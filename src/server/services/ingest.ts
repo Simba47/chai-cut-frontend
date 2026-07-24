@@ -1,8 +1,11 @@
 import { PassThrough } from 'node:stream'
 import Busboy from 'busboy'
 import type { NextRequest } from 'next/server'
-import { createServiceClient, createAdminClient } from '@/lib/supabase/server'
-import { STORAGE_BUCKET_RAW, ACCEPTED_VIDEO_EXTENSIONS } from '@chai-cut/shared'
+import { PutObjectCommand, HeadObjectCommand } from '@aws-sdk/client-s3'
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
+import { r2, R2_BUCKET } from '@/lib/r2'
+import { createAdminClient, createServiceClient } from '@/lib/supabase/server'
+import { ACCEPTED_VIDEO_EXTENSIONS } from '@chai-cut/shared'
 import type { TranscribeJobPayload } from '@chai-cut/shared'
 
 // ── Link ingest ────────────────────────────────────────────────────────────────
@@ -42,9 +45,9 @@ export async function uploadVideo(userId: string, req: NextRequest) {
     throw Object.assign(new Error('Expected multipart/form-data'), { status: 400 })
   }
 
-  const supabase = createAdminClient()
-  const { storagePath } = await streamFileToStorage(req, userId, supabase, contentType)
+  const { storagePath } = await streamFileToR2(req, userId, contentType)
 
+  const supabase = createAdminClient()
   const { data: video, error: dbError } = await supabase
     .from('videos')
     .insert({ user_id: userId, source_type: 'upload', storage_path: storagePath, status: 'uploaded' })
@@ -62,10 +65,9 @@ export async function uploadVideo(userId: string, req: NextRequest) {
   return { video_id: video.id }
 }
 
-async function streamFileToStorage(
+async function streamFileToR2(
   req: NextRequest,
   userId: string,
-  supabase: ReturnType<typeof createAdminClient>,
   contentType: string,
 ): Promise<{ storagePath: string }> {
   return new Promise((resolve, reject) => {
@@ -83,17 +85,19 @@ async function streamFileToStorage(
         return
       }
 
-      const storagePath = `${userId}/${Date.now()}${ext}`
+      const storagePath = `raw/${userId}/${Date.now()}${ext}`
       const chunks: Buffer[] = []
       fileStream.on('data', (chunk: Buffer) => chunks.push(chunk))
       fileStream.on('end', async () => {
         if (settled) return
         try {
           const buffer = Buffer.concat(chunks)
-          const { error } = await supabase.storage
-            .from(STORAGE_BUCKET_RAW)
-            .upload(storagePath, buffer, { contentType: mimeType, upsert: false })
-          if (error) { settled = true; reject(new Error(`Storage error: ${error.message}`)); return }
+          await r2.send(new PutObjectCommand({
+            Bucket: R2_BUCKET,
+            Key: storagePath,
+            Body: buffer,
+            ContentType: mimeType,
+          }))
           settled = true
           resolve({ storagePath })
         } catch (e) {
@@ -124,41 +128,38 @@ async function streamFileToStorage(
   })
 }
 
-// ── Signed URL upload ─────────────────────────────────────────────────────────
+// ── Signed URL upload (browser-direct) ───────────────────────────────────────
 
-export async function getSignedUploadUrl(userId: string, filename: string, contentType?: string) {
+export async function getSignedUploadUrl(userId: string, filename: string, mimeType?: string) {
   const ext = '.' + filename.split('.').pop()?.toLowerCase()
   if (!ACCEPTED_VIDEO_EXTENSIONS.includes(ext as never)) {
     throw Object.assign(new Error('Unsupported file type'), { status: 415 })
   }
 
-  const supabase = await createServiceClient()
-  const storagePath = `${userId}/${Date.now()}${ext}`
-  const { data, error } = await supabase.storage
-    .from(STORAGE_BUCKET_RAW)
-    .createSignedUploadUrl(storagePath)
+  const storagePath = `raw/${userId}/${Date.now()}${ext}`
+  const signed_url = await getSignedUrl(
+    r2,
+    new PutObjectCommand({
+      Bucket: R2_BUCKET,
+      Key: storagePath,
+      ContentType: mimeType,
+    }),
+    { expiresIn: 3600 },
+  )
 
-  if (error || !data) {
-    console.error('signed URL error:', error)
-    throw Object.assign(new Error('Could not create upload URL'), { status: 500 })
-  }
-
-  return { signed_url: data.signedUrl, storage_path: storagePath, token: data.token }
+  return { signed_url, storage_path: storagePath }
 }
 
 // ── Complete upload (browser-direct) ─────────────────────────────────────────
 
 export async function completeUpload(userId: string, storagePath: string, durationMs?: number) {
-  const supabase = await createServiceClient()
-
-  const { data: stat, error: statErr } = await supabase.storage
-    .from('raw-videos')
-    .list(storagePath.split('/').slice(0, -1).join('/'), { search: storagePath.split('/').pop() })
-
-  if (statErr || !stat?.length) {
+  try {
+    await r2.send(new HeadObjectCommand({ Bucket: R2_BUCKET, Key: storagePath }))
+  } catch {
     throw Object.assign(new Error('File not found in storage'), { status: 404 })
   }
 
+  const supabase = await createServiceClient()
   const { data: video, error: dbError } = await supabase
     .from('videos')
     .insert({
