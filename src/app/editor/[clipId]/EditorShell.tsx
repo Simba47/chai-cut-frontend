@@ -534,9 +534,9 @@ export function EditorShell({
             )}
           </div>
 
-          {/* Timeline footer */}
-          <div className="shrink-0" style={{ background: '#0f0f0f', borderTop: '1px solid rgba(255,255,255,0.07)' }}>
-            <div className="flex items-center gap-2 px-4" style={{ height: 36 }}>
+          {/* Timeline footer - fixed height so overflow-hidden never clips the keyframe bar */}
+          <div className="shrink-0 flex flex-col" style={{ height: 190, background: '#0f0f0f', borderTop: '1px solid rgba(255,255,255,0.07)' }}>
+            <div className="flex items-center gap-2 px-4 shrink-0" style={{ height: 36 }}>
               <button onClick={handleCut} disabled={!activeSegment}
                 className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium disabled:opacity-30 transition-opacity hover:opacity-80"
                 style={{ background: 'rgba(255,255,255,0.06)', color: 'rgba(255,255,255,0.6)', border: '1px solid rgba(255,255,255,0.1)' }}>
@@ -558,7 +558,7 @@ export function EditorShell({
               <div className="flex-1" />
               <span className="text-xs tabular-nums" style={{ color: 'rgba(255,255,255,0.3)' }}>{msToLabel(currentTimeMs)} / {msToLabel(clipDurationMs)}</span>
             </div>
-            <div className="px-4 pb-3 overflow-y-auto" style={{ maxHeight: 180 }}>
+            <div className="flex-1 min-h-0 px-4 pb-3 overflow-y-auto">
               <SegmentTimeline
                 segments={segments} clipStartMs={clip.start_ms} clipEndMs={clip.end_ms}
                 currentTimeMs={currentTimeMs} activeSegmentId={activeSegment?.id ?? null}
