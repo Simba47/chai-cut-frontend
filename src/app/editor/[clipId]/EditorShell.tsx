@@ -535,7 +535,7 @@ export function EditorShell({
           </div>
 
           {/* Timeline footer - fixed height so overflow-hidden never clips the keyframe bar */}
-          <div className="shrink-0 flex flex-col" style={{ height: 190, background: '#0f0f0f', borderTop: '1px solid rgba(255,255,255,0.07)' }}>
+          <div className="shrink-0 flex flex-col" style={{ height: 220, background: '#0f0f0f', borderTop: '1px solid rgba(255,255,255,0.07)' }}>
             <div className="flex items-center gap-2 px-4 shrink-0" style={{ height: 36 }}>
               <button onClick={handleCut} disabled={!activeSegment}
                 className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium disabled:opacity-30 transition-opacity hover:opacity-80"
