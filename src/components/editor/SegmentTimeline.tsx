@@ -245,7 +245,7 @@ export function SegmentTimeline({
       <div
         ref={trackRef}
         className="relative select-none"
-        style={{ height: 68, cursor: 'pointer' }}
+        style={{ height: 48, cursor: 'pointer' }}
         onClick={handleTrackClick}
       >
         {/* Track background: video thumbnails or flat fill */}
