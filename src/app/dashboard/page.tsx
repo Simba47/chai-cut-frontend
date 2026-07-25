@@ -67,28 +67,56 @@ export default function DashboardPage() {
     setUploading(true)
     setUploadProgress(0)
     setUploadError(null)
-    const formData = new FormData()
-    formData.append('file', f)
-    const xhr = new XMLHttpRequest()
-    xhr.open('POST', '/api/ingest/upload')
-    xhr.upload.addEventListener('progress', ev => {
-      if (ev.lengthComputable) setUploadProgress(Math.round((ev.loaded / ev.total) * 100))
-    })
     try {
-      const result = await new Promise<{ video_id: string }>((resolve, reject) => {
+      // Step 1: get pre-signed R2 URL (avoids Vercel's 4.5 MB serverless body limit)
+      const signRes = await fetch('/api/ingest/signed-url', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filename: f.name, content_type: f.type }),
+      })
+      if (!signRes.ok) throw new Error((await signRes.json()).error ?? 'Failed to get upload URL')
+      const { signed_url, storage_path } = await signRes.json()
+
+      // Step 2: upload directly from browser to R2 with progress
+      await new Promise<void>((resolve, reject) => {
+        const xhr = new XMLHttpRequest()
+        xhr.open('PUT', signed_url)
+        xhr.setRequestHeader('Content-Type', f.type || 'video/mp4')
+        xhr.upload.addEventListener('progress', ev => {
+          if (ev.lengthComputable) setUploadProgress(Math.round((ev.loaded / ev.total) * 100))
+        })
         xhr.addEventListener('load', () => {
-          if (xhr.status >= 200 && xhr.status < 300) resolve(JSON.parse(xhr.responseText))
-          else {
-            try { reject(new Error(JSON.parse(xhr.responseText).error ?? 'Upload failed')) }
-            catch { reject(new Error(`Upload failed (${xhr.status})`)) }
-          }
+          if (xhr.status >= 200 && xhr.status < 300) resolve()
+          else reject(new Error(`Upload failed (${xhr.status})`))
         })
         xhr.addEventListener('error', () => reject(new Error('Network error')))
-        xhr.send(formData)
+        xhr.send(f)
       })
+
+      // Step 3: read duration client-side to avoid extra worker round-trip
+      let durationMs: number | undefined
+      try {
+        durationMs = await new Promise<number>((res, rej) => {
+          const v = document.createElement('video')
+          v.preload = 'metadata'
+          const url = URL.createObjectURL(f)
+          v.onloadedmetadata = () => { URL.revokeObjectURL(url); res(Math.round(v.duration * 1000)) }
+          v.onerror = () => { URL.revokeObjectURL(url); rej(new Error('metadata')) }
+          v.src = url
+        })
+      } catch { /* leave undefined */ }
+
+      // Step 4: create DB record
+      const completeRes = await fetch('/api/ingest/complete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ storage_path, ...(durationMs ? { duration_ms: durationMs } : {}) }),
+      })
+      if (!completeRes.ok) throw new Error((await completeRes.json()).error ?? 'Failed')
+      const { video_id } = await completeRes.json()
       setFile(null)
       await fetchVideos()
-      router.push(`/videos/${result.video_id}`)
+      router.push(`/videos/${video_id}`)
     } catch (err) {
       setUploadError(err instanceof Error ? err.message : 'Upload failed')
     } finally {
