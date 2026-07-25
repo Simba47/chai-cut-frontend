@@ -2,14 +2,14 @@
 
 import { useState, useEffect, useRef } from 'react'
 import { useRouter } from 'next/navigation'
-import { createClient } from '@/lib/supabase/client'
+import { useSession } from 'next-auth/react'
 import type { Video } from '@chai-cut/shared'
 import { ACCEPTED_VIDEO_EXTENSIONS, MAX_UPLOAD_BYTES } from '@chai-cut/shared'
 
 export default function DashboardPage() {
   const router = useRouter()
+  const { data: session } = useSession()
   const [videos, setVideos] = useState<Video[]>([])
-  const [user, setUser] = useState<{ id: string; email: string } | null>(null)
   const [loading, setLoading] = useState(true)
 
   // Upload state
@@ -21,38 +21,28 @@ export default function DashboardPage() {
   const [uploadError, setUploadError] = useState<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
+  async function fetchVideos() {
+    const res = await fetch('/api/videos')
+    if (res.ok) {
+      const { videos } = await res.json()
+      setVideos(videos ?? [])
+    }
+  }
+
   useEffect(() => {
-    const supabase = createClient()
-    supabase.auth.getUser().then(({ data: { user } }) => {
-      if (!user) { router.push('/login'); return }
-      setUser({ id: user.id, email: user.email ?? '' })
-      supabase
-        .from('videos')
-        .select('*')
-        .order('created_at', { ascending: false })
-        .then(({ data }) => { setVideos((data ?? []) as Video[]); setLoading(false) })
-    })
-  }, [router])
+    fetchVideos().finally(() => setLoading(false))
+  }, [])
 
   // Auto-poll every 3 s while any video is still processing
   useEffect(() => {
     const hasPending = videos.some(v => v.status === 'uploaded' || v.status === 'transcribing')
     if (!hasPending) return
-    const supabase = createClient()
-    const id = setInterval(async () => {
-      const { data } = await supabase
-        .from('videos')
-        .select('*')
-        .order('created_at', { ascending: false })
-      if (data) setVideos(data as Video[])
-    }, 3000)
+    const id = setInterval(fetchVideos, 3000)
     return () => clearInterval(id)
   }, [videos])
 
-  async function signOut() {
-    const supabase = createClient()
-    await supabase.auth.signOut()
-    router.push('/login')
+  async function handleSignOut() {
+    window.location.href = '/login'
   }
 
   function validateAndSetFile(f: File) {
@@ -97,10 +87,7 @@ export default function DashboardPage() {
         xhr.send(formData)
       })
       setFile(null)
-      // video will appear via the supabase poll — just refresh once
-      const supabase = createClient()
-      const { data } = await supabase.from('videos').select('*').order('created_at', { ascending: false })
-      if (data) setVideos(data as Video[])
+      await fetchVideos()
       router.push(`/videos/${result.video_id}`)
     } catch (err) {
       setUploadError(err instanceof Error ? err.message : 'Upload failed')
@@ -123,9 +110,7 @@ export default function DashboardPage() {
       if (!res.ok) throw new Error((await res.json()).error ?? 'Failed')
       const { video_id } = await res.json()
       setLink('')
-      const supabase = createClient()
-      const { data } = await supabase.from('videos').select('*').order('created_at', { ascending: false })
-      if (data) setVideos(data as Video[])
+      await fetchVideos()
       router.push(`/videos/${video_id}`)
     } catch (err) {
       setUploadError(err instanceof Error ? err.message : 'Failed to queue link')
@@ -151,9 +136,9 @@ export default function DashboardPage() {
       >
         <span className="text-base font-bold text-white tracking-tight">✂ Chai Cut</span>
         <div className="flex items-center gap-4">
-          <span className="text-sm" style={{ color: 'rgba(255,255,255,0.35)' }}>{user?.email}</span>
+          <span className="text-sm" style={{ color: 'rgba(255,255,255,0.35)' }}>{session?.user?.email}</span>
           <button
-            onClick={signOut}
+            onClick={handleSignOut}
             className="text-xs px-3 py-1.5 rounded-lg transition-opacity hover:opacity-70"
             style={{ color: 'rgba(255,255,255,0.4)', background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)' }}
           >
@@ -317,7 +302,6 @@ function VideoCard({ video, index, onDeleted }: { video: Video; index: number; o
     >
       {/* Thumbnail area */}
       <div className="relative" style={{ aspectRatio: '16/9', background: '#141414' }}>
-        {/* Placeholder */}
         <div className="absolute inset-0 flex items-center justify-center">
           <svg width="40" height="40" viewBox="0 0 40 40" fill="none" opacity={0.2}>
             <rect width="40" height="40" rx="6" fill="#6b7280"/>
@@ -325,7 +309,6 @@ function VideoCard({ video, index, onDeleted }: { video: Video; index: number; o
           </svg>
         </div>
 
-        {/* Processing progress overlay */}
         {video.status === 'transcribing' && (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 px-6"
             style={{ background: 'rgba(0,0,0,0.7)' }}>
@@ -337,7 +320,6 @@ function VideoCard({ video, index, onDeleted }: { video: Video; index: number; o
           </div>
         )}
 
-        {/* Duration badge */}
         {durationLabel && (
           <div className="absolute top-2 left-2 text-xs font-medium px-1.5 py-0.5 rounded"
             style={{ background: 'rgba(0,0,0,0.65)', color: 'rgba(255,255,255,0.8)' }}>
@@ -345,7 +327,6 @@ function VideoCard({ video, index, onDeleted }: { video: Video; index: number; o
           </div>
         )}
 
-        {/* Delete button */}
         <button
           onClick={handleDelete}
           className="absolute top-2 right-2 flex items-center justify-center rounded-lg transition-colors"
@@ -363,7 +344,6 @@ function VideoCard({ video, index, onDeleted }: { video: Video; index: number; o
               : <svg width="10" height="10" viewBox="0 0 12 12" fill="none"><path d="M2 3h8M5 3V2h2v1M4.5 3v6M7.5 3v6M3 3l.5 7h5L9 3" stroke="rgba(255,255,255,0.6)" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/></svg>
           }
         </button>
-
       </div>
 
       {/* Bottom info */}

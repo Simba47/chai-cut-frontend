@@ -1,97 +1,71 @@
-import { createAdminClient } from '@/lib/supabase/server'
-import { STORAGE_BUCKET_RAW } from '@chai-cut/shared'
+import { DeleteObjectCommand } from '@aws-sdk/client-s3'
+import { r2, R2_BUCKET } from '@/lib/r2'
+import sql from '@/lib/db'
 
-// ── Get video status ───────────────────────────────────────────────────────────
+export async function listVideos(userId: string) {
+  return sql`
+    SELECT id, status, download_progress, duration_ms, created_at
+    FROM videos WHERE user_id = ${userId} ORDER BY created_at DESC
+  `
+}
 
 export async function getVideo(userId: string, videoId: string) {
-  const admin = createAdminClient()
-  const { data: video } = await admin
-    .from('videos')
-    .select('id, user_id, status, download_progress, duration_ms')
-    .eq('id', videoId)
-    .single()
-
+  const [video] = await sql`
+    SELECT id, user_id, status, download_progress, duration_ms
+    FROM videos WHERE id = ${videoId}
+  `
   if (!video || video.user_id !== userId) {
     throw Object.assign(new Error('Not found'), { status: 404 })
   }
   return { video }
 }
 
-// ── Delete video ───────────────────────────────────────────────────────────────
-
 export async function deleteVideo(userId: string, videoId: string) {
-  const admin = createAdminClient()
-  const { data: video } = await admin
-    .from('videos')
-    .select('id, user_id, storage_path')
-    .eq('id', videoId)
-    .single()
-
+  const [video] = await sql`
+    SELECT id, user_id, storage_path FROM videos WHERE id = ${videoId}
+  `
   if (!video) throw Object.assign(new Error('Not found'), { status: 404 })
   if (video.user_id !== userId) throw Object.assign(new Error('Forbidden'), { status: 403 })
 
   if (video.storage_path) {
-    await admin.storage.from(STORAGE_BUCKET_RAW).remove([video.storage_path])
+    await r2.send(new DeleteObjectCommand({ Bucket: R2_BUCKET, Key: video.storage_path })).catch(() => {})
   }
 
-  const { error } = await admin.from('videos').delete().eq('id', videoId)
-  if (error) throw Object.assign(new Error(error.message), { status: 500 })
+  await sql`DELETE FROM videos WHERE id = ${videoId}`
 }
 
-// ── Clip suggestions ───────────────────────────────────────────────────────────
-
-interface ClipSuggestion {
-  id: string
-  title: string
-  start_ms: number
-  end_ms: number
-  summary: string
-}
-
+interface ClipSuggestion { id: string; title: string; start_ms: number; end_ms: number; summary: string }
 type Word = { word: string; start_ms: number; end_ms: number }
 
 export async function getVideoSuggestions(userId: string, videoId: string): Promise<{ suggestions: ClipSuggestion[] }> {
-  const admin = createAdminClient()
-
-  const { data: video } = await admin
-    .from('videos')
-    .select('id, user_id, duration_ms, status')
-    .eq('id', videoId)
-    .single()
-
+  const [video] = await sql`
+    SELECT id, user_id, duration_ms, status FROM videos WHERE id = ${videoId}
+  `
   if (!video || video.user_id !== userId) {
     throw Object.assign(new Error('Not found'), { status: 404 })
   }
 
-  const { data: transcriptRow } = await admin
-    .from('transcripts')
-    .select('id')
-    .eq('video_id', videoId)
-    .order('created_at', { ascending: false })
-    .limit(1)
-    .single()
+  const [transcriptRow] = await sql`
+    SELECT id FROM transcripts WHERE video_id = ${videoId} ORDER BY created_at DESC LIMIT 1
+  `
 
   const words: Word[] = transcriptRow
-    ? ((await admin.from('transcript_words').select('word, start_ms, end_ms').eq('transcript_id', transcriptRow.id).order('start_ms')).data ?? [])
+    ? await sql`SELECT word, start_ms, end_ms FROM transcript_words WHERE transcript_id = ${transcriptRow.id} ORDER BY start_ms`
     : []
 
   const durationMs = video.duration_ms ?? 0
-
   if (words.length === 0) return { suggestions: makeTimeChunks(durationMs) }
 
   const anthropicKey = process.env.ANTHROPIC_API_KEY
   if (!anthropicKey) return { suggestions: makeWordChunks(words, durationMs) }
 
   try {
-    const suggestions = await detectClipsWithClaude(buildTranscriptText(words), durationMs, anthropicKey)
-    return { suggestions }
+    return { suggestions: await detectClipsWithClaude(buildTranscriptText(words), durationMs, anthropicKey) }
   } catch (e) {
     console.error('[suggestions] Claude error:', e)
     return { suggestions: makeWordChunks(words, durationMs) }
   }
 }
-
-// ── Suggestion helpers ─────────────────────────────────────────────────────────
 
 function msToTimestamp(ms: number) {
   const s = Math.floor(ms / 1000)

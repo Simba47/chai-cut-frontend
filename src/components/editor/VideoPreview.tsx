@@ -4,7 +4,6 @@ import { useRef, useEffect, useCallback, useState, useMemo } from 'react'
 import type { RefObject } from 'react'
 import type { SegmentLocal, Overlay, TextOverlay as TextOverlayType, CaptionStyle, TranscriptWord } from '@chai-cut/shared'
 import type { BoxPosition } from '@/lib/interpolation'
-import { createClient } from '@/lib/supabase/client'
 import type { TextCase } from './CaptionStyler'
 import { applyCase } from './CaptionStyler'
 
@@ -59,7 +58,6 @@ export function VideoPreview({
         <video
           ref={videoRef}
           src={videoUrl || undefined}
-          crossOrigin="anonymous"
           preload="auto"
           style={{ width: '100%', height: '100%', display: 'block' }}
           onLoadedMetadata={e => {
@@ -622,12 +620,10 @@ function OverlayBox({ overlay, isActive, onChange, onSelect, onDelete }: Overlay
     window.addEventListener('mouseup', up)
   }
 
-  // Resolve public URL for image overlays
   const imageUrl = useMemo(() => {
-    if (overlay.type !== 'image' || !overlay.storage_path) return null
-    const sb = createClient()
-    return sb.storage.from('overlays').getPublicUrl(overlay.storage_path).data.publicUrl
-  }, [overlay.type, overlay.storage_path])
+    if (overlay.type !== 'image') return null
+    return overlay.preview_url ?? null
+  }, [overlay.type, overlay.preview_url])
 
   const color = '#f59e0b'
   return (

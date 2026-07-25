@@ -1,6 +1,11 @@
 import { redirect, notFound } from 'next/navigation'
-import { createClient, createAdminClient } from '@/lib/supabase/server'
+import { requireUser } from '@/server/auth'
 import { EditorShell } from './EditorShell'
+import sql from '@/lib/db'
+import { r2, R2_BUCKET } from '@/lib/r2'
+import { GetObjectCommand } from '@aws-sdk/client-s3'
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
+import type { TranscriptWord, CaptionStyle, TextOverlay, AudioTrack, Transition, Overlay } from '@chai-cut/shared'
 
 export default async function EditorPage({
   params,
@@ -12,103 +17,88 @@ export default async function EditorPage({
   const { clipId } = await params
   const { layout: layoutParam } = await searchParams
   const initialLayout = layoutParam === 'horizontal' ? 'horizontal' : 'vertical'
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
+
+  const user = await requireUser()
   if (!user) redirect('/login')
 
-  const { data: clip } = await supabase
-    .from('clips')
-    .select('*, videos(storage_path, status, user_id)')
-    .eq('id', clipId)
-    .single()
+  const [clip] = await sql`
+    SELECT c.*, v.storage_path, v.status AS video_status, v.user_id
+    FROM clips c JOIN videos v ON v.id = c.video_id
+    WHERE c.id = ${clipId}
+  `
+  if (!clip || clip.user_id !== user.id) notFound()
 
-  if (!clip) notFound()
-
-  const video = (clip as unknown as { videos: { storage_path: string | null; status: string; user_id: string } | null }).videos
-  if (!video || video.user_id !== user.id) notFound()
-
-  // Get signed URL via admin client (storage has no user-level RLS policies yet)
-  const admin = createAdminClient()
-  const signedUrl = video.storage_path
-    ? (await admin.storage.from('raw-videos').createSignedUrl(video.storage_path, 3600)).data?.signedUrl ?? ''
+  const signedUrl = clip.storage_path
+    ? await getSignedUrl(r2, new GetObjectCommand({ Bucket: R2_BUCKET, Key: clip.storage_path }), { expiresIn: 3600 })
     : ''
 
-  // Load transcript words for this video
-  const { data: transcriptRow } = await supabase
-    .from('transcripts')
-    .select('id')
-    .eq('video_id', (clip as unknown as { video_id: string }).video_id)
-    .order('created_at', { ascending: false })
-    .limit(1)
-    .maybeSingle()
+  const [transcriptRow] = await sql`
+    SELECT id FROM transcripts WHERE video_id = ${clip.video_id} ORDER BY created_at DESC LIMIT 1
+  `
 
-  const words = transcriptRow
-    ? (await supabase
-        .from('transcript_words')
-        .select('*')
-        .eq('transcript_id', transcriptRow.id)
-        .order('start_ms')
-      ).data ?? []
+  const words: TranscriptWord[] = transcriptRow
+    ? (await sql`SELECT * FROM transcript_words WHERE transcript_id = ${transcriptRow.id} ORDER BY start_ms`) as unknown as TranscriptWord[]
     : []
 
-  // Load existing segments, crop_boxes, keyframes
-  let { data: segments } = await supabase
-    .from('segments')
-    .select('*, crop_boxes(*, box_keyframes(*))')
-    .eq('clip_id', clipId)
-    .order('sort_order')
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let segments: any[] = await sql`
+    SELECT s.*, COALESCE(
+      json_agg(
+        jsonb_build_object(
+          'id', cb.id, 'segment_id', cb.segment_id, 'slot_index', cb.slot_index,
+          'source_video_id', cb.source_video_id, 'source_offset_ms', cb.source_offset_ms,
+          'box_keyframes', COALESCE(
+            (SELECT json_agg(bk.* ORDER BY bk.t_ms) FROM box_keyframes bk WHERE bk.box_id = cb.id),
+            '[]'
+          )
+        ) ORDER BY cb.slot_index
+      ) FILTER (WHERE cb.id IS NOT NULL),
+      '[]'
+    ) AS crop_boxes
+    FROM segments s
+    LEFT JOIN crop_boxes cb ON cb.segment_id = s.id
+    WHERE s.clip_id = ${clipId}
+    GROUP BY s.id
+    ORDER BY s.sort_order
+  `
 
-  // If no segments exist yet, create a default full-clip segment in the DB so that
-  // the IDs are stable (generated server-side) and survive SSR→hydration without mismatch.
-  if (!segments || segments.length === 0) {
-    const { data: newSeg } = await admin
-      .from('segments')
-      .insert({
-        clip_id: clipId,
-        start_ms: 0,
-        end_ms: (clip as unknown as { end_ms: number }).end_ms - (clip as unknown as { start_ms: number }).start_ms,
-        layout: initialLayout,
-        sort_order: 0,
-      })
-      .select()
-      .single()
-
+  if (segments.length === 0) {
+    const [newSeg] = await sql`
+      INSERT INTO segments (clip_id, start_ms, end_ms, layout, sort_order)
+      VALUES (${clipId}, 0, ${clip.end_ms - clip.start_ms}, ${initialLayout}, 0)
+      RETURNING *
+    `
     if (newSeg) {
-      const { data: newBox } = await admin
-        .from('crop_boxes')
-        .insert({ segment_id: newSeg.id, slot_index: 0 })
-        .select()
-        .single()
-
+      const [newBox] = await sql`
+        INSERT INTO crop_boxes (segment_id, slot_index)
+        VALUES (${newSeg.id}, 0)
+        RETURNING *
+      `
       segments = [{ ...newSeg, crop_boxes: newBox ? [{ ...newBox, box_keyframes: [] }] : [] }]
     }
   }
 
-  const { data: captionStyles } = await supabase
-    .from('caption_styles')
-    .select('*')
-    .eq('clip_id', clipId)
+  const [captionStylesRaw, textOverlaysRaw, audioTracksRaw, transitionsRaw] = await Promise.all([
+    sql`SELECT * FROM caption_styles WHERE clip_id = ${clipId}`,
+    sql`SELECT * FROM text_overlays WHERE clip_id = ${clipId}`,
+    sql`SELECT * FROM audio_tracks WHERE clip_id = ${clipId}`,
+    sql`SELECT * FROM transitions WHERE clip_id = ${clipId}`,
+  ])
+  const captionStyles = captionStylesRaw as unknown as CaptionStyle[]
+  const textOverlays = textOverlaysRaw as unknown as TextOverlay[]
+  const audioTracks = audioTracksRaw as unknown as AudioTrack[]
+  const transitions = transitionsRaw as unknown as Transition[]
 
-  const { data: textOverlays } = await supabase
-    .from('text_overlays')
-    .select('*')
-    .eq('clip_id', clipId)
-
-  const { data: audioTracks } = await supabase
-    .from('audio_tracks')
-    .select('*')
-    .eq('clip_id', clipId)
-
-  const { data: transitions } = await supabase
-    .from('transitions')
-    .select('*')
-    .eq('clip_id', clipId)
-
-  const { data: overlays } = await supabase
-    .from('overlays')
-    .select('*')
-    .eq('clip_id', clipId)
-    .order('z_index')
+  const overlaysRaw = await sql`SELECT * FROM overlays WHERE clip_id = ${clipId} ORDER BY z_index`
+  const overlays: Overlay[] = await Promise.all((overlaysRaw as unknown as Overlay[]).map(async ov => {
+    if (ov.type === 'image' && ov.storage_path) {
+      const preview_url = await getSignedUrl(
+        r2, new GetObjectCommand({ Bucket: R2_BUCKET, Key: ov.storage_path }), { expiresIn: 3600 }
+      ).catch(() => undefined)
+      return { ...ov, preview_url }
+    }
+    return ov
+  }))
 
   return (
     <EditorShell

@@ -1,6 +1,10 @@
 import { redirect, notFound } from 'next/navigation'
-import { createClient, createAdminClient } from '@/lib/supabase/server'
+import { requireUser } from '@/server/auth'
 import { ClipPickerShell } from './ClipPickerShell'
+import sql from '@/lib/db'
+import { r2, R2_BUCKET } from '@/lib/r2'
+import { GetObjectCommand } from '@aws-sdk/client-s3'
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 
 export default async function VideoPickerPage({
   params,
@@ -8,55 +12,41 @@ export default async function VideoPickerPage({
   params: Promise<{ videoId: string }>
 }) {
   const { videoId } = await params
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
+  const user = await requireUser()
   if (!user) redirect('/login')
 
-  const admin = createAdminClient()
-  const { data: video } = await admin
-    .from('videos')
-    .select('id, user_id, status, download_progress, duration_ms, created_at, storage_path')
-    .eq('id', videoId)
-    .single()
-
+  type VideoRow = { id: string; user_id: string; status: string; download_progress: number; duration_ms: number | null; created_at: string; storage_path: string | null }
+  const [video] = await sql`
+    SELECT id, user_id, status, download_progress, duration_ms, created_at, storage_path
+    FROM videos WHERE id = ${videoId}
+  ` as unknown as VideoRow[]
   if (!video || video.user_id !== user.id) notFound()
 
   let videoUrl = ''
   if (video.status === 'ready' && video.storage_path) {
-    const { data: signed } = await admin.storage
-      .from('raw-videos')
-      .createSignedUrl(video.storage_path, 3600)
-    videoUrl = signed?.signedUrl ?? ''
+    videoUrl = await getSignedUrl(
+      r2, new GetObjectCommand({ Bucket: R2_BUCKET, Key: video.storage_path }), { expiresIn: 3600 }
+    ).catch(() => '')
   }
-
-  // Load existing clips with their first segment layout
-  const { data: clipsRaw } = await admin
-    .from('clips')
-    .select('id, title, start_ms, end_ms, status, output_url, created_at, segments(layout)')
-    .eq('video_id', videoId)
-    .order('created_at', { ascending: true })
 
   type RawClip = {
-    id: string
-    title: string | null
-    start_ms: number
-    end_ms: number
-    status: string
-    output_url: string | null
-    created_at: string
-    segments: Array<{ layout: string }> | null
+    id: string; title: string | null; start_ms: number; end_ms: number
+    status: string; output_url: string | null; created_at: string
+    layout: string | null
   }
 
-  const savedClips = ((clipsRaw ?? []) as RawClip[]).map((c, idx) => ({
-    id: c.id,
-    title: c.title ?? null,
-    start_ms: c.start_ms,
-    end_ms: c.end_ms,
-    status: c.status,
-    output_url: c.output_url,
-    created_at: c.created_at,
-    layout: (c.segments ?? [])[0]?.layout ?? null,
-    index: idx + 1,
+  const clipsRaw = await sql<RawClip[]>`
+    SELECT c.id, c.title, c.start_ms, c.end_ms, c.status, c.output_url, c.created_at,
+      (SELECT layout FROM segments WHERE clip_id = c.id ORDER BY sort_order LIMIT 1) AS layout
+    FROM clips c
+    WHERE c.video_id = ${videoId}
+    ORDER BY c.created_at ASC
+  `
+
+  const savedClips = clipsRaw.map((c, idx) => ({
+    id: c.id, title: c.title ?? null, start_ms: c.start_ms, end_ms: c.end_ms,
+    status: c.status, output_url: c.output_url, created_at: c.created_at,
+    layout: c.layout ?? null, index: idx + 1,
   }))
 
   return (

@@ -1,7 +1,6 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { createClient } from '@/lib/supabase/client'
 import type { Video } from '@chai-cut/shared'
 
 interface Props {
@@ -21,13 +20,10 @@ export function MediaSidebar({ onInsertBroll, pendingInsert = false, onCancelIns
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    const sb = createClient()
-    sb.from('videos')
-      .select('*')
-      .eq('status', 'ready')
-      .order('created_at', { ascending: false })
-      .then(({ data }) => {
-        setVideos((data ?? []) as Video[])
+    fetch('/api/videos')
+      .then(r => r.json())
+      .then(({ videos }) => {
+        setVideos(((videos ?? []) as Video[]).filter((v: Video) => v.status === 'ready'))
         setLoading(false)
       })
   }, [])

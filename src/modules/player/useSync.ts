@@ -57,6 +57,8 @@ export function useVideoSync(clipStartMs = 0, clipEndMs?: number) {
     el.addEventListener('play', onPlay)
     el.addEventListener('pause', onPause)
     el.addEventListener('loadedmetadata', onLoaded)
+    // If metadata already loaded (browser cache hit), fire handler immediately
+    if (el.readyState >= 1) onLoaded()
     return () => {
       el.removeEventListener('play', onPlay)
       el.removeEventListener('pause', onPause)

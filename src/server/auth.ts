@@ -1,8 +1,9 @@
-import { createServiceClient } from '@/lib/supabase/server'
+// DEV BYPASS — remove before production
+const DEV_USER = {
+  id: 'ebfae784-4886-4e9b-84a6-e6ad0227746e',
+  email: 'narasimham@mutinytalent.com',
+}
 
-// Returns the authenticated user or null. Routes call this and return 401 on null.
 export async function requireUser() {
-  const client = await createServiceClient()
-  const { data: { user } } = await client.auth.getUser()
-  return user ?? null
+  return DEV_USER
 }

@@ -1,7 +1,6 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { createClient } from '@/lib/supabase/client'
 import type { Video, SegmentLocal, CropBoxLocal } from '@chai-cut/shared'
 
 interface Props {
@@ -21,12 +20,12 @@ export function MediaPanel({ activeSegment, onAssignSource }: Props) {
   const [pickingBox, setPickingBox] = useState<CropBoxLocal | null>(null)
 
   useEffect(() => {
-    const sb = createClient()
-    sb.from('videos')
-      .select('*')
-      .eq('status', 'ready')
-      .order('created_at', { ascending: false })
-      .then(({ data }) => { setVideos((data ?? []) as Video[]); setLoading(false) })
+    fetch('/api/videos')
+      .then(r => r.json())
+      .then(({ videos }) => {
+        setVideos(((videos ?? []) as Video[]).filter((v: Video) => v.status === 'ready'))
+        setLoading(false)
+      })
   }, [])
 
   if (!activeSegment) {

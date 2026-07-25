@@ -1,7 +1,6 @@
 'use client'
 
 import { useEffect, useRef, useState, useMemo } from 'react'
-import { createClient } from '@/lib/supabase/client'
 import type { Video } from '@chai-cut/shared'
 
 interface Props {
@@ -42,9 +41,12 @@ export function MediaPickerModal({ clipId, atMs, onInsertVideo, onInsertImage, o
   const backdropRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
-    const sb = createClient()
-    sb.from('videos').select('*').eq('status', 'ready').order('created_at', { ascending: false })
-      .then(({ data }) => { setVideos((data ?? []) as Video[]); setLoadingVideos(false) })
+    fetch('/api/videos')
+      .then(r => r.json())
+      .then(({ videos }) => {
+        setVideos(((videos ?? []) as Video[]).filter((v: Video) => v.status === 'ready'))
+        setLoadingVideos(false)
+      })
   }, [])
 
   // ── Upload video from device ─────────────────────────────────────────────
@@ -96,15 +98,12 @@ export function MediaPickerModal({ clipId, atMs, onInsertVideo, onInsertImage, o
     setImageUploading(true)
     setImageError(null)
     try {
-      const sb = createClient()
-      const { data: { user } } = await sb.auth.getUser()
-      if (!user) throw new Error('Not signed in')
-      const ext = imageFile.name.split('.').pop()
-      const path = `${user.id}/overlays/${Date.now()}.${ext}`
-      const { error } = await sb.storage.from('overlays').upload(path, imageFile, { contentType: imageFile.type })
-      if (error) throw new Error(error.message)
-      const { data: { publicUrl } } = sb.storage.from('overlays').getPublicUrl(path)
-      onInsertImage(path, publicUrl)
+      const form = new FormData()
+      form.append('file', imageFile)
+      const res = await fetch('/api/overlays/upload', { method: 'POST', body: form })
+      if (!res.ok) throw new Error((await res.json()).error ?? 'Upload failed')
+      const { storage_path, preview_url } = await res.json()
+      onInsertImage(storage_path, preview_url ?? '')
     } catch (err) {
       setImageError(err instanceof Error ? err.message : 'Upload failed')
       setImageUploading(false)

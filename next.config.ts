@@ -2,8 +2,7 @@ import type { NextConfig } from 'next'
 
 const nextConfig: NextConfig = {
   devIndicators: false,
-  transpilePackages: ['@chai-cut/shared'],
-  experimental: {
+experimental: {
     serverActions: {
       bodySizeLimit: '2gb',
     },

@@ -1,8 +1,6 @@
-import { PutObjectCommand } from '@aws-sdk/client-s3'
+import { PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3'
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
-import { GetObjectCommand } from '@aws-sdk/client-s3'
 import { r2, R2_BUCKET } from '@/lib/r2'
-import { createAdminClient } from '@/lib/supabase/server'
 
 export async function uploadOverlay(userId: string, file: File) {
   const ext = file.name.split('.').pop()?.toLowerCase() ?? 'png'

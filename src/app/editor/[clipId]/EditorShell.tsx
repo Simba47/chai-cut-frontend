@@ -13,7 +13,6 @@ import { AudioMixerPanel } from '@/components/editor/AudioMixerPanel'
 import { TransitionPicker } from '@/components/editor/TransitionPicker'
 import { MediaPickerModal } from '@/components/editor/MediaPickerModal'
 import { LayersPanel } from '@/components/editor/LayersPanel'
-import { createClient } from '@/lib/supabase/client'
 // ── Domain stores ──────────────────────────────────────────────────────────────
 import { useEditorStore, type KeyframeMap } from '@/modules/editor/store'
 import { usePlayerStore } from '@/modules/player/store'
@@ -58,6 +57,11 @@ export function EditorShell({
   // ── Video player ─────────────────────────────────────────────────────────────
   const { videoRef, seekToMs, togglePlay, pause } = useVideoSync(clip.start_ms, clip.end_ms)
   const { currentTimeMs, durationMs, playing } = usePlayerStore()
+  // Append media fragment so browser seeks to clip start at network level,
+  // preventing a flash of the video's frame 0 on page load / cache hit.
+  const clipVideoUrl = videoUrl && clip.start_ms > 0
+    ? `${videoUrl}#t=${clip.start_ms / 1000}`
+    : videoUrl
 
   // ── Domain stores ────────────────────────────────────────────────────────────
   const {
@@ -161,14 +165,11 @@ export function EditorShell({
 
   useEffect(() => {
     if (!transcribing) return
-    const sb = createClient()
+    const videoId = (clip as unknown as { video_id: string }).video_id
     const interval = setInterval(async () => {
-      const { data: tr } = await sb.from('transcripts')
-        .select('id').eq('video_id', (clip as unknown as { video_id: string }).video_id)
-        .order('created_at', { ascending: false }).limit(1).maybeSingle()
-      if (!tr) return
-      const { data: newWords } = await sb.from('transcript_words')
-        .select('*').eq('transcript_id', tr.id).order('start_ms')
+      const res = await fetch(`/api/transcribe/words?video_id=${videoId}`)
+      if (!res.ok) return
+      const { words: newWords } = await res.json()
       if (newWords && newWords.length > 0) {
         setWords(newWords)
         setShowCaptions(true)
@@ -181,15 +182,14 @@ export function EditorShell({
 
   useEffect(() => {
     if (clipStatus !== 'rendering') return
-    const sb = createClient()
     const interval = setInterval(async () => {
-      const { data } = await sb.from('clips').select('status, output_url').eq('id', clip.id).single()
-      if (data) {
-        setClipStatus(data.status)
-        if (data.output_url) setOutputUrl(data.output_url)
-        if (data.status === 'failed') setExportError('Render failed — check backend logs or try again')
-        if (data.status !== 'rendering') clearInterval(interval)
-      }
+      const res = await fetch(`/api/clips/${clip.id}/status`)
+      if (!res.ok) return
+      const data = await res.json()
+      setClipStatus(data.status)
+      if (data.output_url) setOutputUrl(data.output_url)
+      if (data.status === 'failed') setExportError('Render failed — check backend logs or try again')
+      if (data.status !== 'rendering') clearInterval(interval)
     }, 3000)
     return () => clearInterval(interval)
   }, [clip.id, clipStatus])
@@ -241,7 +241,8 @@ export function EditorShell({
       if (!res.ok) throw new Error((await res.json()).error ?? 'Save failed')
       setSaveState('saved')
       saveTimerRef.current = setTimeout(() => setSaveState('idle'), 2500)
-    } catch {
+    } catch (err) {
+      console.error('[save]', err)
       setSaveState('error')
       saveTimerRef.current = setTimeout(() => setSaveState('idle'), 3000)
     }
@@ -289,20 +290,18 @@ export function EditorShell({
         throw new Error(errBody?.error ?? `Retranscription failed (${res.status})`)
       }
       const videoId = (clip as unknown as { video_id: string }).video_id
-      const supabase = createClient()
       const queuedAt = new Date().toISOString()
       const poll = async () => {
         const deadline = Date.now() + 5 * 60 * 1000
         while (Date.now() < deadline) {
           await new Promise(r => setTimeout(r, 3000))
-          const { data: tr } = await supabase.from('transcripts').select('id, created_at')
-            .eq('video_id', videoId).gt('created_at', queuedAt)
-            .order('created_at', { ascending: false }).limit(1).maybeSingle()
-          if (tr) {
-            const { data: newWords } = await supabase.from('transcript_words')
-              .select('*').eq('transcript_id', tr.id).order('start_ms')
-            setWords(newWords ?? [])
-            stopTimer(); setRetranscribing(false); return
+          const res = await fetch(`/api/transcribe/words?video_id=${videoId}&since=${encodeURIComponent(queuedAt)}`)
+          if (res.ok) {
+            const { words: newWords } = await res.json()
+            if (newWords && newWords.length > 0) {
+              setWords(newWords)
+              stopTimer(); setRetranscribing(false); return
+            }
           }
         }
         stopTimer(); setRetranscribing(false)
@@ -369,14 +368,15 @@ export function EditorShell({
     if (seg) setPickerAtMs(seg.end_ms)
   }
 
-  function handleInsertImage(storagePath: string, _url: string) {
+  function handleInsertImage(storagePath: string, previewUrl: string) {
     const atMs = pickerAtMs ?? currentTimeMs
     setPickerAtMs(null)
     const seg = segments.find(s => atMs >= s.start_ms && atMs <= s.end_ms)
     const endMs = seg ? seg.end_ms : atMs + 5000
     setOverlays(prev => [...prev, {
       id: crypto.randomUUID(), clip_id: clip.id, type: 'image' as const,
-      storage_path: storagePath, source_video_id: null, source_offset_ms: 0,
+      storage_path: storagePath, preview_url: previewUrl || undefined,
+      source_video_id: null, source_offset_ms: 0,
       x: 0, y: 0, w: 1, h: 1, start_ms: atMs, end_ms: endMs,
       z_index: prev.length + 1, created_at: new Date().toISOString(),
     }])
@@ -435,7 +435,7 @@ export function EditorShell({
         <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
           <div className="flex-1 min-h-0 relative overflow-hidden">
             <VideoPreview
-              videoRef={videoRef} videoUrl={videoUrl} currentTimeMs={currentTimeMs}
+              videoRef={videoRef} videoUrl={clipVideoUrl} currentTimeMs={currentTimeMs}
               activeSegment={activeSegment ?? null} getPositionAt={getPositionAt}
               activeBoxId={activeBoxId ?? null}
               onSelectBox={(segId, boxId) => { setActiveSegmentId(segId); setActiveBoxId(boxId) }}
