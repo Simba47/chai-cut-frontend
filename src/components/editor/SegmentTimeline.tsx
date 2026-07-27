@@ -325,30 +325,6 @@ export function SegmentTimeline({
                 </div>
               </div>
 
-              {/* "+" button between adjacent segments (KineMaster-style insert point) */}
-              {isAdjacentToNext && onInsertBrollAfter && (
-                <button
-                  className="absolute z-20 flex items-center justify-center"
-                  style={{
-                    left: `calc(${left + width}% - 10px)`,
-                    top: '50%',
-                    transform: 'translateY(-50%)',
-                    width: 20,
-                    height: 20,
-                    borderRadius: '50%',
-                    background: '#f97316',
-                    border: '2px solid #1a1a1a',
-                    boxShadow: '0 2px 8px rgba(249,115,22,0.5)',
-                    cursor: 'pointer',
-                  }}
-                  onClick={e => { e.stopPropagation(); onInsertBrollAfter(seg.id) }}
-                  title="Insert B-roll here"
-                >
-                  <svg width="9" height="9" viewBox="0 0 10 10" fill="none">
-                    <path d="M5 1v8M1 5h8" stroke="white" strokeWidth="1.8" strokeLinecap="round"/>
-                  </svg>
-                </button>
-              )}
 
               {/* Gap indicator (if segments aren't adjacent) */}
               {hasGapAfter && !isAdjacentToNext && (

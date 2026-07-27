@@ -544,24 +544,6 @@ export function EditorShell({
           {/* Timeline footer - fixed height so overflow-hidden never clips the keyframe bar */}
           <div className="shrink-0 flex flex-col" style={{ height: 220, background: '#0f0f0f', borderTop: '1px solid rgba(255,255,255,0.07)' }}>
             <div className="flex items-center gap-2 px-4 shrink-0" style={{ height: 36 }}>
-              <button onClick={handleCut} disabled={!activeSegment}
-                className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium disabled:opacity-30 transition-opacity hover:opacity-80"
-                style={{ background: 'rgba(255,255,255,0.06)', color: 'rgba(255,255,255,0.6)', border: '1px solid rgba(255,255,255,0.1)' }}>
-                <svg width="11" height="11" viewBox="0 0 14 14" fill="none">
-                  <circle cx="4" cy="10" r="2.5" stroke="currentColor" strokeWidth="1.4"/>
-                  <circle cx="4" cy="4" r="2.5" stroke="currentColor" strokeWidth="1.4"/>
-                  <path d="M6 5.5L13 2M6 8.5L13 12" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
-                </svg>
-                Cut
-              </button>
-              {activeBox && (
-                <button onClick={() => upsertKeyframe(activeBox.id, { t_ms: currentTimeMs, ...getPositionAt(activeBox.id, currentTimeMs) })}
-                  className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium transition-opacity hover:opacity-80"
-                  style={{ background: 'rgba(0,180,216,0.12)', color: '#00b4d8', border: '1px solid rgba(0,180,216,0.2)' }}>
-                  <svg width="7" height="7" viewBox="0 0 10 10" fill="currentColor"><path d="M5 0l1.5 3.5L10 5 6.5 6.5 5 10 3.5 6.5 0 5l3.5-1.5L5 0z"/></svg>
-                  Keyframe
-                </button>
-              )}
               <div className="flex-1" />
               <span className="text-xs tabular-nums" style={{ color: 'rgba(255,255,255,0.3)' }}>{msToLabel(currentTimeMs)} / {msToLabel(clipDurationMs)}</span>
             </div>
