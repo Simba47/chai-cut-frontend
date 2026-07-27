@@ -564,7 +564,7 @@ export function EditorShell({
         </div>
 
         {/* Right sidebar */}
-        <div className="shrink-0 flex flex-col overflow-y-auto" style={{ width: 300, background: '#111', borderLeft: '1px solid rgba(255,255,255,0.07)' }}>
+        <div className="shrink-0 flex flex-col" style={{ width: 300, background: '#111', borderLeft: '1px solid rgba(255,255,255,0.07)' }}>
 
           {/* 9:16 Output preview */}
           <div className="shrink-0 flex flex-col" style={{ borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
@@ -588,6 +588,9 @@ export function EditorShell({
               />
             </div>
           </div>
+
+          {/* Scrollable area below preview */}
+          <div className="flex-1 min-h-0 overflow-y-auto flex flex-col">
 
           {/* Crop positions */}
           <div className="p-4" style={{ borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
@@ -748,6 +751,9 @@ export function EditorShell({
                 )}
               </div>
             )}
+          </div>
+
+          {/* end scrollable area */}
           </div>
         </div>
       </div>
