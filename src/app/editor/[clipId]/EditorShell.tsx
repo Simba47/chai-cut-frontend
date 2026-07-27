@@ -788,11 +788,12 @@ function FilmstripScrubber({
   const [hoveredMs, setHoveredMs] = useState<number | null>(null)
 
   useEffect(() => {
-    if (!videoUrl || clipDurationMs <= 0) return
+    if (!videoUrl || clipDurationMs < 1000) return
+    setThumbnails([])
     const vid = document.createElement('video')
     vid.src = videoUrl
     vid.muted = true
-    vid.preload = 'metadata'
+    vid.preload = 'auto'
     vid.crossOrigin = 'anonymous'
     const canvas = document.createElement('canvas')
     canvas.width = 90
@@ -804,9 +805,14 @@ function FilmstripScrubber({
 
     async function capture(i: number) {
       if (cancelled || !ctx) return
-      const ms = clipStartMs + (i / (THUMB_COUNT - 1)) * clipDurationMs
-      vid.currentTime = ms / 1000
-      await new Promise<void>(r => vid.addEventListener('seeked', () => r(), { once: true }))
+      const targetSec = (clipStartMs + (i / (THUMB_COUNT - 1)) * clipDurationMs) / 1000
+      vid.currentTime = targetSec
+      await new Promise<void>(r => {
+        // Resolve immediately if already at the right position with data
+        if (Math.abs(vid.currentTime - targetSec) < 0.05 && vid.readyState >= 2) { r(); return }
+        const tid = setTimeout(r, 3000)
+        vid.addEventListener('seeked', () => { clearTimeout(tid); r() }, { once: true })
+      })
       if (cancelled) return
       ctx.drawImage(vid, 0, 0, 90, 52)
       thumbs[i] = canvas.toDataURL('image/jpeg', 0.55)
@@ -814,12 +820,14 @@ function FilmstripScrubber({
       if (i + 1 < THUMB_COUNT) capture(i + 1)
     }
 
+    function start() { if (!cancelled) capture(0) }
+
     if (vid.readyState >= 1) {
-      capture(0)
+      start()
     } else {
-      vid.addEventListener('loadedmetadata', () => capture(0), { once: true })
+      vid.addEventListener('loadedmetadata', start, { once: true })
     }
-    return () => { cancelled = true; vid.src = '' }
+    return () => { cancelled = true; vid.src = ''; vid.load() }
   }, [videoUrl, clipStartMs, clipDurationMs])
 
   function msFromEvent(e: React.MouseEvent | MouseEvent) {
