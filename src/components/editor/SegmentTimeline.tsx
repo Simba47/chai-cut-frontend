@@ -16,6 +16,64 @@ function isBroll(seg: SegmentLocal): boolean {
   return seg.crop_boxes.some(b => b.source_video_id != null)
 }
 
+const THUMB_W = 80
+const THUMB_H = 56
+const THUMB_COUNT = 24
+
+function VideoThumbnails({ videoUrl, durationMs }: { videoUrl: string; durationMs: number }) {
+  const [thumbs, setThumbs] = useState<string[]>([])
+
+  useEffect(() => {
+    if (!videoUrl || durationMs < 1000) return
+    setThumbs([])
+    let cancelled = false
+    const vid = document.createElement('video')
+    vid.crossOrigin = 'anonymous'
+    vid.preload = 'auto'
+    vid.muted = true
+    vid.src = videoUrl
+    const canvas = document.createElement('canvas')
+    canvas.width = THUMB_W
+    canvas.height = THUMB_H
+    const ctx = canvas.getContext('2d')!
+
+    async function capture(i: number) {
+      if (cancelled) return
+      const targetSec = ((i + 0.5) / THUMB_COUNT) * (durationMs / 1000)
+      vid.currentTime = targetSec
+      await new Promise<void>(r => {
+        if (Math.abs(vid.currentTime - targetSec) < 0.05 && vid.readyState >= 2) { r(); return }
+        const tid = setTimeout(r, 3000)
+        vid.addEventListener('seeked', () => { clearTimeout(tid); r() }, { once: true })
+      })
+      if (cancelled) return
+      try { ctx.drawImage(vid, 0, 0, THUMB_W, THUMB_H) } catch { return }
+      const dataUrl = canvas.toDataURL('image/jpeg', 0.5)
+      setThumbs(prev => { const next = [...prev]; next[i] = dataUrl; return next })
+      if (i + 1 < THUMB_COUNT) capture(i + 1)
+    }
+
+    function start() { if (!cancelled) capture(0) }
+    if (vid.readyState >= 1) { start() }
+    else { vid.addEventListener('loadedmetadata', start, { once: true }) }
+    return () => { cancelled = true; vid.src = ''; vid.load() }
+  }, [videoUrl, durationMs])
+
+  return (
+    <div className="absolute inset-0 flex overflow-hidden" style={{ borderRadius: 8 }}>
+      {Array.from({ length: THUMB_COUNT }).map((_, i) => (
+        <div key={i} style={{ flex: 1, minWidth: 0, overflow: 'hidden', background: 'rgba(255,255,255,0.03)' }}>
+          {thumbs[i] && (
+            <img src={thumbs[i]} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block', opacity: 0, transition: 'opacity 0.3s ease' }}
+              onLoad={e => { (e.currentTarget as HTMLImageElement).style.opacity = '1' }} />
+          )}
+        </div>
+      ))}
+      <div className="absolute inset-0 pointer-events-none" style={{ background: 'rgba(0,0,0,0.25)', borderRadius: 8 }} />
+    </div>
+  )
+}
+
 function msToLabel(ms: number): string {
   const s = Math.floor(ms / 1000)
   const m = Math.floor(s / 60)
@@ -29,6 +87,7 @@ interface Props {
   clipEndMs: number
   currentTimeMs: number
   activeSegmentId: string | null
+  videoUrl?: string
   onSeek: (ms: number) => void
   onSelectSegment: (id: string) => void
   onUpdateSegment: (id: string, updates: { start_ms?: number; end_ms?: number }) => void
@@ -45,6 +104,7 @@ export function SegmentTimeline({
   clipEndMs,
   currentTimeMs,
   activeSegmentId,
+  videoUrl,
   onSeek,
   onSelectSegment,
   onUpdateSegment,
@@ -150,11 +210,14 @@ export function SegmentTimeline({
       <div
         ref={trackRef}
         className="relative select-none"
-        style={{ height: 48, cursor: 'pointer' }}
+        style={{ height: 64, cursor: 'pointer' }}
         onClick={handleTrackClick}
       >
-        {/* Track background */}
-        <div className="absolute inset-0 rounded-lg" style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)' }} />
+        {/* Track background — thumbnails when available, flat fill otherwise */}
+        {videoUrl && duration > 0
+          ? <VideoThumbnails videoUrl={videoUrl} durationMs={duration} />
+          : <div className="absolute inset-0 rounded-lg" style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)' }} />
+        }
 
         {/* Segment blocks */}
         {sorted.map((seg, idx) => {
@@ -176,14 +239,17 @@ export function SegmentTimeline({
             <div key={seg.id}>
               {/* Clip block — semi-transparent so video frames show through */}
               <div
-                className="absolute inset-y-1 flex items-center overflow-hidden cursor-pointer"
+                className="absolute inset-y-0 flex items-center overflow-hidden cursor-pointer"
                 style={{
                   left: `${left}%`,
                   width: `${width}%`,
-                  borderRadius: 7,
-                  background: broll ? `${color}22` : `${color}0f`,
-                  border: `2px solid ${isActive ? color : color + '99'}`,
-                  boxShadow: isActive ? `0 0 0 2px ${color}33` : 'none',
+                  borderRadius: 0,
+                  background: broll ? `${color}22` : `${color}18`,
+                  borderTop: `3px solid ${isActive ? color : color + 'aa'}`,
+                  borderBottom: `3px solid ${isActive ? color : color + 'aa'}`,
+                  borderLeft: `3px solid ${isActive ? color : color + 'aa'}`,
+                  borderRight: `3px solid ${isActive ? color : color + 'aa'}`,
+                  boxShadow: isActive ? `inset 0 0 0 1px ${color}44` : 'none',
                   transition: 'box-shadow 0.1s',
                 }}
                 onClick={e => { e.stopPropagation(); onSelectSegment(seg.id) }}

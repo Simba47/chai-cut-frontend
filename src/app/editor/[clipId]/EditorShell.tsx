@@ -451,15 +451,6 @@ export function EditorShell({
             )}
           </div>
 
-          {/* Filmstrip scrubber */}
-          <FilmstripScrubber
-            videoUrl={videoUrl}
-            clipStartMs={clip.start_ms}
-            clipDurationMs={clipDurationMs}
-            currentTimeMs={currentTimeMs}
-            onSeek={seekToMs}
-          />
-
           {/* Playback controls */}
           <div className="shrink-0 flex items-center gap-2 px-4"
             style={{ height: 44, borderTop: '1px solid rgba(255,255,255,0.06)', background: '#111' }}>
@@ -551,7 +542,7 @@ export function EditorShell({
               <SegmentTimeline
                 segments={segments} clipStartMs={clip.start_ms} clipEndMs={clip.end_ms}
                 currentTimeMs={currentTimeMs} activeSegmentId={activeSegment?.id ?? null}
-                onSeek={seekToMs}
+                videoUrl={videoUrl} onSeek={seekToMs}
                 onSelectSegment={id => setActiveSegmentId(id)}
                 onUpdateSegment={(id, updates) => updateSegment(id, updates)}
                 onInsertBrollAfter={handleInsertBrollAfterSeg}
