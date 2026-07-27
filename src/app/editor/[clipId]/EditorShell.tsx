@@ -451,11 +451,14 @@ export function EditorShell({
             )}
           </div>
 
-          {/* Scrubber */}
-          <div className="relative shrink-0 cursor-pointer" style={{ height: 3, background: 'rgba(255,255,255,0.07)' }}
-            onClick={e => { const r = e.currentTarget.getBoundingClientRect(); seekToMs(Math.round(((e.clientX - r.left) / r.width) * clipDurationMs)) }}>
-            <div className="h-full" style={{ width: `${progress * 100}%`, background: '#00b4d8' }} />
-          </div>
+          {/* Filmstrip scrubber */}
+          <FilmstripScrubber
+            videoUrl={videoUrl}
+            clipStartMs={clip.start_ms}
+            clipDurationMs={clipDurationMs}
+            currentTimeMs={currentTimeMs}
+            onSeek={seekToMs}
+          />
 
           {/* Playback controls */}
           <div className="shrink-0 flex items-center gap-2 px-4"
@@ -781,6 +784,115 @@ export function EditorShell({
           onInsertVideo={handleInsertBroll} onInsertImage={handleInsertImage}
           onClose={() => setPickerAtMs(null)} />
       )}
+    </div>
+  )
+}
+
+// ── Filmstrip scrubber ────────────────────────────────────────────────────────
+
+const THUMB_COUNT = 16
+
+function FilmstripScrubber({
+  videoUrl, clipStartMs, clipDurationMs, currentTimeMs, onSeek,
+}: {
+  videoUrl: string
+  clipStartMs: number
+  clipDurationMs: number
+  currentTimeMs: number
+  onSeek: (ms: number) => void
+}) {
+  const containerRef = useRef<HTMLDivElement>(null)
+  const [thumbnails, setThumbnails] = useState<string[]>([])
+  const [hoveredMs, setHoveredMs] = useState<number | null>(null)
+
+  useEffect(() => {
+    if (!videoUrl || clipDurationMs <= 0) return
+    const vid = document.createElement('video')
+    vid.src = videoUrl
+    vid.muted = true
+    vid.preload = 'metadata'
+    vid.crossOrigin = 'anonymous'
+    const canvas = document.createElement('canvas')
+    canvas.width = 90
+    canvas.height = 52
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return
+    let cancelled = false
+    const thumbs: string[] = []
+
+    async function capture(i: number) {
+      if (cancelled) return
+      const ms = clipStartMs + (i / (THUMB_COUNT - 1)) * clipDurationMs
+      vid.currentTime = ms / 1000
+      await new Promise<void>(r => vid.addEventListener('seeked', () => r(), { once: true }))
+      if (cancelled) return
+      ctx.drawImage(vid, 0, 0, 90, 52)
+      thumbs[i] = canvas.toDataURL('image/jpeg', 0.55)
+      setThumbnails([...thumbs])
+      if (i + 1 < THUMB_COUNT) capture(i + 1)
+    }
+
+    vid.addEventListener('loadedmetadata', () => capture(0), { once: true })
+    return () => { cancelled = true; vid.src = '' }
+  }, [videoUrl, clipStartMs, clipDurationMs])
+
+  function msFromEvent(e: React.MouseEvent | MouseEvent) {
+    const r = containerRef.current?.getBoundingClientRect()
+    if (!r) return 0
+    return Math.round(Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)) * clipDurationMs)
+  }
+
+  function startDrag(e: React.MouseEvent) {
+    onSeek(msFromEvent(e))
+    const move = (ev: MouseEvent) => onSeek(msFromEvent(ev))
+    const up = () => { window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up) }
+    window.addEventListener('mousemove', move)
+    window.addEventListener('mouseup', up)
+  }
+
+  const progress = clipDurationMs > 0 ? currentTimeMs / clipDurationMs : 0
+
+  return (
+    <div
+      ref={containerRef}
+      className="relative shrink-0 select-none overflow-hidden"
+      style={{ height: 54, background: '#000', cursor: 'pointer', borderTop: '1px solid rgba(255,255,255,0.05)' }}
+      onMouseDown={startDrag}
+      onMouseMove={e => setHoveredMs(msFromEvent(e))}
+      onMouseLeave={() => setHoveredMs(null)}
+    >
+      {/* Thumbnails */}
+      <div className="absolute inset-0 flex" style={{ gap: 1 }}>
+        {thumbnails.length > 0
+          ? thumbnails.map((src, i) => (
+            <div key={i} style={{ flex: 1, height: '100%', overflow: 'hidden', background: '#111' }}>
+              {src && <img src={src} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block', pointerEvents: 'none' }} />}
+            </div>
+          ))
+          : Array.from({ length: THUMB_COUNT }).map((_, i) => (
+            <div key={i} style={{ flex: 1, height: '100%', background: 'rgba(255,255,255,0.04)', borderRadius: 1 }} />
+          ))
+        }
+      </div>
+
+      {/* Subtle vignette at bottom */}
+      <div className="absolute inset-x-0 bottom-0 pointer-events-none" style={{ height: 16, background: 'linear-gradient(to bottom, transparent, rgba(0,0,0,0.55))' }} />
+
+      {/* Hover ghost line */}
+      {hoveredMs !== null && (
+        <div className="absolute top-0 bottom-0 w-px pointer-events-none" style={{ left: `${(hoveredMs / clipDurationMs) * 100}%`, background: 'rgba(255,255,255,0.35)' }}>
+          <div className="absolute top-1 left-1/2 -translate-x-1/2 whitespace-nowrap px-1.5 py-0.5 rounded"
+            style={{ background: 'rgba(0,0,0,0.8)', color: '#fff', fontSize: 10, fontWeight: 600, letterSpacing: '0.02em' }}>
+            {msToLabel(hoveredMs)}
+          </div>
+        </div>
+      )}
+
+      {/* Playhead */}
+      <div className="absolute top-0 bottom-0 w-0.5 pointer-events-none" style={{ left: `${progress * 100}%`, background: '#00b4d8', boxShadow: '0 0 6px rgba(0,180,216,0.9)' }}>
+        {/* Diamond head */}
+        <div className="absolute -top-px left-1/2 -translate-x-1/2" style={{ width: 8, height: 8, background: '#00b4d8', transform: 'translateX(-50%) rotate(45deg)', boxShadow: '0 0 4px rgba(0,180,216,0.8)' }} />
+      </div>
     </div>
   )
 }
