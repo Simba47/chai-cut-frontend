@@ -145,39 +145,6 @@ export function SegmentTimeline({
         </span>
       </div>
 
-      {/* ── Edits layer — thin colored bar showing every segment/cut ─── */}
-      <div
-        className="relative select-none overflow-hidden"
-        style={{ height: 12, borderRadius: 4, background: 'rgba(255,255,255,0.04)', cursor: 'pointer' }}
-        onClick={handleTrackClick}
-      >
-        {sorted.map(seg => {
-          const left = (seg.start_ms / duration) * 100
-          const width = ((seg.end_ms - seg.start_ms) / duration) * 100
-          const broll = isBroll(seg)
-          const color = broll ? '#f97316' : LAYOUT_COLORS[seg.layout]
-          const isActive = seg.id === activeSegmentId
-          return (
-            <div
-              key={seg.id}
-              className="absolute inset-y-0 transition-opacity"
-              style={{
-                left: `${left}%`,
-                width: `${width}%`,
-                background: color,
-                opacity: isActive ? 1 : 0.45,
-                borderRight: '1.5px solid rgba(0,0,0,0.4)',
-              }}
-              onClick={e => { e.stopPropagation(); onSelectSegment(seg.id) }}
-            />
-          )
-        })}
-        {/* Playhead line on edits bar */}
-        <div
-          className="absolute inset-y-0 w-px pointer-events-none z-10"
-          style={{ left: `${playheadPct}%`, background: 'rgba(255,255,255,0.9)' }}
-        />
-      </div>
 
       {/* ── Main track ─────────────────────────────────────────────────── */}
       <div
