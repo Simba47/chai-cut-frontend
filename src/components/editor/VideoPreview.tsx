@@ -31,11 +31,12 @@ interface VideoPreviewProps {
   activeBoxId: string | null
   onSelectBox: (segmentId: string, boxId: string) => void
   onBoxChange: (boxId: string, pos: BoxPosition) => void
+  onARDetected?: (ar: number) => void
 }
 
 export function VideoPreview({
   videoRef, videoUrl, currentTimeMs, activeSegment,
-  getPositionAt, activeBoxId, onSelectBox, onBoxChange,
+  getPositionAt, activeBoxId, onSelectBox, onBoxChange, onARDetected,
 }: VideoPreviewProps) {
   const [videoAR, setVideoAR] = useState<number | null>(null)
 
@@ -62,7 +63,11 @@ export function VideoPreview({
           style={{ width: '100%', height: '100%', display: 'block' }}
           onLoadedMetadata={e => {
             const v = e.currentTarget
-            if (v.videoWidth && v.videoHeight) setVideoAR(v.videoWidth / v.videoHeight)
+            if (v.videoWidth && v.videoHeight) {
+              const ar = v.videoWidth / v.videoHeight
+              setVideoAR(ar)
+              onARDetected?.(ar)
+            }
           }}
         />
 
