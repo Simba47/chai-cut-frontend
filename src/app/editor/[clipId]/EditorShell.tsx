@@ -821,7 +821,7 @@ function FilmstripScrubber({
     const thumbs: string[] = []
 
     async function capture(i: number) {
-      if (cancelled) return
+      if (cancelled || !ctx) return
       const ms = clipStartMs + (i / (THUMB_COUNT - 1)) * clipDurationMs
       vid.currentTime = ms / 1000
       await new Promise<void>(r => vid.addEventListener('seeked', () => r(), { once: true }))
