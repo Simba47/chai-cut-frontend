@@ -237,6 +237,21 @@ export function CaptionStyler({
         </div>
       </div>
 
+      {/* Size */}
+      <div className="flex flex-col gap-2">
+        <div className="flex items-center justify-between">
+          <span className="text-xs font-semibold uppercase tracking-widest" style={{ color: 'rgba(255,255,255,0.3)' }}>Size</span>
+          <span className="text-xs font-semibold" style={{ color: 'rgba(255,255,255,0.5)' }}>{style.size ?? 52}px</span>
+        </div>
+        <input
+          type="range" min={20} max={100} step={2}
+          value={style.size ?? 52}
+          onChange={e => onChange({ size: Number(e.target.value) })}
+          className="w-full accent-cyan-400"
+          style={{ height: 4, accentColor: '#00b4d8' }}
+        />
+      </div>
+
       {/* Case */}
       <div className="flex flex-col gap-2">
         <span className="text-xs font-semibold uppercase tracking-widest" style={{ color: 'rgba(255,255,255,0.3)' }}>Case</span>
