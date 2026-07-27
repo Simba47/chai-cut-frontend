@@ -195,236 +195,149 @@ export function SegmentTimeline({
     window.addEventListener('mouseup', up)
   }
 
-  // Segments and currentTimeMs are both 0-based (clip-relative), so no clipStartMs offset needed.
   const playheadPct = duration > 0 ? (currentTimeMs / duration) * 100 : 0
-
   const sorted = [...segments].sort((a, b) => a.sort_order - b.sort_order)
 
+  // Adaptive tick interval for the ruler
+  const durSec = duration / 1000
+  const tickMs = durSec <= 30 ? 5000 : durSec <= 90 ? 10000 : durSec <= 180 ? 15000 : durSec <= 360 ? 30000 : 60000
+  const ticks: number[] = []
+  for (let t = 0; t <= duration; t += tickMs) ticks.push(t)
+
+  const thumbDuration = safeDurationMs && safeDurationMs > duration ? safeDurationMs : duration
+
   return (
-    <div className="flex flex-col gap-1.5">
-      {/* Legend row */}
-      <div className="flex items-center gap-3">
-        <div className="flex items-center gap-1.5">
-          <div className="w-2.5 h-2.5 rounded-sm" style={{ background: '#22c55e' }} />
-          <span className="text-xs" style={{ color: 'rgba(255,255,255,0.35)' }}>Main</span>
+    <div className="flex flex-col" style={{ gap: 0 }}>
+
+      {/* ── Time ruler ─────────────────────────────────────────────────── */}
+      <div className="relative overflow-hidden select-none" style={{ height: 26, background: '#0c0c0c', borderRadius: '6px 6px 0 0' }}>
+        {ticks.map(t => {
+          const pct = duration > 0 ? (t / duration) * 100 : 0
+          const isMajor = t % (tickMs * 2) === 0 || t === 0
+          return (
+            <div key={t} className="absolute flex flex-col items-center pointer-events-none" style={{ left: `${pct}%`, top: 0, bottom: 0, transform: 'translateX(-50%)' }}>
+              <div style={{ flex: 1 }} />
+              <div style={{ width: 1, height: isMajor ? 10 : 5, background: isMajor ? 'rgba(255,255,255,0.35)' : 'rgba(255,255,255,0.12)' }} />
+              {isMajor && (
+                <span style={{ position: 'absolute', top: 3, fontSize: 9, fontWeight: 500, color: 'rgba(255,255,255,0.38)', whiteSpace: 'nowrap', transform: 'translateX(-50%)', left: '50%' }}>
+                  {msToLabel(t)}
+                </span>
+              )}
+            </div>
+          )
+        })}
+        {/* Playhead triangle */}
+        <div className="absolute top-0 pointer-events-none z-20" style={{ left: `${playheadPct}%`, transform: 'translateX(-50%)' }}>
+          <svg width="10" height="10" viewBox="0 0 10 10"><path d="M5 10L0 0h10z" fill="#00b4d8"/></svg>
         </div>
-        <div className="flex items-center gap-1.5">
-          <div className="w-2.5 h-2.5 rounded-sm" style={{ background: '#f97316' }} />
-          <span className="text-xs" style={{ color: 'rgba(255,255,255,0.35)' }}>B-roll</span>
-        </div>
-        <span className="text-xs" style={{ color: 'rgba(255,255,255,0.2)' }}>·</span>
-        <span className="text-xs" style={{ color: 'rgba(255,255,255,0.25)' }}>
-          drag edges to trim · click to select
-        </span>
+        {/* Playhead line */}
+        <div className="absolute inset-y-0 pointer-events-none z-10" style={{ left: `${playheadPct}%`, width: 1, background: '#00b4d8', opacity: 0.6 }} />
       </div>
 
-
-      {/* ── Main track ─────────────────────────────────────────────────── */}
-      <div
-        ref={trackRef}
-        className="relative select-none"
-        style={{ height: 64, cursor: 'pointer' }}
-        onMouseDown={handleTrackDrag}
-      >
-        {/* Track background — thumbnails when available, flat fill otherwise */}
-        {videoUrl && duration > 0
-          ? <VideoThumbnails videoUrl={videoUrl} durationMs={safeDurationMs && safeDurationMs > duration ? safeDurationMs : duration} />
-          : <div className="absolute inset-0 rounded-lg" style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)' }} />
-        }
-
-        {/* Segment blocks */}
-        {sorted.map((seg, idx) => {
+      {/* ── Segment color band ─────────────────────────────────────────── */}
+      <div className="relative overflow-hidden select-none" style={{ height: 8 }}>
+        {sorted.map(seg => {
           const left = (seg.start_ms / duration) * 100
           const width = ((seg.end_ms - seg.start_ms) / duration) * 100
           const broll = isBroll(seg)
           const color = broll ? '#f97316' : LAYOUT_COLORS[seg.layout]
           const isActive = seg.id === activeSegmentId
-          const segDur = seg.end_ms - seg.start_ms
+          return (
+            <div key={seg.id} className="absolute inset-y-0 cursor-pointer"
+              style={{ left: `${left}%`, width: `${width}%`, background: color, opacity: isActive ? 1 : 0.55, borderRight: '1px solid rgba(0,0,0,0.5)' }}
+              onClick={e => { e.stopPropagation(); onSelectSegment(seg.id) }}
+            />
+          )
+        })}
+        <div className="absolute inset-y-0 pointer-events-none z-10" style={{ left: `${playheadPct}%`, width: 1, background: '#00b4d8' }} />
+      </div>
 
-          // Check if there's an adjacent segment after this one
-          const nextSeg = sorted[idx + 1]
-          const hasGapAfter = nextSeg && nextSeg.start_ms > seg.end_ms
-          const gapLeftPct = (seg.end_ms / duration) * 100
-          const gapWidthPct = ((nextSeg?.start_ms ?? seg.end_ms) - seg.end_ms) / duration * 100
-          const isAdjacentToNext = nextSeg && Math.abs(nextSeg.start_ms - seg.end_ms) < 200
+      {/* ── Main thumbnail track ───────────────────────────────────────── */}
+      <div
+        ref={trackRef}
+        className="relative select-none overflow-hidden"
+        style={{ height: 76, cursor: 'ew-resize', background: '#111', borderRadius: '0 0 6px 6px' }}
+        onMouseDown={handleTrackDrag}
+      >
+        {videoUrl && thumbDuration > 0
+          ? <VideoThumbnails videoUrl={videoUrl} durationMs={thumbDuration} />
+          : <div className="absolute inset-0" style={{ background: '#1a1a1a' }} />
+        }
 
+        {/* Segment boundary dividers */}
+        {sorted.map((seg, idx) => {
+          if (idx === 0) return null
+          const leftPct = (seg.start_ms / duration) * 100
+          return <div key={seg.id} className="absolute inset-y-0 pointer-events-none z-10" style={{ left: `${leftPct}%`, width: 1, background: 'rgba(255,255,255,0.25)' }} />
+        })}
+
+        {/* Active segment — colored border highlight + trim handles */}
+        {sorted.map(seg => {
+          if (seg.id !== activeSegmentId) return null
+          const broll = isBroll(seg)
+          const color = broll ? '#f97316' : LAYOUT_COLORS[seg.layout]
+          const leftPct = (seg.start_ms / duration) * 100
+          const rightPct = (seg.end_ms / duration) * 100
+          const widthPct = rightPct - leftPct
           return (
             <div key={seg.id}>
-              {/* Clip block — semi-transparent so video frames show through */}
-              <div
-                className="absolute inset-y-0 flex items-center overflow-hidden cursor-pointer"
-                style={{
-                  left: `${left}%`,
-                  width: `${width}%`,
-                  borderRadius: 0,
-                  background: broll ? `${color}22` : `${color}18`,
-                  borderTop: `3px solid ${isActive ? color : color + 'aa'}`,
-                  borderBottom: `3px solid ${isActive ? color : color + 'aa'}`,
-                  borderLeft: `3px solid ${isActive ? color : color + 'aa'}`,
-                  borderRight: `3px solid ${isActive ? color : color + 'aa'}`,
-                  boxShadow: isActive ? `inset 0 0 0 1px ${color}44` : 'none',
-                  transition: 'box-shadow 0.1s',
-                }}
-                onClick={e => { e.stopPropagation(); onSelectSegment(seg.id) }}
-              >
-                {/* Left trim handle */}
-                <div
-                  className="absolute left-0 inset-y-0 w-2.5 flex items-center justify-center cursor-col-resize z-10"
-                  style={{ background: `${color}cc`, borderRadius: '6px 0 0 6px' }}
-                  onMouseDown={e => handleBoundaryDrag(e, seg.id, 'left')}
-                >
-                  <div className="w-0.5 h-4 rounded-full" style={{ background: 'rgba(255,255,255,0.4)' }} />
-                </div>
-
-                {/* Label */}
-                <div className="flex items-center gap-1.5 px-4 min-w-0 pointer-events-none overflow-hidden">
-                  {broll ? (
-                    <svg width="10" height="10" viewBox="0 0 10 10" fill="none" className="shrink-0 opacity-80">
-                      <rect x="0.5" y="0.5" width="9" height="9" rx="1.5" stroke="white" strokeOpacity="0.9"/>
-                      <path d="M0.5 3.5h9M0.5 6.5h9M3.5 0.5v9M6.5 0.5v9" stroke="white" strokeOpacity="0.6" strokeWidth="0.8"/>
-                    </svg>
-                  ) : (
-                    <svg width="9" height="9" viewBox="0 0 9 9" fill="none" className="shrink-0 opacity-60">
-                      <path d="M2 1l5.5 3.5L2 8V1z" fill="white"/>
-                    </svg>
-                  )}
-                  <span className="text-xs font-semibold text-white truncate" style={{ opacity: 0.95 }}>
-                    {broll ? 'B-roll' : seg.layout}
-                  </span>
-                  {segDur > 2000 && (
-                    <span className="text-xs text-white/50 shrink-0">{msToLabel(segDur)}</span>
-                  )}
-                </div>
-
-                {/* Right trim handle */}
-                <div
-                  className="absolute right-0 inset-y-0 w-2.5 flex items-center justify-center cursor-col-resize z-10"
-                  style={{ background: `${color}cc`, borderRadius: '0 6px 6px 0' }}
-                  onMouseDown={e => handleBoundaryDrag(e, seg.id, 'right')}
-                >
-                  <div className="w-0.5 h-4 rounded-full" style={{ background: 'rgba(255,255,255,0.4)' }} />
-                </div>
+              {/* Inset border highlight */}
+              <div className="absolute inset-y-0 pointer-events-none z-20"
+                style={{ left: `${leftPct}%`, width: `${widthPct}%`, boxShadow: `inset 0 0 0 2px ${color}` }} />
+              {/* Left trim handle */}
+              <div className="absolute inset-y-0 z-30 flex items-center justify-center cursor-col-resize"
+                style={{ left: `${leftPct}%`, width: 12, background: `${color}ee`, borderRadius: '4px 0 0 4px' }}
+                onMouseDown={e => handleBoundaryDrag(e, seg.id, 'left')}>
+                <div style={{ width: 2, height: 22, borderRadius: 2, background: 'rgba(255,255,255,0.6)' }} />
               </div>
-
-
-              {/* Gap indicator (if segments aren't adjacent) */}
-              {hasGapAfter && !isAdjacentToNext && (
-                <div
-                  className="absolute inset-y-1 flex items-center justify-center"
-                  style={{
-                    left: `${gapLeftPct}%`,
-                    width: `${gapWidthPct}%`,
-                    background: 'repeating-linear-gradient(45deg, rgba(255,255,255,0.03), rgba(255,255,255,0.03) 4px, transparent 4px, transparent 8px)',
-                    border: '1px dashed rgba(255,255,255,0.1)',
-                    borderRadius: 4,
-                    pointerEvents: 'none',
-                  }}
-                />
-              )}
+              {/* Right trim handle */}
+              <div className="absolute inset-y-0 z-30 flex items-center justify-center cursor-col-resize"
+                style={{ left: `${rightPct}%`, width: 12, transform: 'translateX(-100%)', background: `${color}ee`, borderRadius: '0 4px 4px 0' }}
+                onMouseDown={e => handleBoundaryDrag(e, seg.id, 'right')}>
+                <div style={{ width: 2, height: 22, borderRadius: 2, background: 'rgba(255,255,255,0.6)' }} />
+              </div>
             </div>
           )
         })}
 
         {/* Playhead */}
-        <div
-          className="absolute inset-y-0 w-px pointer-events-none z-30"
-          style={{ left: `${playheadPct}%`, background: 'rgba(255,255,255,0.85)' }}
-        >
-          <div
-            className="absolute w-3 h-3 rounded-full"
-            style={{
-              top: -1,
-              left: '50%',
-              transform: 'translateX(-50%)',
-              background: '#fff',
-              boxShadow: '0 0 0 2px rgba(255,255,255,0.25)',
-            }}
-          />
-          <div
-            className="absolute w-2 h-2 rotate-45"
-            style={{
-              bottom: -1,
-              left: '50%',
-              transform: 'translateX(-50%) rotate(45deg)',
-              background: '#fff',
-            }}
-          />
-        </div>
+        <div className="absolute inset-y-0 pointer-events-none z-30"
+          style={{ left: `${playheadPct}%`, width: 1.5, background: '#00b4d8', boxShadow: '0 0 6px rgba(0,180,216,0.8)' }} />
       </div>
 
-      {/* Time ruler */}
-      <div className="flex justify-between">
-        <span className="text-xs tabular-nums" style={{ color: 'rgba(255,255,255,0.2)' }}>{msToLabel(clipStartMs)}</span>
-        <span className="text-xs tabular-nums" style={{ color: 'rgba(255,255,255,0.35)' }}>{msToLabel(currentTimeMs)}</span>
-        <span className="text-xs tabular-nums" style={{ color: 'rgba(255,255,255,0.2)' }}>{msToLabel(clipEndMs)}</span>
-      </div>
-
-      {/* ── Text overlay tracks — one row per clip ─────────────────────── */}
+      {/* ── Text overlay tracks ────────────────────────────────────────── */}
       {textOverlays.length > 0 && (
-        <div className="flex flex-col" style={{ gap: 2, marginTop: 2 }}>
+        <div className="flex flex-col" style={{ gap: 2, marginTop: 6 }}>
           <div className="flex items-center gap-1.5">
             <div className="w-2 h-2 rounded-sm" style={{ background: '#8b5cf6' }} />
             <span className="text-xs" style={{ color: 'rgba(255,255,255,0.3)' }}>Text</span>
             <span className="text-xs" style={{ color: 'rgba(255,255,255,0.15)' }}>· drag to move · edges to resize</span>
           </div>
-
           {textOverlays.map(o => {
             const left = (o.start_ms / duration) * 100
             const width = Math.max(((o.end_ms - o.start_ms) / duration) * 100, 1)
             const isActive = o.id === activeTextOverlayId
             return (
-              <div
-                key={o.id}
-                className="relative select-none"
-                style={{ height: 26, borderRadius: 5, background: 'rgba(255,255,255,0.02)' }}
-              >
-                {/* Clip bar */}
-                <div
-                  className="absolute inset-y-0.5 flex items-center overflow-hidden"
-                  style={{
-                    left: `${left}%`,
-                    width: `${width}%`,
-                    borderRadius: 5,
-                    background: isActive ? '#7c3aed' : '#6d28d9aa',
-                    border: `1.5px solid ${isActive ? '#a78bfa' : '#8b5cf666'}`,
-                    cursor: 'grab',
-                    boxShadow: isActive ? '0 0 0 2px #8b5cf633' : 'none',
-                    minWidth: 6,
-                  }}
+              <div key={o.id} className="relative select-none" style={{ height: 26, borderRadius: 5, background: 'rgba(255,255,255,0.02)' }}>
+                <div className="absolute inset-y-0.5 flex items-center overflow-hidden"
+                  style={{ left: `${left}%`, width: `${width}%`, borderRadius: 5, background: isActive ? '#7c3aed' : '#6d28d9aa', border: `1.5px solid ${isActive ? '#a78bfa' : '#8b5cf666'}`, cursor: 'grab', boxShadow: isActive ? '0 0 0 2px #8b5cf633' : 'none', minWidth: 6 }}
                   onMouseDown={e => handleTextOverlayBodyDrag(e, o.id, o.start_ms, o.end_ms)}
-                  onClick={e => { e.stopPropagation(); onSelectTextOverlay?.(o.id) }}
-                >
-                  {/* Left handle */}
-                  <div
-                    className="absolute left-0 inset-y-0 w-3 flex items-center justify-center cursor-col-resize z-10 shrink-0"
+                  onClick={e => { e.stopPropagation(); onSelectTextOverlay?.(o.id) }}>
+                  <div className="absolute left-0 inset-y-0 w-3 flex items-center justify-center cursor-col-resize z-10 shrink-0"
                     style={{ borderRadius: '5px 0 0 5px', background: 'rgba(0,0,0,0.25)' }}
-                    onMouseDown={e => handleTextOverlayEdgeDrag(e, o.id, o.start_ms, o.end_ms, 'left')}
-                  >
+                    onMouseDown={e => handleTextOverlayEdgeDrag(e, o.id, o.start_ms, o.end_ms, 'left')}>
                     <div style={{ width: 1.5, height: 10, borderRadius: 1, background: 'rgba(255,255,255,0.55)' }} />
                   </div>
-
-                  {/* Label */}
                   <div className="absolute inset-0 flex items-center overflow-hidden pointer-events-none" style={{ padding: '0 14px' }}>
-                    <span style={{ fontSize: 10, fontWeight: 600, color: 'rgba(255,255,255,0.92)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                      {o.text}
-                    </span>
+                    <span style={{ fontSize: 10, fontWeight: 600, color: 'rgba(255,255,255,0.92)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{o.text}</span>
                   </div>
-
-                  {/* Right handle */}
-                  <div
-                    className="absolute right-0 inset-y-0 w-3 flex items-center justify-center cursor-col-resize z-10 shrink-0"
+                  <div className="absolute right-0 inset-y-0 w-3 flex items-center justify-center cursor-col-resize z-10 shrink-0"
                     style={{ borderRadius: '0 5px 5px 0', background: 'rgba(0,0,0,0.25)' }}
-                    onMouseDown={e => handleTextOverlayEdgeDrag(e, o.id, o.start_ms, o.end_ms, 'right')}
-                  >
+                    onMouseDown={e => handleTextOverlayEdgeDrag(e, o.id, o.start_ms, o.end_ms, 'right')}>
                     <div style={{ width: 1.5, height: 10, borderRadius: 1, background: 'rgba(255,255,255,0.55)' }} />
                   </div>
                 </div>
-
-                {/* Playhead */}
-                <div
-                  className="absolute inset-y-0 w-px pointer-events-none z-30"
-                  style={{ left: `${playheadPct}%`, background: 'rgba(255,255,255,0.35)' }}
-                />
+                <div className="absolute inset-y-0 w-px pointer-events-none z-30" style={{ left: `${playheadPct}%`, background: 'rgba(255,255,255,0.35)' }} />
               </div>
             )
           })}
