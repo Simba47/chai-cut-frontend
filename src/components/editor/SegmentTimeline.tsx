@@ -88,6 +88,7 @@ interface Props {
   currentTimeMs: number
   activeSegmentId: string | null
   videoUrl?: string
+  safeDurationMs?: number
   onSeek: (ms: number) => void
   onSelectSegment: (id: string) => void
   onUpdateSegment: (id: string, updates: { start_ms?: number; end_ms?: number }) => void
@@ -105,6 +106,7 @@ export function SegmentTimeline({
   currentTimeMs,
   activeSegmentId,
   videoUrl,
+  safeDurationMs,
   onSeek,
   onSelectSegment,
   onUpdateSegment,
@@ -115,18 +117,29 @@ export function SegmentTimeline({
   onTextOverlayUpdate,
 }: Props) {
   const trackRef = useRef<HTMLDivElement>(null)
-  const duration = clipEndMs - clipStartMs
+  const duration = (clipEndMs - clipStartMs) || safeDurationMs || 0
 
   function pxToMs(px: number): number {
     const rect = trackRef.current?.getBoundingClientRect()
-    if (!rect) return 0
-    return (px / rect.width) * duration  // 0-based, no clipStartMs offset
+    if (!rect || duration <= 0) return 0
+    return Math.max(0, Math.min((px / rect.width) * duration, duration))
   }
 
-  function handleTrackClick(e: React.MouseEvent) {
+  function handleTrackDrag(e: React.MouseEvent) {
     const rect = trackRef.current?.getBoundingClientRect()
     if (!rect) return
     onSeek(pxToMs(e.clientX - rect.left))
+    function onMove(ev: MouseEvent) {
+      const r = trackRef.current?.getBoundingClientRect()
+      if (!r) return
+      onSeek(pxToMs(ev.clientX - r.left))
+    }
+    function onUp() {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
   }
 
   function handleBoundaryDrag(e: React.MouseEvent, segId: string, side: 'left' | 'right') {
@@ -211,11 +224,11 @@ export function SegmentTimeline({
         ref={trackRef}
         className="relative select-none"
         style={{ height: 64, cursor: 'pointer' }}
-        onClick={handleTrackClick}
+        onMouseDown={handleTrackDrag}
       >
         {/* Track background — thumbnails when available, flat fill otherwise */}
         {videoUrl && duration > 0
-          ? <VideoThumbnails videoUrl={videoUrl} durationMs={duration} />
+          ? <VideoThumbnails videoUrl={videoUrl} durationMs={safeDurationMs && safeDurationMs > duration ? safeDurationMs : duration} />
           : <div className="absolute inset-0 rounded-lg" style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)' }} />
         }
 

@@ -542,7 +542,7 @@ export function EditorShell({
               <SegmentTimeline
                 segments={segments} clipStartMs={clip.start_ms} clipEndMs={clip.end_ms}
                 currentTimeMs={currentTimeMs} activeSegmentId={activeSegment?.id ?? null}
-                videoUrl={videoUrl} onSeek={seekToMs}
+                videoUrl={videoUrl} safeDurationMs={clipDurationMs} onSeek={seekToMs}
                 onSelectSegment={id => setActiveSegmentId(id)}
                 onUpdateSegment={(id, updates) => updateSegment(id, updates)}
                 onInsertBrollAfter={handleInsertBrollAfterSeg}
