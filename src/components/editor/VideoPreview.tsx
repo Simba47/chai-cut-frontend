@@ -69,7 +69,10 @@ export function VideoPreview({
         {/* Crop box overlay */}
         {activeSegment && (
           <div className="absolute inset-0" style={{ pointerEvents: 'none', zIndex: 10 }}>
-            {activeSegment.crop_boxes.map((box, slotIdx) => {
+            {activeSegment.crop_boxes.slice(0,
+              activeSegment.layout === 'trio' ? 3 :
+              activeSegment.layout === 'split' ? 2 : 1
+            ).map((box, slotIdx) => {
               const pos = getPositionAt(box.id, currentTimeMs)
               return (
                 <DraggableBox
