@@ -437,8 +437,15 @@ export function EditorShell({
 
         {/* Left: Video + controls + panels */}
         <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
-          <div className="flex-1 min-h-0 relative" style={{ padding: '10px 10px 0', background: '#0a0a0a' }}>
-            <div className="relative w-full h-full rounded-xl overflow-hidden" style={{ border: '1px solid rgba(255,255,255,0.09)', boxShadow: '0 4px 24px rgba(0,0,0,0.5)' }}>
+          <div className="flex-1 min-h-0 flex items-center justify-center" style={{ padding: '10px 10px 0', background: '#0a0a0a' }}>
+            <div className="relative flex flex-col rounded-xl overflow-hidden" style={{
+              aspectRatio: '16/9',
+              width: '100%',
+              maxHeight: '100%',
+              maxWidth: '100%',
+              border: '1px solid rgba(255,255,255,0.09)',
+              boxShadow: '0 4px 24px rgba(0,0,0,0.5)',
+            }}>
               <VideoPreview
                 videoRef={videoRef} videoUrl={clipVideoUrl} currentTimeMs={currentTimeMs}
                 activeSegment={activeSegment ?? null} getPositionAt={getPositionAt}
