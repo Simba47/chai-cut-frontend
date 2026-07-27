@@ -124,7 +124,6 @@ export function EditorShell({
   const [renderStuckSince, setRenderStuckSince] = useState<number | null>(clip.status === 'rendering' ? Date.now() : null)
   const [renderElapsed, setRenderElapsed] = useState(0)
   const [saveState, setSaveState] = useState<SaveState>('idle')
-  const [videoFileAR, setVideoFileAR] = useState<number | null>(null)
 
   const retranscribeTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -438,12 +437,8 @@ export function EditorShell({
 
         {/* Left: Video + controls + panels */}
         <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
-          <div className="flex-1 min-h-0 flex items-start justify-center" style={{ padding: '10px 10px 0', background: '#0a0a0a' }}>
-            <div className="relative flex flex-col rounded-xl overflow-hidden" style={{
-              aspectRatio: videoFileAR ? String(videoFileAR) : '16/9',
-              width: '100%',
-              maxHeight: '100%',
-              maxWidth: '100%',
+          <div className="flex-1 min-h-0 relative" style={{ padding: '10px 10px 0', background: '#0a0a0a' }}>
+            <div className="relative w-full h-full rounded-xl overflow-hidden" style={{
               border: '1px solid rgba(255,255,255,0.09)',
               boxShadow: '0 4px 24px rgba(0,0,0,0.5)',
             }}>
@@ -453,7 +448,6 @@ export function EditorShell({
                 activeBoxId={activeBoxId ?? null}
                 onSelectBox={(segId, boxId) => { setActiveSegmentId(segId); setActiveBoxId(boxId) }}
                 onBoxChange={(boxId, pos) => upsertKeyframe(boxId, { t_ms: currentTimeMs, ...pos })}
-                onARDetected={setVideoFileAR}
               />
               {activeSegment?.crop_boxes[0]?.source_video_id && (
                 <div className="absolute top-3 left-3 flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold pointer-events-none"
