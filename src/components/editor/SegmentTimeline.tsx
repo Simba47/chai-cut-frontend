@@ -20,11 +20,11 @@ const THUMB_W = 80
 const THUMB_H = 56
 const THUMB_COUNT = 24
 
-function VideoThumbnails({ videoUrl, durationMs }: { videoUrl: string; durationMs: number }) {
+function VideoThumbnails({ videoUrl }: { videoUrl: string }) {
   const [thumbs, setThumbs] = useState<string[]>([])
 
   useEffect(() => {
-    if (!videoUrl || durationMs < 1000) return
+    if (!videoUrl) return
     setThumbs([])
     let cancelled = false
     const vid = document.createElement('video')
@@ -37,27 +37,31 @@ function VideoThumbnails({ videoUrl, durationMs }: { videoUrl: string; durationM
     canvas.height = THUMB_H
     const ctx = canvas.getContext('2d')!
 
-    async function capture(i: number) {
+    async function captureAll() {
       if (cancelled) return
-      const targetSec = ((i + 0.5) / THUMB_COUNT) * (durationMs / 1000)
-      vid.currentTime = targetSec
-      await new Promise<void>(r => {
-        if (Math.abs(vid.currentTime - targetSec) < 0.05 && vid.readyState >= 2) { r(); return }
-        const tid = setTimeout(r, 3000)
-        vid.addEventListener('seeked', () => { clearTimeout(tid); r() }, { once: true })
-      })
-      if (cancelled) return
-      try { ctx.drawImage(vid, 0, 0, THUMB_W, THUMB_H) } catch { return }
-      const dataUrl = canvas.toDataURL('image/jpeg', 0.5)
-      setThumbs(prev => { const next = [...prev]; next[i] = dataUrl; return next })
-      if (i + 1 < THUMB_COUNT) capture(i + 1)
+      const durSec = vid.duration
+      if (!durSec || !isFinite(durSec) || durSec < 1) return
+      for (let i = 0; i < THUMB_COUNT; i++) {
+        if (cancelled) return
+        const targetSec = ((i + 0.5) / THUMB_COUNT) * durSec
+        vid.currentTime = targetSec
+        await new Promise<void>(r => {
+          if (Math.abs(vid.currentTime - targetSec) < 0.05 && vid.readyState >= 2) { r(); return }
+          const tid = setTimeout(r, 3000)
+          vid.addEventListener('seeked', () => { clearTimeout(tid); r() }, { once: true })
+        })
+        if (cancelled) return
+        try { ctx.drawImage(vid, 0, 0, THUMB_W, THUMB_H) } catch { continue }
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.5)
+        setThumbs(prev => { const next = [...prev]; next[i] = dataUrl; return next })
+      }
     }
 
-    function start() { if (!cancelled) capture(0) }
+    function start() { if (!cancelled) captureAll() }
     if (vid.readyState >= 1) { start() }
     else { vid.addEventListener('loadedmetadata', start, { once: true }) }
     return () => { cancelled = true; vid.src = ''; vid.load() }
-  }, [videoUrl, durationMs])
+  }, [videoUrl])
 
   return (
     <div className="absolute inset-0 flex overflow-hidden" style={{ borderRadius: 8 }}>
@@ -260,8 +264,8 @@ export function SegmentTimeline({
         className="relative overflow-hidden"
         style={{ height: 76, background: '#111', borderRadius: '0 0 6px 6px' }}
       >
-        {videoUrl && thumbDuration > 0
-          ? <VideoThumbnails videoUrl={videoUrl} durationMs={thumbDuration} />
+        {videoUrl
+          ? <VideoThumbnails videoUrl={videoUrl} />
           : <div className="absolute inset-0" style={{ background: '#1a1a1a' }} />
         }
 
