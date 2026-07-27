@@ -121,6 +121,8 @@ export function EditorShell({
   const [exporting, setExporting] = useState(false)
   const [exportError, setExportError] = useState<string | null>(null)
   const [renderQuality, setRenderQuality] = useState<'480p' | '720p' | '1080p' | '2160p'>('1080p')
+  const [renderStuckSince, setRenderStuckSince] = useState<number | null>(clip.status === 'rendering' ? Date.now() : null)
+  const [renderElapsed, setRenderElapsed] = useState(0)
   const [saveState, setSaveState] = useState<SaveState>('idle')
 
   const retranscribeTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
@@ -181,17 +183,19 @@ export function EditorShell({
   }, [transcribing, clip, setWords, setShowCaptions])
 
   useEffect(() => {
-    if (clipStatus !== 'rendering') return
-    const interval = setInterval(async () => {
+    if (clipStatus !== 'rendering') { setRenderStuckSince(null); setRenderElapsed(0); return }
+    if (!renderStuckSince) setRenderStuckSince(Date.now())
+    const tick = setInterval(() => setRenderElapsed(Math.floor((Date.now() - (renderStuckSince ?? Date.now())) / 1000)), 1000)
+    const poll = setInterval(async () => {
       const res = await fetch(`/api/clips/${clip.id}/status`)
       if (!res.ok) return
       const data = await res.json()
       setClipStatus(data.status)
       if (data.output_url) setOutputUrl(data.output_url)
       if (data.status === 'failed') setExportError('Render failed — check backend logs or try again')
-      if (data.status !== 'rendering') clearInterval(interval)
+      if (data.status !== 'rendering') clearInterval(poll)
     }, 3000)
-    return () => clearInterval(interval)
+    return () => { clearInterval(poll); clearInterval(tick) }
   }, [clip.id, clipStatus])
 
   // ── Auto-save: trigger 2.5 s after any meaningful edit ───────────────────────
@@ -755,9 +759,16 @@ export function EditorShell({
                 className="w-full py-3 rounded-xl text-sm font-semibold text-white disabled:opacity-50 transition-opacity hover:opacity-90"
                 style={{ background: clipStatus === 'rendering' ? 'rgba(255,255,255,0.1)' : '#00b4d8' }}>
                 {exporting ? 'Queuing…' : clipStatus === 'rendering'
-                  ? <span className="flex items-center justify-center gap-2"><span className="w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin" />Rendering…</span>
+                  ? <span className="flex items-center justify-center gap-2"><span className="w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin" />Rendering… {renderElapsed > 0 && `(${Math.floor(renderElapsed / 60)}m ${renderElapsed % 60}s)`}</span>
                   : `Process video`}
               </button>
+              {clipStatus === 'rendering' && renderElapsed > 180 && (
+                <button onClick={async () => { await fetch(`/api/clips/${clip.id}/reedit`, { method: 'POST' }); setClipStatus('draft'); setOutputUrl(null); setRenderStuckSince(null); setRenderElapsed(0) }}
+                  className="w-full py-2 text-xs rounded-xl font-medium"
+                  style={{ background: 'rgba(239,68,68,0.12)', color: '#f87171', border: '1px solid rgba(239,68,68,0.25)' }}>
+                  Stuck? Reset &amp; Re-render
+                </button>
+              )}
             )}
           </div>
         </div>
