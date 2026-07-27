@@ -437,18 +437,20 @@ export function EditorShell({
 
         {/* Left: Video + controls + panels */}
         <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
-          <div className="flex-1 min-h-0 relative overflow-hidden">
-            <VideoPreview
-              videoRef={videoRef} videoUrl={clipVideoUrl} currentTimeMs={currentTimeMs}
-              activeSegment={activeSegment ?? null} getPositionAt={getPositionAt}
-              activeBoxId={activeBoxId ?? null}
-              onSelectBox={(segId, boxId) => { setActiveSegmentId(segId); setActiveBoxId(boxId) }}
-              onBoxChange={(boxId, pos) => upsertKeyframe(boxId, { t_ms: currentTimeMs, ...pos })}
-            />
-            {activeSegment?.crop_boxes[0]?.source_video_id && (
-              <div className="absolute top-3 left-3 flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold pointer-events-none"
-                style={{ background: 'rgba(249,115,22,0.85)', color: '#fff' }}>B-roll</div>
-            )}
+          <div className="flex-1 min-h-0 relative" style={{ padding: '10px 10px 0', background: '#0a0a0a' }}>
+            <div className="relative w-full h-full rounded-xl overflow-hidden" style={{ border: '1px solid rgba(255,255,255,0.09)', boxShadow: '0 4px 24px rgba(0,0,0,0.5)' }}>
+              <VideoPreview
+                videoRef={videoRef} videoUrl={clipVideoUrl} currentTimeMs={currentTimeMs}
+                activeSegment={activeSegment ?? null} getPositionAt={getPositionAt}
+                activeBoxId={activeBoxId ?? null}
+                onSelectBox={(segId, boxId) => { setActiveSegmentId(segId); setActiveBoxId(boxId) }}
+                onBoxChange={(boxId, pos) => upsertKeyframe(boxId, { t_ms: currentTimeMs, ...pos })}
+              />
+              {activeSegment?.crop_boxes[0]?.source_video_id && (
+                <div className="absolute top-3 left-3 flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold pointer-events-none"
+                  style={{ background: 'rgba(249,115,22,0.85)', color: '#fff' }}>B-roll</div>
+              )}
+            </div>
           </div>
 
           {/* Playback controls */}
