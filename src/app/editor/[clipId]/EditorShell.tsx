@@ -566,9 +566,35 @@ export function EditorShell({
         {/* Right sidebar */}
         <div className="shrink-0 flex flex-col" style={{ width: 300, background: '#111', borderLeft: '1px solid rgba(255,255,255,0.07)' }}>
 
-          {/* Crop Positions — top card, like Clipzi */}
-          <div className="shrink-0" style={{ borderBottom: '1px solid rgba(255,255,255,0.06)', maxHeight: 210, overflowY: 'auto' }}>
-            <div className="px-4 pt-3 pb-2 flex items-center justify-between">
+          {/* 9:16 Output preview */}
+          <div className="shrink-0 flex flex-col" style={{ borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+            <div className="px-4 pt-3 pb-1 flex items-center gap-2">
+              <span className="text-sm font-semibold text-white">Preview (9:16)</span>
+              {clipStatus === 'done' && <span className="text-xs" style={{ color: '#22c55e' }}>✓ Ready</span>}
+              {clipStatus === 'rendering' && <span className="flex items-center gap-1 text-xs" style={{ color: 'rgba(255,255,255,0.4)' }}><span className="w-2.5 h-2.5 border-2 border-current border-t-transparent rounded-full animate-spin" />Rendering</span>}
+            </div>
+            <div className="flex items-center justify-center px-4 pb-4 pt-2">
+              <OutputCanvas
+                videoRef={videoRef} currentTimeMs={currentTimeMs} clipStartMs={clip.start_ms}
+                activeSegment={playingSegment} getPositionAt={getPositionAt}
+                skipTransitionRef={skipCanvasTransitionRef} words={displayWords}
+                captionStyle={captionStyle} captionTextCase={captionTextCase} showCaptions={showCaptions}
+                overlays={overlays} activeOverlayId={activeOverlayId}
+                onOverlayChange={updateOverlay} onSelectOverlay={setActiveOverlayId} onDeleteOverlay={deleteOverlay}
+                textOverlays={textOverlays} activeTextOverlayId={activeTextOverlayId}
+                onTextOverlayChange={updateTextOverlay} onSelectTextOverlay={setActiveTextOverlayId} onDeleteTextOverlay={deleteTextOverlay}
+                onCaptionPositionChange={y => updateCaptionStyle({ position_y: y })}
+                style={{ width: '100%', height: 'auto', display: 'block', borderRadius: 10, border: '1px solid rgba(255,255,255,0.1)', boxShadow: '0 4px 24px rgba(0,0,0,0.6)' }}
+              />
+            </div>
+          </div>
+
+          {/* Scrollable area below preview */}
+          <div className="flex-1 min-h-0 overflow-y-auto flex flex-col">
+
+          {/* Crop positions */}
+          <div className="p-4" style={{ borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+            <div className="flex items-center justify-between mb-3">
               <span className="text-xs font-semibold text-white" style={{ letterSpacing: '0.05em', textTransform: 'uppercase' }}>Crop Positions</span>
               <div className="flex items-center gap-2">
                 {segments.length > 1 && (
@@ -587,7 +613,7 @@ export function EditorShell({
                 </span>
               </div>
             </div>
-            <div className="px-2 flex flex-col gap-0.5">
+            <div className="flex flex-col gap-0.5">
               {segments.filter(seg => seg.end_ms - seg.start_ms > 50).map((seg, i) => {
                 const col = SEG_COLORS[i % SEG_COLORS.length]
                 const box = seg.crop_boxes[0]
@@ -620,40 +646,12 @@ export function EditorShell({
                 )
               })}
             </div>
-            <div className="px-4 pt-1 pb-3">
-              <button onClick={() => addSegment({ start_ms: currentTimeMs, end_ms: Math.min(currentTimeMs + 5000, clip.end_ms), layout: activeSegment?.layout ?? 'vertical', sort_order: segments.length }, id => setActiveSegmentId(id))}
-                className="mt-1 w-full py-2 text-xs rounded-lg transition-colors hover:opacity-80"
-                style={{ color: 'rgba(255,255,255,0.3)', border: '1px solid rgba(255,255,255,0.08)' }}>
-                + New Position
-              </button>
-            </div>
+            <button onClick={() => addSegment({ start_ms: currentTimeMs, end_ms: Math.min(currentTimeMs + 5000, clip.end_ms), layout: activeSegment?.layout ?? 'vertical', sort_order: segments.length }, id => setActiveSegmentId(id))}
+              className="mt-2 w-full py-2 text-xs rounded-lg transition-colors hover:opacity-80"
+              style={{ color: 'rgba(255,255,255,0.3)', border: '1px solid rgba(255,255,255,0.08)' }}>
+              + New Position
+            </button>
           </div>
-
-          {/* Preview (9:16) — below Crop Positions, like Clipzi */}
-          <div className="shrink-0 flex flex-col" style={{ borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
-            <div className="px-4 pt-3 pb-1 flex items-center gap-2">
-              <span className="text-sm font-semibold text-white">Preview (9:16)</span>
-              {clipStatus === 'done' && <span className="text-xs" style={{ color: '#22c55e' }}>✓ Ready</span>}
-              {clipStatus === 'rendering' && <span className="flex items-center gap-1 text-xs" style={{ color: 'rgba(255,255,255,0.4)' }}><span className="w-2.5 h-2.5 border-2 border-current border-t-transparent rounded-full animate-spin" />Rendering</span>}
-            </div>
-            <div className="flex items-center justify-center px-4 pb-4 pt-2">
-              <OutputCanvas
-                videoRef={videoRef} currentTimeMs={currentTimeMs} clipStartMs={clip.start_ms}
-                activeSegment={playingSegment} getPositionAt={getPositionAt}
-                skipTransitionRef={skipCanvasTransitionRef} words={displayWords}
-                captionStyle={captionStyle} captionTextCase={captionTextCase} showCaptions={showCaptions}
-                overlays={overlays} activeOverlayId={activeOverlayId}
-                onOverlayChange={updateOverlay} onSelectOverlay={setActiveOverlayId} onDeleteOverlay={deleteOverlay}
-                textOverlays={textOverlays} activeTextOverlayId={activeTextOverlayId}
-                onTextOverlayChange={updateTextOverlay} onSelectTextOverlay={setActiveTextOverlayId} onDeleteTextOverlay={deleteTextOverlay}
-                onCaptionPositionChange={y => updateCaptionStyle({ position_y: y })}
-                style={{ width: '100%', height: 'auto', display: 'block', borderRadius: 10, border: '1px solid rgba(255,255,255,0.1)', boxShadow: '0 4px 24px rgba(0,0,0,0.6)' }}
-              />
-            </div>
-          </div>
-
-          {/* Scrollable area below preview */}
-          <div className="flex-1 min-h-0 overflow-y-auto flex flex-col">
 
           {/* Slot source info */}
           {activeSegment?.crop_boxes.some(b => b.source_video_id) && (
