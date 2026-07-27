@@ -209,8 +209,11 @@ export function SegmentTimeline({
   return (
     <div className="flex flex-col" style={{ gap: 0 }}>
 
+      {/* ── Unified drag area: ruler + band + track all seek on drag ────── */}
+      <div ref={trackRef} className="flex flex-col select-none" style={{ gap: 0, cursor: 'ew-resize' }} onMouseDown={handleTrackDrag}>
+
       {/* ── Time ruler ─────────────────────────────────────────────────── */}
-      <div className="relative overflow-hidden select-none" style={{ height: 26, background: '#0c0c0c', borderRadius: '6px 6px 0 0' }}>
+      <div className="relative overflow-hidden" style={{ height: 26, background: '#0c0c0c', borderRadius: '6px 6px 0 0' }}>
         {ticks.map(t => {
           const pct = duration > 0 ? (t / duration) * 100 : 0
           const isMajor = t % (tickMs * 2) === 0 || t === 0
@@ -254,10 +257,8 @@ export function SegmentTimeline({
 
       {/* ── Main thumbnail track ───────────────────────────────────────── */}
       <div
-        ref={trackRef}
-        className="relative select-none overflow-hidden"
-        style={{ height: 76, cursor: 'ew-resize', background: '#111', borderRadius: '0 0 6px 6px' }}
-        onMouseDown={handleTrackDrag}
+        className="relative overflow-hidden"
+        style={{ height: 76, background: '#111', borderRadius: '0 0 6px 6px' }}
       >
         {videoUrl && thumbDuration > 0
           ? <VideoThumbnails videoUrl={videoUrl} durationMs={thumbDuration} />
@@ -303,6 +304,9 @@ export function SegmentTimeline({
         {/* Playhead */}
         <div className="absolute inset-y-0 pointer-events-none z-30"
           style={{ left: `${playheadPct}%`, width: 1.5, background: '#00b4d8', boxShadow: '0 0 6px rgba(0,180,216,0.8)' }} />
+      </div>
+
+      {/* end unified drag area */}
       </div>
 
       {/* ── Text overlay tracks ────────────────────────────────────────── */}
