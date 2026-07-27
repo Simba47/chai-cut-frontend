@@ -22,66 +22,6 @@ function msToLabel(ms: number): string {
   return `${m}:${String(s % 60).padStart(2, '0')}`
 }
 
-function VideoThumbnails({ videoUrl, durationMs }: { videoUrl: string; durationMs: number }) {
-  const [thumbs, setThumbs] = useState<string[]>([])
-
-  useEffect(() => {
-    if (!videoUrl || !durationMs) return
-    let cancelled = false
-    const COUNT = 20
-    const THUMB_W = 80
-    const THUMB_H = 68
-
-    const vid = document.createElement('video')
-    vid.crossOrigin = 'anonymous'
-    vid.preload = 'metadata'
-    vid.muted = true
-    vid.playsInline = true
-    vid.src = videoUrl
-
-    const canvas = document.createElement('canvas')
-    canvas.width = THUMB_W
-    canvas.height = THUMB_H
-    const ctx = canvas.getContext('2d')!
-
-    async function capture() {
-      await new Promise<void>((resolve, reject) => {
-        vid.addEventListener('loadedmetadata', () => resolve(), { once: true })
-        vid.addEventListener('error', () => reject(), { once: true })
-        vid.load()
-      }).catch(() => {})
-      if (cancelled) return
-      const results: string[] = []
-      for (let i = 0; i < COUNT; i++) {
-        if (cancelled) return
-        vid.currentTime = ((i + 0.5) / COUNT) * (durationMs / 1000)
-        await new Promise<void>(r => vid.addEventListener('seeked', () => r(), { once: true }))
-        if (cancelled) return
-        try {
-          ctx.drawImage(vid, 0, 0, THUMB_W, THUMB_H)
-          results.push(canvas.toDataURL('image/jpeg', 0.5))
-        } catch {}
-        if (!cancelled) setThumbs([...results])
-      }
-    }
-    capture()
-    return () => { cancelled = true; vid.src = ''; vid.load() }
-  }, [videoUrl, durationMs])
-
-  return (
-    <div className="absolute inset-0 flex overflow-hidden" style={{ borderRadius: 7 }}>
-      {thumbs.length > 0
-        ? thumbs.map((src, i) => (
-            <div key={i} style={{ flex: 1, minWidth: 0, overflow: 'hidden' }}>
-              <img src={src} style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} alt="" />
-            </div>
-          ))
-        : <div className="flex-1" style={{ background: 'rgba(255,255,255,0.04)', borderRadius: 7 }} />
-      }
-      <div className="absolute inset-0" style={{ background: 'rgba(0,0,0,0.15)', borderRadius: 7 }} />
-    </div>
-  )
-}
 
 interface Props {
   segments: SegmentLocal[]
@@ -89,7 +29,6 @@ interface Props {
   clipEndMs: number
   currentTimeMs: number
   activeSegmentId: string | null
-  videoUrl?: string
   onSeek: (ms: number) => void
   onSelectSegment: (id: string) => void
   onUpdateSegment: (id: string, updates: { start_ms?: number; end_ms?: number }) => void
@@ -106,7 +45,6 @@ export function SegmentTimeline({
   clipEndMs,
   currentTimeMs,
   activeSegmentId,
-  videoUrl,
   onSeek,
   onSelectSegment,
   onUpdateSegment,
@@ -248,11 +186,8 @@ export function SegmentTimeline({
         style={{ height: 48, cursor: 'pointer' }}
         onClick={handleTrackClick}
       >
-        {/* Track background: video thumbnails or flat fill */}
-        {videoUrl && duration > 0
-          ? <VideoThumbnails videoUrl={videoUrl} durationMs={duration} />
-          : <div className="absolute inset-0 rounded-lg" style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)' }} />
-        }
+        {/* Track background */}
+        <div className="absolute inset-0 rounded-lg" style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)' }} />
 
         {/* Segment blocks */}
         {sorted.map((seg, idx) => {
