@@ -865,18 +865,20 @@ function FilmstripScrubber({
       onMouseMove={e => setHoveredMs(msFromEvent(e))}
       onMouseLeave={() => setHoveredMs(null)}
     >
-      {/* Thumbnails */}
+      {/* Thumbnails — placeholders always rendered, images fade in as they're captured */}
       <div className="absolute inset-0 flex" style={{ gap: 1 }}>
-        {thumbnails.length > 0
-          ? thumbnails.map((src, i) => (
-            <div key={i} style={{ flex: 1, height: '100%', overflow: 'hidden', background: '#111' }}>
-              {src && <img src={src} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block', pointerEvents: 'none' }} />}
-            </div>
-          ))
-          : Array.from({ length: THUMB_COUNT }).map((_, i) => (
-            <div key={i} style={{ flex: 1, height: '100%', background: 'rgba(255,255,255,0.04)', borderRadius: 1 }} />
-          ))
-        }
+        {Array.from({ length: THUMB_COUNT }).map((_, i) => (
+          <div key={i} style={{ flex: 1, height: '100%', overflow: 'hidden', background: 'rgba(255,255,255,0.04)', position: 'relative' }}>
+            {thumbnails[i] && (
+              <img
+                src={thumbnails[i]}
+                alt=""
+                style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block', pointerEvents: 'none', opacity: 0, transition: 'opacity 0.3s ease' }}
+                onLoad={e => { (e.currentTarget as HTMLImageElement).style.opacity = '1' }}
+              />
+            )}
+          </div>
+        ))}
       </div>
 
       {/* Subtle vignette at bottom */}
