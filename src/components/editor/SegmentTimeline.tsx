@@ -301,9 +301,30 @@ export function SegmentTimeline({
           )
         })}
 
-        {/* Playhead */}
+        {/* Playhead line */}
         <div className="absolute inset-y-0 pointer-events-none z-30"
           style={{ left: `${playheadPct}%`, width: 1.5, background: '#00b4d8', boxShadow: '0 0 6px rgba(0,180,216,0.8)' }} />
+        {/* Playhead grab handle — visible pill, draggable */}
+        <div
+          className="absolute z-40 flex items-center justify-center"
+          style={{
+            left: `${playheadPct}%`,
+            top: '50%',
+            transform: 'translate(-50%, -50%)',
+            width: 18,
+            height: 28,
+            borderRadius: 6,
+            background: '#00b4d8',
+            boxShadow: '0 0 8px rgba(0,180,216,0.7)',
+            cursor: 'ew-resize',
+          }}
+          onMouseDown={e => { e.stopPropagation(); handleTrackDrag(e) }}
+        >
+          <div style={{ display: 'flex', gap: 2 }}>
+            <div style={{ width: 1.5, height: 12, borderRadius: 1, background: 'rgba(255,255,255,0.7)' }} />
+            <div style={{ width: 1.5, height: 12, borderRadius: 1, background: 'rgba(255,255,255,0.7)' }} />
+          </div>
+        </div>
       </div>
 
       {/* end unified drag area */}
