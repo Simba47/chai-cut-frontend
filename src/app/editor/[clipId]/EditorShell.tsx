@@ -686,44 +686,45 @@ export function EditorShell({
               </div>
             </div>
             {showCaptions && (
-              <CaptionStyler
-                style={captionStyle} textCase={captionTextCase}
-                onChange={updateCaptionStyle}
-                onTextCaseChange={setCaptionTextCase}
-                onEditCaptions={() => { setActivePanel('transcript'); setPanelOpen(true) }}
-                onRetranscribe={handleRetranscribe}
-                retranscribing={retranscribing} retranscribeElapsed={retranscribeElapsed}
-                retranscribeError={retranscribeError} hasWords={words.length > 0}
-                hasRoman={hasRoman} romanize={romanize} romanizeLabel={scriptLabel}
-                onRomanizeChange={setRomanize}
-              />
-            )}
-          </div>
-
-          {/* Romanize + Edit captions — always visible below CC */}
-          <div className="px-4 py-3 flex flex-col gap-3" style={{ borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
-            {hasRoman && (
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm font-medium text-white">{scriptLabel}</p>
-                  <p className="text-xs mt-0.5" style={{ color: 'rgba(255,255,255,0.35)' }}>Show captions in English letters</p>
+              <>
+                {/* Romanize + Edit captions — first thing shown when CC is on */}
+                <div className="px-4 pb-3 flex flex-col gap-3">
+                  {hasRoman && (
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-sm font-medium text-white">{scriptLabel}</p>
+                        <p className="text-xs mt-0.5" style={{ color: 'rgba(255,255,255,0.35)' }}>Show captions in English letters</p>
+                      </div>
+                      <button onClick={() => setRomanize(!romanize)} className="relative shrink-0" style={{ width: 44, height: 24 }}>
+                        <div style={{ width: 44, height: 24, borderRadius: 12, background: romanize ? '#00b4d8' : 'rgba(255,255,255,0.15)', transition: 'background 0.2s' }} />
+                        <div style={{ position: 'absolute', top: 3, left: romanize ? 23 : 3, width: 18, height: 18, borderRadius: '50%', background: '#fff', transition: 'left 0.2s', boxShadow: '0 1px 3px rgba(0,0,0,0.3)' }} />
+                      </button>
+                    </div>
+                  )}
+                  <button
+                    onClick={() => { setActivePanel('transcript'); setPanelOpen(true) }}
+                    className="flex items-center justify-center gap-2 w-full py-2.5 rounded-xl text-sm font-medium transition-opacity hover:opacity-80"
+                    style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.08)', color: 'rgba(255,255,255,0.6)' }}
+                  >
+                    <svg width="13" height="13" viewBox="0 0 14 14" fill="none">
+                      <path d="M9.5 2L12 4.5M2 12l.7-2.8L10 1.5 12.5 4 4.8 11.3 2 12z" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
+                    </svg>
+                    Edit captions
+                  </button>
                 </div>
-                <button onClick={() => setRomanize(!romanize)} className="relative shrink-0" style={{ width: 44, height: 24 }}>
-                  <div style={{ width: 44, height: 24, borderRadius: 12, background: romanize ? '#00b4d8' : 'rgba(255,255,255,0.15)', transition: 'background 0.2s' }} />
-                  <div style={{ position: 'absolute', top: 3, left: romanize ? 23 : 3, width: 18, height: 18, borderRadius: '50%', background: '#fff', transition: 'left 0.2s', boxShadow: '0 1px 3px rgba(0,0,0,0.3)' }} />
-                </button>
-              </div>
+                <CaptionStyler
+                  style={captionStyle} textCase={captionTextCase}
+                  onChange={updateCaptionStyle}
+                  onTextCaseChange={setCaptionTextCase}
+                  onEditCaptions={() => { setActivePanel('transcript'); setPanelOpen(true) }}
+                  onRetranscribe={handleRetranscribe}
+                  retranscribing={retranscribing} retranscribeElapsed={retranscribeElapsed}
+                  retranscribeError={retranscribeError} hasWords={words.length > 0}
+                  hasRoman={hasRoman} romanize={romanize} romanizeLabel={scriptLabel}
+                  onRomanizeChange={setRomanize}
+                />
+              </>
             )}
-            <button
-              onClick={() => { setActivePanel('transcript'); setPanelOpen(true) }}
-              className="flex items-center justify-center gap-2 w-full py-2.5 rounded-xl text-sm font-medium transition-opacity hover:opacity-80"
-              style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.08)', color: 'rgba(255,255,255,0.6)' }}
-            >
-              <svg width="13" height="13" viewBox="0 0 14 14" fill="none">
-                <path d="M9.5 2L12 4.5M2 12l.7-2.8L10 1.5 12.5 4 4.8 11.3 2 12z" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
-              </svg>
-              Edit captions
-            </button>
           </div>
 
           {/* Export */}
