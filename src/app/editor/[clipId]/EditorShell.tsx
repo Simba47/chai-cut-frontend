@@ -832,7 +832,11 @@ function FilmstripScrubber({
       if (i + 1 < THUMB_COUNT) capture(i + 1)
     }
 
-    vid.addEventListener('loadedmetadata', () => capture(0), { once: true })
+    if (vid.readyState >= 1) {
+      capture(0)
+    } else {
+      vid.addEventListener('loadedmetadata', () => capture(0), { once: true })
+    }
     return () => { cancelled = true; vid.src = '' }
   }, [videoUrl, clipStartMs, clipDurationMs])
 
