@@ -747,6 +747,7 @@ export function EditorShell({
             {outputUrl && clipStatus === 'done' ? (
               <div className="flex flex-col gap-2">
                 <a href={outputUrl} download="export.mp4" className="block w-full py-3 text-center rounded-xl text-sm font-semibold text-white" style={{ background: '#16a34a' }}>Download</a>
+                <button onClick={handleExport} disabled={exporting} className="w-full py-2 text-xs rounded-xl font-medium disabled:opacity-50" style={{ background: 'rgba(0,180,216,0.15)', color: '#00b4d8', border: '1px solid rgba(0,180,216,0.3)' }}>{exporting ? 'Queuing…' : 'Re-render'}</button>
                 <button onClick={handleReEdit} className="w-full py-2 text-xs rounded-xl font-medium" style={{ background: 'rgba(124,58,237,0.15)', color: '#a78bfa', border: '1px solid rgba(124,58,237,0.2)' }}>Re-edit</button>
               </div>
             ) : (
