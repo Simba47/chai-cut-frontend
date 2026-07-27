@@ -161,11 +161,10 @@ function paintSegment(
       coverCrop(ctx, video, p.x * vW, p.y * vH, p.w * vW, p.h * vH, 0, i * slotH, W, slotH)
     })
   } else if (layout === 'trio') {
-    const topH = H * 0.55
+    const slotH = H / 3
     crop_boxes.slice(0, 3).forEach((box, i) => {
       const p = getPositionAt(box.id, tMs)
-      if (i === 0) coverCrop(ctx, video, p.x * vW, p.y * vH, p.w * vW, p.h * vH, 0, 0, W, topH)
-      else coverCrop(ctx, video, p.x * vW, p.y * vH, p.w * vW, p.h * vH, (i - 1) * (W / 2), topH, W / 2, H - topH)
+      coverCrop(ctx, video, p.x * vW, p.y * vH, p.w * vW, p.h * vH, 0, i * slotH, W, slotH)
     })
   } else if (layout === 'horizontal') {
     const box = crop_boxes[0]; if (!box) return
