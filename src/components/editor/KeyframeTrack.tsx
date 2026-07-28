@@ -46,7 +46,7 @@ export function KeyframeTrack({
         </button>
       </div>
 
-      <div className="relative h-6 rounded overflow-hidden cursor-pointer" style={{ background: 'var(--surface-2)' }}>
+      <div className="relative h-6 rounded cursor-pointer" style={{ background: 'var(--surface-2)' }}>
         {/* Playhead */}
         <div
           className="absolute inset-y-0 w-0.5 pointer-events-none z-10"
