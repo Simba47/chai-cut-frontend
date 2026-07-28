@@ -393,7 +393,7 @@ export function EditorShell({
 
       {/* Header */}
       <header className="shrink-0 flex items-center gap-3 px-4"
-        style={{ height: 52, background: '#111', borderBottom: '1px solid rgba(255,255,255,0.07)', zIndex: 10 }}>
+        style={{ height: 44, background: '#111', borderBottom: '1px solid rgba(255,255,255,0.07)', zIndex: 10 }}>
         <a href="/dashboard" className="flex items-center justify-center rounded-lg transition-opacity hover:opacity-70 shrink-0"
           style={{ width: 32, height: 32, background: 'rgba(255,255,255,0.05)' }}>
           <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
@@ -439,7 +439,7 @@ export function EditorShell({
         <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
           <div className="flex-1 min-h-0 relative overflow-hidden" style={{ background: '#1a1a2e' }}>
             <div className="absolute flex flex-col rounded-2xl overflow-hidden" style={{
-              inset: '10px',
+              inset: '6px',
               border: '1.5px solid rgba(255,255,255,0.15)',
               boxShadow: '0 8px 32px rgba(0,0,0,0.6)',
             }}>
@@ -539,7 +539,7 @@ export function EditorShell({
           </div>
 
           {/* Timeline footer - fixed height so overflow-hidden never clips the keyframe bar */}
-          <div className="shrink-0 flex flex-col" style={{ height: 170, background: '#0f0f0f', borderTop: '1px solid rgba(255,255,255,0.07)' }}>
+          <div className="shrink-0 flex flex-col" style={{ height: 130, background: '#0f0f0f', borderTop: '1px solid rgba(255,255,255,0.07)' }}>
             <div className="flex items-center gap-2 px-4 shrink-0" style={{ height: 36 }}>
               <div className="flex-1" />
               <span className="text-xs tabular-nums" style={{ color: 'rgba(255,255,255,0.3)' }}>{msToLabel(currentTimeMs)} / {msToLabel(clipDurationMs)}</span>
