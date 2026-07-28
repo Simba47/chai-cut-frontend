@@ -74,6 +74,9 @@ export const useEditorStore = create<EditorState & EditorActions>()((set, get) =
     const removed = sorted[idx]
     const prev = sorted[idx - 1]
     const next = sorted[idx + 1]
+    const newActiveId = s.activeSegmentId === id
+      ? (prev?.id ?? next?.id ?? null)
+      : s.activeSegmentId
     return {
       segments: s.segments
         .filter(seg => seg.id !== id)
@@ -82,6 +85,8 @@ export const useEditorStore = create<EditorState & EditorActions>()((set, get) =
           if (!prev && next && seg.id === next.id) return { ...seg, start_ms: removed.start_ms }
           return seg
         }),
+      activeSegmentId: newActiveId,
+      activeBoxId: s.activeSegmentId === id ? null : s.activeBoxId,
     }
   }),
 
