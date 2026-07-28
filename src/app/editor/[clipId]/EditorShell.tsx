@@ -439,7 +439,7 @@ export function EditorShell({
         <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
           <div className="flex-1 min-h-0 relative overflow-hidden" style={{ background: '#1a1a2e' }}>
             <div className="absolute flex flex-col rounded-2xl overflow-hidden" style={{
-              inset: '16px',
+              inset: '10px',
               border: '1.5px solid rgba(255,255,255,0.15)',
               boxShadow: '0 8px 32px rgba(0,0,0,0.6)',
             }}>
@@ -539,7 +539,7 @@ export function EditorShell({
           </div>
 
           {/* Timeline footer - fixed height so overflow-hidden never clips the keyframe bar */}
-          <div className="shrink-0 flex flex-col" style={{ height: 220, background: '#0f0f0f', borderTop: '1px solid rgba(255,255,255,0.07)' }}>
+          <div className="shrink-0 flex flex-col" style={{ height: 170, background: '#0f0f0f', borderTop: '1px solid rgba(255,255,255,0.07)' }}>
             <div className="flex items-center gap-2 px-4 shrink-0" style={{ height: 36 }}>
               <div className="flex-1" />
               <span className="text-xs tabular-nums" style={{ color: 'rgba(255,255,255,0.3)' }}>{msToLabel(currentTimeMs)} / {msToLabel(clipDurationMs)}</span>
@@ -570,7 +570,7 @@ export function EditorShell({
         </div>
 
         {/* Right sidebar */}
-        <div className="shrink-0 flex flex-col" style={{ width: 300, background: '#111', borderLeft: '1px solid rgba(255,255,255,0.07)' }}>
+        <div className="shrink-0 flex flex-col" style={{ width: 270, background: '#111', borderLeft: '1px solid rgba(255,255,255,0.07)' }}>
 
           {/* 9:16 Output preview */}
           <div className="shrink-0 flex flex-col" style={{ borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
