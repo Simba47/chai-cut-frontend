@@ -537,7 +537,7 @@ export function EditorShell({
               <div className="flex-1" />
               <span className="text-xs tabular-nums" style={{ color: 'rgba(255,255,255,0.3)' }}>{msToLabel(currentTimeMs)} / {msToLabel(clipDurationMs)}</span>
             </div>
-            <div className="px-4 pb-3">
+            <div className="px-4 pb-12">
               <SegmentTimeline
                 segments={segments} clipStartMs={clip.start_ms} clipEndMs={clip.end_ms}
                 currentTimeMs={currentTimeMs} activeSegmentId={activeSegment?.id ?? null}
