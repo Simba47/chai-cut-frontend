@@ -63,12 +63,19 @@ export function KeyframeTrack({
               style={{ left: `${pct}%` }}
               onClick={e => { e.stopPropagation(); onSeek(kf.t_ms) }}
               onContextMenu={e => { e.preventDefault(); onRemoveKeyframe(kf.t_ms) }}
-              title={`${msToLabel(kf.t_ms)} — right-click to remove`}
+              title={msToLabel(kf.t_ms)}
             >
               <div
                 className="w-2.5 h-2.5 rotate-45 group-hover:scale-125 transition-transform"
                 style={{ background: 'var(--accent)' }}
               />
+              {/* Delete button — appears on hover above the diamond */}
+              <button
+                className="absolute opacity-0 group-hover:opacity-100 transition-opacity pointer-events-auto flex items-center justify-center rounded-full"
+                style={{ width: 14, height: 14, background: '#ef4444', top: -16, left: '50%', transform: 'translateX(-50%)', fontSize: 9, color: '#fff', fontWeight: 700, lineHeight: 1, zIndex: 20 }}
+                onClick={e => { e.stopPropagation(); onRemoveKeyframe(kf.t_ms) }}
+                title="Delete keyframe"
+              >×</button>
             </div>
           )
         })}
