@@ -722,11 +722,6 @@ export function EditorShell({
             <div className="px-4 py-3 flex items-center justify-between">
               <span className="flex items-center gap-2 text-xs font-medium" style={{ color: showCaptions ? '#fff' : 'rgba(255,255,255,0.45)' }}>
                 <span style={{ letterSpacing: 0.5 }}>Cc</span><span>Auto-captions</span>
-                {transcribing && (
-                  <span className="flex items-center gap-1 text-xs" style={{ color: '#00b4d8' }}>
-                    <span className="w-2.5 h-2.5 border border-current border-t-transparent rounded-full animate-spin" />Transcribing…
-                  </span>
-                )}
               </span>
               <div className="w-10 h-5 rounded-full flex items-center px-0.5 cursor-pointer transition-colors"
                 style={{ background: showCaptions ? '#00b4d8' : 'rgba(255,255,255,0.1)' }}
@@ -734,6 +729,21 @@ export function EditorShell({
                 <div className="w-4 h-4 rounded-full bg-white transition-transform" style={{ transform: showCaptions ? 'translateX(20px)' : 'translateX(0)' }} />
               </div>
             </div>
+            {/* Caption status row */}
+            {(transcribing || retranscribing) ? (
+              <div className="mx-4 mb-3 flex items-center gap-2.5 px-3 py-2.5 rounded-xl" style={{ background: 'rgba(0,180,216,0.08)', border: '1px solid rgba(0,180,216,0.2)' }}>
+                <span className="w-4 h-4 rounded-full border-2 border-t-transparent animate-spin shrink-0" style={{ borderColor: '#00b4d8', borderTopColor: 'transparent' }} />
+                <div>
+                  <p className="text-xs font-semibold" style={{ color: '#00b4d8' }}>Generating captions…</p>
+                  <p className="text-xs animate-pulse mt-0.5" style={{ color: 'rgba(255,255,255,0.35)' }}>This may take a moment</p>
+                </div>
+              </div>
+            ) : words.length > 0 ? (
+              <div className="mx-4 mb-3 flex items-center gap-2 px-3 py-2 rounded-xl" style={{ background: 'rgba(34,197,94,0.07)', border: '1px solid rgba(34,197,94,0.15)' }}>
+                <span style={{ color: '#22c55e', fontSize: 13 }}>✓</span>
+                <p className="text-xs font-medium" style={{ color: '#4ade80' }}>Captions ready <span style={{ color: 'rgba(255,255,255,0.3)', fontWeight: 400 }}>· {words.length} words</span></p>
+              </div>
+            ) : null}
             {showCaptions && (
               <>
                 {/* Romanize + Edit captions — first thing shown when CC is on */}
