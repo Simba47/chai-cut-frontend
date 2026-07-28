@@ -67,7 +67,23 @@ export const useEditorStore = create<EditorState & EditorActions>()((set, get) =
     }),
   })),
 
-  removeSegment: (id) => set(s => ({ segments: s.segments.filter(seg => seg.id !== id) })),
+  removeSegment: (id) => set(s => {
+    const sorted = [...s.segments].sort((a, b) => a.sort_order - b.sort_order)
+    const idx = sorted.findIndex(seg => seg.id === id)
+    if (idx === -1) return s
+    const removed = sorted[idx]
+    const prev = sorted[idx - 1]
+    const next = sorted[idx + 1]
+    return {
+      segments: s.segments
+        .filter(seg => seg.id !== id)
+        .map(seg => {
+          if (prev && seg.id === prev.id) return { ...seg, end_ms: removed.end_ms }
+          if (!prev && next && seg.id === next.id) return { ...seg, start_ms: removed.start_ms }
+          return seg
+        }),
+    }
+  }),
 
   splitAtMs: (segId, tMs, getPos) => {
     const seg = get().segments.find(s => s.id === segId)
