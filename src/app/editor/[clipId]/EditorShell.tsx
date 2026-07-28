@@ -531,13 +531,13 @@ export function EditorShell({
           </div>
           )}
 
-          {/* Timeline footer - fixed height so overflow-hidden never clips the keyframe bar */}
-          <div className="shrink-0 flex flex-col" style={{ height: 130, background: '#0f0f0f', borderTop: '1px solid rgba(255,255,255,0.07)' }}>
-            <div className="flex items-center gap-2 px-4 shrink-0" style={{ height: 36 }}>
+          {/* Timeline footer - naturally sized, outer panel scroll handles everything */}
+          <div className="shrink-0" style={{ background: '#0f0f0f', borderTop: '1px solid rgba(255,255,255,0.07)' }}>
+            <div className="flex items-center gap-2 px-4" style={{ height: 36 }}>
               <div className="flex-1" />
               <span className="text-xs tabular-nums" style={{ color: 'rgba(255,255,255,0.3)' }}>{msToLabel(currentTimeMs)} / {msToLabel(clipDurationMs)}</span>
             </div>
-            <div className="flex-1 min-h-0 px-4 pb-3 overflow-y-auto">
+            <div className="px-4 pb-3">
               <SegmentTimeline
                 segments={segments} clipStartMs={clip.start_ms} clipEndMs={clip.end_ms}
                 currentTimeMs={currentTimeMs} activeSegmentId={activeSegment?.id ?? null}
