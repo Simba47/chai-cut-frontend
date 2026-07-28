@@ -437,7 +437,7 @@ export function EditorShell({
 
         {/* Left: Video + controls + panels */}
         <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
-          <div className="flex-1 min-h-0 relative" style={{ padding: '10px 10px 0', background: '#0a0a0a' }}>
+          <div className="flex-1 min-h-0 relative" style={{ padding: '10px', background: '#0a0a0a' }}>
             <div className="relative w-full h-full rounded-xl overflow-hidden" style={{
               border: '1px solid rgba(255,255,255,0.09)',
               boxShadow: '0 4px 24px rgba(0,0,0,0.5)',
