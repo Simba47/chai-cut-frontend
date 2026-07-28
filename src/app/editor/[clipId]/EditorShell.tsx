@@ -45,9 +45,7 @@ const LAYOUTS: { id: LayoutType; label: string }[] = [
   { id: 'trio', label: 'Trio' }, { id: 'spotlight', label: 'Spotlight' },
   { id: 'centered', label: 'Centered' }, { id: 'horizontal', label: 'Horizontal' },
 ]
-const PANELS: { id: Panel; label: string }[] = [
-  { id: 'transcript', label: 'Transcript' }, { id: 'text', label: 'Text' },
-]
+const PANELS: { id: Panel; label: string }[] = []
 const SEG_COLORS = ['#22c55e','#3b82f6','#a855f7','#f59e0b','#ef4444','#06b6d4','#ec4899','#84cc16']
 
 export function EditorShell({
@@ -488,7 +486,8 @@ export function EditorShell({
             </span>
           </div>
 
-          {/* Panel tabs */}
+          {/* Panel — only visible when opened (e.g. via Edit captions) */}
+          {panelOpen && (
           <div className="shrink-0 flex flex-col" style={{ background: '#0d0d0d', borderTop: '1px solid rgba(255,255,255,0.05)' }}>
             <div className="flex items-center overflow-x-auto">
               {PANELS.map(p => (
@@ -537,6 +536,7 @@ export function EditorShell({
               </div>
             )}
           </div>
+          )}
 
           {/* Timeline footer - fixed height so overflow-hidden never clips the keyframe bar */}
           <div className="shrink-0 flex flex-col" style={{ height: 130, background: '#0f0f0f', borderTop: '1px solid rgba(255,255,255,0.07)' }}>
@@ -718,6 +718,19 @@ export function EditorShell({
                     Edit captions
                   </button>
                 </div>
+
+                {/* Text overlays — inline below Edit captions */}
+                <div className="px-4 pb-2">
+                  <TextOverlayPanel
+                    overlays={textOverlays}
+                    currentTimeMs={currentTimeMs}
+                    clipDurationMs={clip.end_ms - clip.start_ms}
+                    onAdd={o => setTextOverlays(prev => [...prev, { ...o, id: crypto.randomUUID(), clip_id: clip.id }])}
+                    onUpdate={updateTextOverlay}
+                    onRemove={deleteTextOverlay}
+                  />
+                </div>
+
                 <CaptionStyler
                   style={captionStyle} textCase={captionTextCase}
                   onChange={updateCaptionStyle}
