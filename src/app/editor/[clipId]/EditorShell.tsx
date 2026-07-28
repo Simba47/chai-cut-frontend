@@ -417,9 +417,6 @@ export function EditorShell({
           {exportError && (
             <span className="text-xs px-2 py-1 rounded" style={{ background: 'rgba(239,68,68,0.15)', color: '#f87171' }}>{exportError}</span>
           )}
-          {saveState === 'saving' && <span className="flex items-center gap-1.5 text-xs" style={{ color: 'rgba(255,255,255,0.3)' }}><span className="w-2.5 h-2.5 border-2 border-current border-t-transparent rounded-full animate-spin" />Saving…</span>}
-          {saveState === 'saved' && <span className="text-xs" style={{ color: 'rgba(34,197,94,0.7)' }}>✓ Saved</span>}
-          {saveState === 'error' && <span className="text-xs" style={{ color: '#f87171' }}>Save error</span>}
         </div>
       </header>
 
