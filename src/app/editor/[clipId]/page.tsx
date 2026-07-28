@@ -62,6 +62,18 @@ export default async function EditorPage({
     ORDER BY s.sort_order
   `
 
+  // Heal segments that were accidentally saved with absolute timestamps instead of clip-relative
+  const clipDuration = clip.end_ms - clip.start_ms
+  for (const seg of segments) {
+    if (seg.start_ms >= clipDuration || seg.end_ms > clipDuration) {
+      const corrStart = Math.max(0, Math.min(seg.start_ms - clip.start_ms, clipDuration))
+      const corrEnd = Math.max(corrStart + 1000, Math.min(seg.end_ms - clip.start_ms, clipDuration))
+      await sql`UPDATE segments SET start_ms = ${corrStart}, end_ms = ${corrEnd} WHERE id = ${seg.id}`
+      seg.start_ms = corrStart
+      seg.end_ms = corrEnd
+    }
+  }
+
   if (segments.length === 0) {
     const [newSeg] = await sql`
       INSERT INTO segments (clip_id, start_ms, end_ms, layout, sort_order)
