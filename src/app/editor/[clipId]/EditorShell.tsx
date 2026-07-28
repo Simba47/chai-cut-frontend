@@ -437,10 +437,11 @@ export function EditorShell({
 
         {/* Left: Video + controls + panels */}
         <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
-          <div className="flex-1 min-h-0 relative overflow-hidden" style={{ padding: '16px', background: '#12121c' }}>
-            <div className="relative w-full h-full rounded-2xl" style={{
-              border: '1px solid rgba(255,255,255,0.13)',
-              boxShadow: '0 0 0 1px rgba(0,0,0,0.5), 0 8px 32px rgba(0,0,0,0.6)',
+          <div className="flex-1 min-h-0 relative overflow-hidden" style={{ background: '#1a1a2e' }}>
+            <div className="absolute flex flex-col rounded-2xl overflow-hidden" style={{
+              inset: '16px',
+              border: '1.5px solid rgba(255,255,255,0.15)',
+              boxShadow: '0 8px 32px rgba(0,0,0,0.6)',
             }}>
               <VideoPreview
                 videoRef={videoRef} videoUrl={clipVideoUrl} currentTimeMs={currentTimeMs}
