@@ -417,16 +417,9 @@ export function EditorShell({
           {exportError && (
             <span className="text-xs px-2 py-1 rounded" style={{ background: 'rgba(239,68,68,0.15)', color: '#f87171' }}>{exportError}</span>
           )}
-          <button onClick={handleSave} disabled={saveState === 'saving'}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold disabled:opacity-50"
-            style={{
-              background: saveState === 'saved' ? 'rgba(34,197,94,0.15)' : saveState === 'error' ? 'rgba(239,68,68,0.15)' : 'rgba(255,255,255,0.07)',
-              color: saveState === 'saved' ? '#4ade80' : saveState === 'error' ? '#f87171' : 'rgba(255,255,255,0.6)',
-              border: '1px solid rgba(255,255,255,0.1)',
-            }}>
-            {saveState === 'saving' && <span className="w-3 h-3 border-2 border-current border-t-transparent rounded-full animate-spin" />}
-            {saveState === 'saved' ? '✓ Saved' : saveState === 'error' ? 'Save error' : saveState === 'saving' ? 'Saving…' : 'Save'}
-          </button>
+          {saveState === 'saving' && <span className="flex items-center gap-1.5 text-xs" style={{ color: 'rgba(255,255,255,0.3)' }}><span className="w-2.5 h-2.5 border-2 border-current border-t-transparent rounded-full animate-spin" />Saving…</span>}
+          {saveState === 'saved' && <span className="text-xs" style={{ color: 'rgba(34,197,94,0.7)' }}>✓ Saved</span>}
+          {saveState === 'error' && <span className="text-xs" style={{ color: '#f87171' }}>Save error</span>}
         </div>
       </header>
 
