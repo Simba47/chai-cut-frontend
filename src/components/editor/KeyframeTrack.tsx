@@ -24,7 +24,7 @@ export function KeyframeTrack({
   onSeek,
 }: Props) {
   const duration = clipEndMs - clipStartMs
-  const playheadPct = duration > 0 ? ((currentTimeMs - clipStartMs) / duration) * 100 : 0
+  const playheadPct = duration > 0 ? (currentTimeMs / duration) * 100 : 0
   const hasKeyframeAtTime = keyframes.some(k => Math.abs(k.t_ms - currentTimeMs) < 50)
 
   return (
@@ -55,7 +55,7 @@ export function KeyframeTrack({
 
         {/* Keyframe diamonds */}
         {keyframes.map(kf => {
-          const pct = duration > 0 ? ((kf.t_ms - clipStartMs) / duration) * 100 : 0
+          const pct = duration > 0 ? (kf.t_ms / duration) * 100 : 0
           return (
             <div
               key={kf.t_ms}
