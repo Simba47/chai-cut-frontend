@@ -118,7 +118,7 @@ export function EditorShell({
   const [outputUrl, setOutputUrl] = useState<string | null>(clip.output_url)
   const [exporting, setExporting] = useState(false)
   const [exportError, setExportError] = useState<string | null>(null)
-  const [renderQuality, setRenderQuality] = useState<'480p' | '720p' | '1080p' | '2160p'>('1080p')
+  const renderQuality = '2160p' as const
   const [renderStuckSince, setRenderStuckSince] = useState<number | null>(clip.status === 'rendering' ? Date.now() : null)
   const [renderElapsed, setRenderElapsed] = useState(0)
   const [saveState, setSaveState] = useState<SaveState>('idle')
@@ -741,31 +741,6 @@ export function EditorShell({
 
           {/* Export */}
           <div className="p-4 mt-auto flex flex-col gap-3">
-            {/* Quality selector */}
-            {clipStatus !== 'rendering' && (
-              <div className="flex flex-col gap-1.5">
-                <span className="text-xs font-semibold uppercase tracking-widest" style={{ color: 'rgba(255,255,255,0.3)' }}>Quality</span>
-                <div className="grid grid-cols-4 gap-1">
-                  {(['480p', '720p', '1080p', '2160p'] as const).map(q => (
-                    <button
-                      key={q}
-                      onClick={() => setRenderQuality(q)}
-                      className="py-1.5 rounded-lg text-xs font-semibold transition-colors"
-                      style={{
-                        background: renderQuality === q ? 'rgba(0,180,216,0.2)' : 'rgba(255,255,255,0.04)',
-                        color: renderQuality === q ? '#00b4d8' : 'rgba(255,255,255,0.35)',
-                        border: `1px solid ${renderQuality === q ? 'rgba(0,180,216,0.5)' : 'rgba(255,255,255,0.07)'}`,
-                      }}
-                    >
-                      {q === '2160p' ? '4K' : q}
-                    </button>
-                  ))}
-                </div>
-                {renderQuality === '2160p' && (
-                  <p className="text-xs" style={{ color: 'rgba(255,165,0,0.8)' }}>⚠ 4K takes longer to render</p>
-                )}
-              </div>
-            )}
             {outputUrl && clipStatus === 'done' ? (
               <div className="flex flex-col gap-2">
                 <a href={outputUrl} download="export.mp4" className="block w-full py-3 text-center rounded-xl text-sm font-semibold text-white" style={{ background: '#16a34a' }}>Download</a>
