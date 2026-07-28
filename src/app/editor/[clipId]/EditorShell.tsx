@@ -650,7 +650,7 @@ export function EditorShell({
                   <button onClick={() => {
                     const first = segments[0]; if (!first) return
                     segments.slice(1).forEach(s => removeSegment(s.id))
-                    updateSegment(first.id, { start_ms: clip.start_ms, end_ms: clip.end_ms })
+                    updateSegment(first.id, { start_ms: 0, end_ms: clip.end_ms - clip.start_ms })
                     setActiveSegmentId(first.id)
                   }} className="text-xs px-2 py-0.5 rounded transition-opacity hover:opacity-70"
                     style={{ background: 'rgba(239,68,68,0.12)', color: '#f87171', border: '1px solid rgba(239,68,68,0.2)' }} title="Remove all extra positions">
