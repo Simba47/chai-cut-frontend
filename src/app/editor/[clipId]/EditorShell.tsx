@@ -570,24 +570,74 @@ export function EditorShell({
 
           {/* 9:16 Output preview */}
           <div className="flex flex-col" style={{ borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
-            <div className="px-4 pt-3 pb-1 flex items-center gap-2">
+            <div className="px-4 pt-3 pb-1 flex items-center justify-between">
               <span className="text-sm font-semibold text-white">Preview (9:16)</span>
-              {clipStatus === 'done' && <span className="text-xs" style={{ color: '#22c55e' }}>✓ Ready</span>}
-              {clipStatus === 'rendering' && <span className="flex items-center gap-1 text-xs" style={{ color: 'rgba(255,255,255,0.4)' }}><span className="w-2.5 h-2.5 border-2 border-current border-t-transparent rounded-full animate-spin" />Rendering</span>}
+              {clipStatus === 'done' && <span className="text-xs font-semibold" style={{ color: '#22c55e' }}>Ready</span>}
+              {(clipStatus === 'rendering' || exporting) && <span className="text-xs" style={{ color: 'rgba(255,255,255,0.35)' }}>Processing…</span>}
             </div>
-            <div className="flex items-center justify-center px-4 pb-4 pt-2">
-              <OutputCanvas
-                videoRef={videoRef} currentTimeMs={currentTimeMs} clipStartMs={clip.start_ms}
-                activeSegment={playingSegment} getPositionAt={getPositionAt}
-                skipTransitionRef={skipCanvasTransitionRef} words={displayWords}
-                captionStyle={captionStyle} captionTextCase={captionTextCase} showCaptions={showCaptions}
-                overlays={overlays} activeOverlayId={activeOverlayId}
-                onOverlayChange={updateOverlay} onSelectOverlay={setActiveOverlayId} onDeleteOverlay={deleteOverlay}
-                textOverlays={textOverlays} activeTextOverlayId={activeTextOverlayId}
-                onTextOverlayChange={updateTextOverlay} onSelectTextOverlay={setActiveTextOverlayId} onDeleteTextOverlay={deleteTextOverlay}
-                onCaptionPositionChange={y => updateCaptionStyle({ position_y: y })}
-                style={{ width: '100%', height: 'auto', display: 'block', borderRadius: 10, border: '1px solid rgba(255,255,255,0.1)', boxShadow: '0 4px 24px rgba(0,0,0,0.6)' }}
-              />
+
+            <div className="px-4 pb-3 pt-2">
+              {(clipStatus === 'rendering' || exporting) ? (
+                /* Spinner inside preview area */
+                <div className="flex flex-col items-center justify-center gap-4 rounded-xl" style={{
+                  aspectRatio: '9/16', background: '#0d0d0d',
+                  border: '1px solid rgba(255,255,255,0.08)',
+                }}>
+                  <div className="relative flex items-center justify-center">
+                    <span className="w-12 h-12 rounded-full border-2 border-t-transparent animate-spin" style={{ borderColor: '#00b4d8', borderTopColor: 'transparent' }} />
+                    <span className="absolute w-8 h-8 rounded-full border-2 border-t-transparent animate-spin" style={{ borderColor: 'rgba(0,180,216,0.3)', borderTopColor: 'transparent', animationDirection: 'reverse', animationDuration: '0.8s' }} />
+                  </div>
+                  <div className="text-center flex flex-col gap-1 px-6">
+                    <p className="text-sm font-semibold text-white">Processing video…</p>
+                    <p className="text-xs animate-pulse" style={{ color: 'rgba(255,255,255,0.4)' }}>This may take a minute</p>
+                    {renderElapsed > 0 && (
+                      <p className="text-xs tabular-nums mt-1" style={{ color: 'rgba(0,180,216,0.7)' }}>{Math.floor(renderElapsed / 60)}m {renderElapsed % 60}s</p>
+                    )}
+                  </div>
+                  {clipStatus === 'rendering' && renderElapsed > 180 && (
+                    <button onClick={async () => { await fetch(`/api/clips/${clip.id}/reedit`, { method: 'POST' }); setClipStatus('draft'); setOutputUrl(null); setRenderStuckSince(null); setRenderElapsed(0) }}
+                      className="text-xs px-4 py-1.5 rounded-lg"
+                      style={{ color: '#f87171', background: 'rgba(239,68,68,0.12)', border: '1px solid rgba(239,68,68,0.25)' }}>
+                      Stuck? Reset
+                    </button>
+                  )}
+                </div>
+              ) : (
+                <OutputCanvas
+                  videoRef={videoRef} currentTimeMs={currentTimeMs} clipStartMs={clip.start_ms}
+                  activeSegment={playingSegment} getPositionAt={getPositionAt}
+                  skipTransitionRef={skipCanvasTransitionRef} words={displayWords}
+                  captionStyle={captionStyle} captionTextCase={captionTextCase} showCaptions={showCaptions}
+                  overlays={overlays} activeOverlayId={activeOverlayId}
+                  onOverlayChange={updateOverlay} onSelectOverlay={setActiveOverlayId} onDeleteOverlay={deleteOverlay}
+                  textOverlays={textOverlays} activeTextOverlayId={activeTextOverlayId}
+                  onTextOverlayChange={updateTextOverlay} onSelectTextOverlay={setActiveTextOverlayId} onDeleteTextOverlay={deleteTextOverlay}
+                  onCaptionPositionChange={y => updateCaptionStyle({ position_y: y })}
+                  style={{ width: '100%', height: 'auto', display: 'block', borderRadius: 10, border: '1px solid rgba(255,255,255,0.1)', boxShadow: '0 4px 24px rgba(0,0,0,0.6)' }}
+                />
+              )}
+            </div>
+
+            {/* Download / Process button — right below preview */}
+            <div className="px-4 pb-4 flex flex-col gap-2">
+              {outputUrl && clipStatus === 'done' ? (
+                <>
+                  <a href={outputUrl} download="export.mp4"
+                    className="flex items-center justify-center gap-2 w-full py-3 rounded-xl text-sm font-bold text-white transition-opacity hover:opacity-90"
+                    style={{ background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.12)' }}>
+                    <svg width="15" height="15" viewBox="0 0 15 15" fill="none"><path d="M7.5 2v8M4 7l3.5 3.5L11 7M2 13h11" stroke="white" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                    Download
+                  </a>
+                  <button onClick={handleExport} disabled={exporting} className="w-full py-2 text-xs rounded-xl font-medium disabled:opacity-50" style={{ background: 'rgba(0,180,216,0.1)', color: '#00b4d8', border: '1px solid rgba(0,180,216,0.2)' }}>{exporting ? 'Queuing…' : 'Re-render'}</button>
+                  <button onClick={handleReEdit} className="w-full py-2 text-xs rounded-xl font-medium" style={{ background: 'rgba(124,58,237,0.1)', color: '#a78bfa', border: '1px solid rgba(124,58,237,0.2)' }}>Re-edit</button>
+                </>
+              ) : clipStatus !== 'rendering' && !exporting ? (
+                <button onClick={handleExport} disabled={exporting}
+                  className="w-full py-3 rounded-xl text-sm font-semibold text-white disabled:opacity-50 transition-opacity hover:opacity-90"
+                  style={{ background: '#00b4d8' }}>
+                  {exporting ? 'Queuing…' : 'Process video'}
+                </button>
+              ) : null}
             </div>
           </div>
 
@@ -739,51 +789,6 @@ export function EditorShell({
             )}
           </div>
 
-          {/* Export */}
-          <div className="p-4 mt-auto flex flex-col gap-3">
-            {(clipStatus === 'rendering' || exporting) ? (
-              /* Processing state */
-              <div className="flex flex-col items-center gap-4 py-6 px-4 rounded-2xl" style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.07)' }}>
-                <div className="relative flex items-center justify-center">
-                  <span className="w-12 h-12 rounded-full border-2 border-t-transparent animate-spin" style={{ borderColor: '#00b4d8', borderTopColor: 'transparent' }} />
-                  <span className="absolute w-8 h-8 rounded-full border-2 border-t-transparent animate-spin" style={{ borderColor: 'rgba(0,180,216,0.3)', borderTopColor: 'transparent', animationDirection: 'reverse', animationDuration: '0.8s' }} />
-                </div>
-                <div className="text-center flex flex-col gap-1">
-                  <p className="text-sm font-semibold text-white">Processing video…</p>
-                  <p className="text-xs animate-pulse" style={{ color: 'rgba(255,255,255,0.4)' }}>This may take a minute</p>
-                  {renderElapsed > 0 && (
-                    <p className="text-xs tabular-nums mt-1" style={{ color: 'rgba(0,180,216,0.7)' }}>{Math.floor(renderElapsed / 60)}m {renderElapsed % 60}s elapsed</p>
-                  )}
-                </div>
-                {clipStatus === 'rendering' && renderElapsed > 180 && (
-                  <button onClick={async () => { await fetch(`/api/clips/${clip.id}/reedit`, { method: 'POST' }); setClipStatus('draft'); setOutputUrl(null); setRenderStuckSince(null); setRenderElapsed(0) }}
-                    className="text-xs px-4 py-1.5 rounded-lg"
-                    style={{ color: '#f87171', background: 'rgba(239,68,68,0.12)', border: '1px solid rgba(239,68,68,0.25)' }}>
-                    Stuck? Reset
-                  </button>
-                )}
-              </div>
-            ) : outputUrl && clipStatus === 'done' ? (
-              /* Done state */
-              <div className="flex flex-col gap-2">
-                <a href={outputUrl} download="export.mp4"
-                  className="flex items-center justify-center gap-2 w-full py-3.5 rounded-2xl text-sm font-bold text-white transition-opacity hover:opacity-90"
-                  style={{ background: 'linear-gradient(135deg, #00c6ff, #0072ff)' }}>
-                  <svg width="15" height="15" viewBox="0 0 15 15" fill="none"><path d="M7.5 2v8M4 7l3.5 3.5L11 7M2 13h11" stroke="white" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/></svg>
-                  Download
-                </a>
-                <button onClick={handleExport} disabled={exporting} className="w-full py-2 text-xs rounded-xl font-medium disabled:opacity-50" style={{ background: 'rgba(0,180,216,0.1)', color: '#00b4d8', border: '1px solid rgba(0,180,216,0.2)' }}>{exporting ? 'Queuing…' : 'Re-render'}</button>
-                <button onClick={handleReEdit} className="w-full py-2 text-xs rounded-xl font-medium" style={{ background: 'rgba(124,58,237,0.1)', color: '#a78bfa', border: '1px solid rgba(124,58,237,0.2)' }}>Re-edit</button>
-              </div>
-            ) : (
-              /* Draft state */
-              <button onClick={handleExport} disabled={exporting}
-                className="w-full py-3 rounded-2xl text-sm font-semibold text-white disabled:opacity-50 transition-opacity hover:opacity-90"
-                style={{ background: '#00b4d8' }}>
-                {exporting ? 'Queuing…' : 'Process video'}
-              </button>
-            )}
-          </div>
 
           {/* end scrollable area */}
           </div>
