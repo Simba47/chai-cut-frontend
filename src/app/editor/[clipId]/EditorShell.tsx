@@ -570,7 +570,7 @@ export function EditorShell({
         </div>
 
         {/* Right sidebar */}
-        <div className="shrink-0 flex flex-col" style={{ width: 270, background: '#111', borderLeft: '1px solid rgba(255,255,255,0.07)' }}>
+        <div className="shrink-0 flex flex-col" style={{ width: 360, background: '#111', borderLeft: '1px solid rgba(255,255,255,0.07)' }}>
 
           {/* 9:16 Output preview */}
           <div className="shrink-0 flex flex-col" style={{ borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
