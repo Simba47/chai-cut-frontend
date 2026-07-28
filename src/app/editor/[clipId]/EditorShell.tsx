@@ -695,11 +695,6 @@ export function EditorShell({
                 )
               })}
             </div>
-            <button onClick={() => addSegment({ start_ms: currentTimeMs, end_ms: Math.min(currentTimeMs + 5000, clip.end_ms), layout: activeSegment?.layout ?? 'vertical', sort_order: segments.length }, id => setActiveSegmentId(id))}
-              className="mt-2 w-full py-2 text-xs rounded-lg transition-colors hover:opacity-80"
-              style={{ color: 'rgba(255,255,255,0.3)', border: '1px solid rgba(255,255,255,0.08)' }}>
-              + New Position
-            </button>
           </div>
 
           {/* Slot source info */}
