@@ -183,8 +183,9 @@ export function EditorShell({
 
   useEffect(() => {
     if (clipStatus !== 'rendering') { setRenderStuckSince(null); setRenderElapsed(0); return }
-    if (!renderStuckSince) setRenderStuckSince(Date.now())
-    const tick = setInterval(() => setRenderElapsed(Math.floor((Date.now() - (renderStuckSince ?? Date.now())) / 1000)), 1000)
+    const startedAt = renderStuckSince ?? Date.now()
+    if (!renderStuckSince) setRenderStuckSince(startedAt)
+    const tick = setInterval(() => setRenderElapsed(Math.floor((Date.now() - startedAt) / 1000)), 1000)
     const poll = setInterval(async () => {
       const res = await fetch(`/api/clips/${clip.id}/status`)
       if (!res.ok) return
