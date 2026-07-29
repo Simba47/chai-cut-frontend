@@ -14,7 +14,6 @@ export default function DashboardPage() {
 
   // Upload state
   const [file, setFile] = useState<File | null>(null)
-  const [link, setLink] = useState('')
   const [dragOver, setDragOver] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [uploadProgress, setUploadProgress] = useState(0)
@@ -124,29 +123,6 @@ export default function DashboardPage() {
     }
   }
 
-  async function handleLinkSubmit(e: React.FormEvent) {
-    e.preventDefault()
-    if (!link.trim()) return
-    setUploading(true)
-    setUploadError(null)
-    try {
-      const res = await fetch('/api/ingest/link', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: link.trim() }),
-      })
-      if (!res.ok) throw new Error((await res.json()).error ?? 'Failed')
-      const { video_id } = await res.json()
-      setLink('')
-      await fetchVideos()
-      router.push(`/videos/${video_id}`)
-    } catch (err) {
-      setUploadError(err instanceof Error ? err.message : 'Failed to queue link')
-    } finally {
-      setUploading(false)
-    }
-  }
-
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center" style={{ background: '#0d0d0d' }}>
@@ -222,27 +198,6 @@ export default function DashboardPage() {
             </>
           )}
         </div>
-
-        {/* YouTube / link input */}
-        <form onSubmit={handleLinkSubmit} className="flex gap-2 mb-3">
-          <input
-            type="url"
-            value={link}
-            onChange={e => setLink(e.target.value)}
-            placeholder="Or paste a YouTube / video URL…"
-            className="flex-1 px-3 py-2.5 rounded-xl text-sm text-white outline-none"
-            style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)' }}
-            disabled={uploading}
-          />
-          <button
-            type="submit"
-            disabled={uploading || !link.trim()}
-            className="px-4 py-2.5 rounded-xl text-sm font-semibold text-white disabled:opacity-40 transition-opacity"
-            style={{ background: '#00b4d8' }}
-          >
-            {uploading ? 'Adding…' : 'Add'}
-          </button>
-        </form>
 
         {uploadError && (
           <p className="text-sm mb-4 text-center" style={{ color: '#f87171' }}>{uploadError}</p>
