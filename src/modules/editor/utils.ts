@@ -15,7 +15,7 @@ export function defaultCropForSlot(layout: LayoutType, slotIdx: number) {
     case 'horizontal':
       return { x: 0, y: 0, w: 1, h: 1 }
     case 'split':
-      return slotIdx === 0 ? { x: 0, y: 0, w: 1, h: 0.5 } : { x: 0, y: 0.5, w: 1, h: 0.5 }
+      return slotIdx === 0 ? { x: 0, y: 0, w: 0.5, h: 1 } : { x: 0.5, y: 0, w: 0.5, h: 1 }
     case 'trio':
       if (slotIdx === 0) return { x: 0, y: 0, w: 1, h: 0.55 }
       if (slotIdx === 1) return { x: 0, y: 0.5, w: 0.5, h: 0.5 }
