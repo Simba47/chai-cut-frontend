@@ -51,9 +51,11 @@ function VideoThumbnails({ videoUrl }: { videoUrl: string }) {
           vid.addEventListener('seeked', () => { clearTimeout(tid); r() }, { once: true })
         })
         if (cancelled) return
-        try { ctx.drawImage(vid, 0, 0, THUMB_W, THUMB_H) } catch { continue }
-        const dataUrl = canvas.toDataURL('image/jpeg', 0.5)
-        setThumbs(prev => { const next = [...prev]; next[i] = dataUrl; return next })
+        try {
+          ctx.drawImage(vid, 0, 0, THUMB_W, THUMB_H)
+          const dataUrl = canvas.toDataURL('image/jpeg', 0.5)
+          setThumbs(prev => { const next = [...prev]; next[i] = dataUrl; return next })
+        } catch { continue }
       }
     }
 

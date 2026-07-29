@@ -58,6 +58,7 @@ export function VideoPreview({
         <video
           ref={videoRef}
           src={videoUrl || undefined}
+          crossOrigin="anonymous"
           preload="auto"
           style={{ width: '100%', height: '100%', display: 'block' }}
           onLoadedMetadata={e => {

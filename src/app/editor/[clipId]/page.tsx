@@ -7,6 +7,8 @@ import { GetObjectCommand } from '@aws-sdk/client-s3'
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 import type { TranscriptWord, CaptionStyle, TextOverlay, AudioTrack, Transition, Overlay } from '@chai-cut/shared'
 
+export const dynamic = 'force-dynamic'
+
 export default async function EditorPage({
   params,
   searchParams,
