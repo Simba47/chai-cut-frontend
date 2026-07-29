@@ -42,8 +42,7 @@ interface Props {
 
 const LAYOUTS: { id: LayoutType; label: string }[] = [
   { id: 'vertical', label: 'Vertical' }, { id: 'split', label: 'Split' },
-  { id: 'trio', label: 'Trio' }, { id: 'spotlight', label: 'Spotlight' },
-  { id: 'centered', label: 'Centered' }, { id: 'horizontal', label: 'Horizontal' },
+  { id: 'trio', label: 'Trio' }, { id: 'horizontal', label: 'Horizontal' },
 ]
 const PANELS: { id: Panel; label: string }[] = []
 const SEG_COLORS = ['#22c55e','#3b82f6','#a855f7','#f59e0b','#ef4444','#06b6d4','#ec4899','#84cc16']
