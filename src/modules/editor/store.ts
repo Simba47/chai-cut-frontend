@@ -17,6 +17,7 @@ interface EditorState {
 
 interface EditorActions {
   hydrate: (segments: SegmentLocal[], keyframes: KeyframeMap) => void
+  reset: () => void
   // Segments
   addSegment: (seg: Omit<SegmentLocal, 'id' | 'crop_boxes'>, onCreate?: (id: string) => void, initialBoxes?: CropBoxLocal[]) => void
   updateSegment: (id: string, updates: Partial<Omit<SegmentLocal, 'id'>>) => void
@@ -40,7 +41,8 @@ export const useEditorStore = create<EditorState & EditorActions>()((set, get) =
   activeSegmentId: null,
   activeBoxId: null,
 
-  hydrate: (segments, keyframes) => set({ segments, keyframes }),
+  hydrate: (segments, keyframes) => set({ segments, keyframes, activeSegmentId: null, activeBoxId: null }),
+  reset: () => set({ segments: [] as SegmentLocal[], keyframes: {} as KeyframeMap, activeSegmentId: null, activeBoxId: null }),
 
   addSegment: (seg, onCreate, initialBoxes) => {
     const id = crypto.randomUUID()

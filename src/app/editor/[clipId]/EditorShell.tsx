@@ -105,6 +105,8 @@ export function EditorShell({
       audioTracks: initialAudioTracks,
       transitions: initialTransitions,
     })
+
+    return () => useEditorStore.getState().reset()
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Local UI state (not shared across components) ─────────────────────────────
