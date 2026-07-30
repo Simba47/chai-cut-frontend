@@ -1,4 +1,4 @@
-import { DeleteObjectCommand } from '@aws-sdk/client-s3'
+import { DeleteObjectCommand, DeleteObjectsCommand } from '@aws-sdk/client-s3'
 import { r2, R2_BUCKET } from '@/lib/r2'
 import sql from '@/lib/db'
 
@@ -27,8 +27,27 @@ export async function deleteVideo(userId: string, videoId: string) {
   if (!video) throw Object.assign(new Error('Not found'), { status: 404 })
   if (video.user_id !== userId) throw Object.assign(new Error('Forbidden'), { status: 403 })
 
+  // Collect all R2 keys to delete
+  const keysToDelete: string[] = []
+
   if (video.storage_path) {
-    await r2.send(new DeleteObjectCommand({ Bucket: R2_BUCKET, Key: video.storage_path })).catch(() => {})
+    keysToDelete.push(video.storage_path)
+    // FLAC audio cache created during transcription
+    keysToDelete.push(video.storage_path.replace(/\.[^.]+$/, '_audio.flac'))
+  }
+
+  // Rendered output for every clip of this video
+  const clipOutputs = await sql`
+    SELECT output_storage_path FROM clips
+    WHERE video_id = ${videoId} AND output_storage_path IS NOT NULL
+  `
+  for (const row of clipOutputs) keysToDelete.push(row.output_storage_path as string)
+
+  if (keysToDelete.length > 0) {
+    await r2.send(new DeleteObjectsCommand({
+      Bucket: R2_BUCKET,
+      Delete: { Objects: keysToDelete.map(Key => ({ Key })), Quiet: true },
+    })).catch(() => {})
   }
 
   await sql`DELETE FROM videos WHERE id = ${videoId}`
