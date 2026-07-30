@@ -1,65 +1,71 @@
 'use client'
 
-import { useState, useEffect, Suspense } from 'react'
+import { useState, Suspense } from 'react'
 import { signIn } from 'next-auth/react'
-import { useSearchParams } from 'next/navigation'
+import { useRouter } from 'next/navigation'
+import Link from 'next/link'
 
 function LoginForm() {
   const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
   const [loading, setLoading] = useState(false)
-  const [sent, setSent] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const params = useSearchParams()
-  const verify = params.get('verify')
-
-  useEffect(() => { if (verify) setSent(true) }, [verify])
+  const router = useRouter()
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     setLoading(true)
     setError(null)
-    try {
-      await signIn('resend', { email, redirect: false })
-    } catch {
-      // email providers throw on redirect — ignore
+    const res = await signIn('credentials', { email, password, redirect: false })
+    if (res?.error) {
+      setError('Incorrect email or password')
+      setLoading(false)
+      return
     }
-    setSent(true)
-    setLoading(false)
+    router.push('/dashboard')
   }
 
   return (
     <div className="w-full max-w-sm p-8 rounded-xl" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
-      <h1 className="text-2xl font-bold mb-2 text-white">Chai Cut</h1>
+      <h1 className="text-2xl font-bold mb-1 text-white">Chai Cut</h1>
+      <p className="text-sm mb-8" style={{ color: 'var(--text-muted)' }}>Sign in to your account</p>
 
-      {sent ? (
-        <div className="text-center py-4">
-          <p className="text-white font-medium mb-2">Check your email</p>
-          <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
-            We sent a magic link to <strong>{email || 'your email'}</strong>. Click it to sign in.
-          </p>
+      <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+        <div className="flex flex-col gap-1">
+          <label className="text-sm font-medium text-white">Email</label>
+          <input
+            type="email" value={email} onChange={e => setEmail(e.target.value)}
+            required placeholder="you@example.com"
+            className="px-3 py-2 rounded-lg text-sm text-white outline-none"
+            style={{ background: 'var(--surface-2)', border: '1px solid var(--border)' }}
+          />
         </div>
-      ) : (
-        <>
-          <p className="text-sm mb-8" style={{ color: 'var(--text-muted)' }}>Enter your email — we&apos;ll send a sign-in link.</p>
-          <form onSubmit={handleSubmit} className="flex flex-col gap-4">
-            <div className="flex flex-col gap-1">
-              <label className="text-sm font-medium text-white">Email</label>
-              <input
-                type="email" value={email} onChange={e => setEmail(e.target.value)}
-                required placeholder="you@example.com"
-                className="px-3 py-2 rounded-lg text-sm text-white outline-none"
-                style={{ background: 'var(--surface-2)', border: '1px solid var(--border)' }}
-              />
-            </div>
-            {error && <p className="text-sm" style={{ color: 'var(--danger)' }}>{error}</p>}
-            <button type="submit" disabled={loading}
-              className="py-2 rounded-lg text-sm font-semibold text-white disabled:opacity-60"
-              style={{ background: 'var(--accent)' }}>
-              {loading ? 'Sending…' : 'Send magic link'}
-            </button>
-          </form>
-        </>
-      )}
+        <div className="flex flex-col gap-1">
+          <label className="text-sm font-medium text-white">Password</label>
+          <input
+            type="password" value={password} onChange={e => setPassword(e.target.value)}
+            required placeholder="••••••••"
+            className="px-3 py-2 rounded-lg text-sm text-white outline-none"
+            style={{ background: 'var(--surface-2)', border: '1px solid var(--border)' }}
+          />
+        </div>
+        {error && <p className="text-sm" style={{ color: 'var(--danger)' }}>{error}</p>}
+        <button type="submit" disabled={loading}
+          className="py-2 rounded-lg text-sm font-semibold text-white disabled:opacity-60"
+          style={{ background: 'var(--accent)' }}>
+          {loading ? 'Signing in…' : 'Sign in'}
+        </button>
+      </form>
+
+      <div className="mt-5 flex flex-col gap-2 text-center text-sm" style={{ color: 'var(--text-muted)' }}>
+        <Link href="/forgot-password" className="hover:text-white transition-colors">
+          Forgot your password?
+        </Link>
+        <span>
+          No account?{' '}
+          <Link href="/signup" className="text-white font-medium hover:underline">Sign up</Link>
+        </span>
+      </div>
     </div>
   )
 }
