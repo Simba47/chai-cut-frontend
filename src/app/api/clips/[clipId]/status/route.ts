@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { requireUser } from '@/server/auth'
 import sql from '@/lib/db'
+import { r2, R2_BUCKET } from '@/lib/r2'
+import { GetObjectCommand } from '@aws-sdk/client-s3'
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -10,10 +13,20 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ cli
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   const { clipId } = await params
   const [row] = await sql`
-    SELECT c.status, c.output_url FROM clips c
+    SELECT c.status, c.output_storage_path FROM clips c
     JOIN videos v ON v.id = c.video_id
     WHERE c.id = ${clipId} AND v.user_id = ${user.id}
   `
   if (!row) return NextResponse.json({ error: 'Not found' }, { status: 404 })
-  return NextResponse.json({ status: row.status, output_url: row.output_url })
+
+  let output_url: string | null = null
+  if (row.status === 'done' && row.output_storage_path) {
+    output_url = await getSignedUrl(
+      r2,
+      new GetObjectCommand({ Bucket: R2_BUCKET, Key: row.output_storage_path }),
+      { expiresIn: 43200 }
+    ).catch(() => null)
+  }
+
+  return NextResponse.json({ status: row.status, output_url })
 }

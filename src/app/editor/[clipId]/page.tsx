@@ -31,7 +31,7 @@ export default async function EditorPage({
   if (!clip || clip.user_id !== user.id) notFound()
 
   const signedUrl = clip.storage_path
-    ? await getSignedUrl(r2, new GetObjectCommand({ Bucket: R2_BUCKET, Key: clip.storage_path }), { expiresIn: 3600 })
+    ? await getSignedUrl(r2, new GetObjectCommand({ Bucket: R2_BUCKET, Key: clip.storage_path }), { expiresIn: 43200 })
     : ''
 
   const [transcriptRow] = await sql`
@@ -107,7 +107,7 @@ export default async function EditorPage({
   const overlays: Overlay[] = await Promise.all((overlaysRaw as unknown as Overlay[]).map(async ov => {
     if (ov.type === 'image' && ov.storage_path) {
       const preview_url = await getSignedUrl(
-        r2, new GetObjectCommand({ Bucket: R2_BUCKET, Key: ov.storage_path }), { expiresIn: 3600 }
+        r2, new GetObjectCommand({ Bucket: R2_BUCKET, Key: ov.storage_path }), { expiresIn: 43200 }
       ).catch(() => undefined)
       return { ...ov, preview_url }
     }
