@@ -139,6 +139,8 @@ export function EditorShellMobile({
   const latestHandleSaveRef = useRef<() => Promise<void>>(() => Promise.resolve())
   const retranscribeTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const skipCanvasTransitionRef = useRef(false)
+  const previewInnerRef = useRef<HTMLDivElement>(null)
+  const cropDragRef = useRef<{ startFx: number; startFy: number; startX: number; startY: number } | null>(null)
 
   // ── Orientation detection ─────────────────────────────────────────────────────
   useEffect(() => {
@@ -360,6 +362,63 @@ export function EditorShellMobile({
 
   function handleInsertBrollAfterSeg(_afterSegId: string) {}
 
+  // ── Touch-drag crop (translates finger movement to crop position) ─────────────
+
+  function getVideoFrame() {
+    const video = videoRef.current
+    const container = previewInnerRef.current
+    if (!video || !container || !video.videoWidth) return null
+    const cW = container.clientWidth
+    const cH = container.clientHeight
+    const vA = video.videoWidth / video.videoHeight
+    const cA = cW / cH
+    if (vA > cA) {
+      const fW = cW, fH = cW / vA
+      return { left: 0, top: (cH - fH) / 2, width: fW, height: fH }
+    } else {
+      const fH = cH, fW = cH * vA
+      return { left: (cW - fW) / 2, top: 0, width: fW, height: fH }
+    }
+  }
+
+  function touchToFraction(touch: React.Touch) {
+    const frame = getVideoFrame()
+    const container = previewInnerRef.current
+    if (!frame || !container) return null
+    const rect = container.getBoundingClientRect()
+    const tx = touch.clientX - rect.left - frame.left
+    const ty = touch.clientY - rect.top - frame.top
+    return { fx: tx / frame.width, fy: ty / frame.height }
+  }
+
+  function onCropTouchStart(e: React.TouchEvent) {
+    e.preventDefault()
+    const pos = touchToFraction(e.touches[0])
+    if (!pos) return
+    const { fx, fy } = pos
+    if (fx >= cropPos.x && fx <= cropPos.x + cropPos.w &&
+        fy >= cropPos.y && fy <= cropPos.y + cropPos.h) {
+      cropDragRef.current = { startFx: fx, startFy: fy, startX: cropPos.x, startY: cropPos.y }
+    }
+  }
+
+  function onCropTouchMove(e: React.TouchEvent) {
+    e.preventDefault()
+    if (!cropDragRef.current || !activeBox) return
+    const pos = touchToFraction(e.touches[0])
+    if (!pos) return
+    const dx = pos.fx - cropDragRef.current.startFx
+    const dy = pos.fy - cropDragRef.current.startFy
+    upsertKeyframe(activeBox.id, {
+      t_ms: currentTimeMs,
+      ...cropPos,
+      x: Math.max(0, Math.min(1 - cropPos.w, cropDragRef.current.startX + dx)),
+      y: Math.max(0, Math.min(1 - cropPos.h, cropDragRef.current.startY + dy)),
+    })
+  }
+
+  function onCropTouchEnd() { cropDragRef.current = null }
+
   // ── Render ────────────────────────────────────────────────────────────────────
 
   const headerH = 44
@@ -445,28 +504,79 @@ export function EditorShellMobile({
             ...(isLandscape
               ? { width: '55%', display: 'flex', flexDirection: 'column', borderRight: '1px solid rgba(255,255,255,0.07)' }
               : { height: 'calc(45dvh - 22px)' }),
-            background: '#1a1a2e', position: 'relative',
+            background: '#0d0d0d', position: 'relative',
           }}
         >
+          {/* Inner container — VideoPreview always mounted so video element stays in DOM */}
           <div
+            ref={previewInnerRef}
             style={{
               position: 'absolute', inset: 6,
-              border: '1.5px solid rgba(255,255,255,0.15)',
+              border: '1.5px solid rgba(255,255,255,0.1)',
               borderRadius: 14, overflow: 'hidden',
               boxShadow: '0 8px 32px rgba(0,0,0,0.6)',
+              background: '#111',
             }}
           >
+            {/* Source video — always rendered, provides videoRef for OutputCanvas */}
             <VideoPreview
               videoRef={videoRef} videoUrl={clipVideoUrl} currentTimeMs={currentTimeMs}
               activeSegment={activeSegment ?? null} getPositionAt={getPositionAt}
-              activeBoxId={activeBoxId ?? null}
+              activeBoxId={activeTab === 'crop' ? (activeBoxId ?? null) : null}
               onSelectBox={(segId, boxId) => { setActiveSegmentId(segId); setActiveBoxId(boxId) }}
               onBoxChange={(boxId, pos) => upsertKeyframe(boxId, { t_ms: currentTimeMs, ...pos })}
             />
+
+            {/* 9:16 output canvas — overlays source video when NOT in crop mode */}
+            {activeTab !== 'crop' && (
+              <div style={{
+                position: 'absolute', inset: 0, zIndex: 5,
+                background: '#000',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+              }}>
+                <OutputCanvas
+                  videoRef={videoRef} currentTimeMs={currentTimeMs} clipStartMs={clip.start_ms}
+                  activeSegment={playingSegment} getPositionAt={getPositionAt}
+                  skipTransitionRef={skipCanvasTransitionRef}
+                  words={displayWords} captionStyle={captionStyle}
+                  captionTextCase={captionTextCase} showCaptions={showCaptions}
+                  overlays={overlays} activeOverlayId={activeOverlayId}
+                  onOverlayChange={updateOverlay} onSelectOverlay={setActiveOverlayId}
+                  onDeleteOverlay={deleteOverlay}
+                  textOverlays={textOverlays} activeTextOverlayId={activeTextOverlayId}
+                  onTextOverlayChange={updateTextOverlay}
+                  onSelectTextOverlay={setActiveTextOverlayId}
+                  onDeleteTextOverlay={deleteTextOverlay}
+                  onCaptionPositionChange={y => updateCaptionStyle({ position_y: y })}
+                  style={{ height: '100%', width: 'auto', maxWidth: '100%', display: 'block' }}
+                />
+              </div>
+            )}
+
+            {/* Touch drag overlay — only active in crop mode */}
+            {activeTab === 'crop' && (
+              <div
+                style={{ position: 'absolute', inset: 0, zIndex: 10, touchAction: 'none' }}
+                onTouchStart={onCropTouchStart}
+                onTouchMove={onCropTouchMove}
+                onTouchEnd={onCropTouchEnd}
+              >
+                {/* Hint label */}
+                <div style={{
+                  position: 'absolute', bottom: 10, left: '50%', transform: 'translateX(-50%)',
+                  background: 'rgba(0,0,0,0.65)', color: '#00b4d8',
+                  padding: '4px 12px', borderRadius: 20,
+                  fontSize: 11, fontWeight: 700, pointerEvents: 'none', whiteSpace: 'nowrap',
+                }}>
+                  Touch inside crop box to drag
+                </div>
+              </div>
+            )}
+
             {activeSegment?.crop_boxes[0]?.source_video_id && (
               <div
                 style={{
-                  position: 'absolute', top: 8, left: 8,
+                  position: 'absolute', top: 8, left: 8, zIndex: 20,
                   background: 'rgba(249,115,22,0.85)', color: '#fff',
                   fontSize: 11, fontWeight: 700, padding: '3px 8px',
                   borderRadius: 6, pointerEvents: 'none',
