@@ -1,6 +1,8 @@
 import { redirect, notFound } from 'next/navigation'
+import { headers } from 'next/headers'
 import { requireUser } from '@/server/auth'
 import { EditorShell } from './EditorShell'
+import { EditorShellMobile } from './EditorShellMobile'
 import sql from '@/lib/db'
 import { r2, R2_BUCKET } from '@/lib/r2'
 import { GetObjectCommand } from '@aws-sdk/client-s3'
@@ -19,6 +21,9 @@ export default async function EditorPage({
   const { clipId } = await params
   const { layout: layoutParam } = await searchParams
   const initialLayout = layoutParam === 'horizontal' ? 'horizontal' : 'vertical'
+
+  const ua = (await headers()).get('user-agent') ?? ''
+  const isMobile = /Mobi|Android|iPhone|iPad|iPod|IEMobile|Opera Mini/i.test(ua)
 
   const user = await requireUser()
   if (!user) redirect('/login')
@@ -114,17 +119,17 @@ export default async function EditorPage({
     return ov
   }))
 
-  return (
-    <EditorShell
-      clip={clip as Parameters<typeof EditorShell>[0]['clip']}
-      videoUrl={signedUrl}
-      words={words}
-      initialSegments={segments ?? []}
-      initialCaptionStyles={captionStyles ?? []}
-      initialTextOverlays={textOverlays ?? []}
-      initialAudioTracks={audioTracks ?? []}
-      initialTransitions={transitions ?? []}
-      initialOverlays={overlays ?? []}
-    />
-  )
+  const shellProps = {
+    clip: clip as Parameters<typeof EditorShell>[0]['clip'],
+    videoUrl: signedUrl,
+    words,
+    initialSegments: segments ?? [],
+    initialCaptionStyles: captionStyles ?? [],
+    initialTextOverlays: textOverlays ?? [],
+    initialAudioTracks: audioTracks ?? [],
+    initialTransitions: transitions ?? [],
+    initialOverlays: overlays ?? [],
+  }
+
+  return isMobile ? <EditorShellMobile {...shellProps} /> : <EditorShell {...shellProps} />
 }
