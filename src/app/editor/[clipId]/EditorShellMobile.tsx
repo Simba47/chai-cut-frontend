@@ -144,11 +144,18 @@ export function EditorShellMobile({
 
   // ── Orientation detection ─────────────────────────────────────────────────────
   useEffect(() => {
-    const mq = window.matchMedia('(orientation: landscape)')
-    setIsLandscape(mq.matches)
-    const handler = (e: MediaQueryListEvent) => setIsLandscape(e.matches)
-    mq.addEventListener('change', handler)
-    return () => mq.removeEventListener('change', handler)
+    const check = () => setIsLandscape(window.innerWidth > window.innerHeight)
+    check()
+    window.addEventListener('resize', check)
+    window.addEventListener('orientationchange', check)
+    // fire again after orientation settles
+    const delayed = () => setTimeout(check, 300)
+    window.addEventListener('orientationchange', delayed)
+    return () => {
+      window.removeEventListener('resize', check)
+      window.removeEventListener('orientationchange', check)
+      window.removeEventListener('orientationchange', delayed)
+    }
   }, [])
 
   // ── Derived values ────────────────────────────────────────────────────────────
