@@ -421,399 +421,313 @@ export function EditorShellMobile({
 
   // ── Render ────────────────────────────────────────────────────────────────────
 
-  const headerH = 44
-  const playbackH = 44
-  const tabBarH = 52
+  // Shared header JSX reused in both orientations
+  const headerJSX = (
+    <header style={{ height: 44, flexShrink: 0, display: 'flex', alignItems: 'center', gap: 8, paddingLeft: 12, paddingRight: 12, background: '#111', borderBottom: '1px solid rgba(255,255,255,0.07)', zIndex: 20 }}>
+      <a href="/dashboard" style={{ width: 36, height: 36, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(255,255,255,0.06)', borderRadius: 10, flexShrink: 0 }}>
+        <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+          <path d="M9 2.5L4.5 7 9 11.5" stroke="rgba(255,255,255,0.7)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/>
+        </svg>
+      </a>
+      <div style={{ display: 'flex', gap: 2, background: 'rgba(0,0,0,0.4)', borderRadius: 10, padding: 3, flexShrink: 0 }}>
+        {LAYOUTS.map(l => (
+          <button key={l.id} onClick={() => handleLayoutChange(l.id)}
+            style={{ padding: '4px 8px', borderRadius: 7, fontSize: 11, fontWeight: 600, border: 'none', cursor: 'pointer', background: activeSegment?.layout === l.id ? '#00b4d8' : 'transparent', color: activeSegment?.layout === l.id ? '#fff' : 'rgba(255,255,255,0.4)' }}>
+            {l.label}
+          </button>
+        ))}
+      </div>
+      <div style={{ flex: 1 }} />
+      <span style={{ fontSize: 11, flexShrink: 0, color: saveState === 'saved' ? '#22c55e' : saveState === 'saving' ? 'rgba(255,255,255,0.4)' : saveState === 'error' ? '#f87171' : 'transparent' }}>
+        {saveState === 'saving' ? '●' : saveState === 'saved' ? '✓ Saved' : saveState === 'error' ? '! Error' : '·'}
+      </span>
+      {exportError && <span style={{ fontSize: 10, color: '#f87171', maxWidth: 80, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{exportError}</span>}
+    </header>
+  )
+
+  // Shared playback bar JSX
+  const playbackJSX = (compact = false) => (
+    <div style={{ flexShrink: 0, height: compact ? 40 : 44, display: 'flex', alignItems: 'center', gap: compact ? 6 : 8, paddingLeft: compact ? 8 : 12, paddingRight: compact ? 8 : 12, background: '#111', borderTop: '1px solid rgba(255,255,255,0.06)' }}>
+      <button onClick={() => seekToMs(Math.max(0, currentTimeMs - 5000))} style={{ width: compact ? 30 : 36, height: compact ? 30 : 36, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(255,255,255,0.05)', borderRadius: 8, border: 'none', cursor: 'pointer', color: 'rgba(255,255,255,0.5)' }}>
+        <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M9.5 3L5 7l4.5 4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/><line x1="3" y1="2.5" x2="3" y2="11.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>
+      </button>
+      <button onClick={togglePlay} style={{ width: compact ? 36 : 44, height: compact ? 36 : 44, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#00b4d8', borderRadius: compact ? 18 : 22, border: 'none', cursor: 'pointer', flexShrink: 0 }}>
+        {playing
+          ? <svg width="12" height="12" viewBox="0 0 12 12" fill="white"><rect x="2" y="1.5" width="3" height="9" rx="1"/><rect x="7" y="1.5" width="3" height="9" rx="1"/></svg>
+          : <svg width="12" height="12" viewBox="0 0 12 12" fill="white"><path d="M3 1.5l7.5 4.5L3 10.5V1.5z"/></svg>
+        }
+      </button>
+      <button onClick={() => seekToMs(Math.min(clipDurationMs, currentTimeMs + 5000))} style={{ width: compact ? 30 : 36, height: compact ? 30 : 36, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(255,255,255,0.05)', borderRadius: 8, border: 'none', cursor: 'pointer', color: 'rgba(255,255,255,0.5)' }}>
+        <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M4.5 3L9 7l-4.5 4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/><line x1="11" y1="2.5" x2="11" y2="11.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>
+      </button>
+      {compact && <button onClick={handleCut} style={{ padding: '3px 8px', borderRadius: 6, background: 'rgba(0,180,216,0.12)', color: '#00b4d8', fontSize: 11, fontWeight: 700, border: '1px solid rgba(0,180,216,0.2)', cursor: 'pointer' }}>✂</button>}
+      <div style={{ flex: 1 }} />
+      <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.45)', fontVariantNumeric: 'tabular-nums' }}>
+        {msToLabel(currentTimeMs)} / {msToLabel(clipDurationMs)}
+      </span>
+    </div>
+  )
+
+  // Shared right sidebar content (9:16 preview + controls) — used in landscape
+  const sidebarJSX = (
+    <div style={{ width: 240, flexShrink: 0, display: 'flex', flexDirection: 'column', background: '#111', borderLeft: '1px solid rgba(255,255,255,0.07)', overflowY: 'auto' }}>
+
+      {/* 9:16 Output preview */}
+      <div style={{ borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+        <div style={{ padding: '8px 12px 6px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <span style={{ fontSize: 10, fontWeight: 700, color: '#fff', letterSpacing: 0.5, textTransform: 'uppercase' as const }}>Preview 9:16</span>
+          {clipStatus === 'done' && <span style={{ fontSize: 10, fontWeight: 700, color: '#22c55e' }}>Ready</span>}
+          {(clipStatus === 'rendering' || exporting) && <span style={{ fontSize: 10, color: 'rgba(255,255,255,0.35)' }}>Processing…</span>}
+        </div>
+        <div style={{ padding: '0 10px' }}>
+          {(clipStatus === 'rendering' || exporting) ? (
+            <div style={{ aspectRatio: '9/16', background: '#0d0d0d', borderRadius: 8, border: '1px solid rgba(255,255,255,0.07)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
+              <span style={{ width: 28, height: 28, borderRadius: 14, border: '2px solid #00b4d8', borderTopColor: 'transparent', display: 'block', animation: 'spin 1s linear infinite' }} />
+              <p style={{ fontSize: 11, color: '#fff', fontWeight: 600 }}>Processing…</p>
+              {renderElapsed > 0 && <p style={{ fontSize: 10, color: 'rgba(0,180,216,0.7)', fontVariantNumeric: 'tabular-nums' }}>{Math.floor(renderElapsed / 60)}m {renderElapsed % 60}s</p>}
+            </div>
+          ) : (
+            <OutputCanvas
+              videoRef={videoRef} currentTimeMs={currentTimeMs} clipStartMs={clip.start_ms}
+              activeSegment={playingSegment} getPositionAt={getPositionAt}
+              skipTransitionRef={skipCanvasTransitionRef}
+              words={displayWords} captionStyle={captionStyle} captionTextCase={captionTextCase} showCaptions={showCaptions}
+              overlays={overlays} activeOverlayId={activeOverlayId}
+              onOverlayChange={updateOverlay} onSelectOverlay={setActiveOverlayId} onDeleteOverlay={deleteOverlay}
+              textOverlays={textOverlays} activeTextOverlayId={activeTextOverlayId}
+              onTextOverlayChange={updateTextOverlay} onSelectTextOverlay={setActiveTextOverlayId} onDeleteTextOverlay={deleteTextOverlay}
+              onCaptionPositionChange={y => updateCaptionStyle({ position_y: y })}
+              style={{ width: '100%', height: 'auto', display: 'block', borderRadius: 8, border: '1px solid rgba(255,255,255,0.1)' }}
+            />
+          )}
+        </div>
+        <div style={{ padding: '8px 10px 12px', display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {outputUrl && clipStatus === 'done' ? (
+            <>
+              <a href={outputUrl} download="export.mp4" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, padding: '10px 0', borderRadius: 10, background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.12)', color: '#fff', fontSize: 12, fontWeight: 700, textDecoration: 'none' }}>
+                <svg width="13" height="13" viewBox="0 0 15 15" fill="none"><path d="M7.5 2v8M4 7l3.5 3.5L11 7M2 13h11" stroke="white" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                Download
+              </a>
+              <button onClick={handleExport} disabled={exporting} style={{ padding: '8px 0', borderRadius: 8, background: 'rgba(0,180,216,0.1)', color: '#00b4d8', fontSize: 11, fontWeight: 600, border: '1px solid rgba(0,180,216,0.2)', cursor: 'pointer', opacity: exporting ? 0.5 : 1 }}>{exporting ? 'Queuing…' : 'Re-render'}</button>
+              <button onClick={handleReEdit} style={{ padding: '8px 0', borderRadius: 8, background: 'rgba(124,58,237,0.1)', color: '#a78bfa', fontSize: 11, fontWeight: 600, border: '1px solid rgba(124,58,237,0.2)', cursor: 'pointer' }}>Re-edit</button>
+            </>
+          ) : clipStatus !== 'rendering' && !exporting ? (
+            <button onClick={handleExport} style={{ padding: '11px 0', borderRadius: 10, background: '#00b4d8', color: '#fff', fontSize: 13, fontWeight: 700, border: 'none', cursor: 'pointer' }}>Process video</button>
+          ) : clipStatus === 'rendering' && renderElapsed > 180 ? (
+            <button onClick={handleReEdit} style={{ fontSize: 11, padding: '8px 0', borderRadius: 8, background: 'rgba(239,68,68,0.12)', color: '#f87171', border: '1px solid rgba(239,68,68,0.2)', cursor: 'pointer' }}>Stuck? Reset</button>
+          ) : null}
+        </div>
+      </div>
+
+      {/* Crop positions */}
+      <div style={{ padding: '10px 12px', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+          <span style={{ fontSize: 10, fontWeight: 700, color: 'rgba(255,255,255,0.5)', letterSpacing: 0.5, textTransform: 'uppercase' as const }}>Crop Positions</span>
+          {segments.length > 1 && (
+            <button onClick={() => { const f = segments[0]; if (!f) return; segments.slice(1).forEach(s => removeSegment(s.id)); updateSegment(f.id, { start_ms: 0, end_ms: clip.end_ms - clip.start_ms }); setActiveSegmentId(f.id) }}
+              style={{ fontSize: 10, padding: '2px 6px', borderRadius: 5, background: 'rgba(239,68,68,0.12)', color: '#f87171', border: '1px solid rgba(239,68,68,0.2)', cursor: 'pointer' }}>Reset</button>
+          )}
+        </div>
+        {segments.filter(s => s.end_ms - s.start_ms > 50).map((seg, i) => {
+          const col = SEG_COLORS[i % SEG_COLORS.length]
+          const isActive = seg.id === activeSegment?.id
+          return (
+            <div key={seg.id} onClick={() => { setActiveSegmentId(seg.id); seekToMs(seg.start_ms) }}
+              style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 8px', borderRadius: 8, cursor: 'pointer', marginBottom: 2, background: isActive ? 'rgba(255,255,255,0.06)' : 'transparent' }}>
+              <div style={{ width: 6, height: 6, borderRadius: 3, background: col, flexShrink: 0 }} />
+              <span style={{ fontSize: 10, color: 'rgba(255,255,255,0.6)', fontVariantNumeric: 'tabular-nums', flex: 1 }}>{msToLabel(seg.start_ms)}–{msToLabel(seg.end_ms)}</span>
+              <span style={{ fontSize: 10, color: 'rgba(255,255,255,0.3)', textTransform: 'capitalize' as const }}>{seg.layout}</span>
+              {segments.length > 1 && <button onClick={e => { e.stopPropagation(); removeSegment(seg.id) }} style={{ width: 18, height: 18, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(239,68,68,0.1)', borderRadius: 4, border: 'none', cursor: 'pointer', color: '#f87171', fontSize: 12 }}>×</button>}
+            </div>
+          )
+        })}
+      </div>
+
+      {/* Auto-captions */}
+      <div style={{ borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+        <div style={{ padding: '10px 12px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <span style={{ fontSize: 11, fontWeight: 600, color: showCaptions ? '#fff' : 'rgba(255,255,255,0.45)' }}>Auto-captions</span>
+          <div onClick={() => setShowCaptions(!showCaptions)} style={{ width: 36, height: 20, borderRadius: 10, display: 'flex', alignItems: 'center', paddingLeft: 2, cursor: 'pointer', background: showCaptions ? '#00b4d8' : 'rgba(255,255,255,0.1)', transition: 'background 0.2s' }}>
+            <div style={{ width: 16, height: 16, borderRadius: 8, background: '#fff', transition: 'transform 0.2s', transform: showCaptions ? 'translateX(16px)' : 'translateX(0)' }} />
+          </div>
+        </div>
+        {(transcribing || retranscribing) && (
+          <div style={{ margin: '0 12px 10px', display: 'flex', alignItems: 'center', gap: 8, padding: '7px 10px', background: 'rgba(0,180,216,0.08)', borderRadius: 8, border: '1px solid rgba(0,180,216,0.2)' }}>
+            <span style={{ width: 12, height: 12, borderRadius: 6, border: '2px solid #00b4d8', borderTopColor: 'transparent', display: 'block', animation: 'spin 0.8s linear infinite', flexShrink: 0 }} />
+            <p style={{ fontSize: 11, color: '#00b4d8', fontWeight: 600 }}>Generating captions…</p>
+          </div>
+        )}
+        {showCaptions && (
+          <div style={{ padding: '0 12px 10px' }}>
+            <CaptionStyler
+              style={captionStyle} textCase={captionTextCase}
+              onChange={updateCaptionStyle} onTextCaseChange={setCaptionTextCase}
+              onEditCaptions={() => {}} onRetranscribe={handleRetranscribe}
+              retranscribing={retranscribing} retranscribeElapsed={retranscribeElapsed} retranscribeError={retranscribeError}
+              hasWords={words.length > 0} hasRoman={hasRoman} romanize={romanize} romanizeLabel={scriptLabel} onRomanizeChange={setRomanize}
+            />
+          </div>
+        )}
+      </div>
+
+      {/* Filters */}
+      <div style={{ padding: '10px 12px 12px' }}>
+        <p style={{ fontSize: 10, fontWeight: 700, color: 'rgba(255,255,255,0.35)', letterSpacing: 0.5, textTransform: 'uppercase' as const, marginBottom: 8 }}>Filters</p>
+        <FilterPanel values={filters} onChange={setFilters} />
+      </div>
+    </div>
+  )
+
+  // Shared source video + touch crop overlay JSX
+  const videoPreviewJSX = (
+    <div ref={previewInnerRef} style={{ position: 'absolute', inset: 0, borderRadius: 0, overflow: 'hidden' }}>
+      <VideoPreview
+        videoRef={videoRef} videoUrl={clipVideoUrl} currentTimeMs={currentTimeMs}
+        activeSegment={activeSegment ?? null} getPositionAt={getPositionAt}
+        activeBoxId={activeBoxId ?? null}
+        onSelectBox={(segId, boxId) => { setActiveSegmentId(segId); setActiveBoxId(boxId) }}
+        onBoxChange={(boxId, pos) => upsertKeyframe(boxId, { t_ms: currentTimeMs, ...pos })}
+      />
+      {/* Always-on touch overlay so crop dragging works in both orientations */}
+      <div style={{ position: 'absolute', inset: 0, zIndex: 10, touchAction: 'none' }}
+        onTouchStart={onCropTouchStart} onTouchMove={onCropTouchMove} onTouchEnd={onCropTouchEnd}
+      />
+      {activeSegment?.crop_boxes[0]?.source_video_id && (
+        <div style={{ position: 'absolute', top: 8, left: 8, zIndex: 20, background: 'rgba(249,115,22,0.85)', color: '#fff', fontSize: 11, fontWeight: 700, padding: '3px 8px', borderRadius: 6, pointerEvents: 'none' }}>B-roll</div>
+      )}
+    </div>
+  )
 
   return (
-    <div
-      style={{
-        height: '100dvh', display: 'flex', flexDirection: 'column',
-        background: '#0d0d0d', overflow: 'hidden',
-      }}
-    >
-      {/* ── Header ── */}
-      <header
-        style={{
-          height: headerH, flexShrink: 0, display: 'flex', alignItems: 'center',
-          gap: 8, paddingLeft: 12, paddingRight: 12,
-          background: '#111', borderBottom: '1px solid rgba(255,255,255,0.07)', zIndex: 20,
-        }}
-      >
-        <a href="/dashboard"
-          style={{
-            width: 36, height: 36, display: 'flex', alignItems: 'center', justifyContent: 'center',
-            background: 'rgba(255,255,255,0.06)', borderRadius: 10, flexShrink: 0,
-          }}
-        >
-          <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-            <path d="M9 2.5L4.5 7 9 11.5" stroke="rgba(255,255,255,0.7)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/>
-          </svg>
-        </a>
+    <div style={{ height: '100dvh', display: 'flex', flexDirection: 'column', background: '#0d0d0d', overflow: 'hidden' }}>
+      {headerJSX}
 
-        {/* Layout picker — compact icon buttons */}
-        <div style={{ display: 'flex', gap: 2, background: 'rgba(0,0,0,0.4)', borderRadius: 10, padding: 3, flexShrink: 0 }}>
-          {LAYOUTS.map(l => (
-            <button
-              key={l.id}
-              onClick={() => handleLayoutChange(l.id)}
-              style={{
-                padding: '4px 8px', borderRadius: 7, fontSize: 11, fontWeight: 600,
-                background: activeSegment?.layout === l.id ? '#00b4d8' : 'transparent',
-                color: activeSegment?.layout === l.id ? '#fff' : 'rgba(255,255,255,0.4)',
-                border: 'none', cursor: 'pointer',
-              }}
-            >
-              {l.label}
-            </button>
-          ))}
-        </div>
+      {/* ══ LANDSCAPE: exactly like the desktop — video left, sidebar right ══ */}
+      {isLandscape && (
+        <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'row', overflow: 'hidden' }}>
 
-        <div style={{ flex: 1 }} />
-
-        {/* Save indicator */}
-        <div style={{ fontSize: 11, flexShrink: 0, color: saveState === 'saved' ? '#22c55e' : saveState === 'saving' ? 'rgba(255,255,255,0.4)' : saveState === 'error' ? '#f87171' : 'transparent' }}>
-          {saveState === 'saving' ? '●' : saveState === 'saved' ? '✓ Saved' : saveState === 'error' ? '! Error' : '·'}
-        </div>
-
-        {/* Export button */}
-        <button
-          onClick={() => { setActiveTab('export') }}
-          style={{
-            height: 32, paddingLeft: 14, paddingRight: 14, borderRadius: 8,
-            background: '#00b4d8', color: '#fff', fontSize: 12, fontWeight: 600,
-            border: 'none', cursor: 'pointer', flexShrink: 0,
-          }}
-        >
-          Export
-        </button>
-      </header>
-
-      {/* ── Body — flex-row in landscape, flex-col in portrait ── */}
-      <div
-        style={{
-          flex: 1, minHeight: 0, display: 'flex',
-          flexDirection: isLandscape ? 'row' : 'column',
-          overflow: 'hidden',
-        }}
-      >
-        {/* ── Preview area ── */}
-        <div
-          style={{
-            flexShrink: 0,
-            ...(isLandscape
-              ? { width: '55%', display: 'flex', flexDirection: 'column', borderRight: '1px solid rgba(255,255,255,0.07)' }
-              : { height: 'calc(45dvh - 22px)' }),
-            background: '#0d0d0d', position: 'relative',
-          }}
-        >
-          {/* Inner container — VideoPreview always mounted so video element stays in DOM */}
-          <div
-            ref={previewInnerRef}
-            style={{
-              position: 'absolute', inset: 6,
-              border: '1.5px solid rgba(255,255,255,0.1)',
-              borderRadius: 14, overflow: 'hidden',
-              boxShadow: '0 8px 32px rgba(0,0,0,0.6)',
-              background: '#111',
-            }}
-          >
-            {/* Source video — always rendered, provides videoRef for OutputCanvas */}
-            <VideoPreview
-              videoRef={videoRef} videoUrl={clipVideoUrl} currentTimeMs={currentTimeMs}
-              activeSegment={activeSegment ?? null} getPositionAt={getPositionAt}
-              activeBoxId={activeTab === 'crop' ? (activeBoxId ?? null) : null}
-              onSelectBox={(segId, boxId) => { setActiveSegmentId(segId); setActiveBoxId(boxId) }}
-              onBoxChange={(boxId, pos) => upsertKeyframe(boxId, { t_ms: currentTimeMs, ...pos })}
-            />
-
-            {/* 9:16 output canvas — overlays source video when NOT in crop mode */}
-            {activeTab !== 'crop' && (
-              <div style={{
-                position: 'absolute', inset: 0, zIndex: 5,
-                background: '#000',
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-              }}>
-                <OutputCanvas
-                  videoRef={videoRef} currentTimeMs={currentTimeMs} clipStartMs={clip.start_ms}
-                  activeSegment={playingSegment} getPositionAt={getPositionAt}
-                  skipTransitionRef={skipCanvasTransitionRef}
-                  words={displayWords} captionStyle={captionStyle}
-                  captionTextCase={captionTextCase} showCaptions={showCaptions}
-                  overlays={overlays} activeOverlayId={activeOverlayId}
-                  onOverlayChange={updateOverlay} onSelectOverlay={setActiveOverlayId}
-                  onDeleteOverlay={deleteOverlay}
-                  textOverlays={textOverlays} activeTextOverlayId={activeTextOverlayId}
-                  onTextOverlayChange={updateTextOverlay}
-                  onSelectTextOverlay={setActiveTextOverlayId}
-                  onDeleteTextOverlay={deleteTextOverlay}
-                  onCaptionPositionChange={y => updateCaptionStyle({ position_y: y })}
-                  style={{ height: '100%', width: 'auto', maxWidth: '100%', display: 'block' }}
-                />
-              </div>
-            )}
-
-            {/* Touch drag overlay — only active in crop mode */}
-            {activeTab === 'crop' && (
-              <div
-                style={{ position: 'absolute', inset: 0, zIndex: 10, touchAction: 'none' }}
-                onTouchStart={onCropTouchStart}
-                onTouchMove={onCropTouchMove}
-                onTouchEnd={onCropTouchEnd}
-              >
-                {/* Hint label */}
-                <div style={{
-                  position: 'absolute', bottom: 10, left: '50%', transform: 'translateX(-50%)',
-                  background: 'rgba(0,0,0,0.65)', color: '#00b4d8',
-                  padding: '4px 12px', borderRadius: 20,
-                  fontSize: 11, fontWeight: 700, pointerEvents: 'none', whiteSpace: 'nowrap',
-                }}>
-                  Touch inside crop box to drag
-                </div>
-              </div>
-            )}
-
-            {activeSegment?.crop_boxes[0]?.source_video_id && (
-              <div
-                style={{
-                  position: 'absolute', top: 8, left: 8, zIndex: 20,
-                  background: 'rgba(249,115,22,0.85)', color: '#fff',
-                  fontSize: 11, fontWeight: 700, padding: '3px 8px',
-                  borderRadius: 6, pointerEvents: 'none',
-                }}
-              >B-roll</div>
-            )}
-          </div>
-        </div>
-
-        {/* ── Controls column ── */}
-        <div
-          style={{
-            flex: 1, minHeight: 0, minWidth: 0,
-            display: 'flex', flexDirection: 'column',
-          }}
-        >
-          {/* Playback controls */}
-          <div
-            style={{
-              flexShrink: 0, height: playbackH, display: 'flex', alignItems: 'center',
-              gap: 8, paddingLeft: 12, paddingRight: 12,
-              background: '#111', borderTop: '1px solid rgba(255,255,255,0.06)',
-              borderBottom: '1px solid rgba(255,255,255,0.06)',
-            }}
-          >
-            <button
-              onClick={() => seekToMs(Math.max(0, currentTimeMs - 5000))}
-              style={{ width: 36, height: 36, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(255,255,255,0.05)', borderRadius: 8, border: 'none', cursor: 'pointer', color: 'rgba(255,255,255,0.5)' }}
-            >
-              <svg width="16" height="16" viewBox="0 0 14 14" fill="none">
-                <path d="M9.5 3L5 7l4.5 4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-                <line x1="3" y1="2.5" x2="3" y2="11.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-              </svg>
-            </button>
-            <button
-              onClick={togglePlay}
-              style={{ width: 44, height: 44, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#00b4d8', borderRadius: 22, border: 'none', cursor: 'pointer', flexShrink: 0 }}
-            >
-              {playing
-                ? <svg width="14" height="14" viewBox="0 0 12 12" fill="white"><rect x="2" y="1.5" width="3" height="9" rx="1"/><rect x="7" y="1.5" width="3" height="9" rx="1"/></svg>
-                : <svg width="14" height="14" viewBox="0 0 12 12" fill="white"><path d="M3 1.5l7.5 4.5L3 10.5V1.5z"/></svg>
-              }
-            </button>
-            <button
-              onClick={() => seekToMs(Math.min(clipDurationMs, currentTimeMs + 5000))}
-              style={{ width: 36, height: 36, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(255,255,255,0.05)', borderRadius: 8, border: 'none', cursor: 'pointer', color: 'rgba(255,255,255,0.5)' }}
-            >
-              <svg width="16" height="16" viewBox="0 0 14 14" fill="none">
-                <path d="M4.5 3L9 7l-4.5 4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-                <line x1="11" y1="2.5" x2="11" y2="11.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-              </svg>
-            </button>
-            <div style={{ flex: 1 }} />
-            <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.45)', fontVariantNumeric: 'tabular-nums' }}>
-              {msToLabel(currentTimeMs)}<span style={{ color: 'rgba(255,255,255,0.2)' }}> / </span>{msToLabel(clipDurationMs)}
-            </span>
+          {/* Left — source video + playback controls + timeline */}
+          <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', background: '#1a1a2e' }}>
+            <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>
+              {videoPreviewJSX}
+            </div>
+            {playbackJSX(true)}
+            <div style={{ flexShrink: 0, background: '#0d0d0d', borderTop: '1px solid rgba(255,255,255,0.06)', overflowX: 'auto', padding: '4px 8px' }}>
+              <SegmentTimeline
+                segments={segments} clipStartMs={clip.start_ms} clipEndMs={clip.end_ms}
+                currentTimeMs={currentTimeMs} activeSegmentId={activeSegmentId ?? null}
+                onSeek={seekToMs} onSelectSegment={setActiveSegmentId}
+                onUpdateSegment={(id, u) => updateSegment(id, u)}
+                onInsertBrollAfter={handleInsertBrollAfterSeg}
+              />
+            </div>
           </div>
 
-          {/* ── Tab bar ── */}
-          <div
-            style={{
-              flexShrink: 0, height: tabBarH, display: 'flex', alignItems: 'stretch',
-              overflowX: 'auto', overflowY: 'hidden',
-              background: '#0d0d0d', borderBottom: '1px solid rgba(255,255,255,0.07)',
-              scrollbarWidth: 'none',
-            }}
-          >
+          {/* Right — desktop-style sidebar */}
+          {sidebarJSX}
+        </div>
+      )}
+
+      {/* ══ PORTRAIT: source video top, tab-based controls below ══ */}
+      {!isLandscape && (
+        <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+
+          {/* Source video — visible directly, no overlay hiding it */}
+          <div style={{ flexShrink: 0, height: 'calc(40dvh)', background: '#1a1a2e', position: 'relative' }}>
+            <div style={{ position: 'absolute', inset: 6, border: '1.5px solid rgba(255,255,255,0.12)', borderRadius: 14, overflow: 'hidden', boxShadow: '0 8px 32px rgba(0,0,0,0.6)' }}>
+              {videoPreviewJSX}
+            </div>
+          </div>
+
+          {playbackJSX(false)}
+
+          {/* Tab bar */}
+          <div style={{ flexShrink: 0, height: 52, display: 'flex', alignItems: 'stretch', overflowX: 'auto', overflowY: 'hidden', background: '#0d0d0d', borderBottom: '1px solid rgba(255,255,255,0.07)', scrollbarWidth: 'none' }}>
             {TABS.map(tab => (
-              <button
-                key={tab.id}
-                onClick={() => setActiveTab(tab.id)}
-                style={{
-                  flexShrink: 0, minWidth: 68, display: 'flex', flexDirection: 'column',
-                  alignItems: 'center', justifyContent: 'center', gap: 3,
-                  background: 'transparent', border: 'none', cursor: 'pointer',
-                  borderBottom: activeTab === tab.id ? '2px solid #00b4d8' : '2px solid transparent',
-                  paddingTop: 2,
-                }}
-              >
-                <span style={{ fontSize: 15, lineHeight: 1, color: activeTab === tab.id ? '#00b4d8' : 'rgba(255,255,255,0.4)' }}>
-                  {tab.icon}
-                </span>
-                <span style={{ fontSize: 10, fontWeight: 600, color: activeTab === tab.id ? '#fff' : 'rgba(255,255,255,0.35)', letterSpacing: 0.2 }}>
-                  {tab.label}
-                </span>
+              <button key={tab.id} onClick={() => setActiveTab(tab.id)}
+                style={{ flexShrink: 0, minWidth: 68, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 3, background: 'transparent', border: 'none', cursor: 'pointer', borderBottom: activeTab === tab.id ? '2px solid #00b4d8' : '2px solid transparent', paddingTop: 2 }}>
+                <span style={{ fontSize: 15, lineHeight: 1, color: activeTab === tab.id ? '#00b4d8' : 'rgba(255,255,255,0.4)' }}>{tab.icon}</span>
+                <span style={{ fontSize: 10, fontWeight: 600, color: activeTab === tab.id ? '#fff' : 'rgba(255,255,255,0.35)', letterSpacing: 0.2 }}>{tab.label}</span>
               </button>
             ))}
           </div>
 
-          {/* ── Active tab panel ── */}
+          {/* Active tab panels */}
           <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden' }}>
 
-            {/* Timeline tab */}
             {activeTab === 'timeline' && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
-                {/* Cut button row */}
+              <div style={{ display: 'flex', flexDirection: 'column' }}>
                 <div style={{ padding: '10px 12px', display: 'flex', gap: 8, borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
-                  <button
-                    onClick={handleCut}
-                    style={{ flex: 1, padding: '10px 0', borderRadius: 10, background: 'rgba(0,180,216,0.12)', color: '#00b4d8', fontSize: 13, fontWeight: 600, border: '1px solid rgba(0,180,216,0.25)', cursor: 'pointer' }}
-                  >
-                    ✂ Cut here
-                  </button>
+                  <button onClick={handleCut} style={{ flex: 1, padding: '10px 0', borderRadius: 10, background: 'rgba(0,180,216,0.12)', color: '#00b4d8', fontSize: 13, fontWeight: 600, border: '1px solid rgba(0,180,216,0.25)', cursor: 'pointer' }}>✂ Cut here</button>
                   {segments.length > 1 && (
-                    <button
-                      onClick={() => {
-                        const first = segments[0]; if (!first) return
-                        segments.slice(1).forEach(s => removeSegment(s.id))
-                        updateSegment(first.id, { start_ms: 0, end_ms: clip.end_ms - clip.start_ms })
-                        setActiveSegmentId(first.id)
-                      }}
-                      style={{ padding: '10px 16px', borderRadius: 10, background: 'rgba(239,68,68,0.1)', color: '#f87171', fontSize: 13, fontWeight: 600, border: '1px solid rgba(239,68,68,0.2)', cursor: 'pointer' }}
-                    >
-                      Reset
-                    </button>
+                    <button onClick={() => { const f = segments[0]; if (!f) return; segments.slice(1).forEach(s => removeSegment(s.id)); updateSegment(f.id, { start_ms: 0, end_ms: clip.end_ms - clip.start_ms }); setActiveSegmentId(f.id) }}
+                      style={{ padding: '10px 16px', borderRadius: 10, background: 'rgba(239,68,68,0.1)', color: '#f87171', fontSize: 13, fontWeight: 600, border: '1px solid rgba(239,68,68,0.2)', cursor: 'pointer' }}>Reset</button>
                   )}
                 </div>
-                {/* Segment list */}
                 <div style={{ padding: '8px 12px', display: 'flex', flexDirection: 'column', gap: 4 }}>
                   {segments.filter(s => s.end_ms - s.start_ms > 50).map((seg, i) => {
                     const col = SEG_COLORS[i % SEG_COLORS.length]
                     const isActive = seg.id === activeSegment?.id
                     return (
-                      <div
-                        key={seg.id}
-                        onClick={() => { setActiveSegmentId(seg.id); seekToMs(seg.start_ms) }}
-                        style={{
-                          display: 'flex', alignItems: 'center', gap: 10,
-                          padding: '10px 12px', borderRadius: 10, cursor: 'pointer',
-                          background: isActive ? 'rgba(255,255,255,0.07)' : 'rgba(255,255,255,0.02)',
-                          border: isActive ? `1px solid ${col}33` : '1px solid rgba(255,255,255,0.05)',
-                        }}
-                      >
+                      <div key={seg.id} onClick={() => { setActiveSegmentId(seg.id); seekToMs(seg.start_ms) }}
+                        style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', borderRadius: 10, cursor: 'pointer', background: isActive ? 'rgba(255,255,255,0.07)' : 'rgba(255,255,255,0.02)', border: isActive ? `1px solid ${col}33` : '1px solid rgba(255,255,255,0.05)' }}>
                         <div style={{ width: 8, height: 8, borderRadius: 4, background: col, flexShrink: 0 }} />
-                        <span style={{ fontSize: 12, color: 'rgba(255,255,255,0.6)', fontVariantNumeric: 'tabular-nums' }}>
-                          {msToLabel(seg.start_ms)} — {msToLabel(seg.end_ms)}
-                        </span>
+                        <span style={{ fontSize: 12, color: 'rgba(255,255,255,0.6)', fontVariantNumeric: 'tabular-nums' }}>{msToLabel(seg.start_ms)} — {msToLabel(seg.end_ms)}</span>
                         <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.3)', textTransform: 'capitalize' }}>{seg.layout}</span>
                         <div style={{ flex: 1 }} />
-                        {segments.length > 1 && (
-                          <button
-                            onClick={e => { e.stopPropagation(); removeSegment(seg.id) }}
-                            style={{ width: 28, height: 28, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(239,68,68,0.1)', borderRadius: 7, border: 'none', cursor: 'pointer', color: '#f87171', fontSize: 14 }}
-                          >×</button>
-                        )}
+                        {segments.length > 1 && <button onClick={e => { e.stopPropagation(); removeSegment(seg.id) }} style={{ width: 28, height: 28, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(239,68,68,0.1)', borderRadius: 7, border: 'none', cursor: 'pointer', color: '#f87171', fontSize: 14 }}>×</button>}
                       </div>
                     )
                   })}
                 </div>
-                {/* Timeline strip */}
                 <div style={{ padding: '0 12px 12px', overflowX: 'auto' }}>
                   <SegmentTimeline
-                    segments={segments}
-                    clipStartMs={clip.start_ms} clipEndMs={clip.end_ms}
-                    currentTimeMs={currentTimeMs}
-                    activeSegmentId={activeSegmentId ?? null}
+                    segments={segments} clipStartMs={clip.start_ms} clipEndMs={clip.end_ms}
+                    currentTimeMs={currentTimeMs} activeSegmentId={activeSegmentId ?? null}
                     onSeek={seekToMs} onSelectSegment={setActiveSegmentId}
-                    onUpdateSegment={(id, updates) => updateSegment(id, updates)}
+                    onUpdateSegment={(id, u) => updateSegment(id, u)}
                     onInsertBrollAfter={handleInsertBrollAfterSeg}
                   />
                 </div>
               </div>
             )}
 
-            {/* Crop tab */}
             {activeTab === 'crop' && (
-              <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 16 }}>
+              <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
+                <p style={{ fontSize: 11, color: 'rgba(255,255,255,0.4)', textAlign: 'center' }}>Drag the crop box in the video above, or use sliders:</p>
                 {!activeBox ? (
-                  <p style={{ color: 'rgba(255,255,255,0.35)', fontSize: 13, textAlign: 'center', padding: '24px 0' }}>
-                    Tap a segment to edit its crop
-                  </p>
+                  <p style={{ color: 'rgba(255,255,255,0.35)', fontSize: 13, textAlign: 'center', padding: '16px 0' }}>Tap a segment to edit its crop</p>
                 ) : (
                   <>
-                    <p style={{ fontSize: 11, color: 'rgba(255,255,255,0.3)', letterSpacing: 0.5, textTransform: 'uppercase', fontWeight: 600 }}>
-                      Crop position — {activeSegment?.layout}
-                    </p>
                     {[
-                      { key: 'x' as const, label: 'Left (X)', hint: 'horizontal position' },
-                      { key: 'w' as const, label: 'Width (W)', hint: 'how wide the crop is' },
-                      { key: 'y' as const, label: 'Top (Y)', hint: 'vertical position' },
-                      { key: 'h' as const, label: 'Height (H)', hint: 'how tall the crop is' },
+                      { key: 'x' as const, label: 'Left (X)' },
+                      { key: 'w' as const, label: 'Width (W)' },
+                      { key: 'y' as const, label: 'Top (Y)' },
+                      { key: 'h' as const, label: 'Height (H)' },
                     ].map(({ key, label }) => (
                       <div key={key} style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                           <span style={{ fontSize: 12, fontWeight: 600, color: 'rgba(255,255,255,0.7)' }}>{label}</span>
-                          <span style={{ fontSize: 12, color: '#00b4d8', fontVariantNumeric: 'tabular-nums' }}>
-                            {Math.round(cropPos[key] * 100)}%
-                          </span>
+                          <span style={{ fontSize: 12, color: '#00b4d8', fontVariantNumeric: 'tabular-nums' }}>{Math.round(cropPos[key] * 100)}%</span>
                         </div>
-                        <input
-                          type="range" min={0} max={100}
-                          value={Math.round(cropPos[key] * 100)}
+                        <input type="range" min={0} max={100} value={Math.round(cropPos[key] * 100)}
                           onChange={e => handleCropChange(key, +e.target.value / 100)}
-                          style={{ width: '100%', accentColor: '#00b4d8', height: 4 }}
-                        />
+                          style={{ width: '100%', accentColor: '#00b4d8' }} />
                       </div>
                     ))}
-                    {/* Fine-tune nudge buttons */}
-                    <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
-                      {[
-                        { label: '← X', action: () => handleCropChange('x', Math.max(0, cropPos.x - 0.01)) },
-                        { label: 'X →', action: () => handleCropChange('x', Math.min(1 - cropPos.w, cropPos.x + 0.01)) },
-                        { label: '↑ Y', action: () => handleCropChange('y', Math.max(0, cropPos.y - 0.01)) },
-                        { label: 'Y ↓', action: () => handleCropChange('y', Math.min(1 - cropPos.h, cropPos.y + 0.01)) },
-                      ].map(({ label, action }) => (
-                        <button
-                          key={label}
-                          onClick={action}
-                          style={{
-                            flex: 1, padding: '10px 4px', borderRadius: 8, fontSize: 12, fontWeight: 600,
-                            background: 'rgba(255,255,255,0.06)', color: 'rgba(255,255,255,0.6)',
-                            border: '1px solid rgba(255,255,255,0.1)', cursor: 'pointer',
-                          }}
-                        >
-                          {label}
-                        </button>
-                      ))}
-                    </div>
                   </>
                 )}
               </div>
             )}
 
-            {/* Captions tab */}
             {activeTab === 'captions' && (
               <div style={{ padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: 12 }}>
-                {/* CC toggle */}
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 14px', background: 'rgba(255,255,255,0.04)', borderRadius: 12, border: '1px solid rgba(255,255,255,0.07)' }}>
                   <span style={{ fontSize: 14, fontWeight: 600, color: showCaptions ? '#fff' : 'rgba(255,255,255,0.45)' }}>Auto-captions</span>
-                  <div
-                    onClick={() => setShowCaptions(!showCaptions)}
-                    style={{ width: 44, height: 24, borderRadius: 12, display: 'flex', alignItems: 'center', paddingLeft: 2, paddingRight: 2, cursor: 'pointer', background: showCaptions ? '#00b4d8' : 'rgba(255,255,255,0.12)', transition: 'background 0.2s' }}
-                  >
+                  <div onClick={() => setShowCaptions(!showCaptions)} style={{ width: 44, height: 24, borderRadius: 12, display: 'flex', alignItems: 'center', paddingLeft: 2, cursor: 'pointer', background: showCaptions ? '#00b4d8' : 'rgba(255,255,255,0.12)', transition: 'background 0.2s' }}>
                     <div style={{ width: 20, height: 20, borderRadius: 10, background: '#fff', transition: 'transform 0.2s', transform: showCaptions ? 'translateX(20px)' : 'translateX(0)' }} />
                   </div>
                 </div>
-                {/* Caption status */}
                 {(transcribing || retranscribing) ? (
                   <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', background: 'rgba(0,180,216,0.08)', borderRadius: 10, border: '1px solid rgba(0,180,216,0.2)' }}>
                     <span style={{ width: 16, height: 16, borderRadius: 8, border: '2px solid #00b4d8', borderTopColor: 'transparent', display: 'block', animation: 'spin 0.8s linear infinite' }} />
@@ -824,185 +738,90 @@ export function EditorShellMobile({
                     <p style={{ fontSize: 12, color: '#4ade80', fontWeight: 600 }}>✓ Captions ready · {words.length} words</p>
                   </div>
                 ) : null}
+                {showCaptions && (
+                  <CaptionStyler
+                    style={captionStyle} textCase={captionTextCase}
+                    onChange={updateCaptionStyle} onTextCaseChange={setCaptionTextCase}
+                    onEditCaptions={() => {}} onRetranscribe={handleRetranscribe}
+                    retranscribing={retranscribing} retranscribeElapsed={retranscribeElapsed} retranscribeError={retranscribeError}
+                    hasWords={words.length > 0} hasRoman={hasRoman} romanize={romanize} romanizeLabel={scriptLabel} onRomanizeChange={setRomanize}
+                  />
+                )}
                 {showCaptions && words.length > 0 && (
-                  <>
-                    {hasRoman && (
-                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 14px', background: 'rgba(255,255,255,0.04)', borderRadius: 12, border: '1px solid rgba(255,255,255,0.07)' }}>
-                        <div>
-                          <p style={{ fontSize: 13, fontWeight: 600, color: '#fff' }}>{scriptLabel}</p>
-                          <p style={{ fontSize: 11, color: 'rgba(255,255,255,0.35)', marginTop: 2 }}>Show in English letters</p>
-                        </div>
-                        <div
-                          onClick={() => setRomanize(!romanize)}
-                          style={{ width: 44, height: 24, borderRadius: 12, display: 'flex', alignItems: 'center', paddingLeft: 2, paddingRight: 2, cursor: 'pointer', background: romanize ? '#00b4d8' : 'rgba(255,255,255,0.12)', transition: 'background 0.2s' }}
-                        >
-                          <div style={{ width: 20, height: 20, borderRadius: 10, background: '#fff', transition: 'transform 0.2s', transform: romanize ? 'translateX(20px)' : 'translateX(0)' }} />
-                        </div>
-                      </div>
-                    )}
-                    <CaptionStyler
-                      style={captionStyle} textCase={captionTextCase}
-                      onChange={updateCaptionStyle} onTextCaseChange={setCaptionTextCase}
-                      onEditCaptions={() => {}}
-                      onRetranscribe={handleRetranscribe}
-                      retranscribing={retranscribing} retranscribeElapsed={retranscribeElapsed}
-                      retranscribeError={retranscribeError}
-                      hasWords={words.length > 0}
-                      hasRoman={hasRoman} romanize={romanize}
-                      romanizeLabel={scriptLabel} onRomanizeChange={setRomanize}
-                    />
-                    {retranscribeError && (
-                      <p style={{ fontSize: 11, color: '#f87171', padding: '0 4px' }}>{retranscribeError}</p>
-                    )}
-                    {/* Transcript words list */}
-                    {words.length > 0 && (
-                      <div>
-                        <p style={{ fontSize: 11, color: 'rgba(255,255,255,0.3)', fontWeight: 600, letterSpacing: 0.5, textTransform: 'uppercase', marginBottom: 8 }}>Edit words</p>
-                        <TranscriptPanel
-                          words={displayWords} clipStartMs={clip.start_ms} clipEndMs={clip.end_ms}
-                          currentTimeMs={currentTimeMs} onSeek={seekToMs}
-                          onWordChange={(id, text) => updateWord(id, text, romanize ? 'word_roman' : 'word')}
-                        />
-                      </div>
-                    )}
-                  </>
+                  <TranscriptPanel words={displayWords} clipStartMs={clip.start_ms} clipEndMs={clip.end_ms}
+                    currentTimeMs={currentTimeMs} onSeek={seekToMs}
+                    onWordChange={(id, text) => updateWord(id, text, romanize ? 'word_roman' : 'word')} />
                 )}
               </div>
             )}
 
-            {/* Text overlays tab */}
             {activeTab === 'text' && (
               <div style={{ padding: 12 }}>
-                <TextOverlayPanel
-                  overlays={textOverlays}
-                  currentTimeMs={currentTimeMs}
-                  clipDurationMs={clip.end_ms - clip.start_ms}
+                <TextOverlayPanel overlays={textOverlays} currentTimeMs={currentTimeMs} clipDurationMs={clip.end_ms - clip.start_ms}
                   onAdd={o => setTextOverlays(prev => [...prev, { ...o, id: crypto.randomUUID(), clip_id: clip.id }])}
-                  onUpdate={updateTextOverlay}
-                  onRemove={deleteTextOverlay}
-                />
+                  onUpdate={updateTextOverlay} onRemove={deleteTextOverlay} />
               </div>
             )}
 
-            {/* Audio tab */}
             {activeTab === 'audio' && (
               <div style={{ padding: 12 }}>
-                <AudioMixerPanel
-                  tracks={audioTracks}
+                <AudioMixerPanel tracks={audioTracks}
                   onAddTrack={f => setAudioTracks(prev => [...prev, { id: crypto.randomUUID(), clip_id: clip.id, storage_path: f.name, start_ms: 0, volume: 0.5, duck_under_speech: true }])}
                   onRemoveTrack={id => setAudioTracks(prev => prev.filter(t => t.id !== id))}
-                  onUpdateTrack={(id, updates) => setAudioTracks(prev => prev.map(t => t.id === id ? { ...t, ...updates } : t))}
-                />
+                  onUpdateTrack={(id, u) => setAudioTracks(prev => prev.map(t => t.id === id ? { ...t, ...u } : t))} />
               </div>
             )}
 
-            {/* Filters tab */}
             {activeTab === 'filters' && (
               <div style={{ padding: 12 }}>
                 <FilterPanel values={filters} onChange={setFilters} />
               </div>
             )}
 
-            {/* Export tab */}
             {activeTab === 'export' && (
               <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
-                {/* 9:16 Output preview */}
                 <div style={{ borderRadius: 12, overflow: 'hidden', border: '1px solid rgba(255,255,255,0.1)' }}>
                   {(clipStatus === 'rendering' || exporting) ? (
-                    <div style={{
-                      aspectRatio: '9/16', background: '#0d0d0d',
-                      display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 12,
-                    }}>
+                    <div style={{ aspectRatio: '9/16', background: '#0d0d0d', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 12 }}>
                       <span style={{ width: 40, height: 40, borderRadius: 20, border: '2px solid #00b4d8', borderTopColor: 'transparent', display: 'block', animation: 'spin 1s linear infinite' }} />
                       <p style={{ fontSize: 13, fontWeight: 600, color: '#fff' }}>Processing video…</p>
-                      {renderElapsed > 0 && (
-                        <p style={{ fontSize: 12, color: 'rgba(0,180,216,0.7)', fontVariantNumeric: 'tabular-nums' }}>
-                          {Math.floor(renderElapsed / 60)}m {renderElapsed % 60}s
-                        </p>
-                      )}
-                      {clipStatus === 'rendering' && renderElapsed > 180 && (
-                        <button
-                          onClick={handleReEdit}
-                          style={{ fontSize: 12, padding: '8px 16px', borderRadius: 8, background: 'rgba(239,68,68,0.12)', color: '#f87171', border: '1px solid rgba(239,68,68,0.25)', cursor: 'pointer' }}
-                        >
-                          Stuck? Reset
-                        </button>
-                      )}
+                      {renderElapsed > 0 && <p style={{ fontSize: 12, color: 'rgba(0,180,216,0.7)', fontVariantNumeric: 'tabular-nums' }}>{Math.floor(renderElapsed / 60)}m {renderElapsed % 60}s</p>}
+                      {clipStatus === 'rendering' && renderElapsed > 180 && <button onClick={handleReEdit} style={{ fontSize: 12, padding: '8px 16px', borderRadius: 8, background: 'rgba(239,68,68,0.12)', color: '#f87171', border: '1px solid rgba(239,68,68,0.25)', cursor: 'pointer' }}>Stuck? Reset</button>}
                     </div>
                   ) : (
                     <OutputCanvas
                       videoRef={videoRef} currentTimeMs={currentTimeMs} clipStartMs={clip.start_ms}
                       activeSegment={playingSegment} getPositionAt={getPositionAt}
                       skipTransitionRef={skipCanvasTransitionRef}
-                      words={displayWords} captionStyle={captionStyle}
-                      captionTextCase={captionTextCase} showCaptions={showCaptions}
+                      words={displayWords} captionStyle={captionStyle} captionTextCase={captionTextCase} showCaptions={showCaptions}
                       overlays={overlays} activeOverlayId={activeOverlayId}
                       onOverlayChange={updateOverlay} onSelectOverlay={setActiveOverlayId} onDeleteOverlay={deleteOverlay}
                       textOverlays={textOverlays} activeTextOverlayId={activeTextOverlayId}
-                      onTextOverlayChange={updateTextOverlay} onSelectTextOverlay={setActiveTextOverlayId}
-                      onDeleteTextOverlay={deleteTextOverlay}
+                      onTextOverlayChange={updateTextOverlay} onSelectTextOverlay={setActiveTextOverlayId} onDeleteTextOverlay={deleteTextOverlay}
                       onCaptionPositionChange={y => updateCaptionStyle({ position_y: y })}
                       style={{ width: '100%', height: 'auto', display: 'block' }}
                     />
                   )}
                 </div>
-
-                {/* Status + action buttons */}
-                {clipStatus === 'done' && outputUrl ? (
+                {outputUrl && clipStatus === 'done' ? (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                    <div style={{ padding: '8px 12px', background: 'rgba(34,197,94,0.08)', borderRadius: 10, border: '1px solid rgba(34,197,94,0.2)' }}>
-                      <p style={{ fontSize: 12, color: '#4ade80', fontWeight: 600 }}>✓ Video ready to download</p>
-                    </div>
-                    <a
-                      href={outputUrl} download="export.mp4"
-                      style={{
-                        display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
-                        padding: '14px 0', borderRadius: 12, background: '#00b4d8',
-                        color: '#fff', fontSize: 15, fontWeight: 700, textDecoration: 'none',
-                      }}
-                    >
+                    <a href={outputUrl} download="export.mp4" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, padding: '14px 0', borderRadius: 12, background: '#00b4d8', color: '#fff', fontSize: 15, fontWeight: 700, textDecoration: 'none' }}>
                       <svg width="16" height="16" viewBox="0 0 15 15" fill="none"><path d="M7.5 2v8M4 7l3.5 3.5L11 7M2 13h11" stroke="white" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"/></svg>
                       Download
                     </a>
-                    <button
-                      onClick={handleExport} disabled={exporting}
-                      style={{ padding: '12px 0', borderRadius: 10, background: 'rgba(0,180,216,0.1)', color: '#00b4d8', fontSize: 13, fontWeight: 600, border: '1px solid rgba(0,180,216,0.2)', cursor: 'pointer', opacity: exporting ? 0.5 : 1 }}
-                    >
-                      {exporting ? 'Queuing…' : 'Re-render'}
-                    </button>
-                    <button
-                      onClick={handleReEdit}
-                      style={{ padding: '12px 0', borderRadius: 10, background: 'rgba(124,58,237,0.1)', color: '#a78bfa', fontSize: 13, fontWeight: 600, border: '1px solid rgba(124,58,237,0.2)', cursor: 'pointer' }}
-                    >
-                      Re-edit
-                    </button>
+                    <button onClick={handleExport} disabled={exporting} style={{ padding: '12px 0', borderRadius: 10, background: 'rgba(0,180,216,0.1)', color: '#00b4d8', fontSize: 13, fontWeight: 600, border: '1px solid rgba(0,180,216,0.2)', cursor: 'pointer', opacity: exporting ? 0.5 : 1 }}>{exporting ? 'Queuing…' : 'Re-render'}</button>
+                    <button onClick={handleReEdit} style={{ padding: '12px 0', borderRadius: 10, background: 'rgba(124,58,237,0.1)', color: '#a78bfa', fontSize: 13, fontWeight: 600, border: '1px solid rgba(124,58,237,0.2)', cursor: 'pointer' }}>Re-edit</button>
                   </div>
                 ) : clipStatus !== 'rendering' && !exporting ? (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                    {exportError && (
-                      <div style={{ padding: '8px 12px', background: 'rgba(239,68,68,0.1)', borderRadius: 10, border: '1px solid rgba(239,68,68,0.2)' }}>
-                        <p style={{ fontSize: 12, color: '#f87171' }}>{exportError}</p>
-                      </div>
-                    )}
-                    <button
-                      onClick={handleExport} disabled={exporting}
-                      style={{ padding: '16px 0', borderRadius: 12, background: '#00b4d8', color: '#fff', fontSize: 15, fontWeight: 700, border: 'none', cursor: 'pointer', opacity: exporting ? 0.5 : 1 }}
-                    >
-                      {exporting ? 'Queuing…' : 'Process video'}
-                    </button>
-                    <p style={{ fontSize: 11, color: 'rgba(255,255,255,0.3)', textAlign: 'center' }}>
-                      Renders at 4K (2160 × 3840) for best quality
-                    </p>
-                  </div>
+                  <button onClick={handleExport} style={{ padding: '16px 0', borderRadius: 12, background: '#00b4d8', color: '#fff', fontSize: 15, fontWeight: 700, border: 'none', cursor: 'pointer' }}>Process video</button>
                 ) : null}
               </div>
             )}
 
           </div>
         </div>
-      </div>
+      )}
 
-      {/* Spinner keyframes */}
       <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
     </div>
   )
