@@ -478,27 +478,30 @@ export function EditorShellMobile({
           {clipStatus === 'done' && <span style={{ fontSize: 10, fontWeight: 700, color: '#22c55e' }}>Ready</span>}
           {(clipStatus === 'rendering' || exporting) && <span style={{ fontSize: 10, color: 'rgba(255,255,255,0.35)' }}>Processing…</span>}
         </div>
-        <div style={{ padding: '0 10px' }}>
-          {(clipStatus === 'rendering' || exporting) ? (
-            <div style={{ aspectRatio: '9/16', background: '#0d0d0d', borderRadius: 8, border: '1px solid rgba(255,255,255,0.07)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
-              <span style={{ width: 28, height: 28, borderRadius: 14, border: '2px solid #00b4d8', borderTopColor: 'transparent', display: 'block', animation: 'spin 1s linear infinite' }} />
-              <p style={{ fontSize: 11, color: '#fff', fontWeight: 600 }}>Processing…</p>
-              {renderElapsed > 0 && <p style={{ fontSize: 10, color: 'rgba(0,180,216,0.7)', fontVariantNumeric: 'tabular-nums' }}>{Math.floor(renderElapsed / 60)}m {renderElapsed % 60}s</p>}
-            </div>
-          ) : (
-            <OutputCanvas
-              videoRef={videoRef} currentTimeMs={currentTimeMs} clipStartMs={clip.start_ms}
-              activeSegment={playingSegment} getPositionAt={getPositionAt}
-              skipTransitionRef={skipCanvasTransitionRef}
-              words={displayWords} captionStyle={captionStyle} captionTextCase={captionTextCase} showCaptions={showCaptions}
-              overlays={overlays} activeOverlayId={activeOverlayId}
-              onOverlayChange={updateOverlay} onSelectOverlay={setActiveOverlayId} onDeleteOverlay={deleteOverlay}
-              textOverlays={textOverlays} activeTextOverlayId={activeTextOverlayId}
-              onTextOverlayChange={updateTextOverlay} onSelectTextOverlay={setActiveTextOverlayId} onDeleteTextOverlay={deleteTextOverlay}
-              onCaptionPositionChange={y => updateCaptionStyle({ position_y: y })}
-              style={{ width: '100%', height: 'auto', display: 'block', borderRadius: 8, border: '1px solid rgba(255,255,255,0.1)' }}
-            />
-          )}
+        {/* Canvas sized to fit full preview in sidebar: height fills viewport minus header+buttons */}
+        <div style={{ display: 'flex', justifyContent: 'center', padding: '0 10px 4px' }}>
+          <div style={{ height: 'calc(100dvh - 160px)', aspectRatio: '9/16', borderRadius: 8, overflow: 'hidden', border: '1px solid rgba(255,255,255,0.1)', flexShrink: 0 }}>
+            {(clipStatus === 'rendering' || exporting) ? (
+              <div style={{ width: '100%', height: '100%', background: '#0d0d0d', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
+                <span style={{ width: 28, height: 28, borderRadius: 14, border: '2px solid #00b4d8', borderTopColor: 'transparent', display: 'block', animation: 'spin 1s linear infinite' }} />
+                <p style={{ fontSize: 11, color: '#fff', fontWeight: 600 }}>Processing…</p>
+                {renderElapsed > 0 && <p style={{ fontSize: 10, color: 'rgba(0,180,216,0.7)', fontVariantNumeric: 'tabular-nums' }}>{Math.floor(renderElapsed / 60)}m {renderElapsed % 60}s</p>}
+              </div>
+            ) : (
+              <OutputCanvas
+                videoRef={videoRef} currentTimeMs={currentTimeMs} clipStartMs={clip.start_ms}
+                activeSegment={playingSegment} getPositionAt={getPositionAt}
+                skipTransitionRef={skipCanvasTransitionRef}
+                words={displayWords} captionStyle={captionStyle} captionTextCase={captionTextCase} showCaptions={showCaptions}
+                overlays={overlays} activeOverlayId={activeOverlayId}
+                onOverlayChange={updateOverlay} onSelectOverlay={setActiveOverlayId} onDeleteOverlay={deleteOverlay}
+                textOverlays={textOverlays} activeTextOverlayId={activeTextOverlayId}
+                onTextOverlayChange={updateTextOverlay} onSelectTextOverlay={setActiveTextOverlayId} onDeleteTextOverlay={deleteTextOverlay}
+                onCaptionPositionChange={y => updateCaptionStyle({ position_y: y })}
+                style={{ width: '100%', height: '100%', display: 'block' }}
+              />
+            )}
+          </div>
         </div>
         <div style={{ padding: '8px 10px 12px', display: 'flex', flexDirection: 'column', gap: 6 }}>
           {outputUrl && clipStatus === 'done' ? (
@@ -577,8 +580,8 @@ export function EditorShellMobile({
     </div>
   )
 
-  // Shared source video + touch crop overlay JSX
-  const videoPreviewJSX = (
+  // Video preview without touch overlay — used in landscape so the column can scroll
+  const videoPreviewNoTouch = (
     <div ref={previewInnerRef} style={{ position: 'absolute', inset: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
       <VideoPreview
         videoRef={videoRef} videoUrl={clipVideoUrl} currentTimeMs={currentTimeMs}
@@ -587,7 +590,22 @@ export function EditorShellMobile({
         onSelectBox={(segId, boxId) => { setActiveSegmentId(segId); setActiveBoxId(boxId) }}
         onBoxChange={(boxId, pos) => upsertKeyframe(boxId, { t_ms: currentTimeMs, ...pos })}
       />
-      {/* Always-on touch overlay so crop dragging works in both orientations */}
+      {activeSegment?.crop_boxes[0]?.source_video_id && (
+        <div style={{ position: 'absolute', top: 8, left: 8, zIndex: 20, background: 'rgba(249,115,22,0.85)', color: '#fff', fontSize: 11, fontWeight: 700, padding: '3px 8px', borderRadius: 6, pointerEvents: 'none' }}>B-roll</div>
+      )}
+    </div>
+  )
+
+  // Video preview with touch crop overlay — used in portrait
+  const videoPreviewWithTouch = (
+    <div ref={previewInnerRef} style={{ position: 'absolute', inset: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+      <VideoPreview
+        videoRef={videoRef} videoUrl={clipVideoUrl} currentTimeMs={currentTimeMs}
+        activeSegment={activeSegment ?? null} getPositionAt={getPositionAt}
+        activeBoxId={activeBoxId ?? null}
+        onSelectBox={(segId, boxId) => { setActiveSegmentId(segId); setActiveBoxId(boxId) }}
+        onBoxChange={(boxId, pos) => upsertKeyframe(boxId, { t_ms: currentTimeMs, ...pos })}
+      />
       <div style={{ position: 'absolute', inset: 0, zIndex: 10, touchAction: 'none' }}
         onTouchStart={onCropTouchStart} onTouchMove={onCropTouchMove} onTouchEnd={onCropTouchEnd}
       />
@@ -609,7 +627,7 @@ export function EditorShellMobile({
             {/* Video — fixed height = full viewport minus header, exactly like desktop calc(100vh - 44px) */}
             <div style={{ flexShrink: 0, height: 'calc(100dvh - 44px)', position: 'relative', overflow: 'hidden', background: '#1a1a2e' }}>
               <div style={{ position: 'absolute', inset: 6, borderRadius: 16, border: '1.5px solid rgba(255,255,255,0.15)', boxShadow: '0 8px 32px rgba(0,0,0,0.6)', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
-                {videoPreviewJSX}
+                {videoPreviewNoTouch}
               </div>
             </div>
             {/* Playback + timeline below the fold, scroll down to reach (same as desktop) */}
@@ -632,10 +650,10 @@ export function EditorShellMobile({
       {/* ══ PORTRAIT: source video top, tab-based controls below ══ */}
       <div className="chai-portrait" style={{ flex: 1, minHeight: 0, flexDirection: 'column', overflow: 'hidden' }}>
 
-          {/* Source video — visible directly, no overlay hiding it */}
+          {/* Source video — touch crop overlay active in portrait */}
           <div style={{ flexShrink: 0, height: 'calc(40dvh)', background: '#1a1a2e', position: 'relative', overflow: 'hidden' }}>
             <div style={{ position: 'absolute', inset: 6, borderRadius: 14, border: '1.5px solid rgba(255,255,255,0.15)', boxShadow: '0 8px 32px rgba(0,0,0,0.6)', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
-              {videoPreviewJSX}
+              {videoPreviewWithTouch}
             </div>
           </div>
 
