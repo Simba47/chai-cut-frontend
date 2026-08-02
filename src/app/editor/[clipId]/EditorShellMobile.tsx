@@ -469,7 +469,7 @@ export function EditorShellMobile({
 
   // Shared right sidebar content (9:16 preview + controls) — used in landscape
   const sidebarJSX = (
-    <div style={{ width: 240, flexShrink: 0, display: 'flex', flexDirection: 'column', background: '#111', borderLeft: '1px solid rgba(255,255,255,0.07)', overflowY: 'auto' }}>
+    <div style={{ width: 240, minWidth: 0, flexShrink: 0, display: 'flex', flexDirection: 'column', background: '#111', borderLeft: '1px solid rgba(255,255,255,0.07)', overflowY: 'auto', overflowX: 'hidden' }}>
 
       {/* 9:16 Output preview */}
       <div style={{ borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
@@ -606,14 +606,15 @@ export function EditorShellMobile({
 
           {/* Left — source video + playback controls + timeline */}
           <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', background: '#0d0d0d', overflow: 'hidden' }}>
-            {/* Video area — fills remaining height, same pattern as desktop */}
+            {/* Video area — matches desktop: height fills all space minus playback+timeline */}
             <div style={{ flex: 1, minHeight: 0, position: 'relative', overflow: 'hidden', background: '#1a1a2e' }}>
               <div style={{ position: 'absolute', inset: 6, borderRadius: 16, border: '1.5px solid rgba(255,255,255,0.15)', boxShadow: '0 8px 32px rgba(0,0,0,0.6)', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
                 {videoPreviewJSX}
               </div>
             </div>
             {playbackJSX(true)}
-            <div style={{ flexShrink: 0, background: '#0d0d0d', borderTop: '1px solid rgba(255,255,255,0.06)', overflowX: 'auto', padding: '4px 8px' }}>
+            {/* Timeline — capped so it never shrinks the video area */}
+            <div style={{ flexShrink: 0, height: 110, overflow: 'hidden', background: '#0d0d0d', borderTop: '1px solid rgba(255,255,255,0.06)', padding: '4px 8px' }}>
               <SegmentTimeline
                 segments={segments} clipStartMs={clip.start_ms} clipEndMs={clip.end_ms}
                 currentTimeMs={currentTimeMs} activeSegmentId={activeSegmentId ?? null}
