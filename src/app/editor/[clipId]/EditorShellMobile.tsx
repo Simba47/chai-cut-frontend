@@ -141,6 +141,15 @@ export function EditorShellMobile({
   const previewInnerRef = useRef<HTMLDivElement>(null)
   const cropDragRef = useRef<{ startFx: number; startFy: number; startX: number; startY: number } | null>(null)
 
+  // ── Auto-rotate to landscape on mount (Android only — iOS ignores this) ──────
+  useEffect(() => {
+    const lo = (screen as { orientation?: { lock?: (o: string) => Promise<void>; unlock?: () => void } }).orientation
+    if (lo?.lock) {
+      lo.lock('landscape').catch(() => {})
+      return () => { try { lo.unlock?.() } catch { /* ignore */ } }
+    }
+  }, [])
+
   // ── Derived values ────────────────────────────────────────────────────────────
   const activeSegment = segments.find(s => s.id === activeSegmentId)
     ?? segments.find(s => currentTimeMs >= s.start_ms && currentTimeMs < s.end_ms)
@@ -570,7 +579,7 @@ export function EditorShellMobile({
 
   // Shared source video + touch crop overlay JSX
   const videoPreviewJSX = (
-    <div ref={previewInnerRef} style={{ position: 'absolute', inset: 0, borderRadius: 0, overflow: 'hidden' }}>
+    <div ref={previewInnerRef} style={{ position: 'absolute', inset: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
       <VideoPreview
         videoRef={videoRef} videoUrl={clipVideoUrl} currentTimeMs={currentTimeMs}
         activeSegment={activeSegment ?? null} getPositionAt={getPositionAt}
@@ -596,9 +605,12 @@ export function EditorShellMobile({
       <div className="chai-landscape" style={{ flex: 1, minHeight: 0, flexDirection: 'row', overflow: 'hidden' }}>
 
           {/* Left — source video + playback controls + timeline */}
-          <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', background: '#1a1a2e' }}>
-            <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>
-              {videoPreviewJSX}
+          <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', background: '#0d0d0d', overflow: 'hidden' }}>
+            {/* Video area — fills remaining height, same pattern as desktop */}
+            <div style={{ flex: 1, minHeight: 0, position: 'relative', overflow: 'hidden', background: '#1a1a2e' }}>
+              <div style={{ position: 'absolute', inset: 6, borderRadius: 16, border: '1.5px solid rgba(255,255,255,0.15)', boxShadow: '0 8px 32px rgba(0,0,0,0.6)', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+                {videoPreviewJSX}
+              </div>
             </div>
             {playbackJSX(true)}
             <div style={{ flexShrink: 0, background: '#0d0d0d', borderTop: '1px solid rgba(255,255,255,0.06)', overflowX: 'auto', padding: '4px 8px' }}>
@@ -620,8 +632,8 @@ export function EditorShellMobile({
       <div className="chai-portrait" style={{ flex: 1, minHeight: 0, flexDirection: 'column', overflow: 'hidden' }}>
 
           {/* Source video — visible directly, no overlay hiding it */}
-          <div style={{ flexShrink: 0, height: 'calc(40dvh)', background: '#1a1a2e', position: 'relative' }}>
-            <div style={{ position: 'absolute', inset: 6, border: '1.5px solid rgba(255,255,255,0.12)', borderRadius: 14, overflow: 'hidden', boxShadow: '0 8px 32px rgba(0,0,0,0.6)' }}>
+          <div style={{ flexShrink: 0, height: 'calc(40dvh)', background: '#1a1a2e', position: 'relative', overflow: 'hidden' }}>
+            <div style={{ position: 'absolute', inset: 6, borderRadius: 14, border: '1.5px solid rgba(255,255,255,0.15)', boxShadow: '0 8px 32px rgba(0,0,0,0.6)', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
               {videoPreviewJSX}
             </div>
           </div>
