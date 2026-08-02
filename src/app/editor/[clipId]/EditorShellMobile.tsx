@@ -130,7 +130,6 @@ export function EditorShellMobile({
   const [renderStuckSince, setRenderStuckSince] = useState<number | null>(clip.status === 'rendering' ? Date.now() : null)
   const [renderElapsed, setRenderElapsed] = useState(0)
   const [saveState, setSaveState] = useState<SaveState>('idle')
-  const [isLandscape, setIsLandscape] = useState(false)
   const [pendingLayout, setPendingLayout] = useState<{ segId: string; layout: LayoutType } | null>(null)
 
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -141,22 +140,6 @@ export function EditorShellMobile({
   const skipCanvasTransitionRef = useRef(false)
   const previewInnerRef = useRef<HTMLDivElement>(null)
   const cropDragRef = useRef<{ startFx: number; startFy: number; startX: number; startY: number } | null>(null)
-
-  // ── Orientation detection ─────────────────────────────────────────────────────
-  useEffect(() => {
-    const check = () => setIsLandscape(window.innerWidth > window.innerHeight)
-    check()
-    window.addEventListener('resize', check)
-    window.addEventListener('orientationchange', check)
-    // fire again after orientation settles
-    const delayed = () => setTimeout(check, 300)
-    window.addEventListener('orientationchange', delayed)
-    return () => {
-      window.removeEventListener('resize', check)
-      window.removeEventListener('orientationchange', check)
-      window.removeEventListener('orientationchange', delayed)
-    }
-  }, [])
 
   // ── Derived values ────────────────────────────────────────────────────────────
   const activeSegment = segments.find(s => s.id === activeSegmentId)
@@ -610,8 +593,7 @@ export function EditorShellMobile({
       {headerJSX}
 
       {/* ══ LANDSCAPE: exactly like the desktop — video left, sidebar right ══ */}
-      {isLandscape && (
-        <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'row', overflow: 'hidden' }}>
+      <div className="chai-landscape" style={{ flex: 1, minHeight: 0, flexDirection: 'row', overflow: 'hidden' }}>
 
           {/* Left — source video + playback controls + timeline */}
           <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', background: '#1a1a2e' }}>
@@ -633,11 +615,9 @@ export function EditorShellMobile({
           {/* Right — desktop-style sidebar */}
           {sidebarJSX}
         </div>
-      )}
 
       {/* ══ PORTRAIT: source video top, tab-based controls below ══ */}
-      {!isLandscape && (
-        <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+      <div className="chai-portrait" style={{ flex: 1, minHeight: 0, flexDirection: 'column', overflow: 'hidden' }}>
 
           {/* Source video — visible directly, no overlay hiding it */}
           <div style={{ flexShrink: 0, height: 'calc(40dvh)', background: '#1a1a2e', position: 'relative' }}>
@@ -827,9 +807,16 @@ export function EditorShellMobile({
 
           </div>
         </div>
-      )}
 
-      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+      <style>{`
+        .chai-landscape { display: none; }
+        .chai-portrait  { display: flex; }
+        @media (orientation: landscape) {
+          .chai-landscape { display: flex; }
+          .chai-portrait  { display: none; }
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+      `}</style>
     </div>
   )
 }
