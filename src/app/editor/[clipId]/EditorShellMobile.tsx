@@ -478,9 +478,9 @@ export function EditorShellMobile({
           {clipStatus === 'done' && <span style={{ fontSize: 10, fontWeight: 700, color: '#22c55e' }}>Ready</span>}
           {(clipStatus === 'rendering' || exporting) && <span style={{ fontSize: 10, color: 'rgba(255,255,255,0.35)' }}>Processing…</span>}
         </div>
-        {/* Canvas sized to fit full preview in sidebar: height fills viewport minus header+buttons */}
+        {/* Fixed 160px wide so height=284px (9:16) — visible + leaves room for buttons */}
         <div style={{ display: 'flex', justifyContent: 'center', padding: '0 10px 4px' }}>
-          <div style={{ height: 'calc(100dvh - 160px)', aspectRatio: '9/16', borderRadius: 8, overflow: 'hidden', border: '1px solid rgba(255,255,255,0.1)', flexShrink: 0 }}>
+          <div style={{ width: 160, flexShrink: 0, borderRadius: 8, overflow: 'hidden', border: '1px solid rgba(255,255,255,0.1)' }}>
             {(clipStatus === 'rendering' || exporting) ? (
               <div style={{ width: '100%', height: '100%', background: '#0d0d0d', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
                 <span style={{ width: 28, height: 28, borderRadius: 14, border: '2px solid #00b4d8', borderTopColor: 'transparent', display: 'block', animation: 'spin 1s linear infinite' }} />
