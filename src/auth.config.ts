@@ -14,8 +14,9 @@ export const authConfig = {
         pathname.startsWith('/verify-otp') ||
         pathname.startsWith('/forgot-password') ||
         pathname.startsWith('/reset-password')
+      const isPublic = pathname === '/'
       const isApi = pathname.startsWith('/api')
-      if (!isLoggedIn && !isAuthPage && !isApi) return false
+      if (!isLoggedIn && !isAuthPage && !isPublic && !isApi) return false
       if (isLoggedIn && isAuthPage) return Response.redirect(new URL('/dashboard', nextUrl))
       return true
     },

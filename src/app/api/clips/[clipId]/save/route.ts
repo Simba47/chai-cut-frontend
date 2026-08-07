@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { requireUser } from '@/server/auth'
 import { saveClip } from '@/server/services/clips'
+import { apiError } from '@/lib/api-error'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -14,8 +15,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cli
   try {
     await saveClip(user.id, clipId, body)
     return NextResponse.json({ ok: true })
-  } catch (err: unknown) {
-    const e = err as { message?: string; status?: number }
-    return NextResponse.json({ error: e.message ?? 'Failed' }, { status: e.status ?? 500 })
+  } catch (err) {
+    return apiError(err)
   }
 }

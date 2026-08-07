@@ -11,9 +11,12 @@ export async function createClip(userId: string, input: CreateClipInput) {
   `
   if (!video) throw Object.assign(new Error('Video not found'), { status: 404 })
 
+  const { checkClipQuota, getUserPlanConfig } = await import('./quota')
+  await checkClipQuota(userId)
+
   const startMs = input.start_ms ?? 0
   const endMs = input.end_ms ?? (video.duration_ms ?? 5 * 60 * 1000)
-  const layout = input.layout === 'horizontal' ? 'horizontal' : 'vertical'
+  const layout = input.layout === 'vertical' ? 'vertical' : 'horizontal'
 
   const [clip] = await sql`
     INSERT INTO clips (video_id, start_ms, end_ms, status, title)
@@ -22,7 +25,8 @@ export async function createClip(userId: string, input: CreateClipInput) {
   `
   if (!clip) throw Object.assign(new Error('Failed to create clip'), { status: 500 })
 
-  if (video.storage_path) {
+  const plan = await getUserPlanConfig(userId)
+  if (video.storage_path && plan.autoCaption) {
     const payload = { video_id: input.video_id, storage_path: video.storage_path, clip_id: clip.id, clip_start_ms: startMs, clip_end_ms: endMs }
     await sql`INSERT INTO jobs (type, status, payload) VALUES ('transcribe', 'queued', ${sql.json(payload)})`
   }
@@ -85,7 +89,10 @@ export async function saveClip(userId: string, clipId: string, body: SaveClipInp
       await tx`DELETE FROM segments WHERE clip_id = ${clipId} AND id != ALL(${segIds})`
     }
 
-    if (Object.keys(captionStyle).length > 0) {
+    const captionEnabled = (captionStyle as Record<string, unknown>).enabled !== false
+    if (!captionEnabled) {
+      await tx`DELETE FROM caption_styles WHERE clip_id = ${clipId}`
+    } else if (Object.keys(captionStyle).length > 0) {
       const [existing] = await tx`SELECT id FROM caption_styles WHERE clip_id = ${clipId} LIMIT 1`
       const styleFields = ['font', 'size', 'color', 'position', 'position_y', 'animation', 'language', 'translated_from_language']
       if (existing?.id) {
@@ -95,7 +102,7 @@ export async function saveClip(userId: string, clipId: string, body: SaveClipInp
           await tx`UPDATE caption_styles SET ${tx(updates)} WHERE id = ${existing.id}`
         }
       } else {
-        const { id: _id, clip_id: _clip_id, ...rest } = captionStyle as CaptionStyle
+        const { id: _id, clip_id: _clip_id, enabled: _en, ...rest } = captionStyle as CaptionStyle & { enabled?: boolean }
         await tx`INSERT INTO caption_styles ${tx({ clip_id: clipId, ...rest })}`
       }
     }

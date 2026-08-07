@@ -4,7 +4,7 @@ import sql from '@/lib/db'
 
 export async function listVideos(userId: string) {
   return sql`
-    SELECT id, status, download_progress, duration_ms, created_at
+    SELECT id, status, download_progress, duration_ms, created_at, storage_path, source_url, source_type
     FROM videos WHERE user_id = ${userId} ORDER BY created_at DESC
   `
 }

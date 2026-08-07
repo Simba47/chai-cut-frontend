@@ -39,21 +39,22 @@ export function VideoPreview({
 }: VideoPreviewProps) {
   const [videoAR, setVideoAR] = useState<number | null>(null)
 
+  const isHorizontal = activeSegment?.layout === 'horizontal'
+
   return (
     <div
       className="flex-1 flex items-center justify-center overflow-hidden"
       style={{ background: '#0a0a0a' }}
     >
-      {/* AR-matched wrapper — 0–1 crop coords map directly to CSS % */}
+      {/* For horizontal layout: fill full width so any source AR looks as large as possible.
+          The AR prop still controls height, and maxHeight prevents overflow. */}
       <div
         className="relative overflow-hidden"
-        style={{
-          ...(videoAR ? { aspectRatio: String(videoAR) } : { width: '100%', height: '100%' }),
-          maxWidth: '100%',
-          maxHeight: '100%',
-          background: '#000',
-          flexShrink: 0,
-        }}
+        style={
+          isHorizontal
+            ? { width: '100%', ...(videoAR ? { aspectRatio: String(videoAR) } : { height: '100%' }), maxHeight: '100%', background: '#000', flexShrink: 0 }
+            : { ...(videoAR ? { aspectRatio: String(videoAR) } : { width: '100%', height: '100%' }), maxWidth: '100%', maxHeight: '100%', background: '#000', flexShrink: 0 }
+        }
       >
         <video
           ref={videoRef}

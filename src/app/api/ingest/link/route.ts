@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { requireUser } from '@/server/auth'
 import { ingestLink } from '@/server/services/ingest'
+import { apiError } from '@/lib/api-error'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -13,8 +14,7 @@ export async function POST(req: NextRequest) {
   if (!url) return NextResponse.json({ error: 'No URL provided' }, { status: 400 })
   try {
     return NextResponse.json(await ingestLink(user.id, url))
-  } catch (err: unknown) {
-    const e = err as { message?: string; status?: number }
-    return NextResponse.json({ error: e.message ?? 'Failed' }, { status: e.status ?? 500 })
+  } catch (err) {
+    return apiError(err)
   }
 }

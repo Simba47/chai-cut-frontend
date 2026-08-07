@@ -122,6 +122,7 @@ export function EditorShellMobile({
   const [activeTab, setActiveTab] = useState<MobileTab>('timeline')
   const [activeTextOverlayId, setActiveTextOverlayId] = useState<string | null>(null)
   const [transcribing, setTranscribing] = useState(initialWords.length === 0)
+  const [isFreePlan, setIsFreePlan] = useState(false)
   const [clipStatus, setClipStatus] = useState<string>(clip.status)
   const [outputUrl, setOutputUrl] = useState<string | null>(clip.output_url)
   const [exporting, setExporting] = useState(false)
@@ -140,6 +141,19 @@ export function EditorShellMobile({
   const skipCanvasTransitionRef = useRef(false)
   const previewInnerRef = useRef<HTMLDivElement>(null)
   const cropDragRef = useRef<{ startFx: number; startFy: number; startX: number; startY: number } | null>(null)
+
+  // If user is on free plan, captions are locked — stop the transcribing spinner immediately
+  useEffect(() => {
+    fetch('/api/billing/plan')
+      .then(r => r.json())
+      .then((d: { autoCaption?: boolean }) => {
+        if (d.autoCaption === false) {
+          setIsFreePlan(true)
+          setTranscribing(false)
+        }
+      })
+      .catch(() => {})
+  }, [])
 
   // ── Auto-rotate to landscape on mount (Android only — iOS ignores this) ──────
   useEffect(() => {
@@ -184,7 +198,7 @@ export function EditorShellMobile({
 
   // ── Polls ─────────────────────────────────────────────────────────────────────
   useEffect(() => {
-    if (!transcribing) return
+    if (!transcribing || isFreePlan) return
     const videoId = (clip as unknown as { video_id: string }).video_id
     const interval = setInterval(async () => {
       const res = await fetch(`/api/transcribe/words?video_id=${videoId}`)
@@ -195,7 +209,7 @@ export function EditorShellMobile({
       }
     }, 3000)
     return () => clearInterval(interval)
-  }, [transcribing, clip, setWords, setShowCaptions])
+  }, [transcribing, isFreePlan, clip, setWords, setShowCaptions])
 
   useEffect(() => {
     if (clipStatus !== 'rendering') { setRenderStuckSince(null); setRenderElapsed(0); return }
@@ -547,28 +561,39 @@ export function EditorShellMobile({
 
       {/* Auto-captions */}
       <div style={{ borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
-        <div style={{ padding: '10px 12px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <span style={{ fontSize: 11, fontWeight: 600, color: showCaptions ? '#fff' : 'rgba(255,255,255,0.45)' }}>Auto-captions</span>
-          <div onClick={() => setShowCaptions(!showCaptions)} style={{ width: 36, height: 20, borderRadius: 10, display: 'flex', alignItems: 'center', paddingLeft: 2, cursor: 'pointer', background: showCaptions ? '#00b4d8' : 'rgba(255,255,255,0.1)', transition: 'background 0.2s' }}>
-            <div style={{ width: 16, height: 16, borderRadius: 8, background: '#fff', transition: 'transform 0.2s', transform: showCaptions ? 'translateX(16px)' : 'translateX(0)' }} />
+        {isFreePlan ? (
+          <div style={{ margin: '10px 12px 12px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, padding: '14px 12px', background: 'rgba(255,255,255,0.03)', borderRadius: 10, border: '1px solid rgba(255,255,255,0.07)', textAlign: 'center' }}>
+            <span style={{ fontSize: 20 }}>🔒</span>
+            <p style={{ fontSize: 11, fontWeight: 700, color: '#fff' }}>Auto-captions</p>
+            <p style={{ fontSize: 10, color: 'rgba(255,255,255,0.35)' }}>Available on Starter and above</p>
+            <a href="/pricing" style={{ marginTop: 4, padding: '7px 16px', borderRadius: 8, background: '#00b4d8', color: '#000', fontSize: 11, fontWeight: 700, textDecoration: 'none' }}>Upgrade Plan →</a>
           </div>
-        </div>
-        {(transcribing || retranscribing) && (
-          <div style={{ margin: '0 12px 10px', display: 'flex', alignItems: 'center', gap: 8, padding: '7px 10px', background: 'rgba(0,180,216,0.08)', borderRadius: 8, border: '1px solid rgba(0,180,216,0.2)' }}>
-            <span style={{ width: 12, height: 12, borderRadius: 6, border: '2px solid #00b4d8', borderTopColor: 'transparent', display: 'block', animation: 'spin 0.8s linear infinite', flexShrink: 0 }} />
-            <p style={{ fontSize: 11, color: '#00b4d8', fontWeight: 600 }}>Generating captions…</p>
-          </div>
-        )}
-        {showCaptions && (
-          <div style={{ padding: '0 12px 10px' }}>
-            <CaptionStyler
-              style={captionStyle} textCase={captionTextCase}
-              onChange={updateCaptionStyle} onTextCaseChange={setCaptionTextCase}
-              onEditCaptions={() => {}} onRetranscribe={handleRetranscribe}
-              retranscribing={retranscribing} retranscribeElapsed={retranscribeElapsed} retranscribeError={retranscribeError}
-              hasWords={words.length > 0} hasRoman={hasRoman} romanize={romanize} romanizeLabel={scriptLabel} onRomanizeChange={setRomanize}
-            />
-          </div>
+        ) : (
+          <>
+            <div style={{ padding: '10px 12px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <span style={{ fontSize: 11, fontWeight: 600, color: showCaptions ? '#fff' : 'rgba(255,255,255,0.45)' }}>Auto-captions</span>
+              <div onClick={() => setShowCaptions(!showCaptions)} style={{ width: 36, height: 20, borderRadius: 10, display: 'flex', alignItems: 'center', paddingLeft: 2, cursor: 'pointer', background: showCaptions ? '#00b4d8' : 'rgba(255,255,255,0.1)', transition: 'background 0.2s' }}>
+                <div style={{ width: 16, height: 16, borderRadius: 8, background: '#fff', transition: 'transform 0.2s', transform: showCaptions ? 'translateX(16px)' : 'translateX(0)' }} />
+              </div>
+            </div>
+            {(transcribing || retranscribing) && (
+              <div style={{ margin: '0 12px 10px', display: 'flex', alignItems: 'center', gap: 8, padding: '7px 10px', background: 'rgba(0,180,216,0.08)', borderRadius: 8, border: '1px solid rgba(0,180,216,0.2)' }}>
+                <span style={{ width: 12, height: 12, borderRadius: 6, border: '2px solid #00b4d8', borderTopColor: 'transparent', display: 'block', animation: 'spin 0.8s linear infinite', flexShrink: 0 }} />
+                <p style={{ fontSize: 11, color: '#00b4d8', fontWeight: 600 }}>Generating captions…</p>
+              </div>
+            )}
+            {showCaptions && (
+              <div style={{ padding: '0 12px 10px' }}>
+                <CaptionStyler
+                  style={captionStyle} textCase={captionTextCase}
+                  onChange={updateCaptionStyle} onTextCaseChange={setCaptionTextCase}
+                  onEditCaptions={() => {}} onRetranscribe={handleRetranscribe}
+                  retranscribing={retranscribing} retranscribeElapsed={retranscribeElapsed} retranscribeError={retranscribeError}
+                  hasWords={words.length > 0} hasRoman={hasRoman} romanize={romanize} romanizeLabel={scriptLabel} onRomanizeChange={setRomanize}
+                />
+              </div>
+            )}
+          </>
         )}
       </div>
 
@@ -740,35 +765,46 @@ export function EditorShellMobile({
 
             {activeTab === 'captions' && (
               <div style={{ padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: 12 }}>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 14px', background: 'rgba(255,255,255,0.04)', borderRadius: 12, border: '1px solid rgba(255,255,255,0.07)' }}>
-                  <span style={{ fontSize: 14, fontWeight: 600, color: showCaptions ? '#fff' : 'rgba(255,255,255,0.45)' }}>Auto-captions</span>
-                  <div onClick={() => setShowCaptions(!showCaptions)} style={{ width: 44, height: 24, borderRadius: 12, display: 'flex', alignItems: 'center', paddingLeft: 2, cursor: 'pointer', background: showCaptions ? '#00b4d8' : 'rgba(255,255,255,0.12)', transition: 'background 0.2s' }}>
-                    <div style={{ width: 20, height: 20, borderRadius: 10, background: '#fff', transition: 'transform 0.2s', transform: showCaptions ? 'translateX(20px)' : 'translateX(0)' }} />
+                {isFreePlan ? (
+                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12, padding: '32px 16px', background: 'rgba(255,255,255,0.03)', borderRadius: 14, border: '1px solid rgba(255,255,255,0.07)', textAlign: 'center' }}>
+                    <span style={{ fontSize: 36 }}>🔒</span>
+                    <p style={{ fontSize: 16, fontWeight: 700, color: '#fff' }}>Auto-captions</p>
+                    <p style={{ fontSize: 13, color: 'rgba(255,255,255,0.4)', maxWidth: 220 }}>Auto-captions are available on Starter and above.</p>
+                    <a href="/pricing" style={{ padding: '11px 24px', borderRadius: 12, background: '#00b4d8', color: '#000', fontSize: 13, fontWeight: 700, textDecoration: 'none' }}>Upgrade Plan →</a>
                   </div>
-                </div>
-                {(transcribing || retranscribing) ? (
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', background: 'rgba(0,180,216,0.08)', borderRadius: 10, border: '1px solid rgba(0,180,216,0.2)' }}>
-                    <span style={{ width: 16, height: 16, borderRadius: 8, border: '2px solid #00b4d8', borderTopColor: 'transparent', display: 'block', animation: 'spin 0.8s linear infinite' }} />
-                    <p style={{ fontSize: 12, color: '#00b4d8', fontWeight: 600 }}>Generating captions…</p>
-                  </div>
-                ) : words.length > 0 ? (
-                  <div style={{ padding: '8px 14px', background: 'rgba(34,197,94,0.07)', borderRadius: 10, border: '1px solid rgba(34,197,94,0.15)' }}>
-                    <p style={{ fontSize: 12, color: '#4ade80', fontWeight: 600 }}>✓ Captions ready · {words.length} words</p>
-                  </div>
-                ) : null}
-                {showCaptions && (
-                  <CaptionStyler
-                    style={captionStyle} textCase={captionTextCase}
-                    onChange={updateCaptionStyle} onTextCaseChange={setCaptionTextCase}
-                    onEditCaptions={() => {}} onRetranscribe={handleRetranscribe}
-                    retranscribing={retranscribing} retranscribeElapsed={retranscribeElapsed} retranscribeError={retranscribeError}
-                    hasWords={words.length > 0} hasRoman={hasRoman} romanize={romanize} romanizeLabel={scriptLabel} onRomanizeChange={setRomanize}
-                  />
-                )}
-                {showCaptions && words.length > 0 && (
-                  <TranscriptPanel words={displayWords} clipStartMs={clip.start_ms} clipEndMs={clip.end_ms}
-                    currentTimeMs={currentTimeMs} onSeek={seekToMs}
-                    onWordChange={(id, text) => updateWord(id, text, romanize ? 'word_roman' : 'word')} />
+                ) : (
+                  <>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 14px', background: 'rgba(255,255,255,0.04)', borderRadius: 12, border: '1px solid rgba(255,255,255,0.07)' }}>
+                      <span style={{ fontSize: 14, fontWeight: 600, color: showCaptions ? '#fff' : 'rgba(255,255,255,0.45)' }}>Auto-captions</span>
+                      <div onClick={() => setShowCaptions(!showCaptions)} style={{ width: 44, height: 24, borderRadius: 12, display: 'flex', alignItems: 'center', paddingLeft: 2, cursor: 'pointer', background: showCaptions ? '#00b4d8' : 'rgba(255,255,255,0.12)', transition: 'background 0.2s' }}>
+                        <div style={{ width: 20, height: 20, borderRadius: 10, background: '#fff', transition: 'transform 0.2s', transform: showCaptions ? 'translateX(20px)' : 'translateX(0)' }} />
+                      </div>
+                    </div>
+                    {(transcribing || retranscribing) ? (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', background: 'rgba(0,180,216,0.08)', borderRadius: 10, border: '1px solid rgba(0,180,216,0.2)' }}>
+                        <span style={{ width: 16, height: 16, borderRadius: 8, border: '2px solid #00b4d8', borderTopColor: 'transparent', display: 'block', animation: 'spin 0.8s linear infinite' }} />
+                        <p style={{ fontSize: 12, color: '#00b4d8', fontWeight: 600 }}>Generating captions…</p>
+                      </div>
+                    ) : words.length > 0 ? (
+                      <div style={{ padding: '8px 14px', background: 'rgba(34,197,94,0.07)', borderRadius: 10, border: '1px solid rgba(34,197,94,0.15)' }}>
+                        <p style={{ fontSize: 12, color: '#4ade80', fontWeight: 600 }}>✓ Captions ready · {words.length} words</p>
+                      </div>
+                    ) : null}
+                    {showCaptions && (
+                      <CaptionStyler
+                        style={captionStyle} textCase={captionTextCase}
+                        onChange={updateCaptionStyle} onTextCaseChange={setCaptionTextCase}
+                        onEditCaptions={() => {}} onRetranscribe={handleRetranscribe}
+                        retranscribing={retranscribing} retranscribeElapsed={retranscribeElapsed} retranscribeError={retranscribeError}
+                        hasWords={words.length > 0} hasRoman={hasRoman} romanize={romanize} romanizeLabel={scriptLabel} onRomanizeChange={setRomanize}
+                      />
+                    )}
+                    {showCaptions && words.length > 0 && (
+                      <TranscriptPanel words={displayWords} clipStartMs={clip.start_ms} clipEndMs={clip.end_ms}
+                        currentTimeMs={currentTimeMs} onSeek={seekToMs}
+                        onWordChange={(id, text) => updateWord(id, text, romanize ? 'word_roman' : 'word')} />
+                    )}
+                  </>
                 )}
               </div>
             )}

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { requireUser } from '@/server/auth'
 import { createClip } from '@/server/services/clips'
+import { apiError } from '@/lib/api-error'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -12,8 +13,7 @@ export async function POST(req: NextRequest) {
   if (!body?.video_id) return NextResponse.json({ error: 'video_id required' }, { status: 400 })
   try {
     return NextResponse.json(await createClip(user.id, body))
-  } catch (err: unknown) {
-    const e = err as { message?: string; status?: number }
-    return NextResponse.json({ error: e.message ?? 'Failed' }, { status: e.status ?? 500 })
+  } catch (err) {
+    return apiError(err)
   }
 }

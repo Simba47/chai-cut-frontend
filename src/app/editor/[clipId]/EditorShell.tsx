@@ -110,7 +110,11 @@ export function EditorShell({
 
   // ── Local UI state (not shared across components) ─────────────────────────────
   const [activeTextOverlayId, setActiveTextOverlayId] = useState<string | null>(null)
-  const [transcribing, setTranscribing] = useState(initialWords.length === 0)
+  const videoStatus = (clip as unknown as { video_status?: string }).video_status
+  const [transcribing, setTranscribing] = useState(
+    initialWords.length === 0 && videoStatus !== 'ready' && videoStatus !== 'failed'
+  )
+  const [isFreePlan, setIsFreePlan] = useState(false)
   const [activePanel, setActivePanel] = useState<Panel>('transcript')
   const [panelOpen, setPanelOpen] = useState(false)
   const [pickerAtMs, setPickerAtMs] = useState<number | null>(null)
@@ -162,24 +166,40 @@ export function EditorShell({
   const clipDurationMs = (clip.end_ms - clip.start_ms) || durationMs || 1
   const progress = Math.min(1, currentTimeMs / clipDurationMs)
 
+  // Free plan: lock captions, stop spinner
+  useEffect(() => {
+    fetch('/api/billing/plan')
+      .then(r => r.json())
+      .then((d: { autoCaption?: boolean }) => {
+        if (d.autoCaption === false) {
+          setIsFreePlan(true)
+          setTranscribing(false)
+        }
+      })
+      .catch(() => {})
+  }, [])
+
   // ── Polls ─────────────────────────────────────────────────────────────────────
 
   useEffect(() => {
-    if (!transcribing) return
+    if (!transcribing || isFreePlan) return
     const videoId = (clip as unknown as { video_id: string }).video_id
     const interval = setInterval(async () => {
       const res = await fetch(`/api/transcribe/words?video_id=${videoId}`)
       if (!res.ok) return
-      const { words: newWords } = await res.json()
+      const { words: newWords, video_status: vs } = await res.json()
       if (newWords && newWords.length > 0) {
         setWords(newWords)
         setShowCaptions(true)
         setTranscribing(false)
         clearInterval(interval)
+      } else if (vs === 'ready' || vs === 'failed') {
+        setTranscribing(false)
+        clearInterval(interval)
       }
     }, 3000)
     return () => clearInterval(interval)
-  }, [transcribing, clip, setWords, setShowCaptions])
+  }, [transcribing, isFreePlan, clip, setWords, setShowCaptions])
 
   useEffect(() => {
     if (clipStatus !== 'rendering') { setRenderStuckSince(null); setRenderElapsed(0); return }
@@ -256,6 +276,7 @@ export function EditorShell({
   async function handleExport() {
     setExporting(true); setExportError(null)
     try {
+      await handleSave()
       const res = await fetch('/api/export', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ clip_id: clip.id, quality: renderQuality }),
@@ -416,6 +437,12 @@ export function EditorShell({
         </div>
         <div className="flex-1" />
         <div className="flex items-center gap-2 shrink-0">
+          {saveState === 'error' && (
+            <span className="text-xs px-2 py-1 rounded" style={{ background: 'rgba(239,68,68,0.15)', color: '#f87171' }}>Save failed — retrying</span>
+          )}
+          {saveState === 'saved' && (
+            <span className="text-xs px-2 py-1 rounded" style={{ background: 'rgba(34,197,94,0.12)', color: '#4ade80' }}>Saved</span>
+          )}
           {exportError && (
             <span className="text-xs px-2 py-1 rounded" style={{ background: 'rgba(239,68,68,0.15)', color: '#f87171' }}>{exportError}</span>
           )}
@@ -713,82 +740,96 @@ export function EditorShell({
 
           {/* Auto-captions */}
           <div style={{ borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
-            <div className="px-4 py-3 flex items-center justify-between">
-              <span className="flex items-center gap-2 text-xs font-medium" style={{ color: showCaptions ? '#fff' : 'rgba(255,255,255,0.45)' }}>
-                <span style={{ letterSpacing: 0.5 }}>Cc</span><span>Auto-captions</span>
-              </span>
-              <div className="w-10 h-5 rounded-full flex items-center px-0.5 cursor-pointer transition-colors"
-                style={{ background: showCaptions ? '#00b4d8' : 'rgba(255,255,255,0.1)' }}
-                onClick={() => setShowCaptions(!showCaptions)}>
-                <div className="w-4 h-4 rounded-full bg-white transition-transform" style={{ transform: showCaptions ? 'translateX(20px)' : 'translateX(0)' }} />
-              </div>
-            </div>
-            {/* Caption status row */}
-            {(transcribing || retranscribing) ? (
-              <div className="mx-4 mb-3 flex items-center gap-2.5 px-3 py-2.5 rounded-xl" style={{ background: 'rgba(0,180,216,0.08)', border: '1px solid rgba(0,180,216,0.2)' }}>
-                <span className="w-4 h-4 rounded-full border-2 border-t-transparent animate-spin shrink-0" style={{ borderColor: '#00b4d8', borderTopColor: 'transparent' }} />
+            {isFreePlan ? (
+              <div className="mx-4 my-3 flex flex-col items-center gap-3 py-6 rounded-xl text-center"
+                style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)' }}>
+                <span style={{ fontSize: 28 }}>🔒</span>
                 <div>
-                  <p className="text-xs font-semibold" style={{ color: '#00b4d8' }}>Generating captions…</p>
-                  <p className="text-xs animate-pulse mt-0.5" style={{ color: 'rgba(255,255,255,0.35)' }}>This may take a moment</p>
+                  <p className="text-sm font-semibold text-white">Auto-captions</p>
+                  <p className="text-xs mt-1" style={{ color: 'rgba(255,255,255,0.35)' }}>Available on Starter and above</p>
                 </div>
+                <a href="/pricing" className="px-5 py-2 rounded-xl text-xs font-bold"
+                  style={{ background: '#00b4d8', color: '#000', textDecoration: 'none' }}>
+                  Upgrade Plan →
+                </a>
               </div>
-            ) : words.length > 0 ? (
-              <div className="mx-4 mb-3 flex items-center gap-2 px-3 py-2 rounded-xl" style={{ background: 'rgba(34,197,94,0.07)', border: '1px solid rgba(34,197,94,0.15)' }}>
-                <span style={{ color: '#22c55e', fontSize: 13 }}>✓</span>
-                <p className="text-xs font-medium" style={{ color: '#4ade80' }}>Captions ready <span style={{ color: 'rgba(255,255,255,0.3)', fontWeight: 400 }}>· {words.length} words</span></p>
-              </div>
-            ) : null}
-            {showCaptions && (
+            ) : (
               <>
-                {/* Romanize + Edit captions — first thing shown when CC is on */}
-                <div className="px-4 pb-3 flex flex-col gap-3">
-                  {hasRoman && (
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <p className="text-sm font-medium text-white">{scriptLabel}</p>
-                        <p className="text-xs mt-0.5" style={{ color: 'rgba(255,255,255,0.35)' }}>Show captions in English letters</p>
-                      </div>
-                      <button onClick={() => setRomanize(!romanize)} className="relative shrink-0" style={{ width: 44, height: 24 }}>
-                        <div style={{ width: 44, height: 24, borderRadius: 12, background: romanize ? '#00b4d8' : 'rgba(255,255,255,0.15)', transition: 'background 0.2s' }} />
-                        <div style={{ position: 'absolute', top: 3, left: romanize ? 23 : 3, width: 18, height: 18, borderRadius: '50%', background: '#fff', transition: 'left 0.2s', boxShadow: '0 1px 3px rgba(0,0,0,0.3)' }} />
+                <div className="px-4 py-3 flex items-center justify-between">
+                  <span className="flex items-center gap-2 text-xs font-medium" style={{ color: showCaptions ? '#fff' : 'rgba(255,255,255,0.45)' }}>
+                    <span style={{ letterSpacing: 0.5 }}>Cc</span><span>Auto-captions</span>
+                  </span>
+                  <div className="w-10 h-5 rounded-full flex items-center px-0.5 cursor-pointer transition-colors"
+                    style={{ background: showCaptions ? '#00b4d8' : 'rgba(255,255,255,0.1)' }}
+                    onClick={() => setShowCaptions(!showCaptions)}>
+                    <div className="w-4 h-4 rounded-full bg-white transition-transform" style={{ transform: showCaptions ? 'translateX(20px)' : 'translateX(0)' }} />
+                  </div>
+                </div>
+                {(transcribing || retranscribing) ? (
+                  <div className="mx-4 mb-3 flex items-center gap-2.5 px-3 py-2.5 rounded-xl" style={{ background: 'rgba(0,180,216,0.08)', border: '1px solid rgba(0,180,216,0.2)' }}>
+                    <span className="w-4 h-4 rounded-full border-2 border-t-transparent animate-spin shrink-0" style={{ borderColor: '#00b4d8', borderTopColor: 'transparent' }} />
+                    <div>
+                      <p className="text-xs font-semibold" style={{ color: '#00b4d8' }}>Generating captions…</p>
+                      <p className="text-xs animate-pulse mt-0.5" style={{ color: 'rgba(255,255,255,0.35)' }}>This may take a moment</p>
+                    </div>
+                  </div>
+                ) : words.length > 0 ? (
+                  <div className="mx-4 mb-3 flex items-center gap-2 px-3 py-2 rounded-xl" style={{ background: 'rgba(34,197,94,0.07)', border: '1px solid rgba(34,197,94,0.15)' }}>
+                    <span style={{ color: '#22c55e', fontSize: 13 }}>✓</span>
+                    <p className="text-xs font-medium" style={{ color: '#4ade80' }}>Captions ready <span style={{ color: 'rgba(255,255,255,0.3)', fontWeight: 400 }}>· {words.length} words</span></p>
+                  </div>
+                ) : null}
+                {showCaptions && (
+                  <>
+                    <div className="px-4 pb-3 flex flex-col gap-3">
+                      {hasRoman && (
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <p className="text-sm font-medium text-white">{scriptLabel}</p>
+                            <p className="text-xs mt-0.5" style={{ color: 'rgba(255,255,255,0.35)' }}>Show captions in English letters</p>
+                          </div>
+                          <button onClick={() => setRomanize(!romanize)} className="relative shrink-0" style={{ width: 44, height: 24 }}>
+                            <div style={{ width: 44, height: 24, borderRadius: 12, background: romanize ? '#00b4d8' : 'rgba(255,255,255,0.15)', transition: 'background 0.2s' }} />
+                            <div style={{ position: 'absolute', top: 3, left: romanize ? 23 : 3, width: 18, height: 18, borderRadius: '50%', background: '#fff', transition: 'left 0.2s', boxShadow: '0 1px 3px rgba(0,0,0,0.3)' }} />
+                          </button>
+                        </div>
+                      )}
+                      <button
+                        onClick={() => { setActivePanel('transcript'); setPanelOpen(true) }}
+                        className="flex items-center justify-center gap-2 w-full py-2.5 rounded-xl text-sm font-medium transition-opacity hover:opacity-80"
+                        style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.08)', color: 'rgba(255,255,255,0.6)' }}
+                      >
+                        <svg width="13" height="13" viewBox="0 0 14 14" fill="none">
+                          <path d="M9.5 2L12 4.5M2 12l.7-2.8L10 1.5 12.5 4 4.8 11.3 2 12z" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
+                        </svg>
+                        Edit captions
                       </button>
                     </div>
-                  )}
-                  <button
-                    onClick={() => { setActivePanel('transcript'); setPanelOpen(true) }}
-                    className="flex items-center justify-center gap-2 w-full py-2.5 rounded-xl text-sm font-medium transition-opacity hover:opacity-80"
-                    style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.08)', color: 'rgba(255,255,255,0.6)' }}
-                  >
-                    <svg width="13" height="13" viewBox="0 0 14 14" fill="none">
-                      <path d="M9.5 2L12 4.5M2 12l.7-2.8L10 1.5 12.5 4 4.8 11.3 2 12z" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
-                    </svg>
-                    Edit captions
-                  </button>
-                </div>
 
-                {/* Text overlays — inline below Edit captions */}
-                <div className="px-4 pb-2">
-                  <TextOverlayPanel
-                    overlays={textOverlays}
-                    currentTimeMs={currentTimeMs}
-                    clipDurationMs={clip.end_ms - clip.start_ms}
-                    onAdd={o => setTextOverlays(prev => [...prev, { ...o, id: crypto.randomUUID(), clip_id: clip.id }])}
-                    onUpdate={updateTextOverlay}
-                    onRemove={deleteTextOverlay}
-                  />
-                </div>
+                    <div className="px-4 pb-2">
+                      <TextOverlayPanel
+                        overlays={textOverlays}
+                        currentTimeMs={currentTimeMs}
+                        clipDurationMs={clip.end_ms - clip.start_ms}
+                        onAdd={o => setTextOverlays(prev => [...prev, { ...o, id: crypto.randomUUID(), clip_id: clip.id }])}
+                        onUpdate={updateTextOverlay}
+                        onRemove={deleteTextOverlay}
+                      />
+                    </div>
 
-                <CaptionStyler
-                  style={captionStyle} textCase={captionTextCase}
-                  onChange={updateCaptionStyle}
-                  onTextCaseChange={setCaptionTextCase}
-                  onEditCaptions={() => { setActivePanel('transcript'); setPanelOpen(true) }}
-                  onRetranscribe={handleRetranscribe}
-                  retranscribing={retranscribing} retranscribeElapsed={retranscribeElapsed}
-                  retranscribeError={retranscribeError} hasWords={words.length > 0}
-                  hasRoman={hasRoman} romanize={romanize} romanizeLabel={scriptLabel}
-                  onRomanizeChange={setRomanize}
-                />
+                    <CaptionStyler
+                      style={captionStyle} textCase={captionTextCase}
+                      onChange={updateCaptionStyle}
+                      onTextCaseChange={setCaptionTextCase}
+                      onEditCaptions={() => { setActivePanel('transcript'); setPanelOpen(true) }}
+                      onRetranscribe={handleRetranscribe}
+                      retranscribing={retranscribing} retranscribeElapsed={retranscribeElapsed}
+                      retranscribeError={retranscribeError} hasWords={words.length > 0}
+                      hasRoman={hasRoman} romanize={romanize} romanizeLabel={scriptLabel}
+                      onRomanizeChange={setRomanize}
+                    />
+                  </>
+                )}
               </>
             )}
           </div>

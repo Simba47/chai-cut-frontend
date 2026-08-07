@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { requireUser } from '@/server/auth'
 import { queueRender } from '@/server/services/export'
+import { apiError } from '@/lib/api-error'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -12,8 +13,7 @@ export async function POST(req: NextRequest) {
   if (!body?.clip_id) return NextResponse.json({ error: 'clip_id required' }, { status: 400 })
   try {
     return NextResponse.json(await queueRender(user.id, body.clip_id, body.quality ?? '1080p'))
-  } catch (err: unknown) {
-    const e = err as { message?: string; status?: number }
-    return NextResponse.json({ error: e.message ?? 'Failed' }, { status: e.status ?? 500 })
+  } catch (err) {
+    return apiError(err)
   }
 }

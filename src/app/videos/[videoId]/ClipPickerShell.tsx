@@ -113,6 +113,7 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, userEmail, save
   const [formEnd, setFormEnd] = useState('')
   const [formError, setFormError] = useState<string | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
+  const [clipError, setClipError] = useState<string | null>(null)
 
   const isReady = video.status === 'ready'
   const isProcessing = video.status === 'uploaded' || video.status === 'transcribing'
@@ -167,19 +168,40 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, userEmail, save
   async function clipIt(startMs: number, endMs: number, pendingId?: string, title?: string) {
     const key = pendingId ?? 'new'
     setBusy(key)
+    setClipError(null)
     try {
       const res = await fetch('/api/clips', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ video_id: video.id, start_ms: startMs, end_ms: endMs, layout: 'vertical', ...(title ? { title } : {}) }),
+        body: JSON.stringify({ video_id: video.id, start_ms: startMs, end_ms: endMs, layout: 'horizontal', ...(title ? { title } : {}) }),
       })
-      if (!res.ok) throw new Error((await res.json()).error ?? 'Failed')
+      if (!res.ok) throw new Error((await res.json()).error ?? 'Failed to create clip')
       const { clip_id } = await res.json()
       if (pendingId) removePending(pendingId)
-      router.push(`/editor/${clip_id}?layout=vertical`)
+      router.push(`/editor/${clip_id}?layout=horizontal`)
     } catch (e) {
       console.error(e)
       setBusy(null)
+      setClipError(e instanceof Error ? e.message : 'Failed to create clip. Please try again.')
+    }
+  }
+
+  async function editFullVideo() {
+    setBusy('full')
+    setClipError(null)
+    try {
+      const res = await fetch('/api/clips', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ video_id: video.id }),
+      })
+      if (!res.ok) throw new Error((await res.json()).error ?? 'Failed to open video')
+      const { clip_id } = await res.json()
+      router.push(`/editor/${clip_id}`)
+    } catch (e) {
+      console.error(e)
+      setBusy(null)
+      setClipError(e instanceof Error ? e.message : 'Failed to open video. Please try again.')
     }
   }
 
@@ -259,15 +281,23 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, userEmail, save
             </span>
             {isReady && (
               <button
-                onClick={() => { setBusy('full'); fetch('/api/clips', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ video_id: video.id }) }).then(r => r.json()).then(d => router.push(`/editor/${d.clip_id}`)).catch(() => setBusy(null)) }}
+                onClick={editFullVideo}
                 disabled={!!busy}
-                className="text-xs px-2.5 py-1 rounded-lg transition-opacity hover:opacity-70 disabled:opacity-40"
-                style={{ color: 'rgba(255,255,255,0.4)', background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.09)' }}
+                className="text-xs px-2.5 py-1 rounded-lg transition-opacity hover:opacity-80 disabled:opacity-40 font-semibold"
+                style={{ color: '#fff', background: '#00b4d8', border: 'none' }}
               >
-                Edit full video
+                {busy === 'full' ? <span className="inline-block w-3 h-3 border border-current border-t-transparent rounded-full animate-spin align-middle" /> : 'Edit full video'}
               </button>
             )}
           </div>
+
+          {/* Error banner */}
+          {clipError && (
+            <div className="mx-3 mt-2 px-3 py-2 rounded-xl flex items-center justify-between gap-2" style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.25)' }}>
+              <span className="text-xs" style={{ color: '#f87171' }}>{clipError}</span>
+              <button onClick={() => setClipError(null)} className="shrink-0" style={{ color: 'rgba(239,68,68,0.6)', fontSize: 14, lineHeight: 1 }}>×</button>
+            </div>
+          )}
 
           {/* Scrollable list */}
           <div className="flex-1 overflow-y-auto py-2">
@@ -366,8 +396,8 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, userEmail, save
               <button
                 onClick={openForm}
                 disabled={!!busy}
-                className="w-full py-3 rounded-xl text-sm font-medium transition-colors hover:border-white/20 disabled:opacity-40"
-                style={{ border: '1.5px dashed rgba(255,255,255,0.13)', color: 'rgba(255,255,255,0.35)' }}
+                className="w-full py-3 rounded-xl text-sm font-semibold transition-opacity hover:opacity-85 disabled:opacity-40"
+                style={{ background: '#00b4d8', color: '#fff', border: 'none' }}
               >
                 + Add a clip
               </button>

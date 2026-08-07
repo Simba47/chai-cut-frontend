@@ -6,7 +6,7 @@ import type { TextCase } from '@/components/editor/CaptionStyler'
 
 interface CaptionState {
   words: TranscriptWord[]
-  captionStyle: Partial<CaptionStyle>
+  captionStyle: Partial<CaptionStyle> & { enabled?: boolean }
   captionTextCase: TextCase
   showCaptions: boolean
   romanize: boolean
@@ -39,7 +39,7 @@ export const useCaptionStore = create<CaptionState & CaptionActions>()(set => ({
   retranscribeError: null,
 
   hydrate: (words, style = { color: '#FFE700' }, showCaptions = false) =>
-    set({ words, captionStyle: style, showCaptions }),
+    set({ words, captionStyle: { ...style, enabled: showCaptions }, showCaptions }),
 
   setWords: (words) => set({ words }),
   updateWord: (id, text, field = 'word') => set(s => ({
@@ -47,7 +47,7 @@ export const useCaptionStore = create<CaptionState & CaptionActions>()(set => ({
   })),
   updateCaptionStyle: (updates) => set(s => ({ captionStyle: { ...s.captionStyle, ...updates } })),
   setCaptionTextCase: (tc) => set({ captionTextCase: tc }),
-  setShowCaptions: (show) => set({ showCaptions: show }),
+  setShowCaptions: (show) => set(s => ({ showCaptions: show, captionStyle: { ...s.captionStyle, enabled: show } })),
   setRomanize: (v) => set({ romanize: v }),
   setRetranscribing: (v) => set({ retranscribing: v }),
   setRetranscribeElapsed: (n) => set({ retranscribeElapsed: n }),

@@ -1,0 +1,53 @@
+export const PLANS = {
+  free: {
+    key: 'free' as const,
+    name: 'Free',
+    price: 0,
+    maxVideos: 1,
+    maxFileSizeBytes: 1 * 1024 * 1024 * 1024,
+    maxFileSizeGb: 1,
+    maxClips: 3,
+    autoCaption: false,
+    watermark: true,
+    retentionDays: 30,
+  },
+  starter: {
+    key: 'starter' as const,
+    name: 'Starter',
+    price: 599,
+    maxVideos: 5,
+    maxFileSizeBytes: 5 * 1024 * 1024 * 1024,
+    maxFileSizeGb: 5,
+    maxClips: null,
+    autoCaption: true,
+    watermark: false,
+    retentionDays: 30,
+  },
+  creator: {
+    key: 'creator' as const,
+    name: 'Creator',
+    price: 999,
+    maxVideos: 15,
+    maxFileSizeBytes: 8 * 1024 * 1024 * 1024,
+    maxFileSizeGb: 8,
+    maxClips: null,
+    autoCaption: true,
+    watermark: false,
+    retentionDays: 45,
+  },
+  agency: {
+    key: 'agency' as const,
+    name: 'Agency',
+    price: 2599,
+    maxVideos: 30,
+    maxFileSizeBytes: 12 * 1024 * 1024 * 1024,
+    maxFileSizeGb: 12,
+    maxClips: null,
+    autoCaption: true,
+    watermark: false,
+    retentionDays: 60,
+  },
+} as const
+
+export type PlanKey = keyof typeof PLANS
+export type Plan = typeof PLANS[PlanKey]

@@ -1,16 +1,42 @@
 @import "tailwindcss";
 
+/* ── Dark theme (default) ── */
 :root {
-  --bg: #0a0a0a;
-  --surface: #141414;
-  --surface-2: #1e1e1e;
-  --border: #2a2a2a;
-  --text: #f0f0f0;
-  --text-muted: #888;
-  --accent: #7c3aed;
-  --accent-hover: #6d28d9;
+  --bg: #0d0d0d;
+  --nav: #111111;
+  --surface: #1a1a1a;
+  --media-bg: #0a0a0a;
+  --border: rgba(255,255,255,0.07);
+  --border-strong: rgba(255,255,255,0.13);
+  --text: #ffffff;
+  --text-muted: rgba(255,255,255,0.35);
+  --text-dim: rgba(255,255,255,0.22);
+  --accent: #00b4d8;
   --danger: #ef4444;
   --success: #22c55e;
+}
+
+/* ── Light theme ── */
+[data-theme="light"] {
+  --bg: #f0f0f0;
+  --nav: #f0f0f0;
+  --surface: #e2e2e2;
+  --media-bg: #c8c8c8;
+  --border: rgba(0,0,0,0.1);
+  --border-strong: rgba(0,0,0,0.16);
+  --text: #111111;
+  --text-muted: rgba(0,0,0,0.5);
+  --text-dim: rgba(0,0,0,0.3);
+  --accent: #0099c0;
+  --danger: #dc2626;
+  --success: #16a34a;
+  --card-shadow: none;
+  --nav-shadow: 0 1px 0 rgba(0,0,0,0.08);
+}
+
+:root {
+  --card-shadow: none;
+  --nav-shadow: none;
 }
 
 * {

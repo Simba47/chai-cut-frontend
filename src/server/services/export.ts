@@ -14,7 +14,9 @@ export async function queueRender(userId: string, clipId: string, quality: Rende
 
   await sql`UPDATE clips SET status = 'rendering' WHERE id = ${clipId}`
 
-  const payload = { clip_id: clipId, video_storage_path: row.storage_path, quality }
+  const { getUserPlanConfig } = await import('./quota')
+  const plan = await getUserPlanConfig(userId)
+  const payload = { clip_id: clipId, video_storage_path: row.storage_path, quality, watermark: plan.watermark }
   const [job] = await sql`
     INSERT INTO jobs (type, payload, status) VALUES ('render', ${sql.json(payload)}, 'queued') RETURNING id
   `

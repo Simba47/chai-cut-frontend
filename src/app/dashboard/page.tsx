@@ -2,18 +2,18 @@
 
 import { useState, useEffect, useRef } from 'react'
 import { useRouter } from 'next/navigation'
-import { useSession } from 'next-auth/react'
+import { useSession, signOut } from 'next-auth/react'
 import type { Video } from '@chai-cut/shared'
 import { ACCEPTED_VIDEO_EXTENSIONS, MAX_UPLOAD_BYTES } from '@chai-cut/shared'
+import { ThemeToggle } from '@/components/ThemeToggle'
 
 export default function DashboardPage() {
   const router = useRouter()
   const { data: session } = useSession()
   const [videos, setVideos] = useState<Video[]>([])
   const [loading, setLoading] = useState(true)
+  const [planInfo, setPlanInfo] = useState<{ plan: string; planName: string; maxVideos: number; maxFileSizeBytes: number; maxFileSizeGb: number; autoCaption: boolean; usage: { videos: number; clips: number } } | null>(null)
 
-  // Upload state
-  const [file, setFile] = useState<File | null>(null)
   const [dragOver, setDragOver] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [uploadProgress, setUploadProgress] = useState(0)
@@ -22,6 +22,7 @@ export default function DashboardPage() {
 
   async function fetchVideos() {
     const res = await fetch('/api/videos')
+    if (res.redirected || res.status === 401) { router.push('/login'); return }
     if (res.ok) {
       const { videos } = await res.json()
       setVideos(videos ?? [])
@@ -29,10 +30,12 @@ export default function DashboardPage() {
   }
 
   useEffect(() => {
-    fetchVideos().finally(() => setLoading(false))
+    Promise.all([
+      fetchVideos(),
+      fetch('/api/billing/plan').then(r => r.ok ? r.json() : null).then(d => { if (d) setPlanInfo(d) }).catch(() => {}),
+    ]).finally(() => setLoading(false))
   }, [])
 
-  // Auto-poll every 3 s while any video is still processing
   useEffect(() => {
     const hasPending = videos.some(v => v.status === 'uploaded' || v.status === 'transcribing')
     if (!hasPending) return
@@ -40,26 +43,23 @@ export default function DashboardPage() {
     return () => clearInterval(id)
   }, [videos])
 
-  async function handleSignOut() {
-    window.location.href = '/login'
-  }
-
   function validateAndSetFile(f: File) {
-    if (f.size > MAX_UPLOAD_BYTES) { setUploadError('File exceeds the 2 GB limit.'); return }
+    const limitBytes = planInfo?.maxFileSizeBytes ?? MAX_UPLOAD_BYTES
+    const limitGb = planInfo?.maxFileSizeGb ?? 2
+    if (f.size > limitBytes) { setUploadError(`File exceeds your plan limit of ${limitGb} GB.`); return }
     const ext = '.' + f.name.split('.').pop()?.toLowerCase()
     if (!ACCEPTED_VIDEO_EXTENSIONS.includes(ext as never)) {
       setUploadError(`Unsupported format. Accepted: ${ACCEPTED_VIDEO_EXTENSIONS.join(', ')}`)
       return
     }
     setUploadError(null)
-    setFile(f)
   }
 
   function handleDrop(e: React.DragEvent) {
     e.preventDefault()
     setDragOver(false)
     const dropped = e.dataTransfer.files[0]
-    if (dropped) validateAndSetFile(dropped)
+    if (dropped) { validateAndSetFile(dropped); handleFileUpload(dropped) }
   }
 
   async function handleFileUpload(f: File) {
@@ -67,16 +67,14 @@ export default function DashboardPage() {
     setUploadProgress(0)
     setUploadError(null)
     try {
-      // Step 1: get pre-signed R2 URL (avoids Vercel's 4.5 MB serverless body limit)
       const signRes = await fetch('/api/ingest/signed-url', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ filename: f.name, content_type: f.type }),
+        body: JSON.stringify({ filename: f.name, content_type: f.type, file_size: f.size }),
       })
       if (!signRes.ok) throw new Error((await signRes.json()).error ?? 'Failed to get upload URL')
       const { signed_url, storage_path } = await signRes.json()
 
-      // Step 2: upload directly from browser to R2 with progress
       await new Promise<void>((resolve, reject) => {
         const xhr = new XMLHttpRequest()
         xhr.open('PUT', signed_url)
@@ -92,7 +90,6 @@ export default function DashboardPage() {
         xhr.send(f)
       })
 
-      // Step 3: read duration client-side to avoid extra worker round-trip
       let durationMs: number | undefined
       try {
         durationMs = await new Promise<number>((res, rej) => {
@@ -105,7 +102,6 @@ export default function DashboardPage() {
         })
       } catch { /* leave undefined */ }
 
-      // Step 4: create DB record
       const completeRes = await fetch('/api/ingest/complete', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -113,7 +109,6 @@ export default function DashboardPage() {
       })
       if (!completeRes.ok) throw new Error((await completeRes.json()).error ?? 'Failed')
       const { video_id } = await completeRes.json()
-      setFile(null)
       await fetchVideos()
       router.push(`/videos/${video_id}`)
     } catch (err) {
@@ -125,91 +120,103 @@ export default function DashboardPage() {
 
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center" style={{ background: '#0d0d0d' }}>
-        <div className="w-8 h-8 border-2 border-[#00b4d8] border-t-transparent rounded-full animate-spin" />
+      <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--bg)' }}>
+        <div style={{ width: 32, height: 32, borderRadius: '50%', border: '2px solid var(--accent)', borderTopColor: 'transparent', animation: 'spin 0.7s linear infinite' }}/>
+        <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
       </div>
     )
   }
 
   return (
-    <div className="min-h-screen" style={{ background: '#0d0d0d' }}>
+    <div style={{ minHeight: '100vh', background: 'var(--bg)' }}>
       {/* Nav */}
-      <nav
-        className="flex items-center justify-between px-6 py-3 border-b"
-        style={{ background: '#111', borderColor: 'rgba(255,255,255,0.07)' }}
-      >
-        <span className="text-base font-bold text-white tracking-tight">✂ Chai Cut</span>
-        <div className="flex items-center gap-4">
-          <span className="text-sm" style={{ color: 'rgba(255,255,255,0.35)' }}>{session?.user?.email}</span>
+      <nav style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 24px', height: 52, background: 'var(--nav)', borderBottom: '1px solid var(--border)', boxShadow: 'var(--nav-shadow)', position: 'sticky', top: 0, zIndex: 50 }}>
+        <span style={{ fontSize: 15, fontWeight: 800, color: 'var(--text)', letterSpacing: '-0.02em' }}>✂ Chai Cut</span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>{session?.user?.email}</span>
+          {planInfo && (
+            <span style={{ fontSize: 11, fontWeight: 700, padding: '3px 10px', borderRadius: 6, background: planInfo.plan === 'free' ? 'var(--surface)' : 'var(--accent)', color: planInfo.plan === 'free' ? 'var(--text-muted)' : '#fff', border: '1px solid var(--border)' }}>
+              {planInfo.planName}
+            </span>
+          )}
+          {planInfo?.plan === 'free' && (
+            <a href="/pricing" style={{ fontSize: 12, padding: '5px 12px', borderRadius: 8, fontWeight: 700, background: 'var(--accent)', color: '#fff', textDecoration: 'none' }}>
+              Upgrade
+            </a>
+          )}
+          <ThemeToggle />
           <button
-            onClick={handleSignOut}
-            className="text-xs px-3 py-1.5 rounded-lg transition-opacity hover:opacity-70"
-            style={{ color: 'rgba(255,255,255,0.4)', background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)' }}
+            onClick={() => signOut({ callbackUrl: '/login' })}
+            style={{ fontSize: 12, padding: '5px 12px', borderRadius: 8, cursor: 'pointer', color: 'var(--text-muted)', background: 'var(--bg)', border: '1px solid var(--border-strong)', fontWeight: 500 }}
           >
             Sign out
           </button>
         </div>
       </nav>
 
-      <main className="max-w-3xl mx-auto px-6 pt-10 pb-16">
-        {/* Upload section */}
-        <h1 className="text-2xl font-bold text-white text-center mb-1">Upload your video</h1>
-        <p className="text-sm text-center mb-8" style={{ color: 'rgba(255,255,255,0.35)' }}>
+      <main style={{ maxWidth: 768, margin: '0 auto', padding: '40px 24px 64px' }}>
+        <h1 style={{ fontSize: 22, fontWeight: 800, color: 'var(--text)', textAlign: 'center', marginBottom: 4, letterSpacing: '-0.02em' }}>Upload your video</h1>
+        <p style={{ fontSize: 14, textAlign: 'center', marginBottom: 32, color: 'var(--text-muted)' }}>
           Transcribe and clip your long-form content
         </p>
 
-        {/* Drag & drop zone */}
+        {/* Drop zone */}
         <div
           onDragOver={e => { e.preventDefault(); setDragOver(true) }}
           onDragLeave={() => setDragOver(false)}
           onDrop={handleDrop}
           onClick={() => fileInputRef.current?.click()}
-          className="rounded-2xl p-14 text-center cursor-pointer transition-all mb-4"
           style={{
-            border: `2px dashed ${dragOver ? '#00b4d8' : 'rgba(255,255,255,0.15)'}`,
-            background: dragOver ? 'rgba(0,180,216,0.05)' : 'transparent',
+            borderRadius: 18, padding: '56px 24px', textAlign: 'center', cursor: 'pointer',
+            border: `2px dashed ${dragOver ? 'var(--accent)' : 'var(--border-strong)'}`,
+            background: dragOver ? 'rgba(0,180,216,0.06)' : 'var(--surface)',
+            boxShadow: 'var(--card-shadow)',
+            transition: 'all 0.2s', marginBottom: 12,
           }}
         >
           <input
             ref={fileInputRef}
             type="file"
             accept={ACCEPTED_VIDEO_EXTENSIONS.join(',')}
-            className="hidden"
+            style={{ display: 'none' }}
             onChange={e => {
               const f = e.target.files?.[0]
               if (f) { validateAndSetFile(f); handleFileUpload(f) }
             }}
           />
-          <svg width="40" height="40" viewBox="0 0 40 40" fill="none" className="mx-auto mb-3" opacity={0.4}>
-            <path d="M20 28V12M20 12L13 19M20 12L27 19" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-            <path d="M8 30C5.8 30 4 28.2 4 26c0-1.9 1.3-3.5 3-4 .1-3.9 3.3-7 7.2-7 .6 0 1.2.1 1.8.2C17.2 13.5 18.5 13 20 13s2.8.5 4 1.2c.6-.1 1.2-.2 1.8-.2C29.7 14 33 17.1 33 21c1.7.5 3 2.1 3 4 0 2.2-1.8 4-4 4H8z" stroke="white" strokeWidth="1.8" strokeLinejoin="round"/>
+          <svg width="40" height="40" viewBox="0 0 40 40" fill="none" style={{ margin: '0 auto 12px', display: 'block', opacity: 0.35 }}>
+            <path d="M20 28V12M20 12L13 19M20 12L27 19" stroke="var(--text)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+            <path d="M8 30C5.8 30 4 28.2 4 26c0-1.9 1.3-3.5 3-4 .1-3.9 3.3-7 7.2-7 .6 0 1.2.1 1.8.2C17.2 13.5 18.5 13 20 13s2.8.5 4 1.2c.6-.1 1.2-.2 1.8-.2C29.7 14 33 17.1 33 21c1.7.5 3 2.1 3 4 0 2.2-1.8 4-4 4H8z" stroke="var(--text)" strokeWidth="1.8" strokeLinejoin="round"/>
           </svg>
           {uploading ? (
-            <div className="mt-2">
-              <p className="text-sm text-white mb-2">Uploading… {uploadProgress}%</p>
-              <div className="w-48 mx-auto h-1.5 rounded-full overflow-hidden" style={{ background: 'rgba(255,255,255,0.1)' }}>
-                <div className="h-full rounded-full transition-all" style={{ width: `${uploadProgress}%`, background: '#00b4d8' }} />
+            <>
+              <p style={{ fontSize: 14, color: 'var(--text)', marginBottom: 10 }}>Uploading… {uploadProgress}%</p>
+              <div style={{ width: 192, margin: '0 auto', height: 6, borderRadius: 999, overflow: 'hidden', background: 'var(--border-strong)' }}>
+                <div style={{ height: '100%', borderRadius: 999, width: `${uploadProgress}%`, background: 'var(--accent)', transition: 'width 0.3s' }}/>
               </div>
-            </div>
+            </>
           ) : (
             <>
-              <p className="text-sm font-medium text-white mb-1">Click or drag to upload a video</p>
-              <p className="text-xs" style={{ color: 'rgba(255,255,255,0.3)' }}>MP4, MOV, WEBM · up to 2 GB</p>
+              <p style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)', marginBottom: 4 }}>Click or drag to upload a video</p>
+              <p style={{ fontSize: 13, color: 'var(--text-muted)' }}>
+                MP4, MOV, WEBM · up to {planInfo?.maxFileSizeGb ?? 2} GB
+                {planInfo && ` · ${planInfo.usage.videos}/${planInfo.maxVideos} videos used`}
+              </p>
             </>
           )}
         </div>
 
         {uploadError && (
-          <p className="text-sm mb-4 text-center" style={{ color: '#f87171' }}>{uploadError}</p>
+          <p style={{ fontSize: 13, textAlign: 'center', marginBottom: 16, color: 'var(--danger)' }}>{uploadError}</p>
         )}
 
-        {/* Videos grid */}
+        {/* Videos */}
         {videos.length > 0 && (
-          <div className="mt-10">
-            <h2 className="text-sm font-semibold text-white mb-4" style={{ color: 'rgba(255,255,255,0.7)' }}>
+          <div style={{ marginTop: 40 }}>
+            <h2 style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-muted)', marginBottom: 16, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
               Your Videos
             </h2>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 16 }}>
               {videos.map((v, i) => (
                 <VideoCard
                   key={v.id}
@@ -239,8 +246,7 @@ function VideoCard({ video, index, onDeleted }: { video: Video; index: number; o
       const res = await fetch(`/api/videos/${video.id}`, { method: 'DELETE' })
       if (!res.ok) throw new Error((await res.json()).error ?? 'Delete failed')
       onDeleted(video.id)
-    } catch (err) {
-      console.error(err)
+    } catch {
       setDeleting(false)
       setConfirmDelete(false)
     }
@@ -252,11 +258,10 @@ function VideoCard({ video, index, onDeleted }: { video: Video; index: number; o
     pct < 46 ? `Downloading ${pct}%` :
     pct < 58 ? `Processing ${pct}%` :
     pct < 70 ? 'Uploading…' :
-    pct < 99 ? `Transcribing ${pct}%` :
-               'Finishing…'
+    pct < 99 ? `Transcribing ${pct}%` : 'Finishing…'
 
   const statusColor: Record<string, string> = {
-    uploaded: '#f59e0b', transcribing: '#00b4d8', ready: '#22c55e', failed: '#ef4444',
+    uploaded: '#f59e0b', transcribing: 'var(--accent)', ready: 'var(--success)', failed: 'var(--danger)',
   }
   const statusText: Record<string, string> = {
     uploaded: 'Queued', transcribing: stageLabel, ready: 'Ready', failed: 'Failed',
@@ -275,78 +280,78 @@ function VideoCard({ video, index, onDeleted }: { video: Video; index: number; o
 
   return (
     <div
-      className="rounded-xl overflow-hidden cursor-pointer transition-transform hover:scale-[1.02] relative"
-      style={{
-        background: '#1a1a1a',
-        border: `1px solid ${confirmDelete ? 'rgba(239,68,68,0.4)' : 'rgba(255,255,255,0.07)'}`,
-      }}
       onClick={openEditor}
       onMouseLeave={() => setConfirmDelete(false)}
+      style={{
+        borderRadius: 12, overflow: 'hidden', cursor: 'pointer',
+        background: 'var(--surface)',
+        border: `1px solid ${confirmDelete ? 'rgba(239,68,68,0.4)' : 'var(--border)'}`,
+        boxShadow: 'var(--card-shadow)',
+        transition: 'border-color 0.15s, transform 0.15s',
+      }}
     >
-      {/* Thumbnail area */}
-      <div className="relative" style={{ aspectRatio: '16/9', background: '#141414' }}>
-        <div className="absolute inset-0 flex items-center justify-center">
-          <svg width="40" height="40" viewBox="0 0 40 40" fill="none" opacity={0.2}>
-            <rect width="40" height="40" rx="6" fill="#6b7280"/>
+      {/* Thumbnail */}
+      <div style={{ position: 'relative', aspectRatio: '16/9', background: 'var(--media-bg)' }}>
+        <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', opacity: 0.3 }}>
+          <svg width="40" height="40" viewBox="0 0 40 40" fill="none">
+            <rect width="40" height="40" rx="6" fill="#888"/>
             <path d="M15 12v16l14-8-14-8z" fill="white"/>
           </svg>
         </div>
 
         {video.status === 'transcribing' && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 px-6"
-            style={{ background: 'rgba(0,0,0,0.7)' }}>
-            <p className="text-xs font-medium text-white text-center">{stageLabel}</p>
-            <div className="w-full h-1.5 rounded-full overflow-hidden" style={{ background: 'rgba(255,255,255,0.1)' }}>
-              <div className="h-full rounded-full transition-all duration-500"
-                style={{ width: `${Math.max(4, pct)}%`, background: '#00b4d8' }} />
+          <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 8, padding: '0 24px', background: 'rgba(0,0,0,0.55)' }}>
+            <p style={{ fontSize: 12, fontWeight: 600, color: '#fff', textAlign: 'center' }}>{stageLabel}</p>
+            <div style={{ width: '100%', height: 6, borderRadius: 999, overflow: 'hidden', background: 'rgba(255,255,255,0.15)' }}>
+              <div style={{ height: '100%', borderRadius: 999, width: `${Math.max(4, pct)}%`, background: 'var(--accent)', transition: 'width 0.5s' }}/>
             </div>
           </div>
         )}
 
         {durationLabel && (
-          <div className="absolute top-2 left-2 text-xs font-medium px-1.5 py-0.5 rounded"
-            style={{ background: 'rgba(0,0,0,0.65)', color: 'rgba(255,255,255,0.8)' }}>
+          <div style={{ position: 'absolute', top: 8, left: 8, fontSize: 11, fontWeight: 600, padding: '2px 7px', borderRadius: 5, background: 'rgba(0,0,0,0.65)', color: 'rgba(255,255,255,0.85)' }}>
             {durationLabel}
           </div>
         )}
 
         <button
           onClick={handleDelete}
-          className="absolute top-2 right-2 flex items-center justify-center rounded-lg transition-colors"
           style={{
-            width: 26, height: 26,
+            position: 'absolute', top: 8, right: 8, width: 26, height: 26, borderRadius: 8, cursor: 'pointer',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
             background: confirmDelete ? 'rgba(239,68,68,0.9)' : 'rgba(0,0,0,0.55)',
-            border: `1px solid ${confirmDelete ? '#ef4444' : 'rgba(255,255,255,0.12)'}`,
+            border: `1px solid ${confirmDelete ? '#ef4444' : 'rgba(255,255,255,0.15)'}`,
+            color: '#fff', transition: 'all 0.15s',
           }}
-          title={confirmDelete ? 'Tap again to confirm' : 'Delete video'}
+          title={confirmDelete ? 'Tap again to confirm' : 'Delete'}
         >
           {deleting
-            ? <div className="w-3 h-3 border border-white border-t-transparent rounded-full animate-spin" />
+            ? <div style={{ width: 10, height: 10, borderRadius: '50%', border: '1.5px solid #fff', borderTopColor: 'transparent', animation: 'spin 0.6s linear infinite' }}/>
             : confirmDelete
               ? <svg width="10" height="10" viewBox="0 0 12 12" fill="none"><path d="M1 1l10 10M11 1L1 11" stroke="white" strokeWidth="1.8" strokeLinecap="round"/></svg>
-              : <svg width="10" height="10" viewBox="0 0 12 12" fill="none"><path d="M2 3h8M5 3V2h2v1M4.5 3v6M7.5 3v6M3 3l.5 7h5L9 3" stroke="rgba(255,255,255,0.6)" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+              : <svg width="10" height="10" viewBox="0 0 12 12" fill="none"><path d="M2 3h8M5 3V2h2v1M4.5 3v6M7.5 3v6M3 3l.5 7h5L9 3" stroke="rgba(255,255,255,0.7)" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/></svg>
           }
         </button>
       </div>
 
-      {/* Bottom info */}
-      <div className="px-3 py-2.5 flex items-center gap-2">
-        <div className="flex-1 min-w-0">
-          <p className="text-xs font-medium text-white truncate">{title}</p>
-          <p className="text-xs mt-0.5 truncate" style={{ color: statusColor[video.status] ?? 'rgba(255,255,255,0.3)' }}>
+      {/* Info row */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 12px' }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <p style={{ fontSize: 12, fontWeight: 600, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginBottom: 2 }}>{title}</p>
+          <p style={{ fontSize: 11, color: statusColor[video.status] ?? 'var(--text-muted)' }}>
             {statusText[video.status] ?? video.status}
           </p>
         </div>
         {video.status === 'ready' && (
           <button
             onClick={e => { e.stopPropagation(); openEditor() }}
-            className="shrink-0 text-xs font-semibold px-3 py-1.5 rounded-lg text-white"
-            style={{ background: '#00b4d8' }}
+            style={{ fontSize: 12, fontWeight: 700, padding: '5px 12px', borderRadius: 8, background: 'var(--accent)', color: '#fff', border: 'none', cursor: 'pointer', flexShrink: 0 }}
           >
             Edit →
           </button>
         )}
       </div>
+      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
     </div>
   )
 }

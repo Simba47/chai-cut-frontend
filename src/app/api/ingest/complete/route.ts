@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { requireUser } from '@/server/auth'
 import { completeUpload } from '@/server/services/ingest'
+import { apiError } from '@/lib/api-error'
 
 export async function POST(req: NextRequest) {
   const user = await requireUser()
@@ -10,8 +11,7 @@ export async function POST(req: NextRequest) {
   const durationMs = typeof body.duration_ms === 'number' ? Math.round(body.duration_ms) : undefined
   try {
     return NextResponse.json(await completeUpload(user.id, body.storage_path, durationMs))
-  } catch (err: unknown) {
-    const e = err as { message?: string; status?: number }
-    return NextResponse.json({ error: e.message ?? 'Failed' }, { status: e.status ?? 500 })
+  } catch (err) {
+    return apiError(err)
   }
 }

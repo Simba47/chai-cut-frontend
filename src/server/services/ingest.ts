@@ -10,7 +10,7 @@ import { ACCEPTED_VIDEO_EXTENSIONS } from '@chai-cut/shared'
 
 export async function ingestLink(userId: string, url: string) {
   try { new URL(url) } catch {
-    throw Object.assign(new Error('Invalid URL'), { status: 400 })
+    throw Object.assign(new Error('Please enter a valid video URL.'), { status: 400 })
   }
 
   const [video] = await sql`
@@ -20,8 +20,12 @@ export async function ingestLink(userId: string, url: string) {
   `
   if (!video) throw Object.assign(new Error('Failed to create video record'), { status: 500 })
 
-  const payload = { video_id: video.id, storage_path: '' }
-  await sql`INSERT INTO jobs (type, payload, status) VALUES ('transcribe', ${sql.json(payload)}, 'queued')`
+  const { getUserPlanConfig } = await import('./quota')
+  const plan = await getUserPlanConfig(userId)
+  if (plan.autoCaption) {
+    const payload = { video_id: video.id, storage_path: '' }
+    await sql`INSERT INTO jobs (type, payload, status) VALUES ('transcribe', ${sql.json(payload)}, 'queued')`
+  }
 
   return { video_id: video.id }
 }
@@ -41,8 +45,12 @@ export async function uploadVideo(userId: string, req: NextRequest) {
   `
   if (!video) throw Object.assign(new Error('Failed to create video record'), { status: 500 })
 
-  const payload = { video_id: video.id, storage_path: storagePath }
-  await sql`INSERT INTO jobs (type, payload, status) VALUES ('transcribe', ${sql.json(payload)}, 'queued')`
+  const { getUserPlanConfig } = await import('./quota')
+  const plan = await getUserPlanConfig(userId)
+  if (plan.autoCaption) {
+    const payload = { video_id: video.id, storage_path: storagePath }
+    await sql`INSERT INTO jobs (type, payload, status) VALUES ('transcribe', ${sql.json(payload)}, 'queued')`
+  }
 
   return { video_id: video.id }
 }
@@ -87,11 +95,14 @@ async function streamFileToR2(req: NextRequest, userId: string, contentType: str
   })
 }
 
-export async function getSignedUploadUrl(userId: string, filename: string, mimeType?: string) {
+export async function getSignedUploadUrl(userId: string, filename: string, mimeType?: string, fileSizeBytes?: number) {
   const ext = '.' + filename.split('.').pop()?.toLowerCase()
   if (!ACCEPTED_VIDEO_EXTENSIONS.includes(ext as never)) {
-    throw Object.assign(new Error('Unsupported file type'), { status: 415 })
+    throw Object.assign(new Error('That file type isn\'t supported. Please upload an MP4, MOV, or WebM.'), { status: 415 })
   }
+  const { checkVideoQuota, checkFileSizeQuota } = await import('./quota')
+  await checkVideoQuota(userId)
+  if (fileSizeBytes) await checkFileSizeQuota(userId, fileSizeBytes)
   const storagePath = `raw/${userId}/${Date.now()}${ext}`
   const signed_url = await getSignedUrl(r2, new PutObjectCommand({ Bucket: R2_BUCKET, Key: storagePath, ContentType: mimeType }), { expiresIn: 3600 })
   return { signed_url, storage_path: storagePath }
@@ -101,7 +112,7 @@ export async function completeUpload(userId: string, storagePath: string, durati
   try {
     await r2.send(new HeadObjectCommand({ Bucket: R2_BUCKET, Key: storagePath }))
   } catch {
-    throw Object.assign(new Error('File not found in storage'), { status: 404 })
+    throw Object.assign(new Error('Your upload couldn\'t be verified — please try uploading again.'), { status: 404 })
   }
 
   const [video] = await sql`

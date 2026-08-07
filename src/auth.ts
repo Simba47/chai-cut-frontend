@@ -6,12 +6,16 @@ import { authConfig } from './auth.config'
 import { verifyPassword } from './modules/auth/password'
 import sql from './lib/db'
 
-const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } })
+const g = global as typeof globalThis & { _pgPool?: Pool }
+if (!g._pgPool) {
+  g._pgPool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false }, max: 3 })
+}
+const pool = g._pgPool
 
 export const { handlers, signIn, signOut, auth } = NextAuth({
   ...authConfig,
   adapter: PostgresAdapter(pool),
-  session: { strategy: 'jwt' },
+  session: { strategy: 'jwt', maxAge: 60 * 60 * 24 * 365 },
   providers: [
     Credentials({
       credentials: {

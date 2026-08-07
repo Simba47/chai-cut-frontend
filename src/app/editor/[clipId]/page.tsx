@@ -35,51 +35,77 @@ export default async function EditorPage({
   `
   if (!clip || clip.user_id !== user.id) notFound()
 
-  const signedUrl = clip.storage_path
-    ? await getSignedUrl(r2, new GetObjectCommand({ Bucket: R2_BUCKET, Key: clip.storage_path }), { expiresIn: 43200 })
-    : ''
+  // Fire all independent queries in parallel — one round-trip after the clip fetch
+  const [
+    signedUrl,
+    wordsRaw,
+    segmentsRaw,
+    captionStylesRaw,
+    textOverlaysRaw,
+    audioTracksRaw,
+    transitionsRaw,
+    overlaysRaw,
+  ] = await Promise.all([
+    clip.storage_path
+      ? getSignedUrl(r2, new GetObjectCommand({ Bucket: R2_BUCKET, Key: clip.storage_path }), { expiresIn: 43200 })
+      : Promise.resolve(''),
+    // Merged two-step transcript lookup into one subquery
+    sql`
+      SELECT tw.* FROM transcript_words tw
+      WHERE tw.transcript_id = (
+        SELECT id FROM transcripts WHERE video_id = ${clip.video_id} ORDER BY created_at DESC LIMIT 1
+      )
+      ORDER BY tw.start_ms
+    `,
+    sql`
+      SELECT s.*, COALESCE(
+        json_agg(
+          jsonb_build_object(
+            'id', cb.id, 'segment_id', cb.segment_id, 'slot_index', cb.slot_index,
+            'source_video_id', cb.source_video_id, 'source_offset_ms', cb.source_offset_ms,
+            'box_keyframes', COALESCE(
+              (SELECT json_agg(bk.* ORDER BY bk.t_ms) FROM box_keyframes bk WHERE bk.box_id = cb.id),
+              '[]'
+            )
+          ) ORDER BY cb.slot_index
+        ) FILTER (WHERE cb.id IS NOT NULL),
+        '[]'
+      ) AS crop_boxes
+      FROM segments s
+      LEFT JOIN crop_boxes cb ON cb.segment_id = s.id
+      WHERE s.clip_id = ${clipId}
+      GROUP BY s.id
+      ORDER BY s.sort_order
+    `,
+    sql`SELECT * FROM caption_styles WHERE clip_id = ${clipId}`,
+    sql`SELECT * FROM text_overlays WHERE clip_id = ${clipId}`,
+    sql`SELECT * FROM audio_tracks WHERE clip_id = ${clipId}`,
+    sql`SELECT * FROM transitions WHERE clip_id = ${clipId}`,
+    sql`SELECT * FROM overlays WHERE clip_id = ${clipId} ORDER BY z_index`,
+  ])
 
-  const [transcriptRow] = await sql`
-    SELECT id FROM transcripts WHERE video_id = ${clip.video_id} ORDER BY created_at DESC LIMIT 1
-  `
-
-  const words: TranscriptWord[] = transcriptRow
-    ? (await sql`SELECT * FROM transcript_words WHERE transcript_id = ${transcriptRow.id} ORDER BY start_ms`) as unknown as TranscriptWord[]
-    : []
+  const words: TranscriptWord[] = wordsRaw as unknown as TranscriptWord[]
+  const captionStyles = captionStylesRaw as unknown as CaptionStyle[]
+  const textOverlays = textOverlaysRaw as unknown as TextOverlay[]
+  const audioTracks = audioTracksRaw as unknown as AudioTrack[]
+  const transitions = transitionsRaw as unknown as Transition[]
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  let segments: any[] = await sql`
-    SELECT s.*, COALESCE(
-      json_agg(
-        jsonb_build_object(
-          'id', cb.id, 'segment_id', cb.segment_id, 'slot_index', cb.slot_index,
-          'source_video_id', cb.source_video_id, 'source_offset_ms', cb.source_offset_ms,
-          'box_keyframes', COALESCE(
-            (SELECT json_agg(bk.* ORDER BY bk.t_ms) FROM box_keyframes bk WHERE bk.box_id = cb.id),
-            '[]'
-          )
-        ) ORDER BY cb.slot_index
-      ) FILTER (WHERE cb.id IS NOT NULL),
-      '[]'
-    ) AS crop_boxes
-    FROM segments s
-    LEFT JOIN crop_boxes cb ON cb.segment_id = s.id
-    WHERE s.clip_id = ${clipId}
-    GROUP BY s.id
-    ORDER BY s.sort_order
-  `
+  let segments: any[] = segmentsRaw as any[]
 
-  // Heal segments that were accidentally saved with absolute timestamps instead of clip-relative
+  // Heal segments with accidental absolute timestamps
   const clipDuration = clip.end_ms - clip.start_ms
+  const healPromises: Promise<unknown>[] = []
   for (const seg of segments) {
     if (seg.start_ms >= clipDuration || seg.end_ms > clipDuration) {
       const corrStart = Math.max(0, Math.min(seg.start_ms - clip.start_ms, clipDuration))
       const corrEnd = Math.max(corrStart + 1000, Math.min(seg.end_ms - clip.start_ms, clipDuration))
-      await sql`UPDATE segments SET start_ms = ${corrStart}, end_ms = ${corrEnd} WHERE id = ${seg.id}`
+      healPromises.push(sql`UPDATE segments SET start_ms = ${corrStart}, end_ms = ${corrEnd} WHERE id = ${seg.id}`)
       seg.start_ms = corrStart
       seg.end_ms = corrEnd
     }
   }
+  if (healPromises.length) await Promise.all(healPromises)
 
   if (segments.length === 0) {
     const [newSeg] = await sql`
@@ -97,18 +123,7 @@ export default async function EditorPage({
     }
   }
 
-  const [captionStylesRaw, textOverlaysRaw, audioTracksRaw, transitionsRaw] = await Promise.all([
-    sql`SELECT * FROM caption_styles WHERE clip_id = ${clipId}`,
-    sql`SELECT * FROM text_overlays WHERE clip_id = ${clipId}`,
-    sql`SELECT * FROM audio_tracks WHERE clip_id = ${clipId}`,
-    sql`SELECT * FROM transitions WHERE clip_id = ${clipId}`,
-  ])
-  const captionStyles = captionStylesRaw as unknown as CaptionStyle[]
-  const textOverlays = textOverlaysRaw as unknown as TextOverlay[]
-  const audioTracks = audioTracksRaw as unknown as AudioTrack[]
-  const transitions = transitionsRaw as unknown as Transition[]
-
-  const overlaysRaw = await sql`SELECT * FROM overlays WHERE clip_id = ${clipId} ORDER BY z_index`
+  // Sign overlay image URLs (fast local operation, run in parallel)
   const overlays: Overlay[] = await Promise.all((overlaysRaw as unknown as Overlay[]).map(async ov => {
     if (ov.type === 'image' && ov.storage_path) {
       const preview_url = await getSignedUrl(
