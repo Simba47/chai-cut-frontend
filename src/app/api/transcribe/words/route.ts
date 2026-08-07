@@ -17,8 +17,16 @@ export async function GET(req: NextRequest) {
   if (!video) return NextResponse.json({ error: 'Not found' }, { status: 404 })
 
   const rows = since
-    ? await sql`SELECT id FROM transcripts WHERE video_id = ${videoId} AND created_at > ${since} ORDER BY created_at DESC LIMIT 1`
-    : await sql`SELECT id FROM transcripts WHERE video_id = ${videoId} ORDER BY created_at DESC LIMIT 1`
+    ? await sql`
+        SELECT t.id FROM transcripts t
+        WHERE t.video_id = ${videoId} AND t.created_at > ${since}
+          AND EXISTS (SELECT 1 FROM transcript_words WHERE transcript_id = t.id)
+        ORDER BY t.created_at DESC LIMIT 1`
+    : await sql`
+        SELECT t.id FROM transcripts t
+        WHERE t.video_id = ${videoId}
+          AND EXISTS (SELECT 1 FROM transcript_words WHERE transcript_id = t.id)
+        ORDER BY t.created_at DESC LIMIT 1`
 
   if (!rows.length) return NextResponse.json({ words: null, video_status: video.status })
 

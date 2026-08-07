@@ -49,11 +49,14 @@ export default async function EditorPage({
     clip.storage_path
       ? getSignedUrl(r2, new GetObjectCommand({ Bucket: R2_BUCKET, Key: clip.storage_path }), { expiresIn: 43200 })
       : Promise.resolve(''),
-    // Merged two-step transcript lookup into one subquery
+    // Prefer newest transcript that has words; fall back to newest empty if none
     sql`
       SELECT tw.* FROM transcript_words tw
       WHERE tw.transcript_id = (
-        SELECT id FROM transcripts WHERE video_id = ${clip.video_id} ORDER BY created_at DESC LIMIT 1
+        SELECT t.id FROM transcripts t
+        WHERE t.video_id = ${clip.video_id}
+          AND EXISTS (SELECT 1 FROM transcript_words WHERE transcript_id = t.id)
+        ORDER BY t.created_at DESC LIMIT 1
       )
       ORDER BY tw.start_ms
     `,
