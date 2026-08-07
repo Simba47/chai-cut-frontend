@@ -504,7 +504,8 @@ export function OutputCanvas({
 
           // Draw captions on top of the video frame
           if (showCaptionsRef.current && captionChunksRef.current.length > 0) {
-            drawCaptions(ctx, captionChunksRef.current, liveMs, captionStyleRef.current ?? {}, captionCaseRef.current)
+            const captionLookupMs = liveMs - (captionStyleRef.current?.timing_offset_ms ?? 0)
+            drawCaptions(ctx, captionChunksRef.current, captionLookupMs, captionStyleRef.current ?? {}, captionCaseRef.current)
           }
 
           // Draw text overlays (clip-relative time)

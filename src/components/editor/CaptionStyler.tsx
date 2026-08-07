@@ -273,6 +273,30 @@ export function CaptionStyler({
         </div>
       </div>
 
+      {/* Caption timing offset */}
+      <div className="flex flex-col gap-2">
+        <div className="flex items-center justify-between">
+          <span className="text-xs font-semibold uppercase tracking-widest" style={{ color: 'rgba(255,255,255,0.3)' }}>Caption Timing</span>
+          <span className="text-xs font-semibold tabular-nums" style={{ color: 'rgba(255,255,255,0.5)' }}>
+            {(style.timing_offset_ms ?? 0) === 0
+              ? 'auto'
+              : (style.timing_offset_ms ?? 0) > 0
+                ? `+${style.timing_offset_ms}ms`
+                : `${style.timing_offset_ms}ms`}
+          </span>
+        </div>
+        <input
+          type="range" min={-2000} max={2000} step={50}
+          value={style.timing_offset_ms ?? 0}
+          onChange={e => onChange({ timing_offset_ms: Number(e.target.value) })}
+          className="w-full"
+          style={{ height: 4, accentColor: '#00b4d8' }}
+        />
+        <p style={{ fontSize: 10, color: 'rgba(255,255,255,0.25)', textAlign: 'center', marginTop: -2 }}>
+          ← earlier &nbsp;&nbsp; later →
+        </p>
+      </div>
+
     </div>
   )
 }

@@ -89,6 +89,7 @@ export interface CaptionStyle {
   animation: AnimationType
   language: string | null
   translated_from_language: string | null
+  timing_offset_ms: number | null
 }
 
 export interface TextOverlay {

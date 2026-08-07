@@ -94,7 +94,7 @@ export async function saveClip(userId: string, clipId: string, body: SaveClipInp
       await tx`DELETE FROM caption_styles WHERE clip_id = ${clipId}`
     } else if (Object.keys(captionStyle).length > 0) {
       const [existing] = await tx`SELECT id FROM caption_styles WHERE clip_id = ${clipId} LIMIT 1`
-      const styleFields = ['font', 'size', 'color', 'position', 'position_y', 'animation', 'language', 'translated_from_language']
+      const styleFields = ['font', 'size', 'color', 'position', 'position_y', 'animation', 'language', 'translated_from_language', 'timing_offset_ms']
       if (existing?.id) {
         const entries = Object.entries(captionStyle).filter(([k, v]) => styleFields.includes(k) && v !== undefined)
         if (entries.length > 0) {
