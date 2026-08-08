@@ -13,7 +13,11 @@
     "@auth/pg-adapter": "^1.11.3",
     "@aws-sdk/client-s3": "^3.1093.0",
     "@aws-sdk/s3-request-presigner": "^3.1093.0",
+    "@splinetool/react-spline": "^4.1.0",
+    "@splinetool/runtime": "^1.12.98",
     "busboy": "^1.6.0",
+    "clsx": "^2.1.1",
+    "framer-motion": "^13.0.0",
     "interactjs": "^1.10.27",
     "next": "^15.3.3",
     "next-auth": "5.0.0-beta.28",
@@ -23,6 +27,7 @@
     "react-dom": "^19.1.0",
     "react-moveable": "^0.56.0",
     "resend": "^6.18.0",
+    "tailwind-merge": "^3.6.0",
     "zustand": "^5.0.14"
   },
   "devDependencies": {

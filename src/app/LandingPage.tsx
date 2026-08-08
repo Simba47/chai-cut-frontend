@@ -3,6 +3,8 @@
 import { useEffect } from 'react'
 import Link from 'next/link'
 import './landing.css'
+import { SplineScene } from '@/components/ui/splite'
+import { Spotlight } from '@/components/ui/spotlight'
 
 export function LandingPage() {
   useEffect(() => {
@@ -38,7 +40,10 @@ export function LandingPage() {
       </nav>
 
       {/* ── HERO ── */}
-      <section className="hero">
+      <section className="hero hero-3d">
+        <Spotlight size={600} />
+
+        {/* Left: text */}
         <div className="hero-text">
           <div className="hero-eyebrow">
             <span className="eyebrow-dot" />
@@ -75,83 +80,12 @@ export function LandingPage() {
           </div>
         </div>
 
-        {/* Phone mockup */}
-        <div className="phone-wrap">
-          <div className="phone-glow" />
-          <div className="phone-glow-warm" />
-          <div className="phone">
-            <div className="phone-notch" />
-            <div className="phone-header">
-              <div className="phone-back">
-                <svg width="8" height="8" viewBox="0 0 8 8" fill="none">
-                  <path d="M5 1.5L2.5 4 5 6.5" stroke="rgba(255,255,255,0.6)" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
-                </svg>
-              </div>
-              <span className="phone-logo-text">✂ Chai Cut</span>
-              <div className="phone-pills">
-                <span className="phone-pill">Vert</span>
-                <span className="phone-pill active">Horiz</span>
-                <span className="phone-pill">Split</span>
-              </div>
-            </div>
-            <div className="phone-canvas">
-              <div className="canvas-bg" />
-              <div className="canvas-subject">
-                <svg width="90" height="210" viewBox="0 0 90 210" fill="none">
-                  <ellipse cx="45" cy="42" rx="28" ry="28" fill="rgba(255,200,150,0.08)" />
-                  <ellipse cx="45" cy="40" rx="20" ry="22" fill="rgba(210,160,110,0.35)" />
-                  <rect x="38" y="59" width="14" height="12" rx="3" fill="rgba(210,160,110,0.3)" />
-                  <path d="M10 85 Q10 70 45 68 Q80 70 80 85 L76 180 H14 Z" fill="rgba(80,110,160,0.22)" />
-                  <path d="M28 75 Q45 80 62 75" stroke="rgba(255,255,255,0.1)" strokeWidth="1.5" fill="none" />
-                  <path d="M14 90 Q5 110 8 135" stroke="rgba(80,110,160,0.25)" strokeWidth="14" strokeLinecap="round" />
-                  <path d="M76 90 Q85 110 82 135" stroke="rgba(80,110,160,0.25)" strokeWidth="14" strokeLinecap="round" />
-                </svg>
-              </div>
-              <div className="crop-overlay">
-                <div className="crop-box">
-                  <div className="crop-h2" />
-                  <div className="crop-grid" />
-                </div>
-              </div>
-              <div className="phone-caption-wrap">
-                <span className="caption-item">నమస్కారం, ఎలా ఉన్నారు?</span>
-                <span className="caption-item">नमस्ते, कैसे हैं आप?</span>
-                <span className="caption-item">வணக்கம், நீங்கள் எப்படி?</span>
-              </div>
-            </div>
-            <div className="phone-timeline">
-              <div className="timeline-row">
-                <div className="tl-seg" style={{ flex: 2.2, background: 'rgba(0,196,232,0.35)' }} />
-                <div className="tl-seg" style={{ flex: 1.4, background: 'rgba(168,85,247,0.35)' }} />
-                <div className="tl-seg" style={{ flex: 1.8, background: 'rgba(59,130,246,0.35)' }} />
-                <div className="tl-seg" style={{ flex: 0.9, background: 'rgba(245,158,11,0.35)' }} />
-                <div className="tl-playhead" />
-              </div>
-              <div className="tl-controls">
-                <span className="tl-time">0:04</span>
-                <div className="tl-bar" />
-                <div className="tl-play">
-                  <svg width="6" height="7" viewBox="0 0 6 7" fill="#000"><path d="M1 0.5l4 3-4 3V0.5z" /></svg>
-                </div>
-                <div className="tl-bar" />
-                <span className="tl-time">0:28</span>
-              </div>
-            </div>
-            <div className="phone-sidebar">
-              <div className="sidebar-btn"><div className="sidebar-icon on" /><span className="sidebar-label on">Captions</span></div>
-              <div className="sidebar-btn"><div className="sidebar-icon" /><span className="sidebar-label">Text</span></div>
-              <div className="sidebar-btn"><div className="sidebar-icon" /><span className="sidebar-label">Filters</span></div>
-              <div className="sidebar-btn"><div className="sidebar-icon" /><span className="sidebar-label">Audio</span></div>
-              <div className="sidebar-btn"><div className="sidebar-icon" /><span className="sidebar-label">Export</span></div>
-            </div>
-          </div>
-          <div className="phone-export-badge">
-            <div className="badge-dot" />
-            Export ready · 1080p
-          </div>
-          <div className="phone-caption-badge">
-            ✦ Auto-captioned in Telugu
-          </div>
+        {/* Right: 3D Spline scene */}
+        <div className="hero-3d-scene">
+          <SplineScene
+            scene="https://prod.spline.design/kZDDjO5HuC9GJUM2/scene.splinecode"
+            className="w-full h-full"
+          />
         </div>
       </section>
 

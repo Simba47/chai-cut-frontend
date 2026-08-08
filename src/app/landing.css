@@ -607,11 +607,37 @@
 .lp-root .reveal { opacity: 0; transform: translateY(20px); transition: opacity .55s ease, transform .55s ease; }
 .lp-root .reveal.visible { opacity: 1; transform: none; }
 
+/* ── HERO 3D ─────────────────────────────────────────────── */
+.lp-root .hero.hero-3d {
+  grid-template-columns: 1fr 1fr;
+  max-width: 1320px;
+  gap: 0;
+  padding: 60px 52px;
+  overflow: hidden;
+  position: relative;
+  background: #050508;
+  border-bottom: 1px solid rgba(255,255,255,0.05);
+}
+
+.lp-root .hero-3d-scene {
+  position: relative;
+  height: 580px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.lp-root .hero-3d-scene canvas {
+  border-radius: 16px;
+}
+
 /* ── RESPONSIVE ─────────────────────────────────────────── */
 @media (max-width: 960px) {
   .lp-nav  { padding: 0 24px; }
   .lp-root .nav-links { display: none; }
   .lp-root .hero { grid-template-columns: 1fr; padding: 60px 24px 80px; min-height: auto; gap: 56px; }
+  .lp-root .hero.hero-3d { grid-template-columns: 1fr; padding: 60px 24px 40px; }
+  .lp-root .hero-3d-scene { height: 360px; order: -1; }
   .lp-root .phone-wrap { order: -1; }
   .lp-root .phone-export-badge, .lp-root .phone-caption-badge { display: none; }
   .lp-root .features-section { padding: 72px 24px; }
