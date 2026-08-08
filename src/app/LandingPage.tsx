@@ -5,6 +5,7 @@ import Link from 'next/link'
 import './landing.css'
 import { SplineScene } from '@/components/ui/splite'
 import { Spotlight } from '@/components/ui/spotlight'
+import { LiquidButton } from '@/components/ui/liquid-glass-button'
 
 export function LandingPage() {
   useEffect(() => {
@@ -56,13 +57,17 @@ export function LandingPage() {
             Chai Cut trims, crops, and captions your short-form video in minutes — with support for Telugu, Hindi, Tamil, and five more Indian languages.
           </p>
           <div className="cta-row">
-            <Link href="/signup" className="btn-primary">
-              <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-                <path d="M7 1.5L12.5 7 7 12.5M1.5 7h11" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-              </svg>
-              Start editing free
-            </Link>
-            <a href="#features" className="btn-ghost">See features</a>
+            <LiquidButton asChild size="lg">
+              <Link href="/signup">
+                <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                  <path d="M7 1.5L12.5 7 7 12.5M1.5 7h11" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+                Start editing free
+              </Link>
+            </LiquidButton>
+            <LiquidButton asChild size="lg">
+              <a href="#features">See features</a>
+            </LiquidButton>
           </div>
           <div className="hero-meta">
             <div className="hero-meta-item">
