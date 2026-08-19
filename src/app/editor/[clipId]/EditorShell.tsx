@@ -4,7 +4,6 @@ import { useState, useEffect, useRef, useMemo } from 'react'
 import type { Clip, Segment, CropBox, BoxKeyframe, CaptionStyle, TextOverlay, AudioTrack, Transition, TranscriptWord, LayoutType, TransitionType, Overlay } from '@chai-cut/shared'
 import { VideoPreview, OutputCanvas } from '@/components/editor/VideoPreview'
 import { SegmentTimeline } from '@/components/editor/SegmentTimeline'
-import { KeyframeTrack } from '@/components/editor/KeyframeTrack'
 import { TranscriptPanel } from '@/components/editor/TranscriptPanel'
 import { CaptionStyler, type TextCase } from '@/components/editor/CaptionStyler'
 import { TextOverlayPanel } from '@/components/editor/TextOverlayPanel'
@@ -20,6 +19,7 @@ import { useVideoSync } from '@/modules/player/useSync'
 import { useCaptionStore } from '@/modules/captions/store'
 import { useMediaStore } from '@/modules/media/store'
 import { rowsToLocal, defaultCropForSlot, msToLabel } from '@/modules/editor/utils'
+import { getBoxPositionAtLerp } from '@/lib/interpolation'
 
 type Panel = 'transcript' | 'captions' | 'text' | 'filters' | 'audio' | 'transitions' | 'layers'
 type SaveState = 'idle' | 'saving' | 'saved' | 'error'
@@ -90,7 +90,9 @@ export function EditorShell({
     const initialKeyframeMap: KeyframeMap = {}
     for (const seg of initialSegments) {
       for (const box of seg.crop_boxes) {
-        initialKeyframeMap[box.id] = box.box_keyframes
+        initialKeyframeMap[box.id] = box.box_keyframes.length > 0
+          ? box.box_keyframes
+          : [{ t_ms: seg.start_ms, ...defaultCropForSlot(seg.layout as LayoutType, box.slot_index) }]
       }
     }
     hydrateEditor(localSegments, initialKeyframeMap)
@@ -117,6 +119,7 @@ export function EditorShell({
   const [isFreePlan, setIsFreePlan] = useState(false)
   const [activePanel, setActivePanel] = useState<Panel>('transcript')
   const [panelOpen, setPanelOpen] = useState(false)
+  const [cropPositionsOpen, setCropPositionsOpen] = useState(true)
   const [pickerAtMs, setPickerAtMs] = useState<number | null>(null)
   const [pendingBrollMs, setPendingBrollMs] = useState<number | null>(null)
   const [clipStatus, setClipStatus] = useState<string>(clip.status)
@@ -127,6 +130,9 @@ export function EditorShell({
   const [renderStuckSince, setRenderStuckSince] = useState<number | null>(clip.status === 'rendering' ? Date.now() : null)
   const [renderElapsed, setRenderElapsed] = useState(0)
   const [saveState, setSaveState] = useState<SaveState>('idle')
+  const [motionMode, setMotionMode] = useState(false)
+  const motionModeRef = useRef(false)
+  useEffect(() => { motionModeRef.current = motionMode }, [motionMode])
 
   const retranscribeTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -165,6 +171,12 @@ export function EditorShell({
   )
   const clipDurationMs = (clip.end_ms - clip.start_ms) || durationMs || 1
   const progress = Math.min(1, currentTimeMs / clipDurationMs)
+
+  // When motion mode is on, use linear interpolation so the crop smoothly pans between recorded positions.
+  const effectiveGetPositionAt = useMemo(() => {
+    if (!motionMode) return getPositionAt
+    return (boxId: string, t_ms: number) => getBoxPositionAtLerp(t_ms, keyframes[boxId] ?? [])
+  }, [motionMode, getPositionAt, keyframes])
 
   // Free plan: lock captions, stop spinner
   useEffect(() => {
@@ -426,14 +438,35 @@ export function EditorShell({
           <p className="text-[10px] leading-tight" style={{ color: 'rgba(255,255,255,0.33)' }}>Click or drag to position. Drag edges to resize.</p>
         </div>
         <div className="flex-1" />
-        <div className="flex items-center gap-0.5 rounded-xl p-0.5" style={{ background: 'rgba(0,0,0,0.4)' }}>
-          {LAYOUTS.map(l => (
-            <button key={l.id} onClick={() => handleLayoutChange(l.id)}
-              className="px-2.5 py-1.5 rounded-lg text-xs font-medium transition-all"
-              style={{ background: activeSegment?.layout === l.id ? '#00b4d8' : 'transparent', color: activeSegment?.layout === l.id ? '#fff' : 'rgba(255,255,255,0.4)' }}>
-              {l.label}
-            </button>
-          ))}
+        <div className="flex items-center gap-2">
+          <div className="flex items-center gap-0.5 rounded-xl p-0.5" style={{ background: 'rgba(0,0,0,0.4)' }}>
+            {LAYOUTS.map(l => (
+              <button key={l.id} onClick={() => handleLayoutChange(l.id)}
+                className="px-2.5 py-1.5 rounded-lg text-xs font-medium transition-all"
+                style={{ background: activeSegment?.layout === l.id ? '#c8ff00' : 'transparent', color: activeSegment?.layout === l.id ? '#000' : 'rgba(255,255,255,0.4)' }}>
+                {l.label}
+              </button>
+            ))}
+          </div>
+          {/* Motion toggle */}
+          <button
+            onClick={() => setMotionMode(m => !m)}
+            title={motionMode ? 'Motion recording ON — drag while playing to record movement' : 'Motion OFF — enable to record crop movement'}
+            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-all select-none"
+            style={{
+              background: motionMode ? 'rgba(239,68,68,0.18)' : 'rgba(255,255,255,0.06)',
+              color: motionMode ? '#f87171' : 'rgba(255,255,255,0.4)',
+              border: motionMode ? '1px solid rgba(239,68,68,0.4)' : '1px solid transparent',
+            }}
+          >
+            {/* Record dot */}
+            <span style={{
+              display: 'inline-block', width: 7, height: 7, borderRadius: '50%',
+              background: motionMode ? '#ef4444' : 'rgba(255,255,255,0.25)',
+              boxShadow: motionMode ? '0 0 6px #ef4444' : 'none',
+            }} />
+            Motion
+          </button>
         </div>
         <div className="flex-1" />
         <div className="flex items-center gap-2 shrink-0">
@@ -465,7 +498,16 @@ export function EditorShell({
                 activeSegment={activeSegment ?? null} getPositionAt={getPositionAt}
                 activeBoxId={activeBoxId ?? null}
                 onSelectBox={(segId, boxId) => { setActiveSegmentId(segId); setActiveBoxId(boxId) }}
-                onBoxChange={(boxId, pos) => upsertKeyframe(boxId, { t_ms: currentTimeMs, ...pos })}
+                onBoxChange={(boxId, pos) => {
+                  // Read motionMode and playing state via refs so this callback is
+                  // never stale — the video is playing at 60fps causing rapid re-renders.
+                  const vid = videoRef.current
+                  const isPlaying = vid ? !vid.paused : false
+                  const t_ms = (motionModeRef.current && isPlaying && vid)
+                    ? Math.round(vid.currentTime * 1000) - clip.start_ms
+                    : currentTimeMs
+                  upsertKeyframe(boxId, { t_ms, ...pos })
+                }}
               />
               {activeSegment?.crop_boxes[0]?.source_video_id && (
                 <div className="absolute top-3 left-3 flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold pointer-events-none"
@@ -484,10 +526,10 @@ export function EditorShell({
                 <line x1="3" y1="2.5" x2="3" y2="11.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
               </svg>
             </button>
-            <button onClick={togglePlay} className="w-9 h-9 flex items-center justify-center rounded-full shrink-0" style={{ background: '#00b4d8' }}>
+            <button onClick={togglePlay} className="w-9 h-9 flex items-center justify-center rounded-full shrink-0" style={{ background: '#c8ff00' }}>
               {playing
-                ? <svg width="12" height="12" viewBox="0 0 12 12" fill="white"><rect x="2" y="1.5" width="3" height="9" rx="1"/><rect x="7" y="1.5" width="3" height="9" rx="1"/></svg>
-                : <svg width="12" height="12" viewBox="0 0 12 12" fill="white"><path d="M3 1.5l7.5 4.5L3 10.5V1.5z"/></svg>
+                ? <svg width="12" height="12" viewBox="0 0 12 12" fill="black"><rect x="2" y="1.5" width="3" height="9" rx="1"/><rect x="7" y="1.5" width="3" height="9" rx="1"/></svg>
+                : <svg width="12" height="12" viewBox="0 0 12 12" fill="black"><path d="M3 1.5l7.5 4.5L3 10.5V1.5z"/></svg>
               }
             </button>
             <button onClick={() => seekToMs(Math.min(clipDurationMs, currentTimeMs + 5000))}
@@ -513,7 +555,7 @@ export function EditorShell({
                 <button key={p.id}
                   onClick={() => { if (activePanel === p.id && panelOpen) setPanelOpen(false); else { setActivePanel(p.id); setPanelOpen(true) } }}
                   className="shrink-0 px-3 py-2 text-xs font-medium whitespace-nowrap"
-                  style={{ color: activePanel === p.id && panelOpen ? '#fff' : 'rgba(255,255,255,0.28)', borderBottom: activePanel === p.id && panelOpen ? '2px solid #00b4d8' : '2px solid transparent' }}>
+                  style={{ color: activePanel === p.id && panelOpen ? '#fff' : 'rgba(255,255,255,0.28)', borderBottom: activePanel === p.id && panelOpen ? '2px solid #c8ff00' : '2px solid transparent' }}>
                   {p.label}
                 </button>
               ))}
@@ -575,15 +617,6 @@ export function EditorShell({
                 onSelectTextOverlay={setActiveTextOverlayId}
                 onTextOverlayUpdate={updateTextOverlay}
               />
-              {activeBox && (
-                <KeyframeTrack
-                  boxId={activeBox.id} keyframes={keyframes[activeBox.id] ?? []}
-                  clipStartMs={clip.start_ms} clipEndMs={clip.end_ms} currentTimeMs={currentTimeMs}
-                  onAddKeyframe={() => upsertKeyframe(activeBox.id, { t_ms: currentTimeMs, ...getPositionAt(activeBox.id, currentTimeMs) })}
-                  onRemoveKeyframe={t => removeKeyframe(activeBox.id, t)}
-                  onSeek={seekToMs}
-                />
-              )}
             </div>
           </div>
         </div>
@@ -610,14 +643,14 @@ export function EditorShell({
                   border: '1px solid rgba(255,255,255,0.08)',
                 }}>
                   <div className="relative flex items-center justify-center">
-                    <span className="w-12 h-12 rounded-full border-2 border-t-transparent animate-spin" style={{ borderColor: '#00b4d8', borderTopColor: 'transparent' }} />
-                    <span className="absolute w-8 h-8 rounded-full border-2 border-t-transparent animate-spin" style={{ borderColor: 'rgba(0,180,216,0.3)', borderTopColor: 'transparent', animationDirection: 'reverse', animationDuration: '0.8s' }} />
+                    <span className="w-12 h-12 rounded-full border-2 border-t-transparent animate-spin" style={{ borderColor: '#c8ff00', borderTopColor: 'transparent' }} />
+                    <span className="absolute w-8 h-8 rounded-full border-2 border-t-transparent animate-spin" style={{ borderColor: 'rgba(200,255,0,0.3)', borderTopColor: 'transparent', animationDirection: 'reverse', animationDuration: '0.8s' }} />
                   </div>
                   <div className="text-center flex flex-col gap-1 px-6">
                     <p className="text-sm font-semibold text-white">Processing video…</p>
                     <p className="text-xs animate-pulse" style={{ color: 'rgba(255,255,255,0.4)' }}>This may take a minute</p>
                     {renderElapsed > 0 && (
-                      <p className="text-xs tabular-nums mt-1" style={{ color: 'rgba(0,180,216,0.7)' }}>{Math.floor(renderElapsed / 60)}m {renderElapsed % 60}s</p>
+                      <p className="text-xs tabular-nums mt-1" style={{ color: 'rgba(200,255,0,0.7)' }}>{Math.floor(renderElapsed / 60)}m {renderElapsed % 60}s</p>
                     )}
                   </div>
                   {clipStatus === 'rendering' && renderElapsed > 180 && (
@@ -631,7 +664,7 @@ export function EditorShell({
               ) : (
                 <OutputCanvas
                   videoRef={videoRef} currentTimeMs={currentTimeMs} clipStartMs={clip.start_ms}
-                  activeSegment={playingSegment} getPositionAt={getPositionAt}
+                  activeSegment={playingSegment} getPositionAt={effectiveGetPositionAt}
                   skipTransitionRef={skipCanvasTransitionRef} words={displayWords}
                   captionStyle={captionStyle} captionTextCase={captionTextCase} showCaptions={showCaptions}
                   overlays={overlays} activeOverlayId={activeOverlayId}
@@ -654,13 +687,13 @@ export function EditorShell({
                     <svg width="15" height="15" viewBox="0 0 15 15" fill="none"><path d="M7.5 2v8M4 7l3.5 3.5L11 7M2 13h11" stroke="white" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/></svg>
                     Download
                   </a>
-                  <button onClick={handleExport} disabled={exporting} className="w-full py-2 text-xs rounded-xl font-medium disabled:opacity-50" style={{ background: 'rgba(0,180,216,0.1)', color: '#00b4d8', border: '1px solid rgba(0,180,216,0.2)' }}>{exporting ? 'Queuing…' : 'Re-render'}</button>
+                  <button onClick={handleExport} disabled={exporting} className="w-full py-2 text-xs rounded-xl font-medium disabled:opacity-50" style={{ background: 'rgba(200,255,0,0.1)', color: '#c8ff00', border: '1px solid rgba(200,255,0,0.2)' }}>{exporting ? 'Queuing…' : 'Re-render'}</button>
                   <button onClick={handleReEdit} className="w-full py-2 text-xs rounded-xl font-medium" style={{ background: 'rgba(124,58,237,0.1)', color: '#a78bfa', border: '1px solid rgba(124,58,237,0.2)' }}>Re-edit</button>
                 </>
               ) : clipStatus !== 'rendering' && !exporting ? (
                 <button onClick={handleExport} disabled={exporting}
-                  className="w-full py-3 rounded-xl text-sm font-semibold text-white disabled:opacity-50 transition-opacity hover:opacity-90"
-                  style={{ background: '#00b4d8' }}>
+                  className="w-full py-3 rounded-xl text-sm font-semibold disabled:opacity-50 transition-opacity hover:opacity-90"
+                  style={{ background: '#c8ff00', color: '#000' }}>
                   {exporting ? 'Queuing…' : 'Process video'}
                 </button>
               ) : null}
@@ -669,9 +702,16 @@ export function EditorShell({
 
           {/* Crop positions */}
           <div className="p-4" style={{ borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
-            <div className="flex items-center justify-between mb-3">
-              <span className="text-xs font-semibold text-white" style={{ letterSpacing: '0.05em', textTransform: 'uppercase' }}>Crop Positions</span>
+            <div className="flex items-center justify-between mb-0 cursor-pointer select-none"
+              onClick={() => setCropPositionsOpen(o => !o)}>
               <div className="flex items-center gap-2">
+                <svg width="12" height="12" viewBox="0 0 12 12" fill="none"
+                  style={{ transform: cropPositionsOpen ? 'rotate(90deg)' : 'rotate(0deg)', transition: 'transform 0.15s', color: 'rgba(255,255,255,0.3)', flexShrink: 0 }}>
+                  <path d="M4 2l4 4-4 4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                </svg>
+                <span className="text-xs font-semibold text-white" style={{ letterSpacing: '0.05em', textTransform: 'uppercase' }}>Crop Positions</span>
+              </div>
+              <div className="flex items-center gap-2" onClick={e => e.stopPropagation()}>
                 {segments.length > 1 && (
                   <button onClick={() => {
                     const first = segments[0]; if (!first) return
@@ -688,7 +728,7 @@ export function EditorShell({
                 </span>
               </div>
             </div>
-            <div className="flex flex-col gap-0.5">
+            {cropPositionsOpen && <div className="flex flex-col gap-0.5 mt-3">
               {segments.filter(seg => seg.end_ms - seg.start_ms > 50).map((seg, i) => {
                 const col = SEG_COLORS[i % SEG_COLORS.length]
                 const box = seg.crop_boxes[0]
@@ -720,7 +760,7 @@ export function EditorShell({
                   </div>
                 )
               })}
-            </div>
+            </div>}
           </div>
 
           {/* Slot source info */}
@@ -749,7 +789,7 @@ export function EditorShell({
                   <p className="text-xs mt-1" style={{ color: 'rgba(255,255,255,0.35)' }}>Available on Starter and above</p>
                 </div>
                 <a href="/pricing" className="px-5 py-2 rounded-xl text-xs font-bold"
-                  style={{ background: '#00b4d8', color: '#000', textDecoration: 'none' }}>
+                  style={{ background: '#c8ff00', color: '#000', textDecoration: 'none' }}>
                   Upgrade Plan →
                 </a>
               </div>
@@ -760,16 +800,16 @@ export function EditorShell({
                     <span style={{ letterSpacing: 0.5 }}>Cc</span><span>Auto-captions</span>
                   </span>
                   <div className="w-10 h-5 rounded-full flex items-center px-0.5 cursor-pointer transition-colors"
-                    style={{ background: showCaptions ? '#00b4d8' : 'rgba(255,255,255,0.1)' }}
+                    style={{ background: showCaptions ? '#c8ff00' : 'rgba(255,255,255,0.1)' }}
                     onClick={() => setShowCaptions(!showCaptions)}>
                     <div className="w-4 h-4 rounded-full bg-white transition-transform" style={{ transform: showCaptions ? 'translateX(20px)' : 'translateX(0)' }} />
                   </div>
                 </div>
                 {(transcribing || retranscribing) ? (
-                  <div className="mx-4 mb-3 flex items-center gap-2.5 px-3 py-2.5 rounded-xl" style={{ background: 'rgba(0,180,216,0.08)', border: '1px solid rgba(0,180,216,0.2)' }}>
-                    <span className="w-4 h-4 rounded-full border-2 border-t-transparent animate-spin shrink-0" style={{ borderColor: '#00b4d8', borderTopColor: 'transparent' }} />
+                  <div className="mx-4 mb-3 flex items-center gap-2.5 px-3 py-2.5 rounded-xl" style={{ background: 'rgba(200,255,0,0.08)', border: '1px solid rgba(200,255,0,0.2)' }}>
+                    <span className="w-4 h-4 rounded-full border-2 border-t-transparent animate-spin shrink-0" style={{ borderColor: '#c8ff00', borderTopColor: 'transparent' }} />
                     <div>
-                      <p className="text-xs font-semibold" style={{ color: '#00b4d8' }}>Generating captions…</p>
+                      <p className="text-xs font-semibold" style={{ color: '#c8ff00' }}>Generating captions…</p>
                       <p className="text-xs animate-pulse mt-0.5" style={{ color: 'rgba(255,255,255,0.35)' }}>This may take a moment</p>
                     </div>
                   </div>
@@ -789,7 +829,7 @@ export function EditorShell({
                             <p className="text-xs mt-0.5" style={{ color: 'rgba(255,255,255,0.35)' }}>Show captions in English letters</p>
                           </div>
                           <button onClick={() => setRomanize(!romanize)} className="relative shrink-0" style={{ width: 44, height: 24 }}>
-                            <div style={{ width: 44, height: 24, borderRadius: 12, background: romanize ? '#00b4d8' : 'rgba(255,255,255,0.15)', transition: 'background 0.2s' }} />
+                            <div style={{ width: 44, height: 24, borderRadius: 12, background: romanize ? '#c8ff00' : 'rgba(255,255,255,0.15)', transition: 'background 0.2s' }} />
                             <div style={{ position: 'absolute', top: 3, left: romanize ? 23 : 3, width: 18, height: 18, borderRadius: '50%', background: '#fff', transition: 'left 0.2s', boxShadow: '0 1px 3px rgba(0,0,0,0.3)' }} />
                           </button>
                         </div>
@@ -964,9 +1004,9 @@ function FilmstripScrubber({
       )}
 
       {/* Playhead */}
-      <div className="absolute top-0 bottom-0 w-0.5 pointer-events-none" style={{ left: `${progress * 100}%`, background: '#00b4d8', boxShadow: '0 0 6px rgba(0,180,216,0.9)' }}>
+      <div className="absolute top-0 bottom-0 w-0.5 pointer-events-none" style={{ left: `${progress * 100}%`, background: '#c8ff00', boxShadow: '0 0 6px rgba(200,255,0,0.9)' }}>
         {/* Diamond head */}
-        <div className="absolute -top-px left-1/2 -translate-x-1/2" style={{ width: 8, height: 8, background: '#00b4d8', transform: 'translateX(-50%) rotate(45deg)', boxShadow: '0 0 4px rgba(0,180,216,0.8)' }} />
+        <div className="absolute -top-px left-1/2 -translate-x-1/2" style={{ width: 8, height: 8, background: '#c8ff00', transform: 'translateX(-50%) rotate(45deg)', boxShadow: '0 0 4px rgba(200,255,0,0.8)' }} />
       </div>
     </div>
   )

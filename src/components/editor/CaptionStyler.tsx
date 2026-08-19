@@ -78,7 +78,7 @@ export function FontPicker({ value, onChange }: FontPickerProps) {
           className="w-full flex items-center justify-between px-3 py-2 rounded-lg"
           style={{
             background: 'rgba(255,255,255,0.06)',
-            border: `1px solid ${open ? 'rgba(0,180,216,0.5)' : 'rgba(255,255,255,0.1)'}`,
+            border: `1px solid ${open ? 'rgba(200,255,0,0.5)' : 'rgba(255,255,255,0.1)'}`,
             cursor: 'pointer',
           }}
         >
@@ -116,8 +116,8 @@ export function FontPicker({ value, onChange }: FontPickerProps) {
                     fontFamily: f.family,
                     fontSize: 14,
                     fontWeight: 700,
-                    color: active ? '#00b4d8' : 'rgba(255,255,255,0.75)',
-                    background: active ? 'rgba(0,180,216,0.1)' : 'transparent',
+                    color: active ? '#c8ff00' : 'rgba(255,255,255,0.75)',
+                    background: active ? 'rgba(200,255,0,0.1)' : 'transparent',
                     borderBottom: '1px solid rgba(255,255,255,0.04)',
                     cursor: 'pointer',
                     display: 'block',
@@ -155,7 +155,7 @@ const PRESET_COLORS = [
   '#FFE700',
   '#FFFFFF',
   '#22c55e',
-  '#00b4d8',
+  '#c8ff00',
   '#ec4899',
   '#f97316',
 ]
@@ -212,10 +212,10 @@ export function CaptionStyler({
               onClick={() => onChange({ color: c })}
               style={{
                 width: 32, height: 32, borderRadius: '50%', background: c, flexShrink: 0,
-                border: color === c ? '2px solid #00b4d8' : '2px solid rgba(255,255,255,0.1)',
+                border: color === c ? '2px solid #c8ff00' : '2px solid rgba(255,255,255,0.1)',
                 transform: color === c ? 'scale(1.15)' : 'scale(1)',
                 transition: 'transform 0.12s, border-color 0.12s',
-                boxShadow: color === c ? '0 0 0 3px rgba(0,180,216,0.25)' : 'none',
+                boxShadow: color === c ? '0 0 0 3px rgba(200,255,0,0.25)' : 'none',
               }}
             />
           ))}
@@ -224,8 +224,8 @@ export function CaptionStyler({
             <div style={{
               width: 32, height: 32, borderRadius: '50%',
               background: 'conic-gradient(red 0deg, yellow 60deg, lime 120deg, cyan 180deg, blue 240deg, magenta 300deg, red 360deg)',
-              border: !isPreset ? '2px solid #00b4d8' : '2px solid rgba(255,255,255,0.2)',
-              boxShadow: !isPreset ? '0 0 0 3px rgba(0,180,216,0.25)' : 'none',
+              border: !isPreset ? '2px solid #c8ff00' : '2px solid rgba(255,255,255,0.2)',
+              boxShadow: !isPreset ? '0 0 0 3px rgba(200,255,0,0.25)' : 'none',
             }} />
             <input
               type="color"
@@ -248,7 +248,7 @@ export function CaptionStyler({
           value={style.size ?? 52}
           onChange={e => onChange({ size: Number(e.target.value) })}
           className="w-full accent-cyan-400"
-          style={{ height: 4, accentColor: '#00b4d8' }}
+          style={{ height: 4, accentColor: '#c8ff00' }}
         />
       </div>
 
@@ -273,29 +273,6 @@ export function CaptionStyler({
         </div>
       </div>
 
-      {/* Caption timing offset */}
-      <div className="flex flex-col gap-2">
-        <div className="flex items-center justify-between">
-          <span className="text-xs font-semibold uppercase tracking-widest" style={{ color: 'rgba(255,255,255,0.3)' }}>Caption Timing</span>
-          <span className="text-xs font-semibold tabular-nums" style={{ color: 'rgba(255,255,255,0.5)' }}>
-            {(style.timing_offset_ms ?? 0) === 0
-              ? 'auto'
-              : (style.timing_offset_ms ?? 0) > 0
-                ? `+${style.timing_offset_ms}ms`
-                : `${style.timing_offset_ms}ms`}
-          </span>
-        </div>
-        <input
-          type="range" min={-2000} max={2000} step={50}
-          value={style.timing_offset_ms ?? 0}
-          onChange={e => onChange({ timing_offset_ms: Number(e.target.value) })}
-          className="w-full"
-          style={{ height: 4, accentColor: '#00b4d8' }}
-        />
-        <p style={{ fontSize: 10, color: 'rgba(255,255,255,0.25)', textAlign: 'center', marginTop: -2 }}>
-          ← earlier &nbsp;&nbsp; later →
-        </p>
-      </div>
 
     </div>
   )

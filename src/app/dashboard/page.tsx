@@ -131,11 +131,14 @@ export default function DashboardPage() {
     <div style={{ minHeight: '100vh', background: 'var(--bg)' }}>
       {/* Nav */}
       <nav style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 24px', height: 52, background: 'var(--nav)', borderBottom: '1px solid var(--border)', boxShadow: 'var(--nav-shadow)', position: 'sticky', top: 0, zIndex: 50 }}>
-        <span style={{ fontSize: 15, fontWeight: 800, color: 'var(--text)', letterSpacing: '-0.02em' }}>✂ Chai Cut</span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <img src="/logo-icon.png" alt="" style={{ width: 32, height: 32, borderRadius: 8, mixBlendMode: 'screen' }} />
+          <span style={{ fontSize: 17, fontWeight: 700, color: '#fff', letterSpacing: '-0.02em' }}>Shortcut</span>
+        </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>{session?.user?.email}</span>
           {planInfo && (
-            <span style={{ fontSize: 11, fontWeight: 700, padding: '3px 10px', borderRadius: 6, background: planInfo.plan === 'free' ? 'var(--surface)' : 'var(--accent)', color: planInfo.plan === 'free' ? 'var(--text-muted)' : '#fff', border: '1px solid var(--border)' }}>
+            <span style={{ fontSize: 11, fontWeight: 700, padding: '3px 10px', borderRadius: 6, background: planInfo.plan === 'free' ? 'var(--surface)' : 'var(--accent)', color: planInfo.plan === 'free' ? 'var(--text-muted)' : '#000', border: '1px solid var(--border)' }}>
               {planInfo.planName}
             </span>
           )}
@@ -169,7 +172,7 @@ export default function DashboardPage() {
           style={{
             borderRadius: 18, padding: '56px 24px', textAlign: 'center', cursor: 'pointer',
             border: `2px dashed ${dragOver ? 'var(--accent)' : 'var(--border-strong)'}`,
-            background: dragOver ? 'rgba(0,180,216,0.06)' : 'var(--surface)',
+            background: dragOver ? 'rgba(200,255,0,0.06)' : 'var(--surface)',
             boxShadow: 'var(--card-shadow)',
             transition: 'all 0.2s', marginBottom: 12,
           }}
@@ -345,7 +348,7 @@ function VideoCard({ video, index, onDeleted }: { video: Video; index: number; o
         {video.status === 'ready' && (
           <button
             onClick={e => { e.stopPropagation(); openEditor() }}
-            style={{ fontSize: 12, fontWeight: 700, padding: '5px 12px', borderRadius: 8, background: 'var(--accent)', color: '#fff', border: 'none', cursor: 'pointer', flexShrink: 0 }}
+            style={{ fontSize: 12, fontWeight: 700, padding: '5px 12px', borderRadius: 8, background: 'var(--accent)', color: '#000', border: 'none', cursor: 'pointer', flexShrink: 0 }}
           >
             Edit →
           </button>

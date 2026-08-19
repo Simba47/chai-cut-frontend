@@ -37,7 +37,7 @@ export default function PricingPage() {
   return (
     <div className="min-h-screen" style={{ background: '#0d0d0d' }}>
       <nav className="flex items-center justify-between px-6 py-3 border-b" style={{ background: '#111', borderColor: 'rgba(255,255,255,0.07)' }}>
-        <a href="/dashboard" className="text-base font-bold text-white tracking-tight">✂ Chai Cut</a>
+        <a href="/dashboard"><img src="/logo.png" alt="Shortcut" style={{ height: 26, objectFit: 'contain' }} /></a>
         {session && (
           <a href="/dashboard" className="text-xs px-3 py-1.5 rounded-lg" style={{ color: 'rgba(255,255,255,0.4)', background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)' }}>
             Dashboard
@@ -70,13 +70,13 @@ export default function PricingPage() {
                 key={key}
                 className="rounded-2xl flex flex-col"
                 style={{
-                  background: isPopular ? 'rgba(0,180,216,0.08)' : '#161616',
-                  border: `1px solid ${isPopular ? 'rgba(0,180,216,0.4)' : 'rgba(255,255,255,0.08)'}`,
+                  background: isPopular ? 'rgba(200,255,0,0.08)' : '#161616',
+                  border: `1px solid ${isPopular ? 'rgba(200,255,0,0.4)' : 'rgba(255,255,255,0.08)'}`,
                   padding: '24px 20px',
                 }}
               >
                 {isPopular && (
-                  <div className="text-xs font-semibold mb-3 px-2 py-0.5 rounded self-start" style={{ background: '#00b4d8', color: '#000' }}>
+                  <div className="text-xs font-semibold mb-3 px-2 py-0.5 rounded self-start" style={{ background: '#c8ff00', color: '#000' }}>
                     Most Popular
                   </div>
                 )}
@@ -102,7 +102,7 @@ export default function PricingPage() {
                     ['No watermark', !plan.watermark],
                   ] as [string, boolean][]).map(([label, included]) => (
                     <li key={label} className="flex items-center gap-2 text-sm" style={{ color: included ? 'rgba(255,255,255,0.75)' : 'rgba(255,255,255,0.2)' }}>
-                      <span style={{ color: included ? '#00b4d8' : 'rgba(255,255,255,0.15)', fontSize: '1rem', lineHeight: '1' }}>
+                      <span style={{ color: included ? '#c8ff00' : 'rgba(255,255,255,0.15)', fontSize: '1rem', lineHeight: '1' }}>
                         {included ? '✓' : '×'}
                       </span>
                       {label}
@@ -116,7 +116,7 @@ export default function PricingPage() {
                     disabled={!!loading}
                     className="w-full py-2.5 rounded-xl text-sm font-semibold transition-opacity"
                     style={{
-                      background: isPopular ? '#00b4d8' : 'rgba(255,255,255,0.1)',
+                      background: isPopular ? '#c8ff00' : 'rgba(255,255,255,0.1)',
                       color: isPopular ? '#000' : '#fff',
                       opacity: loading && !busy ? 0.4 : 1,
                       cursor: loading ? 'wait' : 'pointer',

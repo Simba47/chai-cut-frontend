@@ -13,7 +13,7 @@ export default function EditorError({ error, reset }: { error: Error & { digest?
         <button onClick={() => router.push('/dashboard')} style={{ width: 32, height: 32, display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: 8, background: 'rgba(255,255,255,0.05)', border: 'none', cursor: 'pointer', color: 'rgba(255,255,255,0.7)' }}>
           <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M9 2.5L4.5 7 9 11.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/></svg>
         </button>
-        <span style={{ fontSize: 13, fontWeight: 600, color: '#fff' }}>✂ Chai Cut</span>
+        <img src="/logo.png" alt="Shortcut" style={{ height: 22, objectFit: 'contain' }} />
       </header>
 
       {/* Error body */}
@@ -34,7 +34,7 @@ export default function EditorError({ error, reset }: { error: Error & { digest?
           </button>
           <button
             onClick={() => router.push('/dashboard')}
-            style={{ padding: '10px 20px', borderRadius: 12, background: '#00b4d8', color: '#000', fontSize: 13, fontWeight: 700, cursor: 'pointer', border: 'none' }}
+            style={{ padding: '10px 20px', borderRadius: 12, background: '#c8ff00', color: '#000', fontSize: 13, fontWeight: 700, cursor: 'pointer', border: 'none' }}
           >
             Back to Dashboard
           </button>

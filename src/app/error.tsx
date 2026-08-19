@@ -22,7 +22,7 @@ export default function GlobalError({ error, reset }: { error: Error & { digest?
         </button>
         <button
           onClick={() => router.push('/dashboard')}
-          style={{ padding: '10px 20px', borderRadius: 12, background: '#00b4d8', color: '#000', fontSize: 14, fontWeight: 700, cursor: 'pointer', border: 'none' }}
+          style={{ padding: '10px 20px', borderRadius: 12, background: '#c8ff00', color: '#000', fontSize: 14, fontWeight: 700, cursor: 'pointer', border: 'none' }}
         >
           Dashboard
         </button>

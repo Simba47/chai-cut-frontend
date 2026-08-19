@@ -237,10 +237,10 @@ export function SegmentTimeline({
         })}
         {/* Playhead triangle */}
         <div className="absolute top-0 pointer-events-none z-20" style={{ left: `${playheadPct}%`, transform: 'translateX(-50%)' }}>
-          <svg width="10" height="10" viewBox="0 0 10 10"><path d="M5 10L0 0h10z" fill="#00b4d8"/></svg>
+          <svg width="10" height="10" viewBox="0 0 10 10"><path d="M5 10L0 0h10z" fill="#c8ff00"/></svg>
         </div>
         {/* Playhead line */}
-        <div className="absolute inset-y-0 pointer-events-none z-10" style={{ left: `${playheadPct}%`, width: 1, background: '#00b4d8', opacity: 0.6 }} />
+        <div className="absolute inset-y-0 pointer-events-none z-10" style={{ left: `${playheadPct}%`, width: 1, background: '#c8ff00', opacity: 0.6 }} />
       </div>
 
       {/* ── Segment color band ─────────────────────────────────────────── */}
@@ -258,7 +258,7 @@ export function SegmentTimeline({
             />
           )
         })}
-        <div className="absolute inset-y-0 pointer-events-none z-10" style={{ left: `${playheadPct}%`, width: 1, background: '#00b4d8' }} />
+        <div className="absolute inset-y-0 pointer-events-none z-10" style={{ left: `${playheadPct}%`, width: 1, background: '#c8ff00' }} />
       </div>
 
       {/* ── Main thumbnail track ───────────────────────────────────────── */}
@@ -309,7 +309,7 @@ export function SegmentTimeline({
 
         {/* Playhead line */}
         <div className="absolute inset-y-0 pointer-events-none z-30"
-          style={{ left: `${playheadPct}%`, width: 1.5, background: '#00b4d8', boxShadow: '0 0 6px rgba(0,180,216,0.8)' }} />
+          style={{ left: `${playheadPct}%`, width: 1.5, background: '#c8ff00', boxShadow: '0 0 6px rgba(200,255,0,0.8)' }} />
         {/* Playhead grab handle — visible pill, draggable */}
         <div
           className="absolute z-40 flex items-center justify-center"
@@ -320,8 +320,8 @@ export function SegmentTimeline({
             width: 18,
             height: 28,
             borderRadius: 6,
-            background: '#00b4d8',
-            boxShadow: '0 0 8px rgba(0,180,216,0.7)',
+            background: '#c8ff00',
+            boxShadow: '0 0 8px rgba(200,255,0,0.7)',
             cursor: 'ew-resize',
           }}
           onMouseDown={e => { e.stopPropagation(); handleTrackDrag(e) }}

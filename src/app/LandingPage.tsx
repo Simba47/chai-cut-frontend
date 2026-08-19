@@ -27,7 +27,7 @@ export function LandingPage() {
 
       {/* ── NAV ── */}
       <nav className="lp-nav">
-        <a href="#" className="logo">✂ Chai <span className="cut-word">Cut</span></a>
+        <a href="#" className="logo"><img src="/logo.png" alt="Shortcut" style={{ height: 30, objectFit: 'contain' }} /></a>
         <ul className="nav-links">
           <li><a href="#features">Features</a></li>
           <li><a href="#process">How it works</a></li>
@@ -54,7 +54,7 @@ export function LandingPage() {
             Your reel,<br />your voice.<br /><span className="warm">Auto-captioned.</span>
           </h1>
           <p className="hero-sub">
-            Chai Cut trims, crops, and captions your short-form video in minutes — with support for Telugu, Hindi, Tamil, and five more Indian languages.
+            Shortcut trims, crops, and captions your short-form video in minutes — with support for Telugu, Hindi, Tamil, and five more Indian languages.
           </p>
           <div className="cta-row">
             <LiquidButton asChild size="lg">
@@ -149,7 +149,7 @@ export function LandingPage() {
               <span className="arrow-connector">→</span>
               <div className="step-num"><div className="step-num-circle">1</div> Upload</div>
               <h3 className="step-title">Drop your video</h3>
-              <p className="step-desc">Upload from your device or paste a link. Chai Cut handles any length — short clips or hour-long sessions.</p>
+              <p className="step-desc">Upload from your device or paste a link. Shortcut handles any length — short clips or hour-long sessions.</p>
             </div>
             <div className="process-step reveal">
               <span className="arrow-connector">→</span>
@@ -237,7 +237,7 @@ export function LandingPage() {
       {/* ── CTA ── */}
       <section className="cta-section">
         <h2 className="reveal">Ready to <span style={{ color: 'var(--warm)' }}>cut</span> your first reel?</h2>
-        <p className="reveal">Join thousands of Indian creators already editing on Chai Cut. Free to start, no credit card.</p>
+        <p className="reveal">Join thousands of Indian creators already editing on Shortcut. Free to start, no credit card.</p>
         <div className="cta-btns reveal">
           <Link href="/signup" className="btn-primary" style={{ fontSize: 16, padding: '16px 40px' }}>
             <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
@@ -252,8 +252,8 @@ export function LandingPage() {
       {/* ── FOOTER ── */}
       <footer className="lp-footer">
         <div className="footer-left">
-          <a href="#" className="footer-logo">✂ Chai <span className="cut-word">Cut</span></a>
-          <span className="footer-copy">© 2026 Chai Cut. All rights reserved.</span>
+          <a href="#" className="footer-logo"><img src="/logo.png" alt="Shortcut" style={{ height: 24, objectFit: 'contain' }} /></a>
+          <span className="footer-copy">© 2026 Shortcut. All rights reserved.</span>
         </div>
         <div className="footer-links">
           <a href="#">Privacy</a>

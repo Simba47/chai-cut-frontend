@@ -22,7 +22,7 @@ export default function EditorLoading() {
         {/* Layout buttons */}
         <div style={{ display: 'flex', gap: 4, padding: 4, borderRadius: 12, background: 'rgba(0,0,0,0.4)' }}>
           {['Vertical', 'Split', 'Trio', 'Horizontal'].map((l, i) => (
-            <div key={l} className="sk" style={{ width: i === 0 ? 56 : 44, height: 28, borderRadius: 8, background: i === 0 ? 'rgba(0,180,216,0.25)' : undefined }} />
+            <div key={l} className="sk" style={{ width: i === 0 ? 56 : 44, height: 28, borderRadius: 8, background: i === 0 ? 'rgba(200,255,0,0.25)' : undefined }} />
           ))}
         </div>
         <div style={{ flex: 1 }} />
@@ -49,7 +49,7 @@ export default function EditorLoading() {
             <div className="sk" style={{ width: 36, height: 36, borderRadius: 18 }} />
             <div className="sk" style={{ width: 28, height: 28, borderRadius: 6 }} />
             <div style={{ flex: 1, height: 3, borderRadius: 2, background: 'rgba(255,255,255,0.08)', margin: '0 4px' }}>
-              <div style={{ width: '0%', height: '100%', background: '#00b4d8', borderRadius: 2 }} />
+              <div style={{ width: '0%', height: '100%', background: '#c8ff00', borderRadius: 2 }} />
             </div>
             <div className="sk" style={{ width: 60, height: 14, borderRadius: 4 }} />
           </div>

@@ -11,7 +11,7 @@
   --text: #ffffff;
   --text-muted: rgba(255,255,255,0.35);
   --text-dim: rgba(255,255,255,0.22);
-  --accent: #00b4d8;
+  --accent: #c8ff00;
   --danger: #ef4444;
   --success: #22c55e;
 }
@@ -27,7 +27,7 @@
   --text: #111111;
   --text-muted: rgba(0,0,0,0.5);
   --text-dim: rgba(0,0,0,0.3);
-  --accent: #0099c0;
+  --accent: #a8d900;
   --danger: #dc2626;
   --success: #16a34a;
   --card-shadow: none;

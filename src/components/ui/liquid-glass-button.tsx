@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import { Slot } from "@radix-ui/react-slot"
+import { Slot, Slottable } from "@radix-ui/react-slot"
 import { cva, type VariantProps } from "class-variance-authority"
 import { cn } from "@/lib/utils"
 
@@ -64,9 +64,7 @@ function LiquidButton({
         className="absolute top-0 left-0 isolate -z-10 h-full w-full overflow-hidden rounded-full"
         style={{ backdropFilter: 'url("#liquid-glass-filter")' }}
       />
-      <div className="pointer-events-none z-10">
-        {children}
-      </div>
+      <Slottable>{children}</Slottable>
       <GlassFilter />
     </Comp>
   )

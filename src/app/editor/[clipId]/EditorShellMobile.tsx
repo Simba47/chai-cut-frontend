@@ -445,7 +445,7 @@ export function EditorShellMobile({
       <div style={{ display: 'flex', gap: 2, background: 'rgba(0,0,0,0.4)', borderRadius: 10, padding: 3, flexShrink: 0 }}>
         {LAYOUTS.map(l => (
           <button key={l.id} onClick={() => handleLayoutChange(l.id)}
-            style={{ padding: '4px 8px', borderRadius: 7, fontSize: 11, fontWeight: 600, border: 'none', cursor: 'pointer', background: activeSegment?.layout === l.id ? '#00b4d8' : 'transparent', color: activeSegment?.layout === l.id ? '#fff' : 'rgba(255,255,255,0.4)' }}>
+            style={{ padding: '4px 8px', borderRadius: 7, fontSize: 11, fontWeight: 600, border: 'none', cursor: 'pointer', background: activeSegment?.layout === l.id ? '#c8ff00' : 'transparent', color: activeSegment?.layout === l.id ? '#000' : 'rgba(255,255,255,0.4)' }}>
             {l.label}
           </button>
         ))}
@@ -464,16 +464,16 @@ export function EditorShellMobile({
       <button onClick={() => seekToMs(Math.max(0, currentTimeMs - 5000))} style={{ width: compact ? 30 : 36, height: compact ? 30 : 36, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(255,255,255,0.05)', borderRadius: 8, border: 'none', cursor: 'pointer', color: 'rgba(255,255,255,0.5)' }}>
         <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M9.5 3L5 7l4.5 4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/><line x1="3" y1="2.5" x2="3" y2="11.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>
       </button>
-      <button onClick={togglePlay} style={{ width: compact ? 36 : 44, height: compact ? 36 : 44, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#00b4d8', borderRadius: compact ? 18 : 22, border: 'none', cursor: 'pointer', flexShrink: 0 }}>
+      <button onClick={togglePlay} style={{ width: compact ? 36 : 44, height: compact ? 36 : 44, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#c8ff00', borderRadius: compact ? 18 : 22, border: 'none', cursor: 'pointer', flexShrink: 0 }}>
         {playing
-          ? <svg width="12" height="12" viewBox="0 0 12 12" fill="white"><rect x="2" y="1.5" width="3" height="9" rx="1"/><rect x="7" y="1.5" width="3" height="9" rx="1"/></svg>
-          : <svg width="12" height="12" viewBox="0 0 12 12" fill="white"><path d="M3 1.5l7.5 4.5L3 10.5V1.5z"/></svg>
+          ? <svg width="12" height="12" viewBox="0 0 12 12" fill="black"><rect x="2" y="1.5" width="3" height="9" rx="1"/><rect x="7" y="1.5" width="3" height="9" rx="1"/></svg>
+          : <svg width="12" height="12" viewBox="0 0 12 12" fill="black"><path d="M3 1.5l7.5 4.5L3 10.5V1.5z"/></svg>
         }
       </button>
       <button onClick={() => seekToMs(Math.min(clipDurationMs, currentTimeMs + 5000))} style={{ width: compact ? 30 : 36, height: compact ? 30 : 36, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(255,255,255,0.05)', borderRadius: 8, border: 'none', cursor: 'pointer', color: 'rgba(255,255,255,0.5)' }}>
         <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M4.5 3L9 7l-4.5 4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/><line x1="11" y1="2.5" x2="11" y2="11.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>
       </button>
-      {compact && <button onClick={handleCut} style={{ padding: '3px 8px', borderRadius: 6, background: 'rgba(0,180,216,0.12)', color: '#00b4d8', fontSize: 11, fontWeight: 700, border: '1px solid rgba(0,180,216,0.2)', cursor: 'pointer' }}>✂</button>}
+      {compact && <button onClick={handleCut} style={{ padding: '3px 8px', borderRadius: 6, background: 'rgba(200,255,0,0.12)', color: '#c8ff00', fontSize: 11, fontWeight: 700, border: '1px solid rgba(200,255,0,0.2)', cursor: 'pointer' }}>✂</button>}
       <div style={{ flex: 1 }} />
       <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.45)', fontVariantNumeric: 'tabular-nums' }}>
         {msToLabel(currentTimeMs)} / {msToLabel(clipDurationMs)}
@@ -497,9 +497,9 @@ export function EditorShellMobile({
           <div style={{ width: 160, flexShrink: 0, borderRadius: 8, overflow: 'hidden', border: '1px solid rgba(255,255,255,0.1)' }}>
             {(clipStatus === 'rendering' || exporting) ? (
               <div style={{ width: '100%', height: '100%', background: '#0d0d0d', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
-                <span style={{ width: 28, height: 28, borderRadius: 14, border: '2px solid #00b4d8', borderTopColor: 'transparent', display: 'block', animation: 'spin 1s linear infinite' }} />
+                <span style={{ width: 28, height: 28, borderRadius: 14, border: '2px solid #c8ff00', borderTopColor: 'transparent', display: 'block', animation: 'spin 1s linear infinite' }} />
                 <p style={{ fontSize: 11, color: '#fff', fontWeight: 600 }}>Processing…</p>
-                {renderElapsed > 0 && <p style={{ fontSize: 10, color: 'rgba(0,180,216,0.7)', fontVariantNumeric: 'tabular-nums' }}>{Math.floor(renderElapsed / 60)}m {renderElapsed % 60}s</p>}
+                {renderElapsed > 0 && <p style={{ fontSize: 10, color: 'rgba(200,255,0,0.7)', fontVariantNumeric: 'tabular-nums' }}>{Math.floor(renderElapsed / 60)}m {renderElapsed % 60}s</p>}
               </div>
             ) : (
               <OutputCanvas
@@ -524,11 +524,11 @@ export function EditorShellMobile({
                 <svg width="13" height="13" viewBox="0 0 15 15" fill="none"><path d="M7.5 2v8M4 7l3.5 3.5L11 7M2 13h11" stroke="white" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/></svg>
                 Download
               </a>
-              <button onClick={handleExport} disabled={exporting} style={{ padding: '8px 0', borderRadius: 8, background: 'rgba(0,180,216,0.1)', color: '#00b4d8', fontSize: 11, fontWeight: 600, border: '1px solid rgba(0,180,216,0.2)', cursor: 'pointer', opacity: exporting ? 0.5 : 1 }}>{exporting ? 'Queuing…' : 'Re-render'}</button>
+              <button onClick={handleExport} disabled={exporting} style={{ padding: '8px 0', borderRadius: 8, background: 'rgba(200,255,0,0.1)', color: '#c8ff00', fontSize: 11, fontWeight: 600, border: '1px solid rgba(200,255,0,0.2)', cursor: 'pointer', opacity: exporting ? 0.5 : 1 }}>{exporting ? 'Queuing…' : 'Re-render'}</button>
               <button onClick={handleReEdit} style={{ padding: '8px 0', borderRadius: 8, background: 'rgba(124,58,237,0.1)', color: '#a78bfa', fontSize: 11, fontWeight: 600, border: '1px solid rgba(124,58,237,0.2)', cursor: 'pointer' }}>Re-edit</button>
             </>
           ) : clipStatus !== 'rendering' && !exporting ? (
-            <button onClick={handleExport} style={{ padding: '11px 0', borderRadius: 10, background: '#00b4d8', color: '#fff', fontSize: 13, fontWeight: 700, border: 'none', cursor: 'pointer' }}>Process video</button>
+            <button onClick={handleExport} style={{ padding: '11px 0', borderRadius: 10, background: '#c8ff00', color: '#000', fontSize: 13, fontWeight: 700, border: 'none', cursor: 'pointer' }}>Process video</button>
           ) : clipStatus === 'rendering' && renderElapsed > 180 ? (
             <button onClick={handleReEdit} style={{ fontSize: 11, padding: '8px 0', borderRadius: 8, background: 'rgba(239,68,68,0.12)', color: '#f87171', border: '1px solid rgba(239,68,68,0.2)', cursor: 'pointer' }}>Stuck? Reset</button>
           ) : null}
@@ -566,20 +566,20 @@ export function EditorShellMobile({
             <span style={{ fontSize: 20 }}>🔒</span>
             <p style={{ fontSize: 11, fontWeight: 700, color: '#fff' }}>Auto-captions</p>
             <p style={{ fontSize: 10, color: 'rgba(255,255,255,0.35)' }}>Available on Starter and above</p>
-            <a href="/pricing" style={{ marginTop: 4, padding: '7px 16px', borderRadius: 8, background: '#00b4d8', color: '#000', fontSize: 11, fontWeight: 700, textDecoration: 'none' }}>Upgrade Plan →</a>
+            <a href="/pricing" style={{ marginTop: 4, padding: '7px 16px', borderRadius: 8, background: '#c8ff00', color: '#000', fontSize: 11, fontWeight: 700, textDecoration: 'none' }}>Upgrade Plan →</a>
           </div>
         ) : (
           <>
             <div style={{ padding: '10px 12px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
               <span style={{ fontSize: 11, fontWeight: 600, color: showCaptions ? '#fff' : 'rgba(255,255,255,0.45)' }}>Auto-captions</span>
-              <div onClick={() => setShowCaptions(!showCaptions)} style={{ width: 36, height: 20, borderRadius: 10, display: 'flex', alignItems: 'center', paddingLeft: 2, cursor: 'pointer', background: showCaptions ? '#00b4d8' : 'rgba(255,255,255,0.1)', transition: 'background 0.2s' }}>
+              <div onClick={() => setShowCaptions(!showCaptions)} style={{ width: 36, height: 20, borderRadius: 10, display: 'flex', alignItems: 'center', paddingLeft: 2, cursor: 'pointer', background: showCaptions ? '#c8ff00' : 'rgba(255,255,255,0.1)', transition: 'background 0.2s' }}>
                 <div style={{ width: 16, height: 16, borderRadius: 8, background: '#fff', transition: 'transform 0.2s', transform: showCaptions ? 'translateX(16px)' : 'translateX(0)' }} />
               </div>
             </div>
             {(transcribing || retranscribing) && (
-              <div style={{ margin: '0 12px 10px', display: 'flex', alignItems: 'center', gap: 8, padding: '7px 10px', background: 'rgba(0,180,216,0.08)', borderRadius: 8, border: '1px solid rgba(0,180,216,0.2)' }}>
-                <span style={{ width: 12, height: 12, borderRadius: 6, border: '2px solid #00b4d8', borderTopColor: 'transparent', display: 'block', animation: 'spin 0.8s linear infinite', flexShrink: 0 }} />
-                <p style={{ fontSize: 11, color: '#00b4d8', fontWeight: 600 }}>Generating captions…</p>
+              <div style={{ margin: '0 12px 10px', display: 'flex', alignItems: 'center', gap: 8, padding: '7px 10px', background: 'rgba(200,255,0,0.08)', borderRadius: 8, border: '1px solid rgba(200,255,0,0.2)' }}>
+                <span style={{ width: 12, height: 12, borderRadius: 6, border: '2px solid #c8ff00', borderTopColor: 'transparent', display: 'block', animation: 'spin 0.8s linear infinite', flexShrink: 0 }} />
+                <p style={{ fontSize: 11, color: '#c8ff00', fontWeight: 600 }}>Generating captions…</p>
               </div>
             )}
             {showCaptions && (
@@ -688,8 +688,8 @@ export function EditorShellMobile({
           <div style={{ flexShrink: 0, height: 52, display: 'flex', alignItems: 'stretch', overflowX: 'auto', overflowY: 'hidden', background: '#0d0d0d', borderBottom: '1px solid rgba(255,255,255,0.07)', scrollbarWidth: 'none' }}>
             {TABS.map(tab => (
               <button key={tab.id} onClick={() => setActiveTab(tab.id)}
-                style={{ flexShrink: 0, minWidth: 68, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 3, background: 'transparent', border: 'none', cursor: 'pointer', borderBottom: activeTab === tab.id ? '2px solid #00b4d8' : '2px solid transparent', paddingTop: 2 }}>
-                <span style={{ fontSize: 15, lineHeight: 1, color: activeTab === tab.id ? '#00b4d8' : 'rgba(255,255,255,0.4)' }}>{tab.icon}</span>
+                style={{ flexShrink: 0, minWidth: 68, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 3, background: 'transparent', border: 'none', cursor: 'pointer', borderBottom: activeTab === tab.id ? '2px solid #c8ff00' : '2px solid transparent', paddingTop: 2 }}>
+                <span style={{ fontSize: 15, lineHeight: 1, color: activeTab === tab.id ? '#c8ff00' : 'rgba(255,255,255,0.4)' }}>{tab.icon}</span>
                 <span style={{ fontSize: 10, fontWeight: 600, color: activeTab === tab.id ? '#fff' : 'rgba(255,255,255,0.35)', letterSpacing: 0.2 }}>{tab.label}</span>
               </button>
             ))}
@@ -701,7 +701,7 @@ export function EditorShellMobile({
             {activeTab === 'timeline' && (
               <div style={{ display: 'flex', flexDirection: 'column' }}>
                 <div style={{ padding: '10px 12px', display: 'flex', gap: 8, borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
-                  <button onClick={handleCut} style={{ flex: 1, padding: '10px 0', borderRadius: 10, background: 'rgba(0,180,216,0.12)', color: '#00b4d8', fontSize: 13, fontWeight: 600, border: '1px solid rgba(0,180,216,0.25)', cursor: 'pointer' }}>✂ Cut here</button>
+                  <button onClick={handleCut} style={{ flex: 1, padding: '10px 0', borderRadius: 10, background: 'rgba(200,255,0,0.12)', color: '#c8ff00', fontSize: 13, fontWeight: 600, border: '1px solid rgba(200,255,0,0.25)', cursor: 'pointer' }}>✂ Cut here</button>
                   {segments.length > 1 && (
                     <button onClick={() => { const f = segments[0]; if (!f) return; segments.slice(1).forEach(s => removeSegment(s.id)); updateSegment(f.id, { start_ms: 0, end_ms: clip.end_ms - clip.start_ms }); setActiveSegmentId(f.id) }}
                       style={{ padding: '10px 16px', borderRadius: 10, background: 'rgba(239,68,68,0.1)', color: '#f87171', fontSize: 13, fontWeight: 600, border: '1px solid rgba(239,68,68,0.2)', cursor: 'pointer' }}>Reset</button>
@@ -751,11 +751,11 @@ export function EditorShellMobile({
                       <div key={key} style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                           <span style={{ fontSize: 12, fontWeight: 600, color: 'rgba(255,255,255,0.7)' }}>{label}</span>
-                          <span style={{ fontSize: 12, color: '#00b4d8', fontVariantNumeric: 'tabular-nums' }}>{Math.round(cropPos[key] * 100)}%</span>
+                          <span style={{ fontSize: 12, color: '#c8ff00', fontVariantNumeric: 'tabular-nums' }}>{Math.round(cropPos[key] * 100)}%</span>
                         </div>
                         <input type="range" min={0} max={100} value={Math.round(cropPos[key] * 100)}
                           onChange={e => handleCropChange(key, +e.target.value / 100)}
-                          style={{ width: '100%', accentColor: '#00b4d8' }} />
+                          style={{ width: '100%', accentColor: '#c8ff00' }} />
                       </div>
                     ))}
                   </>
@@ -770,20 +770,20 @@ export function EditorShellMobile({
                     <span style={{ fontSize: 36 }}>🔒</span>
                     <p style={{ fontSize: 16, fontWeight: 700, color: '#fff' }}>Auto-captions</p>
                     <p style={{ fontSize: 13, color: 'rgba(255,255,255,0.4)', maxWidth: 220 }}>Auto-captions are available on Starter and above.</p>
-                    <a href="/pricing" style={{ padding: '11px 24px', borderRadius: 12, background: '#00b4d8', color: '#000', fontSize: 13, fontWeight: 700, textDecoration: 'none' }}>Upgrade Plan →</a>
+                    <a href="/pricing" style={{ padding: '11px 24px', borderRadius: 12, background: '#c8ff00', color: '#000', fontSize: 13, fontWeight: 700, textDecoration: 'none' }}>Upgrade Plan →</a>
                   </div>
                 ) : (
                   <>
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 14px', background: 'rgba(255,255,255,0.04)', borderRadius: 12, border: '1px solid rgba(255,255,255,0.07)' }}>
                       <span style={{ fontSize: 14, fontWeight: 600, color: showCaptions ? '#fff' : 'rgba(255,255,255,0.45)' }}>Auto-captions</span>
-                      <div onClick={() => setShowCaptions(!showCaptions)} style={{ width: 44, height: 24, borderRadius: 12, display: 'flex', alignItems: 'center', paddingLeft: 2, cursor: 'pointer', background: showCaptions ? '#00b4d8' : 'rgba(255,255,255,0.12)', transition: 'background 0.2s' }}>
+                      <div onClick={() => setShowCaptions(!showCaptions)} style={{ width: 44, height: 24, borderRadius: 12, display: 'flex', alignItems: 'center', paddingLeft: 2, cursor: 'pointer', background: showCaptions ? '#c8ff00' : 'rgba(255,255,255,0.12)', transition: 'background 0.2s' }}>
                         <div style={{ width: 20, height: 20, borderRadius: 10, background: '#fff', transition: 'transform 0.2s', transform: showCaptions ? 'translateX(20px)' : 'translateX(0)' }} />
                       </div>
                     </div>
                     {(transcribing || retranscribing) ? (
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', background: 'rgba(0,180,216,0.08)', borderRadius: 10, border: '1px solid rgba(0,180,216,0.2)' }}>
-                        <span style={{ width: 16, height: 16, borderRadius: 8, border: '2px solid #00b4d8', borderTopColor: 'transparent', display: 'block', animation: 'spin 0.8s linear infinite' }} />
-                        <p style={{ fontSize: 12, color: '#00b4d8', fontWeight: 600 }}>Generating captions…</p>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', background: 'rgba(200,255,0,0.08)', borderRadius: 10, border: '1px solid rgba(200,255,0,0.2)' }}>
+                        <span style={{ width: 16, height: 16, borderRadius: 8, border: '2px solid #c8ff00', borderTopColor: 'transparent', display: 'block', animation: 'spin 0.8s linear infinite' }} />
+                        <p style={{ fontSize: 12, color: '#c8ff00', fontWeight: 600 }}>Generating captions…</p>
                       </div>
                     ) : words.length > 0 ? (
                       <div style={{ padding: '8px 14px', background: 'rgba(34,197,94,0.07)', borderRadius: 10, border: '1px solid rgba(34,197,94,0.15)' }}>
@@ -837,9 +837,9 @@ export function EditorShellMobile({
                 <div style={{ borderRadius: 12, overflow: 'hidden', border: '1px solid rgba(255,255,255,0.1)' }}>
                   {(clipStatus === 'rendering' || exporting) ? (
                     <div style={{ aspectRatio: '9/16', background: '#0d0d0d', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 12 }}>
-                      <span style={{ width: 40, height: 40, borderRadius: 20, border: '2px solid #00b4d8', borderTopColor: 'transparent', display: 'block', animation: 'spin 1s linear infinite' }} />
+                      <span style={{ width: 40, height: 40, borderRadius: 20, border: '2px solid #c8ff00', borderTopColor: 'transparent', display: 'block', animation: 'spin 1s linear infinite' }} />
                       <p style={{ fontSize: 13, fontWeight: 600, color: '#fff' }}>Processing video…</p>
-                      {renderElapsed > 0 && <p style={{ fontSize: 12, color: 'rgba(0,180,216,0.7)', fontVariantNumeric: 'tabular-nums' }}>{Math.floor(renderElapsed / 60)}m {renderElapsed % 60}s</p>}
+                      {renderElapsed > 0 && <p style={{ fontSize: 12, color: 'rgba(200,255,0,0.7)', fontVariantNumeric: 'tabular-nums' }}>{Math.floor(renderElapsed / 60)}m {renderElapsed % 60}s</p>}
                       {clipStatus === 'rendering' && renderElapsed > 180 && <button onClick={handleReEdit} style={{ fontSize: 12, padding: '8px 16px', borderRadius: 8, background: 'rgba(239,68,68,0.12)', color: '#f87171', border: '1px solid rgba(239,68,68,0.25)', cursor: 'pointer' }}>Stuck? Reset</button>}
                     </div>
                   ) : (
@@ -859,15 +859,15 @@ export function EditorShellMobile({
                 </div>
                 {outputUrl && clipStatus === 'done' ? (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                    <a href={outputUrl} download="export.mp4" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, padding: '14px 0', borderRadius: 12, background: '#00b4d8', color: '#fff', fontSize: 15, fontWeight: 700, textDecoration: 'none' }}>
-                      <svg width="16" height="16" viewBox="0 0 15 15" fill="none"><path d="M7.5 2v8M4 7l3.5 3.5L11 7M2 13h11" stroke="white" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                    <a href={outputUrl} download="export.mp4" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, padding: '14px 0', borderRadius: 12, background: '#c8ff00', color: '#000', fontSize: 15, fontWeight: 700, textDecoration: 'none' }}>
+                      <svg width="16" height="16" viewBox="0 0 15 15" fill="none"><path d="M7.5 2v8M4 7l3.5 3.5L11 7M2 13h11" stroke="black" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"/></svg>
                       Download
                     </a>
-                    <button onClick={handleExport} disabled={exporting} style={{ padding: '12px 0', borderRadius: 10, background: 'rgba(0,180,216,0.1)', color: '#00b4d8', fontSize: 13, fontWeight: 600, border: '1px solid rgba(0,180,216,0.2)', cursor: 'pointer', opacity: exporting ? 0.5 : 1 }}>{exporting ? 'Queuing…' : 'Re-render'}</button>
+                    <button onClick={handleExport} disabled={exporting} style={{ padding: '12px 0', borderRadius: 10, background: 'rgba(200,255,0,0.1)', color: '#c8ff00', fontSize: 13, fontWeight: 600, border: '1px solid rgba(200,255,0,0.2)', cursor: 'pointer', opacity: exporting ? 0.5 : 1 }}>{exporting ? 'Queuing…' : 'Re-render'}</button>
                     <button onClick={handleReEdit} style={{ padding: '12px 0', borderRadius: 10, background: 'rgba(124,58,237,0.1)', color: '#a78bfa', fontSize: 13, fontWeight: 600, border: '1px solid rgba(124,58,237,0.2)', cursor: 'pointer' }}>Re-edit</button>
                   </div>
                 ) : clipStatus !== 'rendering' && !exporting ? (
-                  <button onClick={handleExport} style={{ padding: '16px 0', borderRadius: 12, background: '#00b4d8', color: '#fff', fontSize: 15, fontWeight: 700, border: 'none', cursor: 'pointer' }}>Process video</button>
+                  <button onClick={handleExport} style={{ padding: '16px 0', borderRadius: 12, background: '#c8ff00', color: '#000', fontSize: 15, fontWeight: 700, border: 'none', cursor: 'pointer' }}>Process video</button>
                 ) : null}
               </div>
             )}

@@ -13,7 +13,7 @@ export default function NotFound() {
       </p>
       <button
         onClick={() => router.push('/dashboard')}
-        style={{ padding: '10px 24px', borderRadius: 12, background: '#00b4d8', color: '#000', fontSize: 14, fontWeight: 700, cursor: 'pointer', border: 'none' }}
+        style={{ padding: '10px 24px', borderRadius: 12, background: '#c8ff00', color: '#000', fontSize: 14, fontWeight: 700, cursor: 'pointer', border: 'none' }}
       >
         Go to Dashboard
       </button>

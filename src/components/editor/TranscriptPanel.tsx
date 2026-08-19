@@ -86,8 +86,8 @@ export function TranscriptPanel({ words, clipStartMs, clipEndMs, currentTimeMs, 
                     }}
                     className="rounded px-0.5 text-sm font-medium outline-none"
                     style={{
-                      background: 'rgba(0,180,216,0.18)',
-                      border: '1px solid rgba(0,180,216,0.5)',
+                      background: 'rgba(200,255,0,0.18)',
+                      border: '1px solid rgba(200,255,0,0.5)',
                       color: '#fff',
                       width: `${Math.max(editingText.length, 3) + 1}ch`,
                       minWidth: 32,

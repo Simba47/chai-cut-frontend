@@ -27,7 +27,7 @@ function LoginForm() {
 
   return (
     <div className="w-full max-w-sm p-8 rounded-xl" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
-      <h1 className="text-2xl font-bold mb-1 text-white">Chai Cut</h1>
+      <img src="/logo.png" alt="Shortcut" style={{ height: 32, objectFit: 'contain', marginBottom: 4 }} />
       <p className="text-sm mb-8" style={{ color: 'var(--text-muted)' }}>Sign in to your account</p>
 
       <form onSubmit={handleSubmit} className="flex flex-col gap-4">

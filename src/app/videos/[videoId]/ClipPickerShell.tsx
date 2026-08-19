@@ -225,7 +225,7 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, userEmail, save
             </svg>
             Back
           </button>
-          <span className="text-sm font-bold text-white tracking-tight">✂ Chai Cut</span>
+          <img src="/logo.png" alt="Shortcut" style={{ height: 24, objectFit: 'contain' }} />
         </div>
         <span className="text-xs" style={{ color: 'rgba(255,255,255,0.3)' }}>{userEmail}</span>
       </nav>
@@ -246,7 +246,7 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, userEmail, save
             <div className="flex flex-col items-center gap-4 px-10 text-center">
               <div
                 className="w-9 h-9 border-2 border-t-transparent rounded-full animate-spin"
-                style={{ borderColor: '#00b4d8', borderTopColor: 'transparent' }}
+                style={{ borderColor: '#c8ff00', borderTopColor: 'transparent' }}
               />
               {isProcessing ? (
                 <>
@@ -254,7 +254,7 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, userEmail, save
                   <div className="w-48 h-1.5 rounded-full overflow-hidden" style={{ background: 'rgba(255,255,255,0.1)' }}>
                     <div
                       className="h-full rounded-full transition-all duration-500"
-                      style={{ width: `${Math.max(4, video.download_progress ?? 0)}%`, background: '#00b4d8' }}
+                      style={{ width: `${Math.max(4, video.download_progress ?? 0)}%`, background: '#c8ff00' }}
                     />
                   </div>
                   <p className="text-xs" style={{ color: 'rgba(255,255,255,0.3)' }}>Video is being processed…</p>
@@ -284,7 +284,7 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, userEmail, save
                 onClick={editFullVideo}
                 disabled={!!busy}
                 className="text-xs px-2.5 py-1 rounded-lg transition-opacity hover:opacity-80 disabled:opacity-40 font-semibold"
-                style={{ color: '#fff', background: '#00b4d8', border: 'none' }}
+                style={{ color: '#000', background: '#c8ff00', border: 'none' }}
               >
                 {busy === 'full' ? <span className="inline-block w-3 h-3 border border-current border-t-transparent rounded-full animate-spin align-middle" /> : 'Edit full video'}
               </button>
@@ -349,7 +349,7 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, userEmail, save
 
             {/* New clip form */}
             {showForm && (
-              <div className="mx-3 my-2 rounded-2xl p-4" style={{ background: 'rgba(0,180,216,0.06)', border: '1.5px solid rgba(0,180,216,0.3)' }}>
+              <div className="mx-3 my-2 rounded-2xl p-4" style={{ background: 'rgba(200,255,0,0.06)', border: '1.5px solid rgba(200,255,0,0.3)' }}>
                 <p className="text-xs font-semibold text-white mb-3">New clip</p>
                 <input
                   type="text"
@@ -383,7 +383,7 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, userEmail, save
                 </div>
                 {formError && <p className="text-xs mb-2" style={{ color: '#f87171' }}>{formError}</p>}
                 <div className="flex gap-2">
-                  <button onClick={submitForm} className="px-3 py-1.5 rounded-lg text-xs font-semibold text-white" style={{ background: '#00b4d8' }}>Add</button>
+                  <button onClick={submitForm} className="px-3 py-1.5 rounded-lg text-xs font-semibold text-black" style={{ background: '#c8ff00' }}>Add</button>
                   <button onClick={() => setShowForm(false)} className="px-3 py-1.5 rounded-lg text-xs font-medium" style={{ background: 'rgba(255,255,255,0.07)', color: 'rgba(255,255,255,0.5)' }}>Cancel</button>
                 </div>
               </div>
@@ -397,7 +397,7 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, userEmail, save
                 onClick={openForm}
                 disabled={!!busy}
                 className="w-full py-3 rounded-xl text-sm font-semibold transition-opacity hover:opacity-85 disabled:opacity-40"
-                style={{ background: '#00b4d8', color: '#fff', border: 'none' }}
+                style={{ background: '#c8ff00', color: '#000', border: 'none' }}
               >
                 + Add a clip
               </button>
@@ -495,8 +495,8 @@ function ClipCard({
                   <a
                     href={outputUrl}
                     download
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-white transition-opacity hover:opacity-80"
-                    style={{ background: '#00b4d8' }}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-black transition-opacity hover:opacity-80"
+                    style={{ background: '#c8ff00' }}
                   >
                     <svg width="11" height="11" viewBox="0 0 14 14" fill="none">
                       <path d="M7 2v7M4 7l3 3 3-3M2 11h10" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
@@ -508,7 +508,7 @@ function ClipCard({
                   <span className="text-xs px-2 py-1 rounded-lg" style={{ background: 'rgba(34,197,94,0.15)', color: '#22c55e' }}>Done</span>
                 )}
                 {status === 'rendering' && (
-                  <span className="flex items-center gap-1.5 text-xs" style={{ color: '#00b4d8' }}>
+                  <span className="flex items-center gap-1.5 text-xs" style={{ color: '#c8ff00' }}>
                     <span className="w-3 h-3 border border-current border-t-transparent rounded-full animate-spin" />
                     Rendering…
                   </span>
@@ -518,8 +518,8 @@ function ClipCard({
               <button
                 onClick={onClip}
                 disabled={disabled}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-white disabled:opacity-40 transition-opacity hover:opacity-80"
-                style={{ background: '#00b4d8' }}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-black disabled:opacity-40 transition-opacity hover:opacity-80"
+                style={{ background: '#c8ff00' }}
               >
                 {busyClip
                   ? <span className="w-3 h-3 border-2 border-current border-t-transparent rounded-full animate-spin" />
