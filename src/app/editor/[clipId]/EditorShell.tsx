@@ -90,9 +90,9 @@ export function EditorShell({
     const initialKeyframeMap: KeyframeMap = {}
     for (const seg of initialSegments) {
       for (const box of seg.crop_boxes) {
-        initialKeyframeMap[box.id] = box.box_keyframes.length > 0
+        initialKeyframeMap[box.id] = (box.box_keyframes.length > 0
           ? box.box_keyframes
-          : [{ t_ms: seg.start_ms, ...defaultCropForSlot(seg.layout as LayoutType, box.slot_index) }]
+          : [{ t_ms: seg.start_ms, ...defaultCropForSlot(seg.layout as LayoutType, box.slot_index) }]) as typeof initialKeyframeMap[string]
       }
     }
     hydrateEditor(localSegments, initialKeyframeMap)
