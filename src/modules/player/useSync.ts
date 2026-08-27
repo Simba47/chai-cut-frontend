@@ -147,8 +147,9 @@ export function useVideoSync(clipStartMs = 0, clipEndMs?: number, segments?: Pus
     const absoluteMs = el.currentTime * 1000
     if (clipEndMs !== undefined && absoluteMs >= clipEndMs) {
       el.pause()
-      el.currentTime = clipEndMs / 1000
+      el.currentTime = (clipEndMs - 1) / 1000  // stay on last valid frame, not the continuation
       setPlaying(false)
+      insertRef.current = null
       setCurrentTimeMs(Math.max(0, videoToTimeline(clipEndMs - clipStartMs)))
       return
     }
@@ -234,17 +235,49 @@ export function useVideoSync(clipStartMs = 0, clipEndMs?: number, segments?: Pus
       if (clipStartMs > 0) el.currentTime = clipStartMs / 1000
     }
 
+    // Safety net: fires even when VFC/rAF is paused (e.g. background tab).
+    // Stops the video if it drifts past clipEndMs while the tick was suspended.
+    const onTimeUpdate = () => {
+      if (clipEndMs === undefined) return
+      const absMs = el.currentTime * 1000
+      if (absMs >= clipEndMs) {
+        cancelTick(el)
+        cancelAnimationFrame(rafRef.current)
+        el.pause()
+        el.currentTime = (clipEndMs - 1) / 1000  // stay on the last valid frame
+        setPlaying(false)
+        insertRef.current = null
+        setCurrentTimeMs(Math.max(0, videoToTimeline(clipEndMs - clipStartMs)))
+      }
+    }
+
+    // When the video file ends naturally (el.duration reached), snap to clip end.
+    const onEnded = () => {
+      cancelTick(el)
+      cancelAnimationFrame(rafRef.current)
+      insertRef.current = null
+      setPlaying(false)
+      if (clipEndMs !== undefined) {
+        el.currentTime = (clipEndMs - 1) / 1000
+        setCurrentTimeMs(Math.max(0, videoToTimeline(clipEndMs - clipStartMs)))
+      }
+    }
+
     el.addEventListener('play', onPlay)
     el.addEventListener('pause', onPause)
     el.addEventListener('loadedmetadata', onLoaded)
+    el.addEventListener('timeupdate', onTimeUpdate)
+    el.addEventListener('ended', onEnded)
     if (el.readyState >= 1) onLoaded()
     return () => {
       el.removeEventListener('play', onPlay)
       el.removeEventListener('pause', onPause)
       el.removeEventListener('loadedmetadata', onLoaded)
+      el.removeEventListener('timeupdate', onTimeUpdate)
+      el.removeEventListener('ended', onEnded)
       cancelTick(el)
     }
-  }, [tick, clipStartMs, clipEndMs, setDurationMs, setPlaying])
+  }, [tick, clipStartMs, clipEndMs, setDurationMs, setPlaying, setCurrentTimeMs])
 
   // ── Public controls ───────────────────────────────────────────────────────────
 
