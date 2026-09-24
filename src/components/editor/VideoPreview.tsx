@@ -200,19 +200,22 @@ function buildCaptionChunks(words: TranscriptWord[]): FlatWord[][] {
 
   for (const w of sorted) {
     const parts = w.word.trim().split(/\s+/).filter(Boolean)
+    // Line rules use the original word (romanizing can turn one word into two, e.g. "opium ni"),
+    // matching render.py _group_sentences so the preview and the download break lines alike
+    const source = (w as TranscriptWord & { source_word?: string }).source_word ?? w.word
 
-    if (parts.length <= 1) {
+    if (source.trim().split(/\s+/).length <= 1) {
       // Real word-level token — group up to CAPTION_MAX_WORDS together.
-      const gap = wordChunk.length > 0
-        ? w.start_ms - wordChunk[wordChunk.length - 1].end_ms
-        : 0
-      if (wordChunk.length >= CAPTION_MAX_WORDS || (wordChunk.length > 0 && gap > CAPTION_GAP_MS)) {
+      const prev = wordChunk[wordChunk.length - 1]
+      const gap = prev ? w.start_ms - prev.end_ms : 0
+      // A different speaker always starts a new line (never mix two people's words)
+      const speakerChange = !!prev && prev.speaker_id != null && w.speaker_id != null && prev.speaker_id !== w.speaker_id
+      if (wordChunk.length >= CAPTION_MAX_WORDS || (prev && gap > CAPTION_GAP_MS) || speakerChange) {
         flushWordChunk()
       }
       wordChunk.push(w)
       // End the line at a sentence end — same rule as the renderer (render.py _group_sentences),
       // so the preview doesn't carry the next sentence's first words on the current line
-      const source = (w as TranscriptWord & { source_word?: string }).source_word ?? w.word
       if (/[.!?।]$/.test(source.trim())) flushWordChunk()
     } else {
       // Phrase-level token (Sarvam returned a multi-word "word").
@@ -249,15 +252,18 @@ function buildCaptionChunks(words: TranscriptWord[]): FlatWord[][] {
   }
   flushWordChunk()
 
-  // Fill only tiny sub-500ms gaps (rounding artefacts). Larger gaps are intentional
-  // music/silence pauses — the backend caps word hold at 4s, so the remaining gap
-  // should stay empty rather than holding the previous caption stale.
-  for (let i = 0; i < chunks.length - 1; i++) {
-    const nextStart = chunks[i + 1][0].start_ms
+  // Line end — same rule as render.py _write_ass: hold 200 ms after the last word, bridge
+  // gaps under 500 ms to the next line, never overlap it. Larger gaps are real pauses and
+  // stay empty. Copies the word (never mutate: words are shared with editor state).
+  for (let i = 0; i < chunks.length; i++) {
     const last = chunks[i][chunks[i].length - 1]
-    if (last.end_ms < nextStart && nextStart - last.end_ms < 500) {
-      last.end_ms = nextStart
+    const nextStart = chunks[i + 1]?.[0].start_ms
+    let end = last.end_ms + 200
+    if (nextStart !== undefined) {
+      if (nextStart - last.end_ms < 500) end = nextStart
+      end = Math.min(end, nextStart)
     }
+    if (end > last.end_ms) chunks[i][chunks[i].length - 1] = { ...last, end_ms: end }
   }
 
   return chunks
