@@ -212,6 +212,8 @@ export function EditorShellMobile({
     return () => clearInterval(interval)
   }, [transcribing, isFreePlan, clip, setWords, setShowCaptions])
 
+  const refreshWordsOnDoneRef = useRef(false)
+
   useEffect(() => {
     if (clipStatus !== 'rendering') { setRenderStuckSince(null); setRenderElapsed(0); return }
     const startedAt = renderStuckSince ?? Date.now()
@@ -223,6 +225,12 @@ export function EditorShellMobile({
       const data = await res.json()
       setClipStatus(data.status)
       if (data.output_url) setOutputUrl(data.output_url)
+      if (data.status === 'done' && refreshWordsOnDoneRef.current) {
+        refreshWordsOnDoneRef.current = false
+        const videoId = (clip as unknown as { video_id: string }).video_id
+        fetch(`/api/transcribe/words?video_id=${videoId}`).then(r => r.ok ? r.json() : null)
+          .then(d => { if (d?.words?.length) setWords(d.words) }).catch(() => {})
+      }
       if (data.status === 'failed') setExportError('Render failed — try again')
       if (data.status !== 'rendering') clearInterval(poll)
     }, 3000)
@@ -280,14 +288,16 @@ export function EditorShellMobile({
   }
   latestHandleSaveRef.current = handleSave
 
-  async function handleExport() {
+  // retranscribe: Re-render also regenerates captions (Gemini) before rendering
+  async function handleExport(retranscribe = false) {
     setExporting(true); setExportError(null)
     try {
       const res = await fetch('/api/export', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ clip_id: clip.id, quality: renderQuality }),
+        body: JSON.stringify({ clip_id: clip.id, quality: renderQuality, retranscribe }),
       })
       if (!res.ok) throw new Error((await res.json()).error ?? 'Export failed')
+      refreshWordsOnDoneRef.current = retranscribe
       setClipStatus('rendering')
       setActiveTab('export')
     } catch (err) {
@@ -525,11 +535,11 @@ export function EditorShellMobile({
                 <svg width="13" height="13" viewBox="0 0 15 15" fill="none"><path d="M7.5 2v8M4 7l3.5 3.5L11 7M2 13h11" stroke="white" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/></svg>
                 Download
               </a>
-              <button onClick={handleExport} disabled={exporting} style={{ padding: '8px 0', borderRadius: 8, background: 'rgba(200,255,0,0.1)', color: '#c8ff00', fontSize: 11, fontWeight: 600, border: '1px solid rgba(200,255,0,0.2)', cursor: 'pointer', opacity: exporting ? 0.5 : 1 }}>{exporting ? 'Queuing…' : 'Re-render'}</button>
+              <button onClick={() => handleExport(true)} disabled={exporting} style={{ padding: '8px 0', borderRadius: 8, background: 'rgba(200,255,0,0.1)', color: '#c8ff00', fontSize: 11, fontWeight: 600, border: '1px solid rgba(200,255,0,0.2)', cursor: 'pointer', opacity: exporting ? 0.5 : 1 }}>{exporting ? 'Queuing…' : 'Re-render'}</button>
               <button onClick={handleReEdit} style={{ padding: '8px 0', borderRadius: 8, background: 'rgba(124,58,237,0.1)', color: '#a78bfa', fontSize: 11, fontWeight: 600, border: '1px solid rgba(124,58,237,0.2)', cursor: 'pointer' }}>Re-edit</button>
             </>
           ) : clipStatus !== 'rendering' && !exporting ? (
-            <button onClick={handleExport} style={{ padding: '11px 0', borderRadius: 10, background: '#c8ff00', color: '#000', fontSize: 13, fontWeight: 700, border: 'none', cursor: 'pointer' }}>Process video</button>
+            <button onClick={() => handleExport()} style={{ padding: '11px 0', borderRadius: 10, background: '#c8ff00', color: '#000', fontSize: 13, fontWeight: 700, border: 'none', cursor: 'pointer' }}>Process video</button>
           ) : clipStatus === 'rendering' && renderElapsed > 180 ? (
             <button onClick={handleReEdit} style={{ fontSize: 11, padding: '8px 0', borderRadius: 8, background: 'rgba(239,68,68,0.12)', color: '#f87171', border: '1px solid rgba(239,68,68,0.2)', cursor: 'pointer' }}>Stuck? Reset</button>
           ) : null}
@@ -864,11 +874,11 @@ export function EditorShellMobile({
                       <svg width="16" height="16" viewBox="0 0 15 15" fill="none"><path d="M7.5 2v8M4 7l3.5 3.5L11 7M2 13h11" stroke="black" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"/></svg>
                       Download
                     </a>
-                    <button onClick={handleExport} disabled={exporting} style={{ padding: '12px 0', borderRadius: 10, background: 'rgba(200,255,0,0.1)', color: '#c8ff00', fontSize: 13, fontWeight: 600, border: '1px solid rgba(200,255,0,0.2)', cursor: 'pointer', opacity: exporting ? 0.5 : 1 }}>{exporting ? 'Queuing…' : 'Re-render'}</button>
+                    <button onClick={() => handleExport(true)} disabled={exporting} style={{ padding: '12px 0', borderRadius: 10, background: 'rgba(200,255,0,0.1)', color: '#c8ff00', fontSize: 13, fontWeight: 600, border: '1px solid rgba(200,255,0,0.2)', cursor: 'pointer', opacity: exporting ? 0.5 : 1 }}>{exporting ? 'Queuing…' : 'Re-render'}</button>
                     <button onClick={handleReEdit} style={{ padding: '12px 0', borderRadius: 10, background: 'rgba(124,58,237,0.1)', color: '#a78bfa', fontSize: 13, fontWeight: 600, border: '1px solid rgba(124,58,237,0.2)', cursor: 'pointer' }}>Re-edit</button>
                   </div>
                 ) : clipStatus !== 'rendering' && !exporting ? (
-                  <button onClick={handleExport} style={{ padding: '16px 0', borderRadius: 12, background: '#c8ff00', color: '#000', fontSize: 15, fontWeight: 700, border: 'none', cursor: 'pointer' }}>Process video</button>
+                  <button onClick={() => handleExport()} style={{ padding: '16px 0', borderRadius: 12, background: '#c8ff00', color: '#000', fontSize: 15, fontWeight: 700, border: 'none', cursor: 'pointer' }}>Process video</button>
                 ) : null}
               </div>
             )}

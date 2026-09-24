@@ -214,6 +214,8 @@ export function EditorShell({
     return () => clearInterval(interval)
   }, [transcribing, isFreePlan, clip, setWords, setShowCaptions])
 
+  const refreshWordsOnDoneRef = useRef(false)
+
   useEffect(() => {
     if (clipStatus !== 'rendering') { setRenderStuckSince(null); setRenderElapsed(0); return }
     const startedAt = renderStuckSince ?? Date.now()
@@ -225,6 +227,12 @@ export function EditorShell({
       const data = await res.json()
       setClipStatus(data.status)
       if (data.output_url) setOutputUrl(data.output_url)
+      if (data.status === 'done' && refreshWordsOnDoneRef.current) {
+        refreshWordsOnDoneRef.current = false
+        const videoId = (clip as unknown as { video_id: string }).video_id
+        fetch(`/api/transcribe/words?video_id=${videoId}`).then(r => r.ok ? r.json() : null)
+          .then(d => { if (d?.words?.length) setWords(d.words) }).catch(() => {})
+      }
       if (data.status === 'failed') setExportError('Render failed — check backend logs or try again')
       if (data.status !== 'rendering') clearInterval(poll)
     }, 3000)
@@ -286,15 +294,17 @@ export function EditorShell({
   }
   latestHandleSaveRef.current = handleSave
 
-  async function handleExport() {
+  // retranscribe: Re-render also regenerates captions (Gemini) before rendering
+  async function handleExport(retranscribe = false) {
     setExporting(true); setExportError(null)
     try {
       await handleSave()
       const res = await fetch('/api/export', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ clip_id: clip.id, quality: renderQuality }),
+        body: JSON.stringify({ clip_id: clip.id, quality: renderQuality, retranscribe }),
       })
       if (!res.ok) throw new Error((await res.json()).error ?? 'Export failed')
+      refreshWordsOnDoneRef.current = retranscribe
       setClipStatus('rendering')
     } catch (err) {
       setExportError(err instanceof Error ? err.message : 'Export failed')
@@ -688,11 +698,11 @@ export function EditorShell({
                     <svg width="15" height="15" viewBox="0 0 15 15" fill="none"><path d="M7.5 2v8M4 7l3.5 3.5L11 7M2 13h11" stroke="white" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/></svg>
                     Download
                   </a>
-                  <button onClick={handleExport} disabled={exporting} className="w-full py-2 text-xs rounded-xl font-medium disabled:opacity-50" style={{ background: 'rgba(200,255,0,0.1)', color: '#c8ff00', border: '1px solid rgba(200,255,0,0.2)' }}>{exporting ? 'Queuing…' : 'Re-render'}</button>
+                  <button onClick={() => handleExport(true)} disabled={exporting} className="w-full py-2 text-xs rounded-xl font-medium disabled:opacity-50" style={{ background: 'rgba(200,255,0,0.1)', color: '#c8ff00', border: '1px solid rgba(200,255,0,0.2)' }}>{exporting ? 'Queuing…' : 'Re-render'}</button>
                   <button onClick={handleReEdit} className="w-full py-2 text-xs rounded-xl font-medium" style={{ background: 'rgba(124,58,237,0.1)', color: '#a78bfa', border: '1px solid rgba(124,58,237,0.2)' }}>Re-edit</button>
                 </>
               ) : clipStatus !== 'rendering' && !exporting ? (
-                <button onClick={handleExport} disabled={exporting}
+                <button onClick={() => handleExport()} disabled={exporting}
                   className="w-full py-3 rounded-xl text-sm font-semibold disabled:opacity-50 transition-opacity hover:opacity-90"
                   style={{ background: '#c8ff00', color: '#000' }}>
                   {exporting ? 'Queuing…' : 'Process video'}
