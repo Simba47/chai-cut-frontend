@@ -166,7 +166,8 @@ export function EditorShell({
     return 'Romanize'
   }, [words])
   const displayWords = useMemo(
-    () => romanize ? words.map(w => ({ ...w, word: w.word_roman ?? w.word })) : words,
+    // source_word keeps the original punctuation so the preview can break lines at sentence ends
+    () => romanize ? words.map(w => ({ ...w, word: w.word_roman ?? w.word, source_word: w.word })) : words,
     [words, romanize],
   )
   const clipDurationMs = (clip.end_ms - clip.start_ms) || durationMs || 1
@@ -681,7 +682,7 @@ export function EditorShell({
             <div className="px-4 pb-4 flex flex-col gap-2">
               {outputUrl && clipStatus === 'done' ? (
                 <>
-                  <a href={outputUrl} download="export.mp4"
+                  <a href={outputUrl} download="export.mp4" target="_blank" rel="noopener noreferrer"
                     className="flex items-center justify-center gap-2 w-full py-3 rounded-xl text-sm font-bold text-white transition-opacity hover:opacity-90"
                     style={{ background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.12)' }}>
                     <svg width="15" height="15" viewBox="0 0 15 15" fill="none"><path d="M7.5 2v8M4 7l3.5 3.5L11 7M2 13h11" stroke="white" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/></svg>

@@ -210,6 +210,10 @@ function buildCaptionChunks(words: TranscriptWord[]): FlatWord[][] {
         flushWordChunk()
       }
       wordChunk.push(w)
+      // End the line at a sentence end — same rule as the renderer (render.py _group_sentences),
+      // so the preview doesn't carry the next sentence's first words on the current line
+      const source = (w as TranscriptWord & { source_word?: string }).source_word ?? w.word
+      if (/[.!?।]$/.test(source.trim())) flushWordChunk()
     } else {
       // Phrase-level token (Sarvam returned a multi-word "word").
       // Split into display chunks and divide the phrase's actual time evenly

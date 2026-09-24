@@ -494,7 +494,7 @@ function ClipCard({
                 {outputUrl && (
                   <a
                     href={outputUrl}
-                    download
+                    download target="_blank" rel="noopener noreferrer"
                     className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-black transition-opacity hover:opacity-80"
                     style={{ background: '#c8ff00' }}
                   >
