@@ -191,7 +191,8 @@ export function EditorShellMobile({
     return 'Romanize'
   }, [words])
   const displayWords = useMemo(
-    () => romanize ? words.map(w => ({ ...w, word: w.word_roman ?? w.word })) : words,
+    // source_word keeps the original punctuation so the preview can break lines at sentence ends
+    () => romanize ? words.map(w => ({ ...w, word: w.word_roman ?? w.word, source_word: w.word })) : words,
     [words, romanize],
   )
   const clipDurationMs = (clip.end_ms - clip.start_ms) || durationMs || 1
@@ -520,7 +521,7 @@ export function EditorShellMobile({
         <div style={{ padding: '8px 10px 12px', display: 'flex', flexDirection: 'column', gap: 6 }}>
           {outputUrl && clipStatus === 'done' ? (
             <>
-              <a href={outputUrl} download="export.mp4" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, padding: '10px 0', borderRadius: 10, background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.12)', color: '#fff', fontSize: 12, fontWeight: 700, textDecoration: 'none' }}>
+              <a href={outputUrl} download="export.mp4" target="_blank" rel="noopener noreferrer" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, padding: '10px 0', borderRadius: 10, background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.12)', color: '#fff', fontSize: 12, fontWeight: 700, textDecoration: 'none' }}>
                 <svg width="13" height="13" viewBox="0 0 15 15" fill="none"><path d="M7.5 2v8M4 7l3.5 3.5L11 7M2 13h11" stroke="white" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/></svg>
                 Download
               </a>
@@ -859,7 +860,7 @@ export function EditorShellMobile({
                 </div>
                 {outputUrl && clipStatus === 'done' ? (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                    <a href={outputUrl} download="export.mp4" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, padding: '14px 0', borderRadius: 12, background: '#c8ff00', color: '#000', fontSize: 15, fontWeight: 700, textDecoration: 'none' }}>
+                    <a href={outputUrl} download="export.mp4" target="_blank" rel="noopener noreferrer" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, padding: '14px 0', borderRadius: 12, background: '#c8ff00', color: '#000', fontSize: 15, fontWeight: 700, textDecoration: 'none' }}>
                       <svg width="16" height="16" viewBox="0 0 15 15" fill="none"><path d="M7.5 2v8M4 7l3.5 3.5L11 7M2 13h11" stroke="black" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"/></svg>
                       Download
                     </a>

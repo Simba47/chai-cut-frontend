@@ -1,6 +1,15 @@
 import { Resend } from 'resend'
 
-const resend = new Resend(process.env.AUTH_RESEND_KEY)
+let resend: Resend | null = null
+
+function getResend(): Resend {
+  if (!resend) {
+    const key = process.env.AUTH_RESEND_KEY
+    if (!key) throw new Error('AUTH_RESEND_KEY is not set')
+    resend = new Resend(key)
+  }
+  return resend
+}
 const FROM = process.env.AUTH_EMAIL_FROM ?? 'Shortcut <noreply@resend.dev>'
 
 export async function sendOtpEmail(
@@ -15,7 +24,7 @@ export async function sendOtpEmail(
     ? 'Enter this code to verify your Shortcut account.'
     : 'Enter this code to reset your password.'
 
-  await resend.emails.send({
+  await getResend().emails.send({
     from: FROM,
     to: email,
     subject,
