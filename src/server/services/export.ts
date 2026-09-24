@@ -1,7 +1,9 @@
 import sql from '@/lib/db'
 import type { RenderQuality } from '@chai-cut/shared'
 
-export async function queueRender(userId: string, clipId: string, quality: RenderQuality = '1080p') {
+// retranscribe: regenerate this clip's captions first (Gemini), then render —
+// the worker queues the render once the new transcript is saved.
+export async function queueRender(userId: string, clipId: string, quality: RenderQuality = '1080p', retranscribe = false) {
   const [row] = await sql`
     SELECT c.id, c.status, v.storage_path, v.user_id
     FROM clips c JOIN videos v ON v.id = c.video_id
@@ -17,6 +19,16 @@ export async function queueRender(userId: string, clipId: string, quality: Rende
   const { getUserPlanConfig } = await import('./quota')
   const plan = await getUserPlanConfig(userId)
   const payload = { clip_id: clipId, video_storage_path: row.storage_path, quality, watermark: plan.watermark }
+  if (retranscribe && plan.autoCaption) {
+    try {
+      const { queueRetranscribe } = await import('./transcribe')
+      await queueRetranscribe(userId, clipId, 'unknown', payload)  // 'unknown' → reuse the video's language
+      return { job_id: null, retranscribing: true }
+    } catch (err) {
+      await sql`UPDATE clips SET status = 'draft' WHERE id = ${clipId}`
+      throw err
+    }
+  }
   const [job] = await sql`
     INSERT INTO jobs (type, payload, status) VALUES ('render', ${sql.json(payload)}, 'queued') RETURNING id
   `
