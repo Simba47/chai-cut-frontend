@@ -236,10 +236,18 @@ export default function DashboardPage() {
   )
 }
 
-function VideoCard({ video, index, onDeleted }: { video: Video; index: number; onDeleted: (id: string) => void }) {
+function VideoCard({ video, index, onDeleted }: { video: Video & { video_url?: string | null }; index: number; onDeleted: (id: string) => void }) {
   const router = useRouter()
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [deleting, setDeleting] = useState(false)
+  // Keep the first signed URL — polling returns a fresh signature every 3s,
+  // which would otherwise reload the thumbnail each time
+  const [thumbSrc, setThumbSrc] = useState<string | null>(null)
+  const [thumbLoaded, setThumbLoaded] = useState(false)
+  const [thumbFailed, setThumbFailed] = useState(false)
+  useEffect(() => {
+    if (!thumbSrc && !thumbFailed && video.status === 'ready' && video.video_url) setThumbSrc(`${video.video_url}#t=1`)
+  }, [thumbSrc, thumbFailed, video.status, video.video_url])
 
   async function handleDelete(e: React.MouseEvent) {
     e.stopPropagation()
@@ -294,13 +302,31 @@ function VideoCard({ video, index, onDeleted }: { video: Video; index: number; o
       }}
     >
       {/* Thumbnail */}
-      <div style={{ position: 'relative', aspectRatio: '16/9', background: 'var(--media-bg)' }}>
-        <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', opacity: 0.3 }}>
-          <svg width="40" height="40" viewBox="0 0 40 40" fill="none">
-            <rect width="40" height="40" rx="6" fill="#888"/>
-            <path d="M15 12v16l14-8-14-8z" fill="white"/>
-          </svg>
-        </div>
+      <div style={{ position: 'relative', aspectRatio: '16/9', background: 'var(--media-bg)', overflow: 'hidden' }}>
+        {!thumbLoaded && (
+          <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', opacity: 0.3 }}>
+            <svg width="40" height="40" viewBox="0 0 40 40" fill="none">
+              <rect width="40" height="40" rx="6" fill="#888"/>
+              <path d="M15 12v16l14-8-14-8z" fill="white"/>
+            </svg>
+          </div>
+        )}
+
+        {thumbSrc && (
+          <video
+            src={thumbSrc}
+            preload="metadata"
+            muted
+            playsInline
+            disablePictureInPicture
+            onLoadedData={() => setThumbLoaded(true)}
+            onError={() => { setThumbFailed(true); setThumbSrc(null) }}
+            style={{
+              position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover',
+              pointerEvents: 'none', opacity: thumbLoaded ? 1 : 0, transition: 'opacity 0.3s',
+            }}
+          />
+        )}
 
         {video.status === 'transcribing' && (
           <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 8, padding: '0 24px', background: 'rgba(0,0,0,0.55)' }}>
