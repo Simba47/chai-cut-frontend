@@ -17,7 +17,7 @@ import { usePlayerStore } from '@/modules/player/store'
 import { useVideoSync } from '@/modules/player/useSync'
 import { useCaptionStore } from '@/modules/captions/store'
 import { useMediaStore } from '@/modules/media/store'
-import { rowsToLocal, defaultCropForSlot, msToLabel } from '@/modules/editor/utils'
+import { rowsToLocal, normalizeCoverage, defaultCropForSlot, msToLabel } from '@/modules/editor/utils'
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -99,7 +99,7 @@ export function EditorShellMobile({
 
   // ── Hydrate stores from server props ─────────────────────────────────────────
   useEffect(() => {
-    const localSegments = rowsToLocal(initialSegments)
+    const localSegments = normalizeCoverage(rowsToLocal(initialSegments), clip.end_ms - clip.start_ms)
     const initialKeyframeMap: KeyframeMap = {}
     for (const seg of initialSegments) {
       for (const box of seg.crop_boxes) {
