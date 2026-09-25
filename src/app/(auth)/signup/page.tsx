@@ -3,6 +3,7 @@
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
+import { FillButtonContent } from '@/components/ui/fill-button'
 
 export default function SignupPage() {
   const [email, setEmail] = useState('')
@@ -63,9 +64,9 @@ export default function SignupPage() {
           </div>
           {error && <p className="text-sm" style={{ color: 'var(--danger)' }}>{error}</p>}
           <button type="submit" disabled={loading}
-            className="py-2 rounded-lg text-sm font-semibold text-white disabled:opacity-60"
-            style={{ background: 'var(--accent)' }}>
-            {loading ? 'Creating account…' : 'Create account'}
+            className="fill-btn fill-btn-sm w-full text-sm font-semibold text-[var(--text)] disabled:opacity-60 disabled:pointer-events-none"
+            style={{ border: '1px solid var(--border-strong)', background: 'transparent' }}>
+            <FillButtonContent>{loading ? 'Creating account…' : 'Create account'}</FillButtonContent>
           </button>
         </form>
 
