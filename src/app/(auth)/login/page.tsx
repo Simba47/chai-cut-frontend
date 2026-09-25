@@ -4,6 +4,8 @@ import { useState, Suspense } from 'react'
 import { signIn } from 'next-auth/react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
+import { BrandLogo } from '@/components/ui/brand-logo'
+import { FillButtonContent } from '@/components/ui/fill-button'
 
 function LoginForm() {
   const [email, setEmail] = useState('')
@@ -27,7 +29,7 @@ function LoginForm() {
 
   return (
     <div className="w-full max-w-sm p-8 rounded-xl" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
-      <img src="/logo.png" alt="Shortcut" style={{ height: 32, objectFit: 'contain', marginBottom: 4 }} />
+      <Link href="/" aria-label="Shortcut home" className="inline-flex mb-2"><BrandLogo shine /></Link>
       <p className="text-sm mb-8" style={{ color: 'var(--text-muted)' }}>Sign in to your account</p>
 
       <form onSubmit={handleSubmit} className="flex flex-col gap-4">
@@ -51,9 +53,9 @@ function LoginForm() {
         </div>
         {error && <p className="text-sm" style={{ color: 'var(--danger)' }}>{error}</p>}
         <button type="submit" disabled={loading}
-          className="py-2 rounded-lg text-sm font-semibold text-white disabled:opacity-60"
-          style={{ background: 'var(--accent)' }}>
-          {loading ? 'Signing in…' : 'Sign in'}
+          className="fill-btn fill-btn-sm w-full text-sm font-semibold text-[var(--text)] disabled:opacity-60 disabled:pointer-events-none"
+          style={{ border: '1px solid var(--border-strong)', background: 'transparent' }}>
+          <FillButtonContent>{loading ? 'Signing in…' : 'Sign in'}</FillButtonContent>
         </button>
       </form>
 
