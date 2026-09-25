@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import NumberFlow from '@number-flow/react'
-import { Mail, MapPin, Phone } from 'lucide-react'
+import { Mail, MapPin, Menu, Phone, X } from 'lucide-react'
 import { motion, useReducedMotion, useScroll, useSpring, useTransform, type MotionStyle } from 'framer-motion'
 import { PricingSection, type PricingPlan } from '@/components/ui/pricing'
 import { DotField } from '@/components/ui/dot-field'
@@ -74,7 +74,7 @@ const PRICING_PLANS: PricingPlan[] = [
 
 // Languages drifting across the closing section
 const LANGUAGES = [
-  { native: 'తెలుగు', name: 'Telugu' },
+  { native: 'English', name: 'English' },
   { native: 'हिंदी', name: 'Hindi' },
   { native: 'தமிழ்', name: 'Tamil' },
   { native: 'ಕನ್ನಡ', name: 'Kannada' },
@@ -84,8 +84,8 @@ const LANGUAGES = [
   { native: 'ગુજરાતી', name: 'Gujarati' },
   { native: 'ਪੰਜਾਬੀ', name: 'Punjabi' },
   { native: 'ଓଡ଼ିଆ', name: 'Odia' },
-  { native: 'English', name: 'English' },
-  { native: 'Hinglish', name: 'Hinglish' },
+  { native: 'తెలుగు', name: 'Telugu' },
+  { native: 'Tenglish', name: 'Tenglish' },
 ]
 // Highlighted in lime wherever it appears
 const HIGHLIGHT_LANGUAGE = 'Telugu'
@@ -178,6 +178,60 @@ const SOCIALS = [
   },
 ]
 
+const NAV_H = 60      // .lp-nav height (sticky, so it covers the top of the screen)
+const FIT_GAP = 16   // minimum space kept above and below a section's content
+
+// Document Y of an element's layout box. Uses offsetTop, so the scroll-driven
+// transforms on sections (tilt / zoom / reveal) don't skew the measurement.
+function docTop(el: HTMLElement) {
+  let y = 0
+  for (let n: HTMLElement | null = el; n; n = n.offsetParent as HTMLElement | null) y += n.offsetTop
+  return y
+}
+
+// A section's content box: walks down the wrapper divs to the element holding the
+// section padding, and measures what's inside that padding.
+function sectionContent(section: HTMLElement) {
+  let inner: HTMLElement = section
+  while (parseFloat(getComputedStyle(inner).paddingTop) === 0 && inner.firstElementChild instanceof HTMLElement) {
+    inner = inner.firstElementChild
+  }
+  const cs = getComputedStyle(inner)
+  const padTop = parseFloat(cs.paddingTop)
+  return { inner, top: docTop(inner) + padTop, height: inner.offsetHeight - padTop - parseFloat(cs.paddingBottom) }
+}
+
+// On desktop, shrink each nav section's [data-fit] element (with CSS zoom, so the
+// layout shrinks too) until the section's content fits one screen below the nav.
+// [data-fit] must sit inside the section's padded box so the measurements stay in
+// unzoomed px.
+function fitSectionsToScreen(ids: string[]) {
+  for (const id of ids) {
+    const section = document.getElementById(id)
+    const el = section?.querySelector<HTMLElement>('[data-fit]')
+    if (!section || !el) continue
+    el.style.zoom = ''
+    if (window.innerWidth < 960) continue
+    const excess = sectionContent(section).height - (window.innerHeight - NAV_H - FIT_GAP * 2)
+    if (excess <= 0) continue
+    el.style.zoom = String(Math.max(0.55, (el.offsetHeight - excess) / el.offsetHeight))
+  }
+}
+
+// Scroll so a section's content (inside its padding) sits in the space below the
+// nav: centred when it fits, top-aligned under the nav when it's taller.
+function scrollToSection(id: string, smooth: boolean) {
+  const section = document.getElementById(id)
+  if (!section) return
+  const { top, height } = sectionContent(section)
+  const room = window.innerHeight - NAV_H
+  const centred = top - NAV_H - Math.max(FIT_GAP, (room - height) / 2)
+  // Don't scroll so high that the previous section peeks in above this one
+  const y = Math.max(centred, Math.min(docTop(section), top - NAV_H - FIT_GAP))
+  window.scrollTo({ top: y, behavior: smooth ? 'smooth' : 'auto' })
+  history.replaceState(null, '', `#${id}`)
+}
+
 // Hand-drawn arrow that swaps in for the label on .arrow-btn hover
 function SquiggleArrow() {
   return (
@@ -220,6 +274,60 @@ export function LandingPage() {
     return () => clearTimeout(t)
   }, [reduceMotion])
 
+  // Keep every nav section within one screen, so a nav click shows all of it
+  useEffect(() => {
+    const ids = EXPLORE.map(l => l.href.slice(1))
+    const fit = () => fitSectionsToScreen(ids)
+    fit()
+    document.fonts?.ready.then(fit)
+    window.addEventListener('resize', fit)
+    return () => window.removeEventListener('resize', fit)
+  }, [])
+
+  const goToSection = (e: React.MouseEvent<HTMLAnchorElement>, href: string) => {
+    e.preventDefault()
+    setMenuOpen(false)
+    scrollToSection(href.slice(1), !reduceMotion)
+  }
+
+  // Once the features sheet reaches the nav (i.e. we've left the hero), the black
+  // link tab turns see-through
+  const [pastHero, setPastHero] = useState(false)
+  useEffect(() => {
+    let raf = 0
+    const check = () => {
+      raf = 0
+      const sheet = sheetRef.current
+      if (sheet) setPastHero(sheet.getBoundingClientRect().top <= NAV_H)
+    }
+    const onScroll = () => { if (!raf) raf = requestAnimationFrame(check) }
+    check()
+    window.addEventListener('scroll', onScroll, { passive: true })
+    window.addEventListener('resize', onScroll)
+    return () => {
+      cancelAnimationFrame(raf)
+      window.removeEventListener('scroll', onScroll)
+      window.removeEventListener('resize', onScroll)
+    }
+  }, [])
+
+  const goHome = (e: React.MouseEvent<HTMLAnchorElement>) => {
+    e.preventDefault()
+    setMenuOpen(false)
+    window.scrollTo({ top: 0, behavior: reduceMotion ? 'auto' : 'smooth' })
+  }
+
+  // Phone menu (the tab of section links is hidden below 960px)
+  const [menuOpen, setMenuOpen] = useState(false)
+  useEffect(() => {
+    if (!menuOpen) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setMenuOpen(false) }
+    const onResize = () => { if (window.innerWidth >= 960) setMenuOpen(false) }
+    window.addEventListener('keydown', onKey)
+    window.addEventListener('resize', onResize)
+    return () => { window.removeEventListener('keydown', onKey); window.removeEventListener('resize', onResize) }
+  }, [menuOpen])
+
   useEffect(() => {
     const observer = new IntersectionObserver(
       entries => entries.forEach(e => {
@@ -238,24 +346,15 @@ export function LandingPage() {
     <div className="lp-root">
 
       {/* ── NAV ── */}
-      <nav className="lp-nav">
+      <nav className={`lp-nav${pastHero ? ' nav-past-hero' : ''}`}>
         <a href="#" className="logo" aria-label="Shortcut home"><BrandLogo shine /></a>
         <ul className="nav-links">
           <li>
-            <a
-              href="#"
-              onClick={e => {
-                e.preventDefault()
-                window.scrollTo({ top: 0, behavior: reduceMotion ? 'auto' : 'smooth' })
-              }}
-            >
-              Home
-            </a>
+            <a href="#" onClick={goHome}>Home</a>
           </li>
-          <li><a href="#features">Features</a></li>
-          <li><a href="#process">How it works</a></li>
-          <li><a href="#editor">Editor</a></li>
-          <li><a href="#pricing">Pricing</a></li>
+          {EXPLORE.map(l => (
+            <li key={l.href}><a href={l.href} onClick={e => goToSection(e, l.href)}>{l.label}</a></li>
+          ))}
         </ul>
         <div className="nav-right">
           <Link href="/login" className="btn-nav-ghost fill-btn fill-btn-sm"><FillButtonContent>Log in</FillButtonContent></Link>
@@ -263,7 +362,24 @@ export function LandingPage() {
             <span className="arrow-btn-label">Get started free</span>
             <SquiggleArrow />
           </Link>
+          <button
+            type="button"
+            className="nav-menu-btn"
+            aria-label={menuOpen ? 'Close menu' : 'Open menu'}
+            aria-expanded={menuOpen}
+            aria-controls="nav-menu"
+            onClick={() => setMenuOpen(o => !o)}
+          >
+            {menuOpen ? <X aria-hidden /> : <Menu aria-hidden />}
+          </button>
         </div>
+        {menuOpen && (
+          <div id="nav-menu" className="nav-menu">
+            <a href="#" onClick={goHome}>Home</a>
+            {EXPLORE.map(l => <a key={l.href} href={l.href} onClick={e => goToSection(e, l.href)}>{l.label}</a>)}
+            <Link href="/login" className="nav-menu-login">Log in</Link>
+          </div>
+        )}
       </nav>
 
       {/* ── HERO + FEATURES: hero pins while features slides over it ── */}
@@ -328,7 +444,7 @@ export function LandingPage() {
             <h2 className="section-title">Everything your reel needs</h2>
             <p className="section-sub">A focused toolkit — no bloat, no learning curve. From raw footage to export-ready reel without switching tabs.</p>
           </div>
-          <div className="reveal">
+          <div data-fit className="reveal">
             <CircularCarousel items={FEATURES} />
           </div>
         </section>
@@ -363,7 +479,7 @@ export function LandingPage() {
             <p className="section-eyebrow">Inside the editor</p>
             <h2 className="section-title">Crop, caption and cut in one place</h2>
           </div>
-          <div className="editor-showcase reveal">
+          <div data-fit className="editor-showcase reveal">
             <EditorMockup />
           </div>
         </section>
@@ -414,7 +530,7 @@ export function LandingPage() {
         <div className="footer-top">
           <div className="footer-brand">
             <a href="#" className="footer-logo" aria-label="Shortcut home"><BrandLogo size="sm" /></a>
-            <p className="footer-tagline">Transcribe, clip, and edit vertical videos in Telugu, Hindi, and Hinglish.</p>
+            <p className="footer-tagline">Transcribe, clip, and edit vertical videos in multiple languages.</p>
             <div className="socials">
               {SOCIALS.map(s => (
                 <a
@@ -437,7 +553,7 @@ export function LandingPage() {
           <nav className="footer-col" aria-label="Explore">
             <h4 className="footer-heading">Explore</h4>
             <ul className="footer-list">
-              {EXPLORE.map(l => <li key={l.href}><a href={l.href}>{l.label}</a></li>)}
+              {EXPLORE.map(l => <li key={l.href}><a href={l.href} onClick={e => goToSection(e, l.href)}>{l.label}</a></li>)}
             </ul>
           </nav>
 
