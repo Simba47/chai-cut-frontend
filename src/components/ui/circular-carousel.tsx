@@ -1,7 +1,7 @@
 'use client'
 
 import React, { useCallback, useEffect, useRef, useState } from 'react'
-import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
+import { motion, useReducedMotion } from 'framer-motion'
 import { ChevronLeft, ChevronRight } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
@@ -29,7 +29,11 @@ const VISIBLE_COUNT = 5
 const MAX_RADIUS_X = 300
 const RADIUS_Y = 110
 
-function getItemPosition(index: number, activeIndex: number, total: number, radiusX: number) {
+// Below this track width the arc gets too cramped: show the active card with its
+// neighbours peeking in from the screen edges instead
+const COMPACT_WIDTH = 600
+
+function getItemPosition(index: number, activeIndex: number, total: number, trackWidth: number) {
   const offset = index - activeIndex
   const half = Math.floor(VISIBLE_COUNT / 2)
   let adjustedOffset = offset
@@ -37,7 +41,14 @@ function getItemPosition(index: number, activeIndex: number, total: number, radi
   if (offset > half) adjustedOffset = offset - total
   if (offset < -half) adjustedOffset = offset + total
 
-  if (Math.abs(adjustedOffset) > half * 2) return null
+  if (trackWidth < COMPACT_WIDTH) {
+    const d = Math.abs(adjustedOffset)
+    if (d > 1) return null
+    return { x: adjustedOffset * trackWidth * 0.72, y: -30, scale: d ? 0.9 : 1, opacity: d ? 0.35 : 1, zIndex: 2 - d }
+  }
+  const radiusX = Math.min(MAX_RADIUS_X, trackWidth * 0.34)
+
+  if (Math.abs(adjustedOffset) > half) return null   // only VISIBLE_COUNT cards on the arc
 
   const angle = (adjustedOffset / VISIBLE_COUNT) * Math.PI
   const x = Math.sin(angle) * radiusX
@@ -62,9 +73,9 @@ export function CircularCarousel({
 }: CircularCarouselProps) {
   const reduceMotion = useReducedMotion()
   const [internalIndex, setInternalIndex] = useState(0)
-  const [isHovered, setIsHovered] = useState(false)
   const [isFocused, setIsFocused] = useState(false)
-  const [radiusX, setRadiusX] = useState(MAX_RADIUS_X)
+  const [pageHidden, setPageHidden] = useState(false)
+  const [trackWidth, setTrackWidth] = useState(1000)
   const containerRef = useRef<HTMLDivElement | null>(null)
   const trackRef = useRef<HTMLDivElement | null>(null)
 
@@ -83,22 +94,32 @@ export function CircularCarousel({
   const next = useCallback(() => goTo(activeIndex + 1), [activeIndex, goTo])
   const prev = useCallback(() => goTo(activeIndex - 1), [activeIndex, goTo])
 
-  // Shrink the arc on narrow screens so the side cards stay on-screen
+  // Track width drives the arc size (and the compact phone layout)
   useEffect(() => {
     const el = trackRef.current
     if (!el) return
     const ro = new ResizeObserver(([entry]) => {
-      setRadiusX(Math.min(MAX_RADIUS_X, entry.contentRect.width * 0.34))
+      setTrackWidth(entry.contentRect.width)
     })
     ro.observe(el)
     return () => ro.disconnect()
   }, [])
 
+  // Don't queue up slides while the tab is in the background
   useEffect(() => {
-    if (!autoPlay || reduceMotion || isHovered || isFocused) return
-    const id = setInterval(next, autoPlayInterval)
-    return () => clearInterval(id)
-  }, [autoPlay, autoPlayInterval, reduceMotion, isHovered, isFocused, next])
+    const onVisibility = () => setPageHidden(document.hidden)
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => document.removeEventListener('visibilitychange', onVisibility)
+  }, [])
+
+  // Loops forever at a steady pace (6 → 1 wraps via goTo). Each slide change —
+  // automatic or clicked — restarts the countdown, so every slide gets the full
+  // interval. Pauses only for keyboard focus and while the tab is in the background.
+  useEffect(() => {
+    if (!autoPlay || reduceMotion || isFocused || pageHidden) return
+    const id = setTimeout(next, autoPlayInterval)
+    return () => clearTimeout(id)
+  }, [autoPlay, autoPlayInterval, reduceMotion, isFocused, pageHidden, activeIndex, next])
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -121,69 +142,68 @@ export function CircularCarousel({
       role="region"
       aria-label="Features"
       aria-roledescription="carousel"
-      onMouseEnter={() => setIsHovered(true)}
-      onMouseLeave={() => setIsHovered(false)}
-      onFocus={() => setIsFocused(true)}
+      onFocus={e => setIsFocused(e.target.matches(':focus-visible'))}
       onBlur={() => setIsFocused(false)}
       className={cn('relative flex flex-col items-center justify-center gap-6 outline-none', className)}
     >
       {/* Circular track */}
-      <div ref={trackRef} className="relative h-[360px] w-full max-w-4xl">
-        <AnimatePresence mode="popLayout">
-          {items.map((item, i) => {
-            const pos = getItemPosition(i, activeIndex, total, radiusX)
-            if (!pos) return null
-            const isActive = i === activeIndex
+      <div ref={trackRef} className="relative h-[290px] w-full max-w-4xl sm:h-[360px]">
+        {items.map((item, i) => {
+          const pos = getItemPosition(i, activeIndex, total, trackWidth)
+            ?? { x: 0, y: trackWidth < COMPACT_WIDTH ? -30 : 0, scale: 0.6, opacity: 0, zIndex: 0 }
+          const isActive = i === activeIndex
+          const hidden = pos.opacity === 0
 
-            return (
-              <motion.button
-                key={item.id}
-                type="button"
-                initial={{ opacity: 0, scale: 0.8 }}
-                animate={{ x: pos.x, y: pos.y, scale: pos.scale, opacity: pos.opacity, zIndex: pos.zIndex }}
-                exit={{ opacity: 0, scale: 0.8 }}
-                transition={{ duration: reduceMotion ? 0 : 0.65, ease: [0.22, 1, 0.36, 1] }}
-                onClick={() => goTo(i)}
-                aria-label={item.title}
-                aria-current={isActive}
-                className={cn(
-                  'absolute left-1/2 top-1/2 -ml-[132px] -mt-[88px] flex h-[176px] w-[264px] cursor-pointer flex-col items-start gap-3 rounded-2xl border p-5 text-left backdrop-blur-sm transition-[box-shadow,border-color] duration-300',
-                  'bg-[linear-gradient(180deg,var(--card-hover),var(--card))]',
-                  isActive
-                    ? 'border-[var(--border-strong)] shadow-[0_24px_60px_-12px_rgba(0,0,0,0.6)]'
-                    : 'border-[var(--border)] shadow-[0_8px_24px_-4px_rgba(0,0,0,0.35)]',
+          return (
+            <motion.button
+              key={item.id}
+              type="button"
+              initial={false}
+              animate={{ x: pos.x, y: pos.y, scale: pos.scale, opacity: pos.opacity, zIndex: pos.zIndex }}
+              transition={{ duration: reduceMotion ? 0 : 0.65, ease: [0.22, 1, 0.36, 1] }}
+              onClick={() => goTo(i)}
+              aria-label={item.title}
+              aria-current={isActive}
+              aria-hidden={hidden || undefined}
+              tabIndex={hidden ? -1 : undefined}
+              style={{ pointerEvents: hidden ? 'none' : undefined }}
+              className={cn(
+                'absolute left-1/2 top-1/2 -ml-[132px] -mt-[88px] flex h-[176px] w-[264px] cursor-pointer flex-col items-start gap-3 rounded-2xl border p-5 text-left backdrop-blur-sm transition-[box-shadow,border-color] duration-300',
+                'bg-[linear-gradient(180deg,var(--card-hover),var(--card))]',
+                isActive
+                  ? 'border-[var(--border-strong)] shadow-[0_24px_60px_-12px_rgba(0,0,0,0.6)]'
+                  : 'border-[var(--border)] shadow-[0_8px_24px_-4px_rgba(0,0,0,0.35)]',
+              )}
+            >
+              <div className="flex w-full items-center justify-between">
+                {item.tag && (
+                  <span className="rounded-full bg-[var(--hover)] px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.1em] text-[var(--muted)]">
+                    {item.tag}
+                  </span>
                 )}
-              >
-                <div className="flex w-full items-center justify-between">
-                  {item.tag && (
-                    <span className="rounded-full bg-[var(--hover)] px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.1em] text-[var(--muted)]">
-                      {item.tag}
-                    </span>
+                {item.icon}
+              </div>
+              <div className="w-full">
+                <h3
+                  className={cn(
+                    'font-bold leading-tight tracking-[-0.02em] transition-colors duration-300',
+                    isActive ? 'text-[17px] text-[var(--text)]' : 'text-[15px] text-[var(--muted)]',
                   )}
-                  {item.icon}
-                </div>
-                <div className="w-full">
-                  <h3
-                    className={cn(
-                      'font-bold leading-tight tracking-[-0.02em] transition-colors duration-300',
-                      isActive ? 'text-[17px] text-[var(--text)]' : 'text-[15px] text-[var(--muted)]',
-                    )}
-                  >
-                    {item.title}
-                  </h3>
-                  <p
-                    className={cn(
-                      'mt-1.5 line-clamp-3 text-[13px] leading-relaxed transition-colors duration-300',
-                      isActive ? 'text-[var(--muted)]' : 'text-[var(--dim)]',
-                    )}
-                  >
-                    {item.description}
-                  </p>
-                </div>
-              </motion.button>
-            )
-          })}
-        </AnimatePresence>
+                >
+                  {item.title}
+                </h3>
+                <p
+                  className={cn(
+                    'mt-1.5 line-clamp-3 text-[13px] leading-relaxed transition-colors duration-300',
+                    isActive ? 'text-[var(--muted)]' : 'text-[var(--dim)]',
+                  )}
+                >
+                  {item.description}
+                </p>
+              </div>
+            </motion.button>
+          )
+        })}
 
         {/* Center counter */}
         <motion.div

@@ -186,7 +186,7 @@ export function PricingSection({
       >
         <InteractiveStarfield mousePosition={mousePosition} containerRef={containerRef} />
         <div className="relative z-10 mx-auto max-w-5xl px-6">
-          <div className="mx-auto mb-12 max-w-5xl text-center">
+          <div className="mx-auto mb-8 max-w-5xl text-center">
             {eyebrow && <p className="mb-4 text-base font-medium text-[var(--muted)]">{eyebrow}</p>}
             <h2 className="section-title">{title}</h2>
             <p className="mt-4 whitespace-pre-line text-lg text-[var(--muted)]">{description}</p>
@@ -194,7 +194,7 @@ export function PricingSection({
           <PricingToggle />
           <div
             className={cn(
-              'mx-auto mt-14 grid grid-cols-1 items-stretch gap-5',
+              'mx-auto mt-8 grid grid-cols-1 items-stretch gap-5',
               wide ? 'max-w-6xl md:grid-cols-2 lg:grid-cols-3' : 'max-w-4xl md:grid-cols-2',
             )}
           >
@@ -217,7 +217,7 @@ function PricingToggle() {
   useEffect(() => {
     const btn = (isMonthly ? monthlyBtnRef : annualBtnRef).current
     if (btn) {
-      setPillStyle({ width: btn.offsetWidth, transform: `translateX(${btn.offsetLeft}px)` })
+      setPillStyle({ width: btn.offsetWidth, x: btn.offsetLeft })
     }
   }, [isMonthly])
 
@@ -256,7 +256,8 @@ function PricingToggle() {
       <div className="relative flex w-fit items-center rounded-full border border-[var(--border)] bg-[var(--card)] p-1">
         <motion.div
           className="absolute left-0 top-1 bottom-1 rounded-full bg-[var(--btn-bg)]"
-          style={pillStyle}
+          initial={false}
+          animate={pillStyle}
           transition={{ type: 'spring', stiffness: 500, damping: 40 }}
         />
         <button ref={monthlyBtnRef} onClick={() => handleToggle(true)} className={btnClass(isMonthly)}>

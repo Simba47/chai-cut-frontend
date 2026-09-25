@@ -2,6 +2,7 @@ import type { Metadata } from 'next'
 import { Inter_Tight } from 'next/font/google'
 import './globals.css'
 import './landing.css'
+import './auth.css'
 import { Providers } from './providers'
 
 // Exposed as --font-display; only the landing page opts into it
