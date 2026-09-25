@@ -62,6 +62,37 @@
   padding: 0 52px;
   background: transparent;
 }
+/* Phone menu button + dropdown (shown below 960px, where the link tab is hidden) */
+.lp-root .nav-menu-btn {
+  display: none;
+  width: 40px; height: 40px;
+  align-items: center; justify-content: center;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  background: color-mix(in srgb, var(--bg) 70%, transparent);
+  color: var(--text);
+  cursor: pointer;
+}
+.lp-root .nav-menu-btn svg { width: 20px; height: 20px; }
+.lp-root .nav-menu {
+  position: absolute; top: 100%; left: 12px; right: 12px;
+  display: flex; flex-direction: column;
+  padding: 8px;
+  border-radius: 18px;
+  border: 1px solid var(--border-strong);
+  background: color-mix(in srgb, var(--bg) 92%, transparent);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  box-shadow: 0 24px 60px -20px rgba(0,0,0,0.6);
+}
+.lp-root .nav-menu a {
+  padding: 13px 14px;
+  border-radius: 12px;
+  font-size: 16px; font-weight: 500;
+  color: var(--text); text-decoration: none;
+}
+.lp-root .nav-menu a:hover, .lp-root .nav-menu a:focus-visible { background: var(--hover); outline: none; }
+.lp-root .nav-menu .nav-menu-login { margin-top: 6px; border-top: 1px solid var(--border); border-radius: 0 0 12px 12px; }
 
 .lp-root .logo {
   display: flex;
@@ -149,9 +180,23 @@ a:hover > .brand .brand-bottom { translate: 12px 12px; }
   gap: 56px;
   list-style: none;
   background: #000;
+  border: 1px solid transparent;
+  border-top: 0;
   border-radius: 0 0 22px 22px;
   white-space: nowrap;
+  transition: background .45s ease, border-color .45s ease, backdrop-filter .45s ease;
 }
+/* Past the hero: the black tab turns see-through (lightly frosted so links stay legible) */
+.lp-root .nav-past-hero .nav-links {
+  background: color-mix(in srgb, var(--bg) 35%, transparent);
+  border-color: var(--border-strong);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+}
+.lp-root .nav-past-hero .nav-links::before,
+.lp-root .nav-past-hero .nav-links::after { opacity: 0; }
+.lp-root .nav-past-hero .nav-links a { color: var(--text); }
+.lp-root .nav-past-hero .nav-links a:hover { color: var(--accent); }
 /* Concave corners where the tab meets the top edge */
 .lp-root .nav-links::before,
 .lp-root .nav-links::after {
@@ -161,6 +206,7 @@ a:hover > .brand .brand-bottom { translate: 12px 12px; }
   width: 22px;
   height: 22px;
   pointer-events: none;
+  transition: opacity .45s ease;
 }
 .lp-root .nav-links::before {
   left: -22px;
@@ -693,38 +739,68 @@ a:hover > .brand .brand-bottom { translate: 12px 12px; }
 .lp-root .cta-section .lang-note { position: relative; font-size: 15px; }
 
 /* ── FOOTER ─────────────────────────────────────────────── */
-.lp-footer {
-  border-top: 1px solid var(--border);
-  padding: 40px 52px;
-  display: flex; align-items: center; justify-content: space-between;
-  flex-wrap: wrap; gap: 24px;
+.lp-footer { border-top: 1px solid var(--border); padding: 64px 52px 32px; }
+.lp-root .footer-top {
+  display: grid; grid-template-columns: 1.3fr 1fr 1.3fr;
+  gap: 48px;
+  padding-bottom: 72px;              /* room for the social icons' reflection */
 }
-.lp-root .footer-left { display: flex; flex-direction: column; gap: 8px; }
+.lp-root .footer-brand { display: flex; flex-direction: column; gap: 14px; }
 .lp-root .footer-logo { text-decoration: none; }
-.lp-root .footer-copy { font-size: 13px; color: var(--dim); }
-.lp-root .footer-right { display: flex; flex-direction: column; align-items: flex-end; gap: 20px; }
-
-/* Social buttons in brand colours: spin a full turn and glow on hover */
-.lp-root .socials { display: flex; align-items: center; gap: 14px; }
-.lp-root .social {
-  width: 42px; height: 42px;
-  border-radius: 50%;
-  display: flex; align-items: center; justify-content: center;
-  background: var(--brand-bg);
-  border: 1px solid rgba(255,255,255,0.14);   /* gives every circle a crisp edge on the dark page */
-  color: #fff;
-  transition: transform .45s cubic-bezier(.2,.8,.2,1), box-shadow .45s, filter .45s;
+.lp-root .footer-tagline { max-width: 320px; font-size: 14px; color: var(--muted); }
+.lp-root .footer-brand .socials { margin-top: -12px; margin-left: -10px; }   /* icons sit inside 50px faces */
+.lp-root .footer-heading {
+  margin-bottom: 18px;
+  font-size: 13px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--text);
 }
-.lp-root .social:hover,
-.lp-root .social:focus-visible {
-  transform: rotate(360deg) scale(1.08);
-  box-shadow:
-    0 0 0 4px color-mix(in srgb, var(--brand-glow) 22%, transparent),
-    0 8px 24px -6px color-mix(in srgb, var(--brand-glow) 55%, transparent);
-  filter: brightness(1.08);
+.lp-root .footer-list { list-style: none; display: flex; flex-direction: column; gap: 12px; font-size: 14px; }
+.lp-root .footer-list a { color: var(--muted); text-decoration: none; transition: color .15s; }
+.lp-root .footer-list a:hover { color: var(--text); }
+.lp-root .footer-contact li { display: flex; gap: 12px; align-items: flex-start; color: var(--muted); }
+.lp-root .footer-contact svg { width: 18px; height: 18px; flex: none; margin-top: 2px; color: var(--dim); }
+.lp-root .footer-contact address { font-style: normal; display: flex; flex-direction: column; }
+.lp-root .footer-bottom {
+  display: grid; grid-template-columns: 1fr auto 1fr;   /* links stay centred */
+  align-items: center; gap: 24px;
+  padding-top: 24px;
+  border-top: 1px solid var(--border);
+}
+.lp-root .footer-copy { font-size: 13px; color: var(--dim); }
+
+/* Social buttons: a plain icon at rest; on hover a brand-coloured circle bounces
+   up from below the clipped window (.social) to cover it. Faces are 50px with a
+   20px top margin, so the hidden face sits 70px lower. */
+.lp-root .socials {
+  display: flex; align-items: center; gap: 10px;
+  /* each .social has 10px of empty space under its icon, so pull the mirror up */
+  -webkit-box-reflect: below -12px linear-gradient(transparent, #00000055);
+}
+.lp-root .social {
+  display: flex; flex-direction: column;
+  height: 80px;
+  overflow: hidden;
+  color: var(--text);
   outline: none;
 }
-.lp-root .social:active { transform: rotate(360deg) scale(.94); }
+.lp-root .social-face {
+  flex: none;
+  width: 50px; height: 50px;
+  margin-top: 20px;
+  border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+}
+.lp-root .social-face-hover {
+  background: var(--brand-bg);
+  color: #fff;
+  transition: transform .4s cubic-bezier(.46,-.78,.5,1.56);
+}
+.lp-root .social-face-hover svg { opacity: 0; transition: opacity .5s .2s; }
+.lp-root .social:hover .social-face-hover,
+.lp-root .social:focus-visible .social-face-hover { transform: translateY(-70px); }
+.lp-root .social:hover .social-face-hover svg,
+.lp-root .social:focus-visible .social-face-hover svg { opacity: 1; }
+.lp-root .social:focus-visible .social-face-hover { box-shadow: inset 0 0 0 2px #fff; }
 
 .lp-root .footer-links { display: flex; gap: 28px; }
 .lp-root .footer-links a { font-size: 14px; color: var(--muted); text-decoration: none; transition: color .15s; }
@@ -921,8 +997,8 @@ a:hover > .brand .brand-bottom { translate: 12px 12px; }
   .lp-root .eyebrow-dot,
   .lp-root .line-inner,
   .lp-root .intro,
-  .lp-root .social,
-  .lp-root .social:hover,
+  .lp-root .social-face-hover,
+  .lp-root .social-face-hover svg,
   .lp-root .arrow-btn-arrow,
   .lp-root .arrow-btn:hover .arrow-btn-arrow,
   .brand-half,
@@ -957,14 +1033,31 @@ a:hover > .brand .brand-bottom { translate: 12px 12px; }
 @media (max-width: 960px) {
   .lp-nav  { padding: 0 20px; }
   .lp-root .nav-links { display: none; }
-  .lp-root .hero { padding: 130px 24px 90px; min-height: auto; }
+  .lp-root .nav-menu-btn { display: inline-flex; }
+  /* Solid bar so page content doesn't run under the logo while scrolling */
+  .lp-nav {
+    background: color-mix(in srgb, var(--bg) 82%, transparent);
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+    border-bottom: 1px solid var(--border);
+  }
+  /* Full screen (svh: excludes the mobile browser bars) so the features sheet
+     starts below the fold and the hero isn't blurred on load */
+  .lp-root .hero { padding: 110px 24px 90px; min-height: 100svh; }
   .lp-root .hero-sub { font-size: 17px; }
   .lp-root .section-inner { padding: 88px 24px; }
   .lp-root .section-head { margin-bottom: 48px; }
   .lp-root .process-grid { grid-template-columns: 1fr; }
   .lp-root .cta-section { padding: 96px 24px; }
-  .lp-footer { padding: 32px 24px; flex-direction: column; align-items: flex-start; }
-  .lp-root .footer-right { align-items: flex-start; }
+  .lp-footer { padding: 48px 24px 28px; }
+  .lp-root .footer-top { grid-template-columns: 1fr; gap: 36px; padding-bottom: 48px; }
+  .lp-root .footer-brand .socials { margin-bottom: 40px; }   /* clear the icons' reflection */
+  /* Keep the gliding language chips to the top and bottom edges, clear of the text */
+  .lp-root .lang-marquees {
+    -webkit-mask-image: linear-gradient(#000 0 12%, transparent 22% 80%, #000 90%);
+            mask-image: linear-gradient(#000 0 12%, transparent 22% 80%, #000 90%);
+  }
+  .lp-root .footer-bottom { grid-template-columns: 1fr; justify-items: start; }
 }
 
 @media (max-width: 640px) {

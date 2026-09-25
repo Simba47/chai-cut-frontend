@@ -1,0 +1,193 @@
+/* ── AUTH: double-slider sign in / sign up (components/auth/AuthSlider.tsx) ──
+   Desktop: the two forms share the left half; a lime overlay covers the right half.
+   Switching slides the overlay left and the active form right, swapping which form
+   is visible halfway through (auth-show). Phones: one form at a time, no overlay. */
+.auth-root {
+  --auth-lime: #C8FF00;
+  --auth-lime-deep: #9ACC00;
+  --auth-ink: #0A0A0A;
+  --auth-ease: cubic-bezier(.65, 0, .35, 1);
+  --auth-dur: .7s;
+
+  position: relative;
+  min-height: 100vh;
+  min-height: 100svh;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 28px;
+  padding: 88px 16px 40px;
+  background:
+    radial-gradient(ellipse 60% 45% at 50% 0%, color-mix(in srgb, var(--accent) 9%, transparent), transparent 70%),
+    var(--bg);
+  color: var(--text);
+  font-family: var(--font-display), system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif;
+}
+.auth-home { position: absolute; top: 22px; left: 28px; text-decoration: none; }
+
+.auth-card {
+  position: relative;
+  overflow: hidden;
+  width: 880px; max-width: 100%;
+  min-height: 560px;
+  border-radius: 28px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  box-shadow:
+    0 40px 100px -30px rgba(0,0,0,0.7),
+    0 30px 120px -50px color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+/* ── forms ── */
+.auth-form-wrap {
+  position: absolute; top: 0; left: 0;
+  width: 50%; height: 100%;
+  transition: transform var(--auth-dur) var(--auth-ease), opacity var(--auth-dur) var(--auth-ease);
+}
+.auth-signin { z-index: 2; }
+.auth-signup { z-index: 1; opacity: 0; }
+.auth-card[data-mode="signup"] .auth-signin { transform: translateX(100%); }
+.auth-card[data-mode="signup"] .auth-signup {
+  transform: translateX(100%);
+  opacity: 1; z-index: 5;
+  animation: auth-show var(--auth-dur);
+}
+@keyframes auth-show {
+  0%, 49.99% { opacity: 0; z-index: 1; }
+  50%, 100%  { opacity: 1; z-index: 5; }
+}
+
+.auth-form {
+  height: 100%;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 12px;
+  padding: 0 48px;
+  text-align: center;
+  background: var(--surface);   /* the forms stack: the top one must hide the other */
+}
+.auth-form h1 {
+  margin: 0;
+  font-size: 34px; font-weight: 900; letter-spacing: -0.03em; line-height: 1.05;
+  background: linear-gradient(180deg, var(--text) 0%, color-mix(in srgb, var(--text) 55%, transparent) 100%);
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+.auth-sub { margin: 0 0 14px; font-size: 14px; color: var(--text-muted); }
+.auth-form input {
+  width: 100%;
+  padding: 13px 16px;
+  border-radius: 12px;
+  border: 1px solid var(--border-strong);
+  background: color-mix(in srgb, var(--text) 4%, transparent);
+  color: var(--text);
+  font-size: 14px;
+  outline: none;
+  transition: border-color .2s, box-shadow .2s, background .2s;
+}
+.auth-form input::placeholder { color: var(--text-dim); }
+.auth-form input:focus {
+  border-color: color-mix(in srgb, var(--accent) 70%, transparent);
+  background: color-mix(in srgb, var(--text) 6%, transparent);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 14%, transparent);
+}
+.auth-link { margin: 4px 0; font-size: 13px; color: var(--text-muted); text-decoration: none; transition: color .15s; }
+.auth-link:hover { color: var(--text); }
+.auth-error { margin: 0; font-size: 13px; color: var(--danger); }
+
+/* Submit uses the site's fill button (lime circle fills it on hover) */
+.auth-form .auth-submit {
+  --fill-r: 24px; --fill-arrow: 16px; --fill-inset: 14px; --fill-shift: 10px;
+  width: 100%;
+  margin-top: 8px;
+  padding: 13px 26px;
+  border: 1px solid var(--border-strong);
+  background: transparent;
+  color: var(--text);
+  font-size: 14px; font-weight: 700;
+}
+.auth-form .auth-submit:disabled { opacity: .6; pointer-events: none; }
+
+.auth-switch { display: none; margin: 10px 0 0; font-size: 14px; color: var(--text-muted); }
+.auth-switch button {
+  border: 0; background: none; padding: 0; cursor: pointer;
+  font: inherit; font-weight: 700; color: var(--text);
+  text-decoration: underline; text-decoration-color: var(--accent); text-underline-offset: 3px;
+}
+
+/* ── lime overlay ── */
+.auth-overlay-wrap {
+  position: absolute; top: 0; left: 50%;
+  width: 50%; height: 100%;
+  overflow: hidden;
+  z-index: 100;
+  transition: transform var(--auth-dur) var(--auth-ease);
+}
+.auth-card[data-mode="signup"] .auth-overlay-wrap { transform: translateX(-100%); }
+.auth-overlay {
+  position: relative; left: -100%;
+  width: 200%; height: 100%;
+  color: var(--auth-ink);
+  background:
+    radial-gradient(rgba(0,0,0,0.13) 1px, transparent 1.4px) 0 0 / 18px 18px,
+    radial-gradient(ellipse 70% 60% at 50% 110%, rgba(255,255,255,0.35), transparent 70%),
+    linear-gradient(120deg, var(--auth-lime) 0%, var(--auth-lime-deep) 100%);
+  transform: translateX(0);
+  transition: transform var(--auth-dur) var(--auth-ease);
+}
+.auth-card[data-mode="signup"] .auth-overlay { transform: translateX(50%); }
+/* A light beam sweeps across the panel on every switch */
+.auth-overlay::after {
+  content: ''; position: absolute; inset: 0; pointer-events: none;
+  background: linear-gradient(105deg, transparent 35%, rgba(255,255,255,0.45) 50%, transparent 65%);
+  background-size: 250% 100%;
+  background-position: 120% 0;
+}
+.auth-card[data-mode="signup"] .auth-overlay::after { animation: auth-beam var(--auth-dur) var(--auth-ease); }
+.auth-card[data-mode="signin"] .auth-overlay::after { animation: auth-beam-back var(--auth-dur) var(--auth-ease); }
+@keyframes auth-beam      { from { background-position: 120% 0; } to { background-position: -20% 0; } }
+@keyframes auth-beam-back { from { background-position: 120% 0; } to { background-position: -20% 0; } }
+
+.auth-panel {
+  position: absolute; top: 0;
+  width: 50%; height: 100%;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  padding: 0 52px;
+  text-align: center;
+  transition: transform var(--auth-dur) var(--auth-ease), opacity var(--auth-dur) var(--auth-ease);
+}
+.auth-panel h2 { margin: 0; font-size: 34px; font-weight: 900; letter-spacing: -0.03em; line-height: 1.05; }
+.auth-panel p { margin: 16px 0 28px; font-size: 15px; line-height: 1.55; color: rgba(10,10,10,0.72); }
+.auth-panel-left  { transform: translateX(-20%); opacity: 0; }
+.auth-panel-right { right: 0; }
+.auth-card[data-mode="signup"] .auth-panel-left  { transform: translateX(0); opacity: 1; }
+.auth-card[data-mode="signup"] .auth-panel-right { transform: translateX(20%); opacity: 0; }
+
+.auth-ghost {
+  padding: 12px 40px;
+  border-radius: 999px;
+  border: 1.5px solid var(--auth-ink);
+  background: transparent;
+  color: var(--auth-ink);
+  font-size: 14px; font-weight: 800; letter-spacing: .02em;
+  cursor: pointer;
+  transition: background .2s, color .2s, scale .15s;
+}
+.auth-ghost:hover, .auth-ghost:focus-visible { background: var(--auth-ink); color: var(--auth-lime); outline: none; }
+.auth-ghost:active { scale: .95; }
+
+/* ── phones: one form at a time, text link to switch ── */
+@media (max-width: 767px) {
+  .auth-root { justify-content: flex-start; padding-top: 96px; }
+  .auth-home { left: 20px; }
+  .auth-card { min-height: 0; border-radius: 22px; }
+  .auth-overlay-wrap { display: none; }
+  .auth-card[data-mode] .auth-form-wrap { position: relative; width: 100%; opacity: 1; transform: none; }
+  .auth-card[data-mode="signin"] .auth-signup,
+  .auth-card[data-mode="signup"] .auth-signin { display: none; }
+  .auth-card[data-mode] .auth-form-wrap:not([inert]) { animation: auth-rise .45s var(--auth-ease); }
+  .auth-form { padding: 36px 24px 30px; }
+  .auth-form h1 { font-size: 30px; }
+  .auth-switch { display: block; }
+}
+@keyframes auth-rise { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .auth-root *, .auth-root *::after { transition-duration: .01ms !important; animation-duration: .01ms !important; }
+}

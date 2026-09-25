@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import NumberFlow from '@number-flow/react'
+import { Mail, MapPin, Menu, Phone, X } from 'lucide-react'
 import { motion, useReducedMotion, useScroll, useSpring, useTransform, type MotionStyle } from 'framer-motion'
 import { PricingSection, type PricingPlan } from '@/components/ui/pricing'
 import { DotField } from '@/components/ui/dot-field'
@@ -73,7 +74,7 @@ const PRICING_PLANS: PricingPlan[] = [
 
 // Languages drifting across the closing section
 const LANGUAGES = [
-  { native: 'తెలుగు', name: 'Telugu' },
+  { native: 'English', name: 'English' },
   { native: 'हिंदी', name: 'Hindi' },
   { native: 'தமிழ்', name: 'Tamil' },
   { native: 'ಕನ್ನಡ', name: 'Kannada' },
@@ -83,8 +84,8 @@ const LANGUAGES = [
   { native: 'ગુજરાતી', name: 'Gujarati' },
   { native: 'ਪੰਜਾਬੀ', name: 'Punjabi' },
   { native: 'ଓଡ଼ିଆ', name: 'Odia' },
-  { native: 'English', name: 'English' },
-  { native: 'Hinglish', name: 'Hinglish' },
+  { native: 'తెలుగు', name: 'Telugu' },
+  { native: 'Tenglish', name: 'Tenglish' },
 ]
 // Highlighted in lime wherever it appears
 const HIGHLIGHT_LANGUAGE = 'Telugu'
@@ -112,13 +113,26 @@ const FEATURES: CarouselItem[] = [
   { id: 'search', tag: 'Search', icon: featureIcon('⌕', 'fi-blue'), title: 'Scene Search', description: 'Shortcut searches the captions and pulls out that exact moment from your video which is needed for you.' },
 ]
 
-// Placeholder handles ("shortcut") — swap in the real accounts later.
-// bg/glow are each network's official brand colours.
+const CONTACT = {
+  email: 'connect@mutinytalent.com',
+  phone: '+91 9391869151',
+  address: ['Block B, 4th Floor, Plot No. 206,', 'Kavuri Hills, Madhapur,', 'Hyderabad, Telangana 500033'],
+}
+
+const EXPLORE = [
+  { label: 'Features', href: '#features' },
+  { label: 'How it works', href: '#process' },
+  { label: 'Editor', href: '#editor' },
+  { label: 'Pricing', href: '#pricing' },
+]
+
+// Placeholder Instagram handle ("shortcut") — swap in the real account later.
+// bg is the brand colour of the circle that slides up on hover; hoverIcon (optional)
+// replaces the icon on that circle.
 const SOCIALS = [
   {
     label: 'Shortcut on Instagram',
-    bg: 'radial-gradient(circle at 30% 107%, #FDF497 0%, #FDF497 5%, #FD5949 45%, #D6249F 60%, #285AEB 90%)',
-    glow: '#E1306C',
+    bg: 'linear-gradient(72.44deg, #FF7A00 11.92%, #FF0169 51.56%, #D300C5 85.69%)',
     href: 'https://instagram.com/shortcut',
     icon: (
       <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" aria-hidden>
@@ -131,9 +145,18 @@ const SOCIALS = [
   {
     label: 'Email Shortcut',
     bg: '#FFFFFF',
-    glow: '#EA4335',
-    href: 'mailto:shortcut@gmail.com', // swap in the real address
+    href: `mailto:${CONTACT.email}`,
     icon: (
+      <svg viewBox="52 42 88 66" width="22" height="17" fill="currentColor" aria-hidden>
+        <path d="M58 108h14V74L52 59v43c0 3.32 2.69 6 6 6" />
+        <path d="M120 108h14c3.32 0 6-2.69 6-6V59l-20 15" />
+        <path d="M120 48v26l20-15v-8c0-7.42-8.47-11.65-14.4-7.2" />
+        <path d="M72 74V48l24 18 24-18v26L96 92" />
+        <path d="M52 51v8l20 15V48l-5.6-4.2c-5.94-4.45-14.4-.22-14.4 7.2" />
+      </svg>
+    ),
+    // Official multicolour Gmail logo (2020)
+    hoverIcon: (
       <svg viewBox="52 42 88 66" width="22" height="17" aria-hidden>
         <path fill="#4285F4" d="M58 108h14V74L52 59v43c0 3.32 2.69 6 6 6" />
         <path fill="#34A853" d="M120 108h14c3.32 0 6-2.69 6-6V59l-20 15" />
@@ -146,8 +169,7 @@ const SOCIALS = [
   {
     label: 'Shortcut on WhatsApp',
     bg: '#25D366',
-    glow: '#25D366',
-    href: 'https://wa.me/', // add the business number, e.g. https://wa.me/91XXXXXXXXXX
+    href: 'https://wa.me/919391869151',
     icon: (
       <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" aria-hidden>
         <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 0 1-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 0 1-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 0 1 2.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0 0 12.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 0 0 5.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 0 0-3.48-8.413Z" />
@@ -155,6 +177,60 @@ const SOCIALS = [
     ),
   },
 ]
+
+const NAV_H = 60      // .lp-nav height (sticky, so it covers the top of the screen)
+const FIT_GAP = 16   // minimum space kept above and below a section's content
+
+// Document Y of an element's layout box. Uses offsetTop, so the scroll-driven
+// transforms on sections (tilt / zoom / reveal) don't skew the measurement.
+function docTop(el: HTMLElement) {
+  let y = 0
+  for (let n: HTMLElement | null = el; n; n = n.offsetParent as HTMLElement | null) y += n.offsetTop
+  return y
+}
+
+// A section's content box: walks down the wrapper divs to the element holding the
+// section padding, and measures what's inside that padding.
+function sectionContent(section: HTMLElement) {
+  let inner: HTMLElement = section
+  while (parseFloat(getComputedStyle(inner).paddingTop) === 0 && inner.firstElementChild instanceof HTMLElement) {
+    inner = inner.firstElementChild
+  }
+  const cs = getComputedStyle(inner)
+  const padTop = parseFloat(cs.paddingTop)
+  return { inner, top: docTop(inner) + padTop, height: inner.offsetHeight - padTop - parseFloat(cs.paddingBottom) }
+}
+
+// On desktop, shrink each nav section's [data-fit] element (with CSS zoom, so the
+// layout shrinks too) until the section's content fits one screen below the nav.
+// [data-fit] must sit inside the section's padded box so the measurements stay in
+// unzoomed px.
+function fitSectionsToScreen(ids: string[]) {
+  for (const id of ids) {
+    const section = document.getElementById(id)
+    const el = section?.querySelector<HTMLElement>('[data-fit]')
+    if (!section || !el) continue
+    el.style.zoom = ''
+    if (window.innerWidth < 960) continue
+    const excess = sectionContent(section).height - (window.innerHeight - NAV_H - FIT_GAP * 2)
+    if (excess <= 0) continue
+    el.style.zoom = String(Math.max(0.55, (el.offsetHeight - excess) / el.offsetHeight))
+  }
+}
+
+// Scroll so a section's content (inside its padding) sits in the space below the
+// nav: centred when it fits, top-aligned under the nav when it's taller.
+function scrollToSection(id: string, smooth: boolean) {
+  const section = document.getElementById(id)
+  if (!section) return
+  const { top, height } = sectionContent(section)
+  const room = window.innerHeight - NAV_H
+  const centred = top - NAV_H - Math.max(FIT_GAP, (room - height) / 2)
+  // Don't scroll so high that the previous section peeks in above this one
+  const y = Math.max(centred, Math.min(docTop(section), top - NAV_H - FIT_GAP))
+  window.scrollTo({ top: y, behavior: smooth ? 'smooth' : 'auto' })
+  history.replaceState(null, '', `#${id}`)
+}
 
 // Hand-drawn arrow that swaps in for the label on .arrow-btn hover
 function SquiggleArrow() {
@@ -198,6 +274,60 @@ export function LandingPage() {
     return () => clearTimeout(t)
   }, [reduceMotion])
 
+  // Keep every nav section within one screen, so a nav click shows all of it
+  useEffect(() => {
+    const ids = EXPLORE.map(l => l.href.slice(1))
+    const fit = () => fitSectionsToScreen(ids)
+    fit()
+    document.fonts?.ready.then(fit)
+    window.addEventListener('resize', fit)
+    return () => window.removeEventListener('resize', fit)
+  }, [])
+
+  const goToSection = (e: React.MouseEvent<HTMLAnchorElement>, href: string) => {
+    e.preventDefault()
+    setMenuOpen(false)
+    scrollToSection(href.slice(1), !reduceMotion)
+  }
+
+  // Once the features sheet reaches the nav (i.e. we've left the hero), the black
+  // link tab turns see-through
+  const [pastHero, setPastHero] = useState(false)
+  useEffect(() => {
+    let raf = 0
+    const check = () => {
+      raf = 0
+      const sheet = sheetRef.current
+      if (sheet) setPastHero(sheet.getBoundingClientRect().top <= NAV_H)
+    }
+    const onScroll = () => { if (!raf) raf = requestAnimationFrame(check) }
+    check()
+    window.addEventListener('scroll', onScroll, { passive: true })
+    window.addEventListener('resize', onScroll)
+    return () => {
+      cancelAnimationFrame(raf)
+      window.removeEventListener('scroll', onScroll)
+      window.removeEventListener('resize', onScroll)
+    }
+  }, [])
+
+  const goHome = (e: React.MouseEvent<HTMLAnchorElement>) => {
+    e.preventDefault()
+    setMenuOpen(false)
+    window.scrollTo({ top: 0, behavior: reduceMotion ? 'auto' : 'smooth' })
+  }
+
+  // Phone menu (the tab of section links is hidden below 960px)
+  const [menuOpen, setMenuOpen] = useState(false)
+  useEffect(() => {
+    if (!menuOpen) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setMenuOpen(false) }
+    const onResize = () => { if (window.innerWidth >= 960) setMenuOpen(false) }
+    window.addEventListener('keydown', onKey)
+    window.addEventListener('resize', onResize)
+    return () => { window.removeEventListener('keydown', onKey); window.removeEventListener('resize', onResize) }
+  }, [menuOpen])
+
   useEffect(() => {
     const observer = new IntersectionObserver(
       entries => entries.forEach(e => {
@@ -216,24 +346,15 @@ export function LandingPage() {
     <div className="lp-root">
 
       {/* ── NAV ── */}
-      <nav className="lp-nav">
+      <nav className={`lp-nav${pastHero ? ' nav-past-hero' : ''}`}>
         <a href="#" className="logo" aria-label="Shortcut home"><BrandLogo shine /></a>
         <ul className="nav-links">
           <li>
-            <a
-              href="#"
-              onClick={e => {
-                e.preventDefault()
-                window.scrollTo({ top: 0, behavior: reduceMotion ? 'auto' : 'smooth' })
-              }}
-            >
-              Home
-            </a>
+            <a href="#" onClick={goHome}>Home</a>
           </li>
-          <li><a href="#features">Features</a></li>
-          <li><a href="#process">How it works</a></li>
-          <li><a href="#editor">Editor</a></li>
-          <li><a href="#pricing">Pricing</a></li>
+          {EXPLORE.map(l => (
+            <li key={l.href}><a href={l.href} onClick={e => goToSection(e, l.href)}>{l.label}</a></li>
+          ))}
         </ul>
         <div className="nav-right">
           <Link href="/login" className="btn-nav-ghost fill-btn fill-btn-sm"><FillButtonContent>Log in</FillButtonContent></Link>
@@ -241,7 +362,24 @@ export function LandingPage() {
             <span className="arrow-btn-label">Get started free</span>
             <SquiggleArrow />
           </Link>
+          <button
+            type="button"
+            className="nav-menu-btn"
+            aria-label={menuOpen ? 'Close menu' : 'Open menu'}
+            aria-expanded={menuOpen}
+            aria-controls="nav-menu"
+            onClick={() => setMenuOpen(o => !o)}
+          >
+            {menuOpen ? <X aria-hidden /> : <Menu aria-hidden />}
+          </button>
         </div>
+        {menuOpen && (
+          <div id="nav-menu" className="nav-menu">
+            <a href="#" onClick={goHome}>Home</a>
+            {EXPLORE.map(l => <a key={l.href} href={l.href} onClick={e => goToSection(e, l.href)}>{l.label}</a>)}
+            <Link href="/login" className="nav-menu-login">Log in</Link>
+          </div>
+        )}
       </nav>
 
       {/* ── HERO + FEATURES: hero pins while features slides over it ── */}
@@ -306,7 +444,7 @@ export function LandingPage() {
             <h2 className="section-title">Everything your reel needs</h2>
             <p className="section-sub">A focused toolkit — no bloat, no learning curve. From raw footage to export-ready reel without switching tabs.</p>
           </div>
-          <div className="reveal">
+          <div data-fit className="reveal">
             <CircularCarousel items={FEATURES} />
           </div>
         </section>
@@ -341,7 +479,7 @@ export function LandingPage() {
             <p className="section-eyebrow">Inside the editor</p>
             <h2 className="section-title">Crop, caption and cut in one place</h2>
           </div>
-          <div className="editor-showcase reveal">
+          <div data-fit className="editor-showcase reveal">
             <EditorMockup />
           </div>
         </section>
@@ -389,31 +527,52 @@ export function LandingPage() {
 
       {/* ── FOOTER ── */}
       <footer className="lp-footer">
-        <div className="footer-left">
-          <a href="#" className="footer-logo" aria-label="Shortcut home"><BrandLogo size="sm" /></a>
-          <span className="footer-copy">© 2026 Shortcut. All rights reserved.</span>
-        </div>
-        <div className="footer-right">
-          <div className="socials">
-            {SOCIALS.map(s => (
-              <a
-                key={s.label}
-                href={s.href}
-                className="social"
-                aria-label={s.label}
-                title={s.label}
-                target="_blank"
-                rel="noopener noreferrer"
-                style={{ '--brand-bg': s.bg, '--brand-glow': s.glow } as React.CSSProperties}
-              >
-                {s.icon}
-              </a>
-            ))}
+        <div className="footer-top">
+          <div className="footer-brand">
+            <a href="#" className="footer-logo" aria-label="Shortcut home"><BrandLogo size="sm" /></a>
+            <p className="footer-tagline">Transcribe, clip, and edit vertical videos in multiple languages.</p>
+            <div className="socials">
+              {SOCIALS.map(s => (
+                <a
+                  key={s.label}
+                  href={s.href}
+                  className="social"
+                  aria-label={s.label}
+                  title={s.label}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style={{ '--brand-bg': s.bg } as React.CSSProperties}
+                >
+                  <span className="social-face">{s.icon}</span>
+                  <span className="social-face social-face-hover" aria-hidden>{s.hoverIcon ?? s.icon}</span>
+                </a>
+              ))}
+            </div>
           </div>
+
+          <nav className="footer-col" aria-label="Explore">
+            <h4 className="footer-heading">Explore</h4>
+            <ul className="footer-list">
+              {EXPLORE.map(l => <li key={l.href}><a href={l.href} onClick={e => goToSection(e, l.href)}>{l.label}</a></li>)}
+            </ul>
+          </nav>
+
+          <div className="footer-col" id="contact">
+            <h4 className="footer-heading">Contact</h4>
+            <ul className="footer-list footer-contact">
+              <li><Mail aria-hidden /><a href={`mailto:${CONTACT.email}`}>{CONTACT.email}</a></li>
+              <li><Phone aria-hidden /><a href={`tel:${CONTACT.phone.replace(/\s/g, '')}`}>{CONTACT.phone}</a></li>
+              <li><MapPin aria-hidden /><address>{CONTACT.address.map(line => <span key={line}>{line}</span>)}</address></li>
+            </ul>
+          </div>
+        </div>
+
+        <div className="footer-bottom">
+          <span className="footer-copy">© 2026 Shortcut. All rights reserved.</span>
           <div className="footer-links">
             <a href="#">Privacy</a>
             <a href="#">Terms</a>
-            <a href="#">Contact</a>
+            <a href="#contact">Contact</a>
           </div>
         </div>
       </footer>
