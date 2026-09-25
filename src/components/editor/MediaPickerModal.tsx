@@ -155,8 +155,8 @@ export function MediaPickerModal({ clipId, atMs, onInsertVideo, onInsertImage, o
               onClick={() => setTab(t.id)}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all"
               style={{
-                background: tab === t.id ? '#7c3aed' : 'rgba(255,255,255,0.06)',
-                color: tab === t.id ? '#fff' : 'rgba(255,255,255,0.4)',
+                background: tab === t.id ? 'rgba(255,255,255,0.14)' : 'rgba(255,255,255,0.04)',
+                color: tab === t.id ? '#fff' : 'rgba(255,255,255,0.45)',
               }}
             >
               {t.icon}
@@ -177,7 +177,7 @@ export function MediaPickerModal({ clipId, atMs, onInsertVideo, onInsertImage, o
                 <p className="text-xs" style={{ color: 'rgba(255,255,255,0.3)', lineHeight: 1.6 }}>
                   Upload a video from the Upload tab or the Dashboard to use it here as a clip.
                 </p>
-                <button onClick={() => setTab('upload')} className="mx-auto mt-2 px-4 py-2 rounded-lg text-xs font-semibold text-white" style={{ background: '#7c3aed' }}>
+                <button onClick={() => setTab('upload')} className="mx-auto mt-2 px-4 py-2 rounded-lg text-xs font-semibold" style={{ background: '#c8ff00', color: '#000' }}>
                   Upload video
                 </button>
               </div>
@@ -215,8 +215,8 @@ export function MediaPickerModal({ clipId, atMs, onInsertVideo, onInsertImage, o
                 className="flex flex-col items-center justify-center gap-3 rounded-2xl py-12"
                 style={{ border: '2px dashed rgba(255,255,255,0.12)', background: 'rgba(255,255,255,0.02)' }}
               >
-                <div className="w-12 h-12 flex items-center justify-center rounded-2xl" style={{ background: 'rgba(124,58,237,0.15)', border: '1px solid rgba(124,58,237,0.3)' }}>
-                  <svg width="22" height="22" viewBox="0 0 24 24" fill="none"><path d="M12 16V8M8 12l4-4 4 4M4 20h16" stroke="#a78bfa" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                <div className="w-12 h-12 flex items-center justify-center rounded-2xl" style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.12)' }}>
+                  <svg width="22" height="22" viewBox="0 0 24 24" fill="none"><path d="M12 16V8M8 12l4-4 4 4M4 20h16" stroke="rgba(255,255,255,0.7)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/></svg>
                 </div>
                 <div className="text-center">
                   <p className="text-sm font-semibold text-white">Choose video from device</p>
@@ -224,9 +224,9 @@ export function MediaPickerModal({ clipId, atMs, onInsertVideo, onInsertImage, o
                 </div>
               </button>
             ) : (
-              <div className="flex items-center gap-3 p-3 rounded-xl" style={{ background: 'rgba(124,58,237,0.1)', border: '1px solid rgba(124,58,237,0.25)' }}>
-                <div className="w-10 h-10 flex items-center justify-center rounded-lg" style={{ background: 'rgba(124,58,237,0.2)' }}>
-                  <svg width="16" height="16" viewBox="0 0 20 20" fill="none"><path d="M5 3l13 7-13 7V3z" fill="#a78bfa"/></svg>
+              <div className="flex items-center gap-3 p-3 rounded-xl" style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.1)' }}>
+                <div className="w-10 h-10 flex items-center justify-center rounded-lg" style={{ background: 'rgba(255,255,255,0.08)' }}>
+                  <svg width="16" height="16" viewBox="0 0 20 20" fill="none"><path d="M5 3l13 7-13 7V3z" fill="rgba(255,255,255,0.7)"/></svg>
                 </div>
                 <div className="flex-1 min-w-0">
                   <p className="text-xs font-semibold text-white truncate">{videoFile.name}</p>
@@ -242,7 +242,7 @@ export function MediaPickerModal({ clipId, atMs, onInsertVideo, onInsertImage, o
                   <span>Uploading…</span><span>{videoProgress}%</span>
                 </div>
                 <div className="h-1.5 rounded-full overflow-hidden" style={{ background: 'rgba(255,255,255,0.1)' }}>
-                  <div className="h-full rounded-full transition-all" style={{ width: `${videoProgress}%`, background: '#7c3aed' }} />
+                  <div className="h-full rounded-full transition-all" style={{ width: `${videoProgress}%`, background: '#c8ff00' }} />
                 </div>
               </div>
             )}
@@ -252,8 +252,8 @@ export function MediaPickerModal({ clipId, atMs, onInsertVideo, onInsertImage, o
             <button
               onClick={handleVideoUpload}
               disabled={!videoFile || videoUploading}
-              className="py-2.5 rounded-xl text-sm font-bold text-white disabled:opacity-40"
-              style={{ background: 'linear-gradient(135deg,#7c3aed,#a855f7)', marginTop: 'auto' }}
+              className="py-2.5 rounded-xl text-sm font-bold disabled:opacity-40"
+              style={{ background: '#c8ff00', color: '#000', marginTop: 'auto' }}
             >
               {videoUploading ? `Uploading ${videoProgress}%…` : 'Upload & insert'}
             </button>
@@ -299,7 +299,7 @@ export function MediaPickerModal({ clipId, atMs, onInsertVideo, onInsertImage, o
                 </div>
                 <div className="flex items-center gap-2">
                   <p className="text-xs flex-1 truncate" style={{ color: 'rgba(255,255,255,0.35)' }}>{imageFile?.name}</p>
-                  <button onClick={() => imageInputRef.current?.click()} className="text-xs shrink-0" style={{ color: '#a78bfa' }}>Change</button>
+                  <button onClick={() => imageInputRef.current?.click()} className="text-xs shrink-0" style={{ color: '#c8ff00' }}>Change</button>
                 </div>
               </div>
             )}

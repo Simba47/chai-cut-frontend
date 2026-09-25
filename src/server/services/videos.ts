@@ -4,9 +4,22 @@ import sql from '@/lib/db'
 
 export async function listVideos(userId: string) {
   return sql`
-    SELECT id, status, download_progress, duration_ms, created_at, storage_path, source_url, source_type
+    SELECT id, title, status, download_progress, duration_ms, created_at, storage_path, source_url, source_type,
+      (SELECT COUNT(*)::int FROM clips c WHERE c.video_id = videos.id) AS clip_count
     FROM videos WHERE user_id = ${userId} ORDER BY created_at DESC
   `
+}
+
+export async function renameVideo(userId: string, videoId: string, title: string) {
+  const trimmed = title.trim().slice(0, 120)
+  if (!trimmed) throw Object.assign(new Error('Title cannot be empty'), { status: 400 })
+  const [video] = await sql`
+    UPDATE videos SET title = ${trimmed}
+    WHERE id = ${videoId} AND user_id = ${userId}
+    RETURNING id, title
+  `
+  if (!video) throw Object.assign(new Error('Not found'), { status: 404 })
+  return { video }
 }
 
 export async function getVideo(userId: string, videoId: string) {

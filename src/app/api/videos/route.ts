@@ -30,6 +30,8 @@ export async function GET() {
         }
         return {
           id: v.id,
+          title: v.title,
+          clip_count: v.clip_count,
           status: v.status,
           download_progress: v.download_progress,
           duration_ms: v.duration_ms,
