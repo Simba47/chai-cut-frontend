@@ -15,9 +15,9 @@ export default async function VideoPickerPage({
   const user = await requireUser()
   if (!user) redirect('/login')
 
-  type VideoRow = { id: string; user_id: string; status: string; download_progress: number; duration_ms: number | null; created_at: string; storage_path: string | null }
+  type VideoRow = { id: string; user_id: string; title: string | null; status: string; download_progress: number; duration_ms: number | null; created_at: string; storage_path: string | null }
   const [video] = await sql`
-    SELECT id, user_id, status, download_progress, duration_ms, created_at, storage_path
+    SELECT id, user_id, title, status, download_progress, duration_ms, created_at, storage_path
     FROM videos WHERE id = ${videoId}
   ` as unknown as VideoRow[]
   if (!video || video.user_id !== user.id) notFound()
@@ -53,7 +53,6 @@ export default async function VideoPickerPage({
     <ClipPickerShell
       video={video}
       videoUrl={videoUrl}
-      userEmail={user.email ?? ''}
       savedClips={savedClips}
     />
   )

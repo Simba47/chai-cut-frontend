@@ -1,10 +1,11 @@
 'use client'
 
-import { useState, useRef, useEffect, useId } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 
 interface VideoData {
   id: string
+  title?: string | null
   status: string
   download_progress: number
   duration_ms: number | null
@@ -23,20 +24,22 @@ interface SavedClip {
   index: number
 }
 
-interface PendingClip {
+interface Suggestion {
   id: string
   title: string
   start_ms: number
   end_ms: number
-  // always vertical — app is reels-only
+  summary: string
 }
 
 interface Props {
   video: VideoData
   videoUrl: string
-  userEmail: string
   savedClips: SavedClip[]
 }
+
+const ACCENT = '#c8ff00'
+const DEFAULT_CLIP_MS = 60_000
 
 // ── helpers ────────────────────────────────────────────────────────────────────
 
@@ -74,39 +77,14 @@ const stageLabel = (pct: number) =>
   pct < 62 ? 'Extracting audio…' :
   pct < 99 ? `Transcribing ${pct}%` : 'Finishing…'
 
-// ── sub-components ─────────────────────────────────────────────────────────────
-
-function TimePill({ startMs, endMs, onSeekStart, onSeekEnd }: {
-  startMs: number; endMs: number
-  onSeekStart?: () => void; onSeekEnd?: () => void
-}) {
-  return (
-    <div
-      className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-mono"
-      style={{ background: 'rgba(255,255,255,0.07)', color: 'rgba(255,255,255,0.55)' }}
-    >
-      <button onClick={onSeekStart} className="hover:text-white transition-colors">{msToDisplay(startMs)}</button>
-      <span style={{ color: 'rgba(255,255,255,0.25)' }}>→</span>
-      <button onClick={onSeekEnd} className="hover:text-white transition-colors">{msToDisplay(endMs)}</button>
-      <span
-        className="ml-0.5 px-1.5 py-0.5 rounded-full text-xs"
-        style={{ background: 'rgba(255,255,255,0.08)', color: 'rgba(255,255,255,0.4)' }}
-      >
-        {durLabel(startMs, endMs)}
-      </span>
-    </div>
-  )
-}
-
 // ── main component ─────────────────────────────────────────────────────────────
 
-export function ClipPickerShell({ video: initialVideo, videoUrl, userEmail, savedClips }: Props) {
+export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: Props) {
   const router = useRouter()
-  const uid = useId()
   const videoRef = useRef<HTMLVideoElement>(null)
 
   const [video, setVideo] = useState(initialVideo)
-  const [pending, setPending] = useState<PendingClip[]>([])
+  const [nowMs, setNowMs] = useState(0)
   const [showForm, setShowForm] = useState(false)
   const [formTitle, setFormTitle] = useState('')
   const [formStart, setFormStart] = useState('')
@@ -114,10 +92,14 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, userEmail, save
   const [formError, setFormError] = useState<string | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
   const [clipError, setClipError] = useState<string | null>(null)
+  const [suggestions, setSuggestions] = useState<Suggestion[] | null>(null)
+  const [loadingSuggestions, setLoadingSuggestions] = useState(false)
+  const [suggestionsError, setSuggestionsError] = useState<string | null>(null)
 
   const isReady = video.status === 'ready'
   const isProcessing = video.status === 'uploaded' || video.status === 'transcribing'
   const maxMs = video.duration_ms ?? 0
+  const videoTitle = video.title?.trim() || 'Untitled video'
 
   // Poll while processing
   useEffect(() => {
@@ -127,46 +109,46 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, userEmail, save
         const r = await fetch(`/api/videos/${video.id}`)
         if (!r.ok) return
         const { video: updated } = await r.json()
-        setVideo(updated)
+        setVideo(v => ({ ...v, ...updated }))
         if (updated.status === 'ready') { clearInterval(id); router.refresh() }
       } catch { /* ignore */ }
     }, 3000)
     return () => clearInterval(id)
   }, [isProcessing, video.id, router])
 
-  function seek(ms: number) {
-    if (videoRef.current) {
-      videoRef.current.currentTime = ms / 1000
-      videoRef.current.play().catch(() => {})
-    }
+  function seek(ms: number, play = true) {
+    const v = videoRef.current
+    if (!v) return
+    v.currentTime = ms / 1000
+    if (play) v.play().catch(() => {})
   }
 
   function openForm() {
+    // Start from wherever the user has scrubbed to — they usually just found the moment
+    const start = Math.floor(nowMs / 1000) * 1000
+    const end = maxMs > 0 ? Math.min(maxMs, start + DEFAULT_CLIP_MS) : start + DEFAULT_CLIP_MS
     setFormTitle('')
-    setFormStart('')
-    setFormEnd('')
+    setFormStart(msToDisplay(start))
+    setFormEnd(msToDisplay(end))
     setFormError(null)
     setShowForm(true)
   }
 
+  // Parsed form range, for the live duration readout and the marker on the video bar
+  const formStartMs = parseTime(formStart)
+  const formEndMs = parseTime(formEnd)
+  const formRangeValid = formStartMs !== null && formEndMs !== null && formEndMs > formStartMs
+
   function submitForm() {
-    if (!formTitle.trim()) { setFormError('Enter a title'); return }
-    const startMs = parseTime(formStart)
-    const endMs = parseTime(formEnd)
-    if (startMs === null) { setFormError('Invalid start time (e.g. 0:30)'); return }
-    if (endMs === null) { setFormError('Invalid end time (e.g. 1:45)'); return }
-    if (endMs <= startMs) { setFormError('End must be after start'); return }
-    if (maxMs > 0 && endMs > maxMs) {
-      setFormError(`Exceeds video length (${msToDisplay(maxMs)})`); return
-    }
-    setPending(prev => [...prev, { id: `${uid}-${Date.now()}`, title: formTitle.trim(), start_ms: startMs, end_ms: endMs }])
-    setShowForm(false)
+    if (formStartMs === null) { setFormError('Start time looks wrong. Use m:ss, e.g. 0:30'); return }
+    if (formEndMs === null) { setFormError('End time looks wrong. Use m:ss, e.g. 1:45'); return }
+    if (formEndMs <= formStartMs) { setFormError('End must be after start'); return }
+    if (maxMs > 0 && formEndMs > maxMs) { setFormError(`The video is only ${msToDisplay(maxMs)} long`); return }
+    setFormError(null)
+    createClip(formStartMs, formEndMs, 'form', formTitle.trim() || undefined)
   }
 
-  function removePending(id: string) { setPending(prev => prev.filter(c => c.id !== id)) }
-
-  async function clipIt(startMs: number, endMs: number, pendingId?: string, title?: string) {
-    const key = pendingId ?? 'new'
+  async function createClip(startMs: number, endMs: number, key: string, title?: string) {
     setBusy(key)
     setClipError(null)
     try {
@@ -177,7 +159,6 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, userEmail, save
       })
       if (!res.ok) throw new Error((await res.json()).error ?? 'Failed to create clip')
       const { clip_id } = await res.json()
-      if (pendingId) removePending(pendingId)
       router.push(`/editor/${clip_id}?layout=horizontal`)
     } catch (e) {
       console.error(e)
@@ -205,328 +186,357 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, userEmail, save
     }
   }
 
-  const totalClips = savedClips.length + pending.length
+  // On demand only — each call asks Claude to read the transcript
+  async function findMoments() {
+    setLoadingSuggestions(true)
+    setSuggestionsError(null)
+    try {
+      const res = await fetch(`/api/videos/${video.id}/suggestions`)
+      if (!res.ok) throw new Error((await res.json()).error ?? 'Could not load suggestions')
+      const { suggestions } = await res.json()
+      setSuggestions(suggestions ?? [])
+    } catch (e) {
+      setSuggestionsError(e instanceof Error ? e.message : 'Could not load suggestions')
+    } finally {
+      setLoadingSuggestions(false)
+    }
+  }
 
   return (
     <div className="h-screen flex flex-col overflow-hidden" style={{ background: '#0d0d0d' }}>
       {/* Nav */}
-      <nav
-        className="flex items-center justify-between px-5 h-11 border-b shrink-0"
-        style={{ background: '#111', borderColor: 'rgba(255,255,255,0.07)' }}
-      >
-        <div className="flex items-center gap-3">
-          <button
-            onClick={() => router.push('/dashboard')}
-            className="flex items-center gap-1 text-sm transition-opacity hover:opacity-70"
-            style={{ color: 'rgba(255,255,255,0.45)' }}
-          >
-            <svg width="15" height="15" viewBox="0 0 16 16" fill="none">
-              <path d="M10 12L6 8l4-4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-            </svg>
-            Back
-          </button>
-          <img src="/logo.png" alt="Shortcut" style={{ height: 24, objectFit: 'contain' }} />
+      <nav className="flex items-center gap-3 px-3 shrink-0"
+        style={{ height: 52, background: '#111', borderBottom: '1px solid rgba(255,255,255,0.07)' }}>
+        <button onClick={() => router.push('/dashboard')} aria-label="Back to videos" title="Back to videos"
+          className="flex items-center justify-center rounded-lg transition-colors hover:bg-white/10 shrink-0"
+          style={{ width: 34, height: 34, background: 'rgba(255,255,255,0.05)' }}>
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+            <path d="M9 2.5L4.5 7 9 11.5" stroke="rgba(255,255,255,0.75)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/>
+          </svg>
+        </button>
+        <div className="min-w-0 flex-1">
+          <p className="text-sm font-semibold text-white leading-tight truncate" title={videoTitle}>{videoTitle}</p>
+          <p className="text-[11px] leading-tight" style={{ color: 'rgba(255,255,255,0.4)' }}>
+            {maxMs > 0 && `${msToDisplay(maxMs)} · `}{savedClips.length === 0 ? 'No clips yet' : `${savedClips.length} clip${savedClips.length === 1 ? '' : 's'}`}
+          </p>
         </div>
-        <span className="text-xs" style={{ color: 'rgba(255,255,255,0.3)' }}>{userEmail}</span>
+        {isReady && (
+          <button onClick={editFullVideo} disabled={!!busy}
+            title="Open the whole video in the editor as one clip"
+            className="flex items-center gap-2 px-3.5 rounded-lg text-sm font-medium transition-colors hover:bg-white/10 disabled:opacity-40 shrink-0"
+            style={{ height: 36, color: 'rgba(255,255,255,0.85)', border: '1px solid rgba(255,255,255,0.14)' }}>
+            {busy === 'full' && <Spinner />}
+            Edit full video
+          </button>
+        )}
       </nav>
 
-      {/* Body */}
-      <div className="flex-1 flex overflow-hidden">
+      <div className="flex-1 flex min-h-0 overflow-hidden">
 
-        {/* ── LEFT: video ────────────────────────────────────────────── */}
-        <div className="flex-1 flex items-center justify-center bg-black overflow-hidden">
-          {isReady && videoUrl ? (
-            <video
-              ref={videoRef}
-              src={videoUrl}
-              controls
-              className="w-full h-full object-contain"
+        {/* ── Video + clip map ────────────────────────────────────── */}
+        <div className="flex-1 min-w-0 flex flex-col">
+          <div className="flex-1 min-h-0 flex items-center justify-center bg-black">
+            {isReady && videoUrl ? (
+              <video
+                ref={videoRef}
+                src={videoUrl}
+                controls
+                className="w-full h-full object-contain"
+                onTimeUpdate={e => setNowMs(e.currentTarget.currentTime * 1000)}
+                onSeeked={e => setNowMs(e.currentTarget.currentTime * 1000)}
+              />
+            ) : (
+              <div className="flex flex-col items-center gap-4 px-10 text-center">
+                {video.status === 'failed' ? (
+                  <>
+                    <p className="text-sm font-medium text-white">We couldn&apos;t process this video</p>
+                    <p className="text-xs" style={{ color: 'rgba(255,255,255,0.45)' }}>Delete it from your videos and upload it again.</p>
+                  </>
+                ) : (
+                  <>
+                    <div className="w-9 h-9 border-2 border-t-transparent rounded-full animate-spin" style={{ borderColor: ACCENT, borderTopColor: 'transparent' }} />
+                    <p className="text-sm font-medium text-white">{isProcessing ? stageLabel(video.download_progress ?? 0) : 'Loading video…'}</p>
+                    {isProcessing && (
+                      <div className="w-48 h-1.5 rounded-full overflow-hidden" style={{ background: 'rgba(255,255,255,0.1)' }}>
+                        <div className="h-full rounded-full transition-all duration-500" style={{ width: `${Math.max(4, video.download_progress ?? 0)}%`, background: ACCENT }} />
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+            )}
+          </div>
+
+          {isReady && maxMs > 0 && (
+            <ClipMap
+              durationMs={maxMs}
+              nowMs={nowMs}
+              clips={savedClips.map((c, i) => ({ id: c.id, n: i + 1, start: c.start_ms, end: c.end_ms, title: c.title ?? `Clip ${c.index}` }))}
+              draft={showForm && formRangeValid ? { start: formStartMs!, end: formEndMs! } : null}
+              onSeek={ms => seek(ms, false)}
             />
-          ) : (
-            <div className="flex flex-col items-center gap-4 px-10 text-center">
-              <div
-                className="w-9 h-9 border-2 border-t-transparent rounded-full animate-spin"
-                style={{ borderColor: '#c8ff00', borderTopColor: 'transparent' }}
-              />
-              {isProcessing ? (
-                <>
-                  <p className="text-sm font-medium text-white">{stageLabel(video.download_progress ?? 0)}</p>
-                  <div className="w-48 h-1.5 rounded-full overflow-hidden" style={{ background: 'rgba(255,255,255,0.1)' }}>
-                    <div
-                      className="h-full rounded-full transition-all duration-500"
-                      style={{ width: `${Math.max(4, video.download_progress ?? 0)}%`, background: '#c8ff00' }}
-                    />
-                  </div>
-                  <p className="text-xs" style={{ color: 'rgba(255,255,255,0.3)' }}>Video is being processed…</p>
-                </>
-              ) : (
-                <p className="text-sm text-white">{video.status === 'failed' ? 'Processing failed' : 'Loading video…'}</p>
-              )}
-            </div>
           )}
         </div>
 
-        {/* ── RIGHT: clip panel ──────────────────────────────────────── */}
-        <div
-          className="w-90 shrink-0 flex flex-col overflow-hidden"
-          style={{ borderLeft: '1px solid rgba(255,255,255,0.08)' }}
-        >
-          {/* Panel header */}
-          <div
-            className="px-4 py-3 flex items-center justify-between border-b shrink-0"
-            style={{ borderColor: 'rgba(255,255,255,0.07)' }}
-          >
-            <span className="text-sm font-semibold text-white">
-              Clips {totalClips > 0 && <span style={{ color: 'rgba(255,255,255,0.35)' }}>· {totalClips}</span>}
-            </span>
-            {isReady && (
-              <button
-                onClick={editFullVideo}
-                disabled={!!busy}
-                className="text-xs px-2.5 py-1 rounded-lg transition-opacity hover:opacity-80 disabled:opacity-40 font-semibold"
-                style={{ color: '#000', background: '#c8ff00', border: 'none' }}
-              >
-                {busy === 'full' ? <span className="inline-block w-3 h-3 border border-current border-t-transparent rounded-full animate-spin align-middle" /> : 'Edit full video'}
-              </button>
-            )}
-          </div>
-
-          {/* Error banner */}
+        {/* ── Clip panel ─────────────────────────────────────────── */}
+        <aside className="shrink-0 flex flex-col min-h-0" style={{ width: 380, background: '#111', borderLeft: '1px solid rgba(255,255,255,0.07)' }}>
           {clipError && (
-            <div className="mx-3 mt-2 px-3 py-2 rounded-xl flex items-center justify-between gap-2" style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.25)' }}>
+            <div role="alert" className="mx-3 mt-3 px-3 py-2 rounded-lg flex items-center justify-between gap-2" style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.25)' }}>
               <span className="text-xs" style={{ color: '#f87171' }}>{clipError}</span>
-              <button onClick={() => setClipError(null)} className="shrink-0" style={{ color: 'rgba(239,68,68,0.6)', fontSize: 14, lineHeight: 1 }}>×</button>
+              <button onClick={() => setClipError(null)} aria-label="Dismiss" className="shrink-0 px-1 rounded hover:bg-white/10" style={{ color: 'rgba(239,68,68,0.7)' }}>✕</button>
             </div>
           )}
 
-          {/* Scrollable list */}
-          <div className="flex-1 overflow-y-auto py-2">
-
-            {/* Saved clips from DB */}
-            {savedClips.map((clip, idx) => (
-              <ClipCard
-                key={clip.id}
-                number={idx + 1}
-                title={clip.title ?? `Clip ${clip.index}`}
-                startMs={clip.start_ms}
-                endMs={clip.end_ms}
-                onSeekStart={() => seek(clip.start_ms)}
-                onSeekEnd={() => seek(clip.end_ms)}
-                saved
-                status={clip.status}
-                outputUrl={clip.output_url}
-                onEdit={() => router.push(`/editor/${clip.id}`)}
-                disabled={!!busy}
-              />
-            ))}
-
-            {/* Pending (local) clips */}
-            {pending.map((clip, idx) => (
-              <ClipCard
-                key={clip.id}
-                number={savedClips.length + idx + 1}
-                title={clip.title}
-                startMs={clip.start_ms}
-                endMs={clip.end_ms}
-                onSeekStart={() => seek(clip.start_ms)}
-                onSeekEnd={() => seek(clip.end_ms)}
-                saved={false}
-                busyClip={busy === clip.id}
-                onClip={() => clipIt(clip.start_ms, clip.end_ms, clip.id, clip.title)}
-                onRemove={() => removePending(clip.id)}
-                disabled={!!busy}
-              />
-            ))}
-
-            {/* Empty state */}
-            {totalClips === 0 && !showForm && (
-              <div className="flex flex-col items-center justify-center py-10 px-6 text-center">
-                <p className="text-sm" style={{ color: 'rgba(255,255,255,0.25)' }}>
-                  {isReady ? 'Scrub the video to find your timestamps, then add clips below' : 'Video is processing…'}
+          <div className="flex-1 min-h-0 overflow-y-auto">
+            {/* Your clips */}
+            <section className="p-4 flex flex-col gap-2" style={{ borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+              <h2 className="text-sm font-semibold text-white">Your clips</h2>
+              {savedClips.length === 0 && !showForm && (
+                <p className="text-xs leading-relaxed" style={{ color: 'rgba(255,255,255,0.45)' }}>
+                  {isReady
+                    ? 'Scrub the video to a moment you like, then press New clip. Or let AI find the best moments below.'
+                    : 'You can start clipping once the video has finished processing.'}
                 </p>
-              </div>
-            )}
-
-            {/* New clip form */}
-            {showForm && (
-              <div className="mx-3 my-2 rounded-2xl p-4" style={{ background: 'rgba(200,255,0,0.06)', border: '1.5px solid rgba(200,255,0,0.3)' }}>
-                <p className="text-xs font-semibold text-white mb-3">New clip</p>
-                <input
-                  type="text"
-                  placeholder="Clip title"
-                  value={formTitle}
-                  onChange={e => setFormTitle(e.target.value)}
-                  onKeyDown={e => e.key === 'Enter' && submitForm()}
-                  autoFocus
-                  className="w-full px-3 py-2 rounded-xl text-sm text-white outline-none mb-2"
-                  style={{ background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.1)' }}
+              )}
+              {savedClips.map((clip, idx) => (
+                <ClipCard
+                  key={clip.id}
+                  number={idx + 1}
+                  title={clip.title ?? `Clip ${clip.index}`}
+                  startMs={clip.start_ms}
+                  endMs={clip.end_ms}
+                  status={clip.status}
+                  outputUrl={clip.output_url}
+                  playing={nowMs >= clip.start_ms && nowMs < clip.end_ms}
+                  onSeek={() => seek(clip.start_ms)}
+                  onEdit={() => router.push(`/editor/${clip.id}`)}
+                  disabled={!!busy}
                 />
-                <div className="flex flex-col gap-2 mb-2">
+              ))}
+
+              {/* New clip form */}
+              {showForm && (
+                <form className="mt-1 rounded-xl p-3.5 flex flex-col gap-3" style={{ background: 'rgba(200,255,0,0.05)', border: '1px solid rgba(200,255,0,0.3)' }}
+                  onSubmit={e => { e.preventDefault(); submitForm() }}>
+                  <p className="text-xs font-semibold text-white">New clip</p>
                   <input
+                    id="clip-title"
                     type="text"
-                    placeholder="Start — e.g. 2:45"
-                    value={formStart}
-                    onChange={e => setFormStart(e.target.value)}
-                    onKeyDown={e => e.key === 'Enter' && submitForm()}
-                    className="w-full px-3 py-2 rounded-xl text-sm text-white outline-none font-mono"
-                    style={{ background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.1)' }}
+                    placeholder="Title (optional)"
+                    aria-label="Clip title"
+                    value={formTitle}
+                    onChange={e => setFormTitle(e.target.value)}
+                    autoFocus
+                    className="w-full px-3 py-2 rounded-lg text-sm text-white outline-none focus:border-[#c8ff00]"
+                    style={{ background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.12)' }}
                   />
-                  <input
-                    type="text"
-                    placeholder={maxMs > 0 ? `End — max ${msToDisplay(maxMs)}` : 'End — e.g. 4:28'}
-                    value={formEnd}
-                    onChange={e => setFormEnd(e.target.value)}
-                    onKeyDown={e => e.key === 'Enter' && submitForm()}
-                    className="w-full px-3 py-2 rounded-xl text-sm text-white outline-none font-mono"
-                    style={{ background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.1)' }}
-                  />
+                  <div className="grid grid-cols-2 gap-2">
+                    <TimeField id="clip-start" label="Start" value={formStart} onChange={setFormStart} onUseNow={() => setFormStart(msToDisplay(nowMs))} />
+                    <TimeField id="clip-end" label="End" value={formEnd} onChange={setFormEnd} onUseNow={() => setFormEnd(msToDisplay(nowMs))} />
+                  </div>
+                  <p className="text-xs" style={{ color: formError ? '#f87171' : 'rgba(255,255,255,0.45)' }}>
+                    {formError ?? (formRangeValid ? `Length: ${durLabel(formStartMs!, formEndMs!)}` : 'Use m:ss, e.g. 1:45')}
+                  </p>
+                  <div className="flex gap-2">
+                    <button type="submit" disabled={!!busy}
+                      className="flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-bold disabled:opacity-50" style={{ background: ACCENT, color: '#000' }}>
+                      {busy === 'form' && <Spinner />} Create &amp; edit
+                    </button>
+                    <button type="button" onClick={() => setShowForm(false)}
+                      className="px-3.5 py-2 rounded-lg text-xs font-medium transition-colors hover:bg-white/10" style={{ color: 'rgba(255,255,255,0.6)' }}>
+                      Cancel
+                    </button>
+                  </div>
+                </form>
+              )}
+            </section>
+
+            {/* AI suggestions */}
+            {isReady && (
+              <section className="p-4 flex flex-col gap-2">
+                <div className="flex items-center justify-between gap-2">
+                  <h2 className="text-sm font-semibold text-white">Best moments</h2>
+                  {suggestions && !loadingSuggestions && (
+                    <button onClick={findMoments} className="text-xs px-2 py-1 rounded-md transition-colors hover:bg-white/10" style={{ color: 'rgba(255,255,255,0.55)' }}>Refresh</button>
+                  )}
                 </div>
-                {formError && <p className="text-xs mb-2" style={{ color: '#f87171' }}>{formError}</p>}
-                <div className="flex gap-2">
-                  <button onClick={submitForm} className="px-3 py-1.5 rounded-lg text-xs font-semibold text-black" style={{ background: '#c8ff00' }}>Add</button>
-                  <button onClick={() => setShowForm(false)} className="px-3 py-1.5 rounded-lg text-xs font-medium" style={{ background: 'rgba(255,255,255,0.07)', color: 'rgba(255,255,255,0.5)' }}>Cancel</button>
-                </div>
-              </div>
+                {!suggestions && !loadingSuggestions && (
+                  <>
+                    <p className="text-xs leading-relaxed" style={{ color: 'rgba(255,255,255,0.45)' }}>
+                      AI reads the transcript and picks the moments most likely to work as reels.
+                    </p>
+                    <button onClick={findMoments}
+                      className="flex items-center justify-center gap-2 py-2 rounded-lg text-xs font-medium transition-colors hover:bg-white/10"
+                      style={{ color: 'rgba(255,255,255,0.85)', border: '1px solid rgba(255,255,255,0.12)' }}>
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8L12 3zM19 16l.8 2.2L22 19l-2.2.8L19 22l-.8-2.2L16 19l2.2-.8L19 16z" fill="currentColor"/></svg>
+                      Find best moments
+                    </button>
+                  </>
+                )}
+                {loadingSuggestions && (
+                  <p className="flex items-center gap-2 text-xs py-2" style={{ color: ACCENT }}><Spinner /> Reading the transcript…</p>
+                )}
+                {suggestionsError && <p className="text-xs" style={{ color: '#f87171' }}>{suggestionsError}</p>}
+                {suggestions && !loadingSuggestions && suggestions.length === 0 && (
+                  <p className="text-xs" style={{ color: 'rgba(255,255,255,0.45)' }}>No suggestions for this video.</p>
+                )}
+                {suggestions && !loadingSuggestions && suggestions.map(s => (
+                  <div key={s.id} className="rounded-xl p-3" style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)' }}>
+                    <p className="text-sm font-medium text-white leading-snug">{s.title}</p>
+                    {s.summary && <p className="text-xs mt-1 leading-relaxed" style={{ color: 'rgba(255,255,255,0.5)' }}>{s.summary}</p>}
+                    <div className="flex items-center gap-2 mt-2.5">
+                      <button onClick={() => seek(s.start_ms)} title="Play this moment"
+                        className="text-xs font-mono tabular-nums px-2 py-1 rounded-md transition-colors hover:bg-white/10" style={{ color: 'rgba(255,255,255,0.6)', background: 'rgba(255,255,255,0.05)' }}>
+                        ▶ {msToDisplay(s.start_ms)} – {msToDisplay(s.end_ms)}
+                      </button>
+                      <span className="text-xs" style={{ color: 'rgba(255,255,255,0.35)' }}>{durLabel(s.start_ms, s.end_ms)}</span>
+                      <div className="flex-1" />
+                      <button onClick={() => createClip(s.start_ms, s.end_ms, s.id, s.title)} disabled={!!busy}
+                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold disabled:opacity-40 transition-colors hover:bg-white/15"
+                        style={{ color: '#fff', background: 'rgba(255,255,255,0.08)' }}>
+                        {busy === s.id ? <Spinner /> : '+'} Use
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </section>
             )}
           </div>
 
-          {/* Add clip button */}
           {!showForm && isReady && (
-            <div className="px-3 py-3 border-t shrink-0" style={{ borderColor: 'rgba(255,255,255,0.07)' }}>
-              <button
-                onClick={openForm}
-                disabled={!!busy}
-                className="w-full py-3 rounded-xl text-sm font-semibold transition-opacity hover:opacity-85 disabled:opacity-40"
-                style={{ background: '#c8ff00', color: '#000', border: 'none' }}
-              >
-                + Add a clip
+            <div className="px-3 py-3 shrink-0" style={{ borderTop: '1px solid rgba(255,255,255,0.07)' }}>
+              <button onClick={openForm} disabled={!!busy}
+                className="w-full py-3 rounded-xl text-sm font-bold transition-opacity hover:opacity-90 disabled:opacity-40"
+                style={{ background: ACCENT, color: '#000' }}>
+                + New clip from {msToDisplay(nowMs)}
               </button>
             </div>
           )}
-        </div>
+        </aside>
       </div>
     </div>
   )
 }
 
-// ── ClipCard ──────────────────────────────────────────────────────────────────
+// ── Clip map: where each clip sits in the video ───────────────────────────────
 
-interface ClipCardProps {
+function ClipMap({ durationMs, nowMs, clips, draft, onSeek }: {
+  durationMs: number
+  nowMs: number
+  clips: { id: string; n: number; start: number; end: number; title: string }[]
+  draft: { start: number; end: number } | null
+  onSeek: (ms: number) => void
+}) {
+  const ref = useRef<HTMLDivElement>(null)
+  const pct = (ms: number) => `${Math.max(0, Math.min(100, (ms / durationMs) * 100))}%`
+
+  function seekFromEvent(e: React.MouseEvent) {
+    const r = ref.current?.getBoundingClientRect()
+    if (!r) return
+    onSeek(Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)) * durationMs)
+  }
+
+  return (
+    <div className="shrink-0 px-4 py-3" style={{ background: '#111', borderTop: '1px solid rgba(255,255,255,0.07)' }}>
+      <div className="flex items-center justify-between mb-2 text-[11px]" style={{ color: 'rgba(255,255,255,0.45)' }}>
+        <span>Clips in this video · click to jump</span>
+        <span className="tabular-nums">{msToDisplay(nowMs)} / {msToDisplay(durationMs)}</span>
+      </div>
+      <div ref={ref} onClick={seekFromEvent} className="relative cursor-pointer rounded-md" style={{ height: 28, background: 'rgba(255,255,255,0.05)' }}>
+        {clips.map(c => (
+          <button key={c.id} onClick={e => { e.stopPropagation(); onSeek(c.start) }}
+            title={`${c.n}. ${c.title} (${msToDisplay(c.start)} – ${msToDisplay(c.end)})`}
+            className="absolute top-1 bottom-1 rounded flex items-center justify-center text-[10px] font-bold overflow-hidden transition-opacity hover:opacity-80"
+            style={{ left: pct(c.start), width: `max(6px, calc(${pct(c.end)} - ${pct(c.start)}))`, background: 'rgba(200,255,0,0.7)', color: '#000' }}>
+            {c.n}
+          </button>
+        ))}
+        {draft && (
+          <div className="absolute top-0.5 bottom-0.5 rounded pointer-events-none"
+            style={{ left: pct(draft.start), width: `max(4px, calc(${pct(draft.end)} - ${pct(draft.start)}))`, border: '1.5px dashed #c8ff00', background: 'rgba(200,255,0,0.1)' }} />
+        )}
+        <div className="absolute -top-1 -bottom-1 w-0.5 pointer-events-none" style={{ left: pct(nowMs), background: '#fff', boxShadow: '0 0 4px rgba(0,0,0,0.8)' }} />
+      </div>
+    </div>
+  )
+}
+
+// ── Pieces ────────────────────────────────────────────────────────────────────
+
+function TimeField({ id, label, value, onChange, onUseNow }: { id: string; label: string; value: string; onChange: (v: string) => void; onUseNow: () => void }) {
+  return (
+    <div className="flex flex-col gap-1">
+      <label htmlFor={id} className="text-[11px] font-medium" style={{ color: 'rgba(255,255,255,0.5)' }}>{label}</label>
+      <div className="flex items-center rounded-lg overflow-hidden" style={{ background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.12)' }}>
+        <input id={id} type="text" inputMode="numeric" value={value} onChange={e => onChange(e.target.value)}
+          className="min-w-0 flex-1 px-2.5 py-2 bg-transparent text-sm text-white outline-none font-mono tabular-nums" />
+        <button type="button" onClick={onUseNow} title="Use the video's current time"
+          className="shrink-0 px-2 self-stretch text-[11px] font-medium transition-colors hover:bg-white/10" style={{ color: ACCENT }}>
+          Now
+        </button>
+      </div>
+    </div>
+  )
+}
+
+function Spinner() {
+  return <span className="inline-block w-3 h-3 border-2 border-current border-t-transparent rounded-full animate-spin" />
+}
+
+function ClipCard({ number, title, startMs, endMs, status, outputUrl, playing, onSeek, onEdit, disabled }: {
   number: number
   title: string
   startMs: number
   endMs: number
-  onSeekStart: () => void
-  onSeekEnd: () => void
-  saved: boolean
+  status: string
+  outputUrl: string | null
+  playing: boolean
+  onSeek: () => void
+  onEdit: () => void
   disabled?: boolean
-  // saved-clip props
-  status?: string
-  outputUrl?: string | null
-  onEdit?: () => void
-  // pending-clip props
-  busyClip?: boolean
-  onClip?: () => void
-  onRemove?: () => void
-}
-
-function ClipCard({
-  number, title, startMs, endMs,
-  onSeekStart, onSeekEnd,
-  saved, disabled,
-  status, outputUrl, onEdit,
-  busyClip, onClip, onRemove,
-}: ClipCardProps) {
-  const isDone = status === 'done'
+}) {
+  const chip =
+    status === 'rendering' ? { label: 'Rendering', color: ACCENT } :
+    status === 'done' ? { label: 'Exported', color: '#4ade80' } :
+    status === 'failed' ? { label: 'Render failed', color: '#f87171' } :
+    { label: 'Draft', color: 'rgba(255,255,255,0.45)' }
 
   return (
-    <div
-      className="mx-3 my-1.5 rounded-2xl p-3.5"
-      style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.07)' }}
-    >
+    <div className="rounded-xl p-3" style={{ background: 'rgba(255,255,255,0.03)', border: `1px solid ${playing ? 'rgba(200,255,0,0.4)' : 'rgba(255,255,255,0.07)'}` }}>
       <div className="flex items-start gap-2.5">
-        {/* Number */}
-        <div
-          className="shrink-0 w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold mt-0.5"
-          style={{ background: 'rgba(255,255,255,0.1)', color: 'rgba(255,255,255,0.6)' }}
-        >
+        <span className="shrink-0 w-6 h-6 rounded-md flex items-center justify-center text-[11px] font-bold" style={{ background: 'rgba(200,255,0,0.7)', color: '#000' }}>
           {number}
-        </div>
-
+        </span>
         <div className="flex-1 min-w-0">
-          {/* Title row */}
           <div className="flex items-start justify-between gap-2">
-            <p className="text-sm font-medium text-white leading-snug">{title}</p>
-            {!saved && onRemove && (
-              <button
-                onClick={onRemove}
-                disabled={disabled}
-                className="shrink-0 p-1 rounded-lg hover:bg-white/10 transition-colors disabled:opacity-30 mt-0.5"
-                style={{ color: 'rgba(255,255,255,0.35)' }}
-              >
-                <svg width="10" height="10" viewBox="0 0 12 12" fill="none">
-                  <path d="M1 1l10 10M11 1L1 11" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+            <p className="text-sm font-medium text-white leading-snug truncate" title={title}>{title}</p>
+            <span className="shrink-0 flex items-center gap-1.5 text-[11px] font-medium mt-0.5" style={{ color: chip.color }}>
+              {status === 'rendering' ? <Spinner /> : <span className="w-1.5 h-1.5 rounded-full" style={{ background: chip.color }} />}
+              {chip.label}
+            </span>
+          </div>
+          <button onClick={onSeek} title="Play this clip"
+            className="mt-1 text-xs font-mono tabular-nums px-2 py-0.5 -ml-2 rounded-md transition-colors hover:bg-white/10" style={{ color: 'rgba(255,255,255,0.55)' }}>
+            ▶ {msToDisplay(startMs)} – {msToDisplay(endMs)} · {durLabel(startMs, endMs)}
+          </button>
+          <div className="flex items-center gap-2 mt-2">
+            <button onClick={onEdit} disabled={disabled}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold disabled:opacity-40 transition-colors hover:bg-white/15"
+              style={{ color: '#fff', background: 'rgba(255,255,255,0.08)' }}>
+              <svg width="11" height="11" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+                <path d="M9.5 2L12 4.5M2 12l.7-2.8L10 1.5 12.5 4 4.8 11.3 2 12z" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
+              </svg>
+              Edit
+            </button>
+            {outputUrl && status === 'done' && (
+              <a href={outputUrl} download target="_blank" rel="noopener noreferrer"
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-opacity hover:opacity-90"
+                style={{ background: ACCENT, color: '#000' }}>
+                <svg width="11" height="11" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+                  <path d="M7 2v7M4 7l3 3 3-3M2 11h10" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/>
                 </svg>
-              </button>
-            )}
-          </div>
-
-          {/* Time pill */}
-          <div className="mt-1.5">
-            <TimePill startMs={startMs} endMs={endMs} onSeekStart={onSeekStart} onSeekEnd={onSeekEnd} />
-          </div>
-
-          {/* Buttons */}
-          <div className="flex items-center gap-2 mt-2.5 flex-wrap">
-            {saved ? (
-              <>
-                <button
-                  onClick={onEdit}
-                  disabled={disabled}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-white disabled:opacity-40 transition-opacity hover:opacity-80"
-                  style={{ background: '#374151' }}
-                >
-                  <svg width="11" height="11" viewBox="0 0 14 14" fill="none">
-                    <path d="M9.5 2L12 4.5M2 12l.7-2.8L10 1.5 12.5 4 4.8 11.3 2 12z" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
-                  </svg>
-                  Re-edit
-                </button>
-                {outputUrl && (
-                  <a
-                    href={outputUrl}
-                    download target="_blank" rel="noopener noreferrer"
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-black transition-opacity hover:opacity-80"
-                    style={{ background: '#c8ff00' }}
-                  >
-                    <svg width="11" height="11" viewBox="0 0 14 14" fill="none">
-                      <path d="M7 2v7M4 7l3 3 3-3M2 11h10" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
-                    </svg>
-                    Download
-                  </a>
-                )}
-                {isDone && !outputUrl && (
-                  <span className="text-xs px-2 py-1 rounded-lg" style={{ background: 'rgba(34,197,94,0.15)', color: '#22c55e' }}>Done</span>
-                )}
-                {status === 'rendering' && (
-                  <span className="flex items-center gap-1.5 text-xs" style={{ color: '#c8ff00' }}>
-                    <span className="w-3 h-3 border border-current border-t-transparent rounded-full animate-spin" />
-                    Rendering…
-                  </span>
-                )}
-              </>
-            ) : (
-              <button
-                onClick={onClip}
-                disabled={disabled}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-black disabled:opacity-40 transition-opacity hover:opacity-80"
-                style={{ background: '#c8ff00' }}
-              >
-                {busyClip
-                  ? <span className="w-3 h-3 border-2 border-current border-t-transparent rounded-full animate-spin" />
-                  : <svg width="6" height="10" viewBox="0 0 9 16" fill="none"><rect x="0.5" y="0.5" width="8" height="15" rx="1.5" stroke="currentColor" strokeWidth="1.3"/></svg>
-                }
-                Clip
-              </button>
+                Download
+              </a>
             )}
           </div>
         </div>
@@ -534,4 +544,3 @@ function ClipCard({
     </div>
   )
 }
-

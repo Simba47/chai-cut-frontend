@@ -13,6 +13,7 @@
   --text-dim: rgba(255,255,255,0.22);
   --accent: #c8ff00;
   --danger: #ef4444;
+  --warning: #f59e0b;
   --success: #22c55e;
 }
 
@@ -29,6 +30,7 @@
   --text-dim: rgba(0,0,0,0.3);
   --accent: #a8d900;
   --danger: #dc2626;
+  --warning: #d97706;
   --success: #16a34a;
   --card-shadow: none;
   --nav-shadow: 0 1px 0 rgba(0,0,0,0.08);
@@ -48,6 +50,38 @@ body {
   color: var(--text);
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   margin: 0;
+}
+
+/* ── Editor theme: always dark ──
+   --ed-fg is an RGB triple so any tint can be written rgb(var(--ed-fg) / alpha). The app-wide
+   tokens are pinned to their dark values too, so the editor stays dark even when the rest of the
+   app is in light mode (e.g. the transcript panel reads --text / --text-muted). */
+.editor-theme {
+  --bg: #0d0d0d;
+  --surface: #1a1a1a;
+  --border: rgba(255,255,255,0.07);
+  --border-strong: rgba(255,255,255,0.13);
+  --text: #ffffff;
+  --text-muted: rgba(255,255,255,0.35);
+  --text-dim: rgba(255,255,255,0.22);
+  --accent: #c8ff00;
+  --ed-fg: 255 255 255;
+  --ed-text: #ffffff;
+  --ed-app: #0d0d0d;
+  --ed-panel: #111111;
+  --ed-canvas: #0a0a0a;
+  --ed-track: #0f0f0f;
+  --ed-ruler: #0c0c0c;
+  --ed-raise: #1a1a1a;
+  --ed-popover: #16161a;
+  --ed-accent-text: #c8ff00;
+  color-scheme: dark;
+}
+
+
+/* Scrollable without a visible scrollbar (e.g. the editor timeline) */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
 }
 
 /* Custom scrollbar */

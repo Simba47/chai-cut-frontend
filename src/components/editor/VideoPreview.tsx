@@ -1,13 +1,18 @@
 'use client'
 
-import { useRef, useEffect, useCallback, useState, useMemo } from 'react'
+import { useRef, useEffect, useCallback, useState, useMemo, useId } from 'react'
 import type { RefObject } from 'react'
 import type { SegmentLocal, Overlay, TextOverlay as TextOverlayType, CaptionStyle, TranscriptWord } from '@chai-cut/shared'
 import type { BoxPosition } from '@/lib/interpolation'
 import type { TextCase } from './CaptionStyler'
 import { applyCase } from './CaptionStyler'
+import { normalizedSlotAspect, fitToAspect } from '@/modules/editor/utils'
 
-const BOX_COLORS = ['#22c55e', '#3b82f6', '#f59e0b', '#a855f7']
+const BOX_COLORS = ['#22c55e', '#3b82f6', '#f59e0b']
+// What each slot becomes in the 9:16 output, top to bottom
+const SLOT_LABELS: Record<string, string[]> = {
+  vertical: ['9:16'], split: ['Top', 'Bottom'], trio: ['Top', 'Middle', 'Bottom'], horizontal: ['Full frame'],
+}
 
 const HANDLES: { cursor: string; pos: React.CSSProperties; dir: string }[] = [
   { cursor: 'nw-resize', pos: { top: -5, left: -5 },                                       dir: 'nw' },
@@ -38,6 +43,7 @@ export function VideoPreview({
   getPositionAt, activeBoxId, onSelectBox, onBoxChange,
 }: VideoPreviewProps) {
   const [videoAR, setVideoAR] = useState<number | null>(null)
+  const maskId = `crop-mask-${useId().replace(/:/g, '')}`
 
   const isHorizontal = activeSegment?.layout === 'horizontal'
 
@@ -68,29 +74,42 @@ export function VideoPreview({
           }}
         />
 
-        {/* Crop box overlay */}
-        {activeSegment && (
-          <div className="absolute inset-0" style={{ pointerEvents: 'none', zIndex: 10 }}>
-            {activeSegment.crop_boxes.slice(0,
-              activeSegment.layout === 'trio' ? 3 :
-              activeSegment.layout === 'split' ? 2 : 1
-            ).map((box, slotIdx) => {
-              const pos = getPositionAt(box.id, currentTimeMs)
-              return (
+        {/* Crop boxes — each is locked to the shape of its slot in the output, so what's
+            inside the box is exactly what gets exported */}
+        {activeSegment && (() => {
+          const layout = activeSegment.layout
+          const aspect = normalizedSlotAspect(layout, videoAR ?? undefined)
+          const count = layout === 'trio' ? 3 : layout === 'split' ? 2 : 1
+          const boxes = activeSegment.crop_boxes.slice(0, count).map(box => ({
+            box, pos: fitToAspect(getPositionAt(box.id, currentTimeMs), aspect),
+          }))
+          return (
+            <div className="absolute inset-0" style={{ pointerEvents: 'none', zIndex: 10 }}>
+              {/* One shared dim layer with a hole per box, so boxes never darken each other */}
+              <svg className="absolute inset-0" width="100%" height="100%" viewBox="0 0 1 1" preserveAspectRatio="none" aria-hidden="true">
+                <defs>
+                  <mask id={maskId}>
+                    <rect x="0" y="0" width="1" height="1" fill="white" />
+                    {boxes.map(({ box, pos }) => <rect key={box.id} x={pos.x} y={pos.y} width={pos.w} height={pos.h} fill="black" />)}
+                  </mask>
+                </defs>
+                <rect x="0" y="0" width="1" height="1" fill="rgba(0,0,0,0.55)" mask={`url(#${maskId})`} />
+              </svg>
+              {boxes.map(({ box, pos }, slotIdx) => (
                 <DraggableBox
                   key={box.id}
                   pos={pos}
+                  aspect={aspect}
                   color={BOX_COLORS[slotIdx % BOX_COLORS.length]}
-                  isActive={box.id === activeBoxId}
-                  layout={activeSegment.layout}
-                  label={activeSegment.crop_boxes.length > 1 ? String(slotIdx + 1) : undefined}
+                  isActive={box.id === activeBoxId || count === 1}
+                  label={SLOT_LABELS[layout]?.[slotIdx] ?? String(slotIdx + 1)}
                   onSelect={() => onSelectBox(activeSegment.id, box.id)}
                   onChange={newPos => onBoxChange(box.id, newPos)}
                 />
-              )
-            })}
-          </div>
-        )}
+              ))}
+            </div>
+          )
+        })()}
       </div>
     </div>
   )
@@ -789,7 +808,7 @@ function TextOverlayBox({ overlay, isActive, onChange, onSelect, onDelete }: Tex
   const x = overlay.x ?? 0.1
   const y = overlay.y ?? 0.4
   const color = overlay.color ?? '#ffffff'
-  const accent = '#8b5cf6'
+  const accent = '#c8ff00'
 
   return (
     <div
@@ -805,7 +824,7 @@ function TextOverlayBox({ overlay, isActive, onChange, onSelect, onDelete }: Tex
         border: `1.5px solid ${isActive ? accent : 'transparent'}`,
         borderRadius: 3,
         padding: 0,
-        background: isActive ? 'rgba(139,92,246,0.15)' : 'transparent',
+        background: isActive ? 'rgba(200,255,0,0.12)' : 'transparent',
         backdropFilter: 'none',
         boxShadow: isActive ? `0 0 0 1px ${accent}44` : 'none',
         maxWidth: '90%',
@@ -842,7 +861,7 @@ function TextOverlayBox({ overlay, isActive, onChange, onSelect, onDelete }: Tex
           }}
         >
           <svg width="6" height="6" viewBox="0 0 8 8" fill="none">
-            <path d="M1 4h6M5 2l2 2-2 2" stroke="white" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
+            <path d="M1 4h6M5 2l2 2-2 2" stroke="black" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
           </svg>
         </div>
       )}
@@ -854,15 +873,18 @@ function TextOverlayBox({ overlay, isActive, onChange, onSelect, onDelete }: Tex
 
 interface DraggableBoxProps {
   pos: BoxPosition
+  /** Locked w/h in normalised units; null = free resize (Horizontal) */
+  aspect: number | null
   color: string
   isActive: boolean
-  layout?: string
-  label?: string
+  label: string
   onSelect: () => void
   onChange: (newPos: BoxPosition) => void
 }
 
-function DraggableBox({ pos, color, isActive, layout, label, onSelect, onChange }: DraggableBoxProps) {
+const MIN_BOX = 0.05
+
+function DraggableBox({ pos, aspect, color, isActive, label, onSelect, onChange }: DraggableBoxProps) {
   const ref = useRef<HTMLDivElement>(null)
 
   function cRect() {
@@ -873,6 +895,7 @@ function DraggableBox({ pos, color, isActive, layout, label, onSelect, onChange 
   function startDrag(e: React.MouseEvent) {
     if ((e.target as HTMLElement).dataset.handle) return
     e.stopPropagation()
+    e.preventDefault()
     onSelect()
     const sx = e.clientX, sy = e.clientY, start = { ...pos }
     function move(ev: MouseEvent) {
@@ -890,22 +913,38 @@ function DraggableBox({ pos, color, isActive, layout, label, onSelect, onChange 
 
   function startResize(e: React.MouseEvent, dir: string) {
     e.stopPropagation()
+    e.preventDefault()
+    onSelect()
     const sx = e.clientX, sy = e.clientY, start = { ...pos }
     const re = start.x + start.w, be = start.y + start.h
     function move(ev: MouseEvent) {
       const { w, h } = cRect()
       const dx = (ev.clientX - sx) / w, dy = (ev.clientY - sy) / h
+      if (aspect) {
+        // Locked shape: resize from a corner while the opposite corner stays put
+        const west = dir.includes('w'), north = dir.includes('n')
+        const ax = west ? re : start.x, ay = north ? be : start.y
+        const growW = west ? -dx : dx, growH = (north ? -dy : dy) * aspect
+        const maxW = Math.min(west ? ax : 1 - ax, (north ? ay : 1 - ay) * aspect)
+        const nw = Math.max(Math.min(MIN_BOX, maxW), Math.min(maxW, start.w + (growW + growH) / 2))
+        const nh = nw / aspect
+        onChange({ x: west ? ax - nw : ax, y: north ? ay - nh : ay, w: nw, h: nh })
+        return
+      }
       let { x, y, w: bw, h: bh } = start
-      if (dir.includes('e')) bw = Math.max(0.04, Math.min(1 - x, bw + dx))
-      if (dir.includes('s')) bh = Math.max(0.04, Math.min(1 - y, bh + dy))
-      if (dir.includes('w')) { const nx = Math.max(0, Math.min(re - 0.04, x + dx)); bw = re - nx; x = nx }
-      if (dir.includes('n')) { const ny = Math.max(0, Math.min(be - 0.04, y + dy)); bh = be - ny; y = ny }
-      onChange({ x, y, w: Math.max(0.04, bw), h: Math.max(0.04, bh) })
+      if (dir.includes('e')) bw = Math.max(MIN_BOX, Math.min(1 - x, bw + dx))
+      if (dir.includes('s')) bh = Math.max(MIN_BOX, Math.min(1 - y, bh + dy))
+      if (dir.includes('w')) { const nx = Math.max(0, Math.min(re - MIN_BOX, x + dx)); bw = re - nx; x = nx }
+      if (dir.includes('n')) { const ny = Math.max(0, Math.min(be - MIN_BOX, y + dy)); bh = be - ny; y = ny }
+      onChange({ x, y, w: bw, h: bh })
     }
     function up() { window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up) }
     window.addEventListener('mousemove', move)
     window.addEventListener('mouseup', up)
   }
+
+  // Locked boxes resize from the corners only; edge handles would break the shape
+  const handles = aspect ? HANDLES.filter(h => h.dir.length === 2) : HANDLES
 
   return (
     <div
@@ -917,79 +956,36 @@ function DraggableBox({ pos, color, isActive, layout, label, onSelect, onChange 
         border: `2px solid ${color}`,
         background: isActive ? `${color}10` : 'transparent',
         boxSizing: 'border-box', cursor: 'move', pointerEvents: 'auto', userSelect: 'none',
-        // Dark shadow fills everything OUTSIDE the crop box — shows user exactly what will be in the 9:16 output
-        boxShadow: `0 0 0 9999px rgba(0,0,0,0.52), 0 0 0 1px ${color}88`,
+        zIndex: isActive ? 2 : 1,
       }}
       onMouseDown={startDrag}
       onClick={e => { e.stopPropagation(); onSelect() }}
     >
-      {/* Corner accent lines (Clipzi-style) */}
-      {['tl', 'tr', 'bl', 'br'].map(c => (
-        <div
-          key={c}
-          style={{
-            position: 'absolute',
-            width: 14, height: 14,
-            top: c.startsWith('t') ? -1 : undefined,
-            bottom: c.startsWith('b') ? -1 : undefined,
-            left: c.endsWith('l') ? -1 : undefined,
-            right: c.endsWith('r') ? -1 : undefined,
-            borderTop: c.startsWith('t') ? `3px solid ${color}` : undefined,
-            borderBottom: c.startsWith('b') ? `3px solid ${color}` : undefined,
-            borderLeft: c.endsWith('l') ? `3px solid ${color}` : undefined,
-            borderRight: c.endsWith('r') ? `3px solid ${color}` : undefined,
-            pointerEvents: 'none',
-          }}
-        />
-      ))}
-
-      {/* Ratio badge — top-left */}
+      {/* Slot label — what this box becomes in the output */}
       <div style={{
         position: 'absolute', top: 6, left: 6,
         fontSize: 10, fontWeight: 700, color: '#fff', lineHeight: 1.4,
-        background: 'rgba(0,0,0,0.65)', backdropFilter: 'blur(4px)',
-        padding: '2px 7px', borderRadius: 4, pointerEvents: 'none',
-      }}>{layout === 'horizontal' ? '16:9' : '9:16'}</div>
+        background: color, padding: '1px 7px', borderRadius: 4, pointerEvents: 'none',
+        textShadow: '0 1px 2px rgba(0,0,0,0.4)',
+      }}>{label}</div>
 
-      {/* Zoom badge — top-right */}
+      {/* Zoom badge — how far this crop is punched in */}
       <div style={{
         position: 'absolute', top: 6, right: 6,
         fontSize: 10, fontWeight: 700, color: '#fff', lineHeight: 1.4,
-        background: 'rgba(0,0,0,0.65)', backdropFilter: 'blur(4px)',
-        padding: '2px 7px', borderRadius: 4, pointerEvents: 'none',
+        background: 'rgba(0,0,0,0.65)', padding: '1px 7px', borderRadius: 4, pointerEvents: 'none',
       }}>
-        {(Math.round(10 / Math.max(0.1, pos.w)) / 10).toFixed(1)}x
+        {(Math.round(10 / Math.max(0.1, pos.h)) / 10).toFixed(1)}x
       </div>
 
-      {/* Slot label (for multi-slot layouts like split/trio) */}
-      {label && (
-        <div style={{
-          position: 'absolute', top: 6, left: '50%', transform: 'translateX(-50%)',
-          fontSize: 11, fontWeight: 700,
-          color: '#fff', textShadow: `0 0 8px ${color}, 0 1px 3px rgba(0,0,0,0.9)`,
-          pointerEvents: 'none',
-        }}>
-          {label}
-        </div>
-      )}
-
-      {/* ⟺ Adjust button — bottom center */}
-      <div style={{
-        position: 'absolute', bottom: 8, left: '50%', transform: 'translateX(-50%)',
-        fontSize: 10, fontWeight: 600, color: '#fff',
-        background: 'rgba(0,0,0,0.65)', backdropFilter: 'blur(4px)',
-        padding: '4px 12px', borderRadius: 6, pointerEvents: 'none', whiteSpace: 'nowrap',
-      }}>⟺ Adjust</div>
-
-      {/* Resize handles */}
-      {(isActive ? HANDLES : HANDLES.filter(h => h.dir === 'se')).map(({ cursor, pos: hPos, dir }) => (
+      {handles.map(({ cursor, pos: hPos, dir }) => (
         <div
           key={dir}
           data-handle="1"
           style={{
-            position: 'absolute', width: 9, height: 9,
+            position: 'absolute', width: 12, height: 12,
             background: '#fff', border: `2px solid ${color}`,
-            borderRadius: 2, cursor, pointerEvents: 'auto', boxSizing: 'border-box',
+            borderRadius: 3, cursor, pointerEvents: 'auto', boxSizing: 'border-box',
             ...hPos,
           }}
           onMouseDown={e => startResize(e, dir)}

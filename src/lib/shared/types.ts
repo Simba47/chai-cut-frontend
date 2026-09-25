@@ -12,6 +12,7 @@ export type TransitionType = 'cut' | 'fade' | 'wipe'
 export interface Video {
   id: string
   user_id: string
+  title: string | null
   source_type: SourceType
   source_url: string | null
   storage_path: string | null

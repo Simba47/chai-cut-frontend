@@ -29,7 +29,7 @@ export default async function EditorPage({
   if (!user) redirect('/login')
 
   const [clip] = await sql`
-    SELECT c.*, v.storage_path, v.status AS video_status, v.user_id
+    SELECT c.*, v.storage_path, v.status AS video_status, v.user_id, v.title AS video_title
     FROM clips c JOIN videos v ON v.id = c.video_id
     WHERE c.id = ${clipId}
   `
