@@ -201,7 +201,7 @@ Video duration: ${msToTimestamp(durationMs)}
 Transcript (each line is tagged [start–end] with when that line of speech actually begins and ends):
 ${transcript.slice(0, 8000)}
 
-When picking end_ms, use the END of the last line the moment needs (the second number in that line's [start–end] tag), not its start — cutting off a punchline or reaction early ruins the clip. If in doubt, end a line or two later rather than earlier.
+Choosing end_ms is the part you must get generously right, not minimally right. Do not stop at the line that merely contains the key moment — deliberately continue past it and include the NEXT 2-3 full lines of transcript after it as trailing context (the reaction, the response, the rest of the thought), then set end_ms to the end of that later line. A clip that runs a few seconds longer than strictly necessary is fine; a clip that cuts off before the payoff, reaction, or the speaker finishing their sentence is a failure. When genuinely unsure exactly where something ends, always round end_ms UP to a later line, never down to an earlier one.
 
 Return ONLY a JSON array, no other text. Each element: {"title":"catchy 3-7 word title","start_ms":number,"end_ms":number,"summary":"one sentence on why this moment matches the request"}`
 
@@ -214,9 +214,10 @@ Return ONLY a JSON array, no other text. Each element: {"title":"catchy 3-7 word
   return parsed
     .map((s, i) => {
       const start_ms = Math.max(0, Math.round(s.start_ms))
-      // Small trailing buffer — Gemini tends to end right at the punchline/reaction
-      // instead of a beat after it, so a cut-off ending is worse than a couple extra seconds.
-      let end_ms = Math.min(durationMs, Math.round(s.end_ms) + 2000)
+      // Trailing buffer — Gemini persistently ends right at the punchline/reaction
+      // instead of past it, even when told to include trailing context. A cut-off
+      // ending is a much worse failure than a clip running a bit long, so pad hard.
+      let end_ms = Math.min(durationMs, Math.round(s.end_ms) + 5000)
       // Gemini sometimes ignores the requested 30–90s length — pad short moments
       // out instead of discarding them outright (same fix ai_edit.ts needed).
       if (end_ms - start_ms < MIN_CLIP_MS) end_ms = Math.min(durationMs, start_ms + MIN_CLIP_MS)
