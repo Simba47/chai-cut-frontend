@@ -26,7 +26,18 @@ export async function createClip(userId: string, input: CreateClipInput) {
   if (!clip) throw Object.assign(new Error('Failed to create clip'), { status: 500 })
 
   const plan = await getUserPlanConfig(userId)
-  if (video.storage_path && plan.autoCaption) {
+  // The whole video is captioned in the background after upload. Skip the per-clip job
+  // when that transcript is done, or still running on a video short enough (≤ 20 min)
+  // that waiting for it is quicker than paying for a second transcription.
+  const [fullJob] = await sql`
+    SELECT status FROM jobs
+    WHERE type = 'transcribe' AND payload->>'video_id' = ${input.video_id}
+      AND payload->>'transcribe_full' = 'true' AND status <> 'failed'
+    ORDER BY created_at DESC LIMIT 1
+  `
+  const coveredByFullTranscript = !!fullJob &&
+    (fullJob.status === 'done' || (video.duration_ms ?? Infinity) <= 20 * 60 * 1000)
+  if (video.storage_path && plan.autoCaption && !coveredByFullTranscript) {
     const payload = { video_id: input.video_id, storage_path: video.storage_path, clip_id: clip.id, clip_start_ms: startMs, clip_end_ms: endMs }
     await sql`INSERT INTO jobs (type, status, payload) VALUES ('transcribe', 'queued', ${sql.json(payload)})`
   }
@@ -45,97 +56,109 @@ interface SaveClipInput {
 }
 
 export async function saveClip(userId: string, clipId: string, body: SaveClipInput) {
-  const [clip] = await sql`
-    SELECT c.id, v.user_id FROM clips c JOIN videos v ON v.id = c.video_id WHERE c.id = ${clipId}
-  `
+  const { segments, captionStyle, textOverlays, audioTracks, transitions, overlays } = body
+  const ms = (v: number) => Math.round(v)
+
+  // Ownership check and the existing caption style in one round trip
+  const [[clip], [existingStyle]] = await Promise.all([
+    sql`SELECT c.id, v.user_id FROM clips c JOIN videos v ON v.id = c.video_id WHERE c.id = ${clipId}`,
+    sql`SELECT id FROM caption_styles WHERE clip_id = ${clipId} LIMIT 1`,
+  ])
   if (!clip) throw Object.assign(new Error('Clip not found'), { status: 404 })
   if (clip.user_id !== userId) throw Object.assign(new Error('Forbidden'), { status: 403 })
 
-  const { segments, captionStyle, textOverlays, audioTracks, transitions, overlays } = body
-
-  const ms = (v: number) => Math.round(v)
-
   // Re-index sort_order as 0,1,2… — the store uses fractional values (e.g. +0.5) to insert
-  // between existing segments in-memory, but the DB column is INTEGER.
-  const sortedSegments = [...segments].sort((a, b) => a.sort_order - b.sort_order)
+  // between existing segments in-memory, but the DB column is INTEGER. Order by time: repeated
+  // splits can give two segments the same fractional sort_order, and the renderer concatenates
+  // segments in sort_order, so a tie could swap them in the export.
+  const sortedSegments = [...segments].sort((a, b) => a.start_ms - b.start_ms || a.sort_order - b.sort_order)
 
-  await sql.begin(async (tx) => {
-    for (let si = 0; si < sortedSegments.length; si++) {
-      const seg = sortedSegments[si]
-      await tx`
-        INSERT INTO segments (id, clip_id, start_ms, end_ms, layout, sort_order)
-        VALUES (${seg.id}, ${clipId}, ${ms(seg.start_ms)}, ${ms(seg.end_ms)}, ${seg.layout}, ${si})
+  const segRows = sortedSegments.map((seg, si) => ({
+    id: seg.id, clip_id: clipId, start_ms: ms(seg.start_ms), end_ms: ms(seg.end_ms), layout: seg.layout, sort_order: si,
+  }))
+  const boxRows = sortedSegments.flatMap(seg => seg.crop_boxes.map(box => ({
+    id: box.id, segment_id: seg.id, slot_index: box.slot_index,
+    source_video_id: box.source_video_id ?? null, source_offset_ms: ms(box.source_offset_ms ?? 0),
+  })))
+  const keyframeRows = sortedSegments.flatMap(seg => seg.crop_boxes.flatMap(box =>
+    (box.keyframes ?? []).map((kf: BoxKeyframeLocal) => ({ box_id: box.id, t_ms: ms(kf.t_ms), x: kf.x, y: kf.y, w: kf.w, h: kf.h }))))
+  const segIds = segRows.map(r => r.id)
+  const boxIds = boxRows.map(r => r.id)
+
+  // Every statement is built up front and pipelined in one transaction: the database is far
+  // from the server (~300–500 ms per round trip), and awaiting each statement made saves take
+  // 10–20 s, long enough for the next auto-save to overlap and collide with this one.
+  await sql.begin(tx => {
+    const q = []
+
+    if (segRows.length > 0) {
+      q.push(tx`
+        INSERT INTO segments ${tx(segRows)}
         ON CONFLICT (id) DO UPDATE SET start_ms = EXCLUDED.start_ms, end_ms = EXCLUDED.end_ms,
           layout = EXCLUDED.layout, sort_order = EXCLUDED.sort_order
-      `
-      for (const box of seg.crop_boxes) {
-        await tx`
-          INSERT INTO crop_boxes (id, segment_id, slot_index, source_video_id, source_offset_ms)
-          VALUES (${box.id}, ${seg.id}, ${box.slot_index}, ${box.source_video_id ?? null}, ${ms(box.source_offset_ms ?? 0)})
-          ON CONFLICT (id) DO UPDATE SET slot_index = EXCLUDED.slot_index,
-            source_video_id = EXCLUDED.source_video_id, source_offset_ms = EXCLUDED.source_offset_ms
-        `
-        await tx`DELETE FROM box_keyframes WHERE box_id = ${box.id}`
-        if (box.keyframes.length > 0) {
-          await tx`
-            INSERT INTO box_keyframes ${tx(box.keyframes.map((kf: BoxKeyframeLocal) => ({ box_id: box.id, t_ms: ms(kf.t_ms), x: kf.x, y: kf.y, w: kf.w, h: kf.h })))}
-          `
-        }
-      }
+      `)
+      // Formats removed in the editor (cascades to their crop boxes and keyframes)
+      q.push(tx`DELETE FROM segments WHERE clip_id = ${clipId} AND id != ALL(${segIds})`)
     }
-
-    if (segments.length > 0) {
-      const segIds = segments.map(s => s.id)
-      await tx`DELETE FROM segments WHERE clip_id = ${clipId} AND id != ALL(${segIds})`
+    if (boxRows.length > 0) {
+      q.push(tx`
+        INSERT INTO crop_boxes ${tx(boxRows)}
+        ON CONFLICT (id) DO UPDATE SET segment_id = EXCLUDED.segment_id, slot_index = EXCLUDED.slot_index,
+          source_video_id = EXCLUDED.source_video_id, source_offset_ms = EXCLUDED.source_offset_ms
+      `)
+      // Boxes left over from a layout with more slots (e.g. Split → Vertical)
+      q.push(tx`DELETE FROM crop_boxes WHERE segment_id = ANY(${segIds}) AND id != ALL(${boxIds})`)
+      q.push(tx`DELETE FROM box_keyframes WHERE box_id = ANY(${boxIds})`)
+      if (keyframeRows.length > 0) q.push(tx`INSERT INTO box_keyframes ${tx(keyframeRows)}`)
     }
 
     const captionEnabled = (captionStyle as Record<string, unknown>).enabled !== false
     if (!captionEnabled) {
-      await tx`DELETE FROM caption_styles WHERE clip_id = ${clipId}`
+      q.push(tx`DELETE FROM caption_styles WHERE clip_id = ${clipId}`)
     } else if (Object.keys(captionStyle).length > 0) {
-      const [existing] = await tx`SELECT id FROM caption_styles WHERE clip_id = ${clipId} LIMIT 1`
       const styleFields = ['font', 'size', 'color', 'position', 'position_y', 'animation', 'language', 'translated_from_language', 'timing_offset_ms']
-      if (existing?.id) {
+      if (existingStyle?.id) {
         const entries = Object.entries(captionStyle).filter(([k, v]) => styleFields.includes(k) && v !== undefined)
-        if (entries.length > 0) {
-          const updates = Object.fromEntries(entries)
-          await tx`UPDATE caption_styles SET ${tx(updates)} WHERE id = ${existing.id}`
-        }
+        if (entries.length > 0) q.push(tx`UPDATE caption_styles SET ${tx(Object.fromEntries(entries))} WHERE id = ${existingStyle.id}`)
       } else {
         const { id: _id, clip_id: _clip_id, enabled: _en, ...rest } = captionStyle as CaptionStyle & { enabled?: boolean }
-        await tx`INSERT INTO caption_styles ${tx({ clip_id: clipId, ...rest })}`
+        q.push(tx`INSERT INTO caption_styles ${tx({ clip_id: clipId, ...rest })}`)
       }
     }
 
-    await tx`DELETE FROM text_overlays WHERE clip_id = ${clipId}`
+    q.push(tx`DELETE FROM text_overlays WHERE clip_id = ${clipId}`)
     if (textOverlays.length > 0) {
-      await tx`INSERT INTO text_overlays ${tx(textOverlays.map(({ id, clip_id: _c, text, start_ms, end_ms, x, y, font, size, color }) => ({
+      q.push(tx`INSERT INTO text_overlays ${tx(textOverlays.map(({ id, text, start_ms, end_ms, x, y, font, size, color }) => ({
         id, clip_id: clipId, text, start_ms: ms(start_ms), end_ms: ms(end_ms), x, y, font, size, color,
-      })))}`
+      })))}`)
     }
 
-    await tx`DELETE FROM audio_tracks WHERE clip_id = ${clipId}`
+    q.push(tx`DELETE FROM audio_tracks WHERE clip_id = ${clipId}`)
     if (audioTracks.length > 0) {
-      await tx`INSERT INTO audio_tracks ${tx(audioTracks.map(({ id, clip_id: _c, storage_path, start_ms, volume, duck_under_speech }) => ({
+      q.push(tx`INSERT INTO audio_tracks ${tx(audioTracks.map(({ id, storage_path, start_ms, volume, duck_under_speech }) => ({
         id, clip_id: clipId, storage_path, start_ms: ms(start_ms), volume, duck_under_speech,
-      })))}`
+      })))}`)
     }
 
-    await tx`DELETE FROM transitions WHERE clip_id = ${clipId}`
-    if (transitions.length > 0) {
-      await tx`INSERT INTO transitions ${tx(transitions.map(({ id, clip_id: _c, after_segment_id, type, duration_ms }) => ({
+    q.push(tx`DELETE FROM transitions WHERE clip_id = ${clipId}`)
+    // A transition can only point at a format that still exists
+    const liveTransitions = transitions.filter(t => segIds.includes(t.after_segment_id))
+    if (liveTransitions.length > 0) {
+      q.push(tx`INSERT INTO transitions ${tx(liveTransitions.map(({ id, after_segment_id, type, duration_ms }) => ({
         id, clip_id: clipId, after_segment_id, type, duration_ms: ms(duration_ms),
-      })))}`
+      })))}`)
     }
 
-    await tx`DELETE FROM overlays WHERE clip_id = ${clipId}`
+    q.push(tx`DELETE FROM overlays WHERE clip_id = ${clipId}`)
     if (overlays.length > 0) {
-      await tx`INSERT INTO overlays ${tx(overlays.map(({ id, type, storage_path, source_video_id, source_offset_ms, x, y, w, h, start_ms, end_ms, z_index }) => ({
+      q.push(tx`INSERT INTO overlays ${tx(overlays.map(({ id, type, storage_path, source_video_id, source_offset_ms, x, y, w, h, start_ms, end_ms, z_index }) => ({
         id, clip_id: clipId, type, storage_path: storage_path ?? null,
         source_video_id: source_video_id ?? null, source_offset_ms: ms(source_offset_ms ?? 0),
         x, y, w, h, start_ms: ms(start_ms), end_ms: ms(end_ms), z_index,
-      })))}`
+      })))}`)
     }
+
+    return q
   })
 }
 

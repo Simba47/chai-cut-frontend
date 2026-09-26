@@ -23,7 +23,8 @@ export async function ingestLink(userId: string, url: string) {
   const { getUserPlanConfig } = await import('./quota')
   const plan = await getUserPlanConfig(userId)
   if (plan.autoCaption) {
-    const payload = { video_id: video.id, storage_path: '' }
+    // transcribe_full: caption the whole video in the background right after download
+    const payload = { video_id: video.id, storage_path: '', transcribe_full: true }
     await sql`INSERT INTO jobs (type, payload, status) VALUES ('transcribe', ${sql.json(payload)}, 'queued')`
   }
 
@@ -48,7 +49,8 @@ export async function uploadVideo(userId: string, req: NextRequest) {
   const { getUserPlanConfig } = await import('./quota')
   const plan = await getUserPlanConfig(userId)
   if (plan.autoCaption) {
-    const payload = { video_id: video.id, storage_path: storagePath }
+    // transcribe_full: caption the whole video in the background right after upload
+    const payload = { video_id: video.id, storage_path: storagePath, transcribe_full: true }
     await sql`INSERT INTO jobs (type, payload, status) VALUES ('transcribe', ${sql.json(payload)}, 'queued')`
   }
 
@@ -108,7 +110,7 @@ export async function getSignedUploadUrl(userId: string, filename: string, mimeT
   return { signed_url, storage_path: storagePath }
 }
 
-export async function completeUpload(userId: string, storagePath: string, durationMs?: number) {
+export async function completeUpload(userId: string, storagePath: string, durationMs?: number, title?: string) {
   try {
     await r2.send(new HeadObjectCommand({ Bucket: R2_BUCKET, Key: storagePath }))
   } catch {
@@ -116,10 +118,19 @@ export async function completeUpload(userId: string, storagePath: string, durati
   }
 
   const [video] = await sql`
-    INSERT INTO videos (user_id, source_type, storage_path, status, duration_ms)
-    VALUES (${userId}, 'upload', ${storagePath}, 'ready', ${durationMs ?? null})
+    INSERT INTO videos (user_id, source_type, storage_path, status, duration_ms, title)
+    VALUES (${userId}, 'upload', ${storagePath}, 'ready', ${durationMs ?? null}, ${title?.trim().slice(0, 120) || null})
     RETURNING id
   `
   if (!video) throw Object.assign(new Error('Failed to create video record'), { status: 500 })
+
+  // Caption the whole video in the background now, so clips made from it open with
+  // captions ready instead of waiting for a per-clip transcription
+  const { getUserPlanConfig } = await import('./quota')
+  const plan = await getUserPlanConfig(userId)
+  if (plan.autoCaption) {
+    const payload = { video_id: video.id, storage_path: storagePath, transcribe_full: true }
+    await sql`INSERT INTO jobs (type, payload, status) VALUES ('transcribe', ${sql.json(payload)}, 'queued')`
+  }
   return { video_id: video.id }
 }

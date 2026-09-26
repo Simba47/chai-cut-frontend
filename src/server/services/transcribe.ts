@@ -1,6 +1,7 @@
 import sql from '@/lib/db'
 
-export async function queueRetranscribe(userId: string, clipId: string, languageCode: string) {
+// renderAfter: when set, the worker queues this render job once transcription finishes
+export async function queueRetranscribe(userId: string, clipId: string, languageCode: string, renderAfter?: { clip_id: string; video_storage_path: string; quality: string; watermark: boolean }) {
   const [row] = await sql`
     SELECT c.video_id, c.start_ms, c.end_ms, v.storage_path, v.user_id
     FROM clips c JOIN videos v ON v.id = c.video_id
@@ -30,6 +31,7 @@ export async function queueRetranscribe(userId: string, clipId: string, language
     clip_id: clipId,
     clip_start_ms: row.start_ms,
     clip_end_ms: row.end_ms,
+    ...(renderAfter ? { render_after: renderAfter } : {}),
   }
   await sql`INSERT INTO jobs (type, payload, status) VALUES ('transcribe', ${sql.json(payload)}, 'queued')`
 }

@@ -56,9 +56,9 @@ export function TranscriptPanel({ words, clipStartMs, clipEndMs, currentTimeMs, 
 
   return (
     <div className="flex flex-col gap-3 p-4 overflow-y-auto h-full">
-      <p className="text-xs font-semibold uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>
-        Transcript {onWordChange && <span style={{ color: 'rgba(255,255,255,0.25)', fontWeight: 400, textTransform: 'none', letterSpacing: 0 }}>— double-click a word to edit</span>}
-      </p>
+      {onWordChange && (
+        <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Click a word to jump to it. Double-click to fix its spelling.</p>
+      )}
       {sentences.map((sent, i) => (
         <div key={i} className="flex flex-col gap-1">
           {sent.speaker_id && (
@@ -104,7 +104,7 @@ export function TranscriptPanel({ words, clipStartMs, clipEndMs, currentTimeMs, 
                   className="cursor-pointer rounded px-0.5 transition-colors"
                   style={{
                     background: isActive ? 'var(--accent)' : 'transparent',
-                    color: isActive ? '#fff' : 'var(--text)',
+                    color: isActive ? '#000' : 'var(--text)',
                     userSelect: 'none',
                   }}
                 >

@@ -1,21 +1,59 @@
 'use client'
 
-import { useState, useEffect, useRef } from 'react'
+import './dashboard.css'
+import { useState, useEffect, useRef, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
 import { useSession, signOut } from 'next-auth/react'
 import type { Video } from '@chai-cut/shared'
 import { ACCEPTED_VIDEO_EXTENSIONS, MAX_UPLOAD_BYTES } from '@chai-cut/shared'
 import { ThemeToggle } from '@/components/ThemeToggle'
 
+type DashVideo = Video & { video_url?: string | null; clip_count?: number }
+type SortKey = 'newest' | 'oldest' | 'name'
+interface PlanInfo {
+  plan: string
+  planName: string
+  maxVideos: number
+  maxFileSizeBytes: number
+  maxFileSizeGb: number
+  autoCaption: boolean
+  usage: { videos: number; clips: number }
+}
+
+// Videos uploaded before titles existed fall back to their position in the list
+function displayTitle(v: DashVideo, index: number) {
+  return v.title?.trim() || `Video ${index}`
+}
+
+// Closes a popover on outside click or Escape
+function useDismiss(open: boolean, close: () => void) {
+  const ref = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!open) return
+    const onDown = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) close() }
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') close() }
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => { document.removeEventListener('mousedown', onDown); document.removeEventListener('keydown', onKey) }
+  }, [open, close])
+  return ref
+}
+
 export default function DashboardPage() {
   const router = useRouter()
   const { data: session } = useSession()
-  const [videos, setVideos] = useState<Video[]>([])
+  const [videos, setVideos] = useState<DashVideo[]>([])
   const [loading, setLoading] = useState(true)
-  const [planInfo, setPlanInfo] = useState<{ plan: string; planName: string; maxVideos: number; maxFileSizeBytes: number; maxFileSizeGb: number; autoCaption: boolean; usage: { videos: number; clips: number } } | null>(null)
+  const [planInfo, setPlanInfo] = useState<PlanInfo | null>(null)
+
+  const [query, setQuery] = useState('')
+  const [sort, setSort] = useState<SortKey>('newest')
+  const [pendingDelete, setPendingDelete] = useState<{ video: DashVideo; title: string } | null>(null)
 
   const [dragOver, setDragOver] = useState(false)
+  const dragDepth = useRef(0)
   const [uploading, setUploading] = useState(false)
+  const [uploadName, setUploadName] = useState('')
   const [uploadProgress, setUploadProgress] = useState(0)
   const [uploadError, setUploadError] = useState<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -29,11 +67,13 @@ export default function DashboardPage() {
     }
   }
 
+  async function fetchPlan() {
+    const res = await fetch('/api/billing/plan').catch(() => null)
+    if (res?.ok) setPlanInfo(await res.json())
+  }
+
   useEffect(() => {
-    Promise.all([
-      fetchVideos(),
-      fetch('/api/billing/plan').then(r => r.ok ? r.json() : null).then(d => { if (d) setPlanInfo(d) }).catch(() => {}),
-    ]).finally(() => setLoading(false))
+    Promise.all([fetchVideos(), fetchPlan()]).finally(() => setLoading(false))
   }, [])
 
   useEffect(() => {
@@ -43,27 +83,41 @@ export default function DashboardPage() {
     return () => clearInterval(id)
   }, [videos])
 
-  function validateAndSetFile(f: File) {
+  const atLimit = !!planInfo && planInfo.usage.videos >= planInfo.maxVideos
+
+  // Numbering follows upload order (newest = highest), independent of the current sort
+  const indexById = useMemo(() => new Map(videos.map((v, i) => [v.id, videos.length - i])), [videos])
+
+  const visible = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    const list = videos
+      .map(v => ({ video: v, title: displayTitle(v, indexById.get(v.id) ?? 0) }))
+      .filter(x => !q || x.title.toLowerCase().includes(q))
+    if (sort === 'oldest') list.reverse()
+    if (sort === 'name') list.sort((a, b) => a.title.localeCompare(b.title, undefined, { numeric: true }))
+    return list
+  }, [videos, indexById, query, sort])
+
+  function validateFile(f: File): string | null {
     const limitBytes = planInfo?.maxFileSizeBytes ?? MAX_UPLOAD_BYTES
     const limitGb = planInfo?.maxFileSizeGb ?? 2
-    if (f.size > limitBytes) { setUploadError(`File exceeds your plan limit of ${limitGb} GB.`); return }
+    if (f.size > limitBytes) return `This file is larger than your plan's ${limitGb} GB limit.`
     const ext = '.' + f.name.split('.').pop()?.toLowerCase()
-    if (!ACCEPTED_VIDEO_EXTENSIONS.includes(ext as never)) {
-      setUploadError(`Unsupported format. Accepted: ${ACCEPTED_VIDEO_EXTENSIONS.join(', ')}`)
-      return
-    }
-    setUploadError(null)
+    if (!ACCEPTED_VIDEO_EXTENSIONS.includes(ext as never)) return `Unsupported format. Accepted: ${ACCEPTED_VIDEO_EXTENSIONS.join(', ')}`
+    return null
   }
 
-  function handleDrop(e: React.DragEvent) {
-    e.preventDefault()
-    setDragOver(false)
-    const dropped = e.dataTransfer.files[0]
-    if (dropped) { validateAndSetFile(dropped); handleFileUpload(dropped) }
+  function startUpload(f: File) {
+    if (uploading) return
+    if (atLimit) { setUploadError(`You've used all ${planInfo?.maxVideos} videos on your plan. Delete a video or upgrade to add more.`); return }
+    const error = validateFile(f)
+    if (error) { setUploadError(error); return }
+    handleFileUpload(f)
   }
 
   async function handleFileUpload(f: File) {
     setUploading(true)
+    setUploadName(f.name)
     setUploadProgress(0)
     setUploadError(null)
     try {
@@ -102,81 +156,126 @@ export default function DashboardPage() {
         })
       } catch { /* leave undefined */ }
 
+      const title = f.name.replace(/\.[^.]+$/, '')
       const completeRes = await fetch('/api/ingest/complete', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ storage_path, ...(durationMs ? { duration_ms: durationMs } : {}) }),
+        body: JSON.stringify({ storage_path, title, ...(durationMs ? { duration_ms: durationMs } : {}) }),
       })
       if (!completeRes.ok) throw new Error((await completeRes.json()).error ?? 'Failed')
       const { video_id } = await completeRes.json()
-      await fetchVideos()
       router.push(`/videos/${video_id}`)
     } catch (err) {
       setUploadError(err instanceof Error ? err.message : 'Upload failed')
-    } finally {
       setUploading(false)
     }
   }
 
+  // Page-wide drag-and-drop; the depth counter stops child elements from flickering the overlay
+  function isFileDrag(e: React.DragEvent) { return Array.from(e.dataTransfer.types).includes('Files') }
+  function onDragEnter(e: React.DragEvent) {
+    if (!isFileDrag(e)) return
+    e.preventDefault()
+    dragDepth.current++
+    setDragOver(true)
+  }
+  function onDragLeave(e: React.DragEvent) {
+    if (!isFileDrag(e)) return
+    dragDepth.current = Math.max(0, dragDepth.current - 1)
+    if (dragDepth.current === 0) setDragOver(false)
+  }
+  function onDrop(e: React.DragEvent) {
+    e.preventDefault()
+    dragDepth.current = 0
+    setDragOver(false)
+    const dropped = e.dataTransfer.files[0]
+    if (dropped) startUpload(dropped)
+  }
+
+  async function renameVideo(id: string, title: string) {
+    const prev = videos
+    setVideos(vs => vs.map(v => v.id === id ? { ...v, title } : v))
+    const res = await fetch(`/api/videos/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title }),
+    }).catch(() => null)
+    if (!res?.ok) setVideos(prev)
+  }
+
   if (loading) {
     return (
-      <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--bg)' }}>
-        <div style={{ width: 32, height: 32, borderRadius: '50%', border: '2px solid var(--accent)', borderTopColor: 'transparent', animation: 'spin 0.7s linear infinite' }}/>
-        <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+      <div className="dash" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--accent)' }}>
+        <div className="dash-spinner" style={{ width: 32, height: 32 }} />
       </div>
     )
   }
 
+  const usagePct = planInfo ? Math.min(100, (planInfo.usage.videos / planInfo.maxVideos) * 100) : 0
+  const isEmpty = videos.length === 0
+
   return (
-    <div style={{ minHeight: '100vh', background: 'var(--bg)' }}>
-      {/* Nav */}
-      <nav style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 24px', height: 52, background: 'var(--nav)', borderBottom: '1px solid var(--border)', boxShadow: 'var(--nav-shadow)', position: 'sticky', top: 0, zIndex: 50 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <img src="/logo-icon.png" alt="" style={{ width: 32, height: 32, borderRadius: 8, mixBlendMode: 'screen' }} />
-          <span style={{ fontSize: 17, fontWeight: 700, color: '#fff', letterSpacing: '-0.02em' }}>Shortcut</span>
-        </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>{session?.user?.email}</span>
+    <div
+      className="dash"
+      onDragEnter={onDragEnter}
+      onDragOver={e => { if (isFileDrag(e)) e.preventDefault() }}
+      onDragLeave={onDragLeave}
+      onDrop={onDrop}
+    >
+      <nav className="dash-nav">
+        <a href="/dashboard" className="dash-brand">
+          <img src="/logo-icon.png" alt="" />
+          <span>Shortcut</span>
+        </a>
+        <div className="dash-nav-right">
           {planInfo && (
-            <span style={{ fontSize: 11, fontWeight: 700, padding: '3px 10px', borderRadius: 6, background: planInfo.plan === 'free' ? 'var(--surface)' : 'var(--accent)', color: planInfo.plan === 'free' ? 'var(--text-muted)' : '#000', border: '1px solid var(--border)' }}>
-              {planInfo.planName}
-            </span>
+            <div
+              className={`dash-usage${usagePct >= 100 ? ' is-full' : usagePct >= 90 ? ' is-warn' : ''}`}
+              title={`${planInfo.usage.videos} of ${planInfo.maxVideos} videos used`}
+            >
+              <span className="dash-usage-label"><strong>{planInfo.usage.videos}</strong> / {planInfo.maxVideos} videos</span>
+              <div className="dash-usage-bar"><div style={{ width: `${usagePct}%` }} /></div>
+            </div>
           )}
-          {planInfo?.plan === 'free' && (
-            <a href="/pricing" style={{ fontSize: 12, padding: '5px 12px', borderRadius: 8, fontWeight: 700, background: 'var(--accent)', color: '#fff', textDecoration: 'none' }}>
-              Upgrade
-            </a>
+          {planInfo && (planInfo.plan === 'free'
+            ? <a href="/pricing" className="dash-btn dash-btn-primary dash-btn-sm">Upgrade</a>
+            : <a href="/pricing" className="dash-plan" title="View plans">{planInfo.planName}</a>
           )}
           <ThemeToggle />
-          <button
-            onClick={() => signOut({ callbackUrl: '/login' })}
-            style={{ fontSize: 12, padding: '5px 12px', borderRadius: 8, cursor: 'pointer', color: 'var(--text-muted)', background: 'var(--bg)', border: '1px solid var(--border-strong)', fontWeight: 500 }}
-          >
-            Sign out
-          </button>
+          <AccountMenu email={session?.user?.email ?? ''} planInfo={planInfo} />
         </div>
       </nav>
 
-      <main style={{ maxWidth: 768, margin: '0 auto', padding: '40px 24px 64px' }}>
-        <h1 style={{ fontSize: 22, fontWeight: 800, color: 'var(--text)', textAlign: 'center', marginBottom: 4, letterSpacing: '-0.02em' }}>Upload your video</h1>
-        <p style={{ fontSize: 14, textAlign: 'center', marginBottom: 32, color: 'var(--text-muted)' }}>
-          Transcribe and clip your long-form content
-        </p>
+      <main className="dash-main">
+        {!isEmpty && (
+          <div className="dash-head">
+            <h1>Your videos<span>{videos.length}</span></h1>
+            <div className="dash-tools">
+              <label className="dash-search">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                  <circle cx="11" cy="11" r="7" stroke="currentColor" strokeWidth="2" />
+                  <path d="M20 20l-3.5-3.5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                </svg>
+                <input
+                  className="dash-input"
+                  type="search"
+                  placeholder="Search videos"
+                  aria-label="Search videos"
+                  value={query}
+                  onChange={e => setQuery(e.target.value)}
+                />
+              </label>
+              <select className="dash-select" aria-label="Sort videos" value={sort} onChange={e => setSort(e.target.value as SortKey)}>
+                <option value="newest">Newest</option>
+                <option value="oldest">Oldest</option>
+                <option value="name">Name</option>
+              </select>
+            </div>
+          </div>
+        )}
 
-        {/* Drop zone */}
-        <div
-          onDragOver={e => { e.preventDefault(); setDragOver(true) }}
-          onDragLeave={() => setDragOver(false)}
-          onDrop={handleDrop}
-          onClick={() => fileInputRef.current?.click()}
-          style={{
-            borderRadius: 18, padding: '56px 24px', textAlign: 'center', cursor: 'pointer',
-            border: `2px dashed ${dragOver ? 'var(--accent)' : 'var(--border-strong)'}`,
-            background: dragOver ? 'rgba(200,255,0,0.06)' : 'var(--surface)',
-            boxShadow: 'var(--card-shadow)',
-            transition: 'all 0.2s', marginBottom: 12,
-          }}
-        >
+        {/* Upload strip — takes the whole stage on first run */}
+        <div className={`dash-drop${isEmpty ? ' is-empty' : ''}${dragOver ? ' is-over' : ''}`}>
           <input
             ref={fileInputRef}
             type="file"
@@ -184,77 +283,122 @@ export default function DashboardPage() {
             style={{ display: 'none' }}
             onChange={e => {
               const f = e.target.files?.[0]
-              if (f) { validateAndSetFile(f); handleFileUpload(f) }
+              e.target.value = ''
+              if (f) startUpload(f)
             }}
           />
-          <svg width="40" height="40" viewBox="0 0 40 40" fill="none" style={{ margin: '0 auto 12px', display: 'block', opacity: 0.35 }}>
-            <path d="M20 28V12M20 12L13 19M20 12L27 19" stroke="var(--text)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-            <path d="M8 30C5.8 30 4 28.2 4 26c0-1.9 1.3-3.5 3-4 .1-3.9 3.3-7 7.2-7 .6 0 1.2.1 1.8.2C17.2 13.5 18.5 13 20 13s2.8.5 4 1.2c.6-.1 1.2-.2 1.8-.2C29.7 14 33 17.1 33 21c1.7.5 3 2.1 3 4 0 2.2-1.8 4-4 4H8z" stroke="var(--text)" strokeWidth="1.8" strokeLinejoin="round"/>
-          </svg>
-          {uploading ? (
-            <>
-              <p style={{ fontSize: 14, color: 'var(--text)', marginBottom: 10 }}>Uploading… {uploadProgress}%</p>
-              <div style={{ width: 192, margin: '0 auto', height: 6, borderRadius: 999, overflow: 'hidden', background: 'var(--border-strong)' }}>
-                <div style={{ height: '100%', borderRadius: 999, width: `${uploadProgress}%`, background: 'var(--accent)', transition: 'width 0.3s' }}/>
-              </div>
-            </>
-          ) : (
-            <>
-              <p style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)', marginBottom: 4 }}>Click or drag to upload a video</p>
-              <p style={{ fontSize: 13, color: 'var(--text-muted)' }}>
-                MP4, MOV, WEBM · up to {planInfo?.maxFileSizeGb ?? 2} GB
-                {planInfo && ` · ${planInfo.usage.videos}/${planInfo.maxVideos} videos used`}
-              </p>
-            </>
+          <div className="dash-drop-icon">
+            <svg width={isEmpty ? 26 : 20} height={isEmpty ? 26 : 20} viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="M12 16V4m0 0L7 9m5-5l5 5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+              <path d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+            </svg>
+          </div>
+          <div className="dash-drop-text">
+            {uploading ? (
+              <>
+                <p>Uploading {uploadName}… {uploadProgress}%</p>
+                <div className="dash-progress"><div style={{ width: `${uploadProgress}%` }} /></div>
+              </>
+            ) : atLimit ? (
+              <>
+                <p>You&apos;ve used all {planInfo?.maxVideos} videos on your {planInfo?.planName} plan</p>
+                <p>Delete a video to free up space, or <a href="/pricing">upgrade your plan</a>.</p>
+              </>
+            ) : (
+              <>
+                <p>{isEmpty ? 'Upload your first video' : 'Drag and drop a video anywhere on this page'}</p>
+                <p>MP4, MOV, WEBM · up to {planInfo?.maxFileSizeGb ?? 2} GB{isEmpty ? ' · we’ll transcribe it so you can cut clips' : ''}</p>
+              </>
+            )}
+          </div>
+          {!atLimit && (
+            <button className="dash-btn dash-btn-primary" disabled={uploading} onClick={() => fileInputRef.current?.click()}>
+              {uploading ? <><span className="dash-spinner" /> Uploading</> : 'Upload video'}
+            </button>
           )}
         </div>
 
-        {uploadError && (
-          <p style={{ fontSize: 13, textAlign: 'center', marginBottom: 16, color: 'var(--danger)' }}>{uploadError}</p>
-        )}
+        {uploadError && <p className="dash-error" role="alert">{uploadError}</p>}
 
-        {/* Videos */}
-        {videos.length > 0 && (
-          <div style={{ marginTop: 40 }}>
-            <h2 style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-muted)', marginBottom: 16, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
-              Your Videos
-            </h2>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 16 }}>
-              {videos.map((v, i) => (
-                <VideoCard
-                  key={v.id}
-                  video={v as Video}
-                  index={videos.length - i}
-                  onDeleted={id => setVideos(prev => prev.filter(x => x.id !== id))}
-                />
-              ))}
-            </div>
+        {!isEmpty && (visible.length > 0 ? (
+          <div className="dash-grid">
+            {visible.map(({ video, title }) => (
+              <VideoCard
+                key={video.id}
+                video={video}
+                title={title}
+                onRename={t => renameVideo(video.id, t)}
+                onDelete={() => setPendingDelete({ video, title })}
+              />
+            ))}
           </div>
-        )}
+        ) : (
+          <p className="dash-note">No videos match &ldquo;{query}&rdquo;</p>
+        ))}
       </main>
+
+      {dragOver && <div className="dash-drop-overlay">Drop your video to upload</div>}
+
+      {pendingDelete && (
+        <DeleteDialog
+          title={pendingDelete.title}
+          clipCount={pendingDelete.video.clip_count ?? 0}
+          videoId={pendingDelete.video.id}
+          onClose={() => setPendingDelete(null)}
+          onDeleted={id => {
+            setVideos(prev => prev.filter(x => x.id !== id))
+            setPendingDelete(null)
+            fetchPlan()
+          }}
+        />
+      )}
     </div>
   )
 }
 
-function VideoCard({ video, index, onDeleted }: { video: Video; index: number; onDeleted: (id: string) => void }) {
+function AccountMenu({ email, planInfo }: { email: string; planInfo: PlanInfo | null }) {
+  const [open, setOpen] = useState(false)
+  const ref = useDismiss(open, () => setOpen(false))
+  return (
+    <div ref={ref} style={{ position: 'relative' }}>
+      <button className="dash-avatar" aria-label="Account menu" aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen(o => !o)}>
+        {email.charAt(0) || '?'}
+      </button>
+      {open && (
+        <div className="dash-popover" role="menu" style={{ minWidth: 220 }}>
+          <div className="dash-popover-head">
+            <p>{email}</p>
+            {planInfo && <p>{planInfo.planName} plan · {planInfo.usage.videos}/{planInfo.maxVideos} videos</p>}
+          </div>
+          <a href="/pricing" className="dash-menu-item" role="menuitem">Plans &amp; billing</a>
+          <button className="dash-menu-item" role="menuitem" onClick={() => signOut({ callbackUrl: '/login' })}>Sign out</button>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function VideoCard({ video, title, onRename, onDelete }: {
+  video: DashVideo
+  title: string
+  onRename: (title: string) => void
+  onDelete: () => void
+}) {
   const router = useRouter()
-  const [confirmDelete, setConfirmDelete] = useState(false)
-  const [deleting, setDeleting] = useState(false)
+  const [menuOpen, setMenuOpen] = useState(false)
+  const menuRef = useDismiss(menuOpen, () => setMenuOpen(false))
+  const [renaming, setRenaming] = useState(false)
+  const [draft, setDraft] = useState(title)
+  // Keep the first signed URL — polling returns a fresh signature every 3s,
+  // which would otherwise reload the thumbnail each time
+  const [thumbSrc, setThumbSrc] = useState<string | null>(null)
+  const [thumbLoaded, setThumbLoaded] = useState(false)
+  const [thumbFailed, setThumbFailed] = useState(false)
+  useEffect(() => {
+    if (!thumbSrc && !thumbFailed && video.status === 'ready' && video.video_url) setThumbSrc(`${video.video_url}#t=1`)
+  }, [thumbSrc, thumbFailed, video.status, video.video_url])
 
-  async function handleDelete(e: React.MouseEvent) {
-    e.stopPropagation()
-    if (!confirmDelete) { setConfirmDelete(true); return }
-    setDeleting(true)
-    try {
-      const res = await fetch(`/api/videos/${video.id}`, { method: 'DELETE' })
-      if (!res.ok) throw new Error((await res.json()).error ?? 'Delete failed')
-      onDeleted(video.id)
-    } catch {
-      setDeleting(false)
-      setConfirmDelete(false)
-    }
-  }
-
+  const ready = video.status === 'ready'
   const pct = video.download_progress ?? 0
   const stageLabel =
     pct < 5  ? 'Queued' :
@@ -263,98 +407,180 @@ function VideoCard({ video, index, onDeleted }: { video: Video; index: number; o
     pct < 70 ? 'Uploading…' :
     pct < 99 ? `Transcribing ${pct}%` : 'Finishing…'
 
-  const statusColor: Record<string, string> = {
-    uploaded: '#f59e0b', transcribing: 'var(--accent)', ready: 'var(--success)', failed: 'var(--danger)',
-  }
-  const statusText: Record<string, string> = {
-    uploaded: 'Queued', transcribing: stageLabel, ready: 'Ready', failed: 'Failed',
+  const created = new Date(video.created_at)
+  const dateStr = created.toLocaleDateString('en-US', {
+    month: 'short', day: 'numeric',
+    ...(created.getFullYear() !== new Date().getFullYear() ? { year: 'numeric' } : {}),
+  })
+  const clips = video.clip_count ?? 0
+  const clipLabel = clips === 0 ? 'No clips yet' : `${clips} clip${clips === 1 ? '' : 's'}`
+  const durationLabel = video.duration_ms ? formatDuration(video.duration_ms) : null
+
+  function open() {
+    if (ready && !renaming) router.push(`/videos/${video.id}`)
   }
 
-  const dateStr = new Date(video.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
-  const title = `Video ${index} — ${dateStr}`
-  const durationLabel = video.duration_ms
-    ? `${Math.floor(video.duration_ms / 60000)}m ${Math.floor((video.duration_ms % 60000) / 1000)}s`
-    : null
-
-  function openEditor() {
-    if (video.status !== 'ready') return
-    router.push(`/videos/${video.id}`)
+  function commitRename() {
+    const next = draft.trim()
+    setRenaming(false)
+    if (next && next !== title) onRename(next)
+    else setDraft(title)
   }
 
   return (
     <div
-      onClick={openEditor}
-      onMouseLeave={() => setConfirmDelete(false)}
-      style={{
-        borderRadius: 12, overflow: 'hidden', cursor: 'pointer',
-        background: 'var(--surface)',
-        border: `1px solid ${confirmDelete ? 'rgba(239,68,68,0.4)' : 'var(--border)'}`,
-        boxShadow: 'var(--card-shadow)',
-        transition: 'border-color 0.15s, transform 0.15s',
-      }}
+      className={`vcard${ready ? ' is-ready' : ''}`}
+      role={ready ? 'link' : undefined}
+      tabIndex={ready ? 0 : -1}
+      aria-label={ready ? `Open ${title}` : undefined}
+      onClick={open}
+      onKeyDown={e => { if (e.key === 'Enter' && e.target === e.currentTarget) open() }}
     >
-      {/* Thumbnail */}
-      <div style={{ position: 'relative', aspectRatio: '16/9', background: 'var(--media-bg)' }}>
-        <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', opacity: 0.3 }}>
-          <svg width="40" height="40" viewBox="0 0 40 40" fill="none">
-            <rect width="40" height="40" rx="6" fill="#888"/>
-            <path d="M15 12v16l14-8-14-8z" fill="white"/>
-          </svg>
-        </div>
+      <div className="vcard-thumb">
+        {!thumbLoaded && (
+          <div className="vcard-placeholder">
+            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <rect x="2" y="4" width="20" height="16" rx="3" stroke="currentColor" strokeWidth="1.5" />
+              <path d="M10 9v6l5-3-5-3z" fill="currentColor" />
+            </svg>
+          </div>
+        )}
+        {thumbSrc && (
+          <video
+            src={thumbSrc}
+            preload="metadata"
+            muted
+            playsInline
+            disablePictureInPicture
+            onLoadedData={() => setThumbLoaded(true)}
+            onError={() => { setThumbFailed(true); setThumbSrc(null) }}
+            style={{ opacity: thumbLoaded ? 1 : 0 }}
+          />
+        )}
 
+        {video.status === 'uploaded' && (
+          <div className="vcard-overlay"><span className="dash-spinner" />Queued</div>
+        )}
         {video.status === 'transcribing' && (
-          <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 8, padding: '0 24px', background: 'rgba(0,0,0,0.55)' }}>
-            <p style={{ fontSize: 12, fontWeight: 600, color: '#fff', textAlign: 'center' }}>{stageLabel}</p>
-            <div style={{ width: '100%', height: 6, borderRadius: 999, overflow: 'hidden', background: 'rgba(255,255,255,0.15)' }}>
-              <div style={{ height: '100%', borderRadius: 999, width: `${Math.max(4, pct)}%`, background: 'var(--accent)', transition: 'width 0.5s' }}/>
-            </div>
+          <div className="vcard-overlay">
+            {stageLabel}
+            <div className="dash-progress"><div style={{ width: `${Math.max(4, pct)}%` }} /></div>
           </div>
         )}
-
-        {durationLabel && (
-          <div style={{ position: 'absolute', top: 8, left: 8, fontSize: 11, fontWeight: 600, padding: '2px 7px', borderRadius: 5, background: 'rgba(0,0,0,0.65)', color: 'rgba(255,255,255,0.85)' }}>
-            {durationLabel}
-          </div>
+        {video.status === 'failed' && (
+          <div className="vcard-overlay is-failed">Couldn&apos;t process this video</div>
         )}
 
+        {durationLabel && <span className="vcard-duration">{durationLabel}</span>}
+      </div>
+
+      <div ref={menuRef}>
         <button
-          onClick={handleDelete}
-          style={{
-            position: 'absolute', top: 8, right: 8, width: 26, height: 26, borderRadius: 8, cursor: 'pointer',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            background: confirmDelete ? 'rgba(239,68,68,0.9)' : 'rgba(0,0,0,0.55)',
-            border: `1px solid ${confirmDelete ? '#ef4444' : 'rgba(255,255,255,0.15)'}`,
-            color: '#fff', transition: 'all 0.15s',
-          }}
-          title={confirmDelete ? 'Tap again to confirm' : 'Delete'}
+          className="vcard-menu-btn"
+          aria-label={`Options for ${title}`}
+          aria-haspopup="menu"
+          aria-expanded={menuOpen}
+          onClick={e => { e.stopPropagation(); setMenuOpen(o => !o) }}
+          onKeyDown={e => e.stopPropagation()}
         >
-          {deleting
-            ? <div style={{ width: 10, height: 10, borderRadius: '50%', border: '1.5px solid #fff', borderTopColor: 'transparent', animation: 'spin 0.6s linear infinite' }}/>
-            : confirmDelete
-              ? <svg width="10" height="10" viewBox="0 0 12 12" fill="none"><path d="M1 1l10 10M11 1L1 11" stroke="white" strokeWidth="1.8" strokeLinecap="round"/></svg>
-              : <svg width="10" height="10" viewBox="0 0 12 12" fill="none"><path d="M2 3h8M5 3V2h2v1M4.5 3v6M7.5 3v6M3 3l.5 7h5L9 3" stroke="rgba(255,255,255,0.7)" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/></svg>
-          }
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <circle cx="5" cy="12" r="2" /><circle cx="12" cy="12" r="2" /><circle cx="19" cy="12" r="2" />
+          </svg>
         </button>
-      </div>
-
-      {/* Info row */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 12px' }}>
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <p style={{ fontSize: 12, fontWeight: 600, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginBottom: 2 }}>{title}</p>
-          <p style={{ fontSize: 11, color: statusColor[video.status] ?? 'var(--text-muted)' }}>
-            {statusText[video.status] ?? video.status}
-          </p>
-        </div>
-        {video.status === 'ready' && (
-          <button
-            onClick={e => { e.stopPropagation(); openEditor() }}
-            style={{ fontSize: 12, fontWeight: 700, padding: '5px 12px', borderRadius: 8, background: 'var(--accent)', color: '#000', border: 'none', cursor: 'pointer', flexShrink: 0 }}
-          >
-            Edit →
-          </button>
+        {menuOpen && (
+          <div className="dash-popover" role="menu" onClick={e => e.stopPropagation()}>
+            <button className="dash-menu-item" role="menuitem" onClick={() => { setMenuOpen(false); setDraft(title); setRenaming(true) }}>
+              Rename
+            </button>
+            <button className="dash-menu-item is-danger" role="menuitem" onClick={() => { setMenuOpen(false); onDelete() }}>
+              Delete
+            </button>
+          </div>
         )}
       </div>
-      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+
+      <div className="vcard-info">
+        {renaming ? (
+          <input
+            className="vcard-rename"
+            autoFocus
+            maxLength={120}
+            aria-label="Video title"
+            value={draft}
+            onChange={e => setDraft(e.target.value)}
+            onClick={e => e.stopPropagation()}
+            onFocus={e => e.target.select()}
+            onBlur={commitRename}
+            onKeyDown={e => {
+              e.stopPropagation()
+              if (e.key === 'Enter') e.currentTarget.blur()
+              if (e.key === 'Escape') { setDraft(title); setRenaming(false) }
+            }}
+          />
+        ) : (
+          <p className="vcard-title" title={title}>{title}</p>
+        )}
+        <p className="vcard-meta">
+          {video.status === 'failed' ? <span style={{ color: 'var(--danger)' }}>Failed</span> : clipLabel} · {dateStr}
+        </p>
+      </div>
     </div>
   )
+}
+
+function DeleteDialog({ title, clipCount, videoId, onClose, onDeleted }: {
+  title: string
+  clipCount: number
+  videoId: string
+  onClose: () => void
+  onDeleted: (id: string) => void
+}) {
+  const [deleting, setDeleting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape' && !deleting) onClose() }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [deleting, onClose])
+
+  async function confirm() {
+    setDeleting(true)
+    setError(null)
+    try {
+      const res = await fetch(`/api/videos/${videoId}`, { method: 'DELETE' })
+      if (!res.ok) throw new Error((await res.json()).error ?? 'Delete failed')
+      onDeleted(videoId)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Delete failed')
+      setDeleting(false)
+    }
+  }
+
+  return (
+    <div className="dash-modal-backdrop" onClick={() => { if (!deleting) onClose() }}>
+      <div className="dash-modal" role="alertdialog" aria-modal="true" aria-labelledby="delete-title" onClick={e => e.stopPropagation()}>
+        <h2 id="delete-title">Delete &ldquo;{title}&rdquo;?</h2>
+        <p>
+          This permanently removes the video{clipCount > 0 ? ` and its ${clipCount} clip${clipCount === 1 ? '' : 's'}` : ''}.
+          This can&apos;t be undone.
+          {error && <><br /><span style={{ color: 'var(--danger)' }}>{error}</span></>}
+        </p>
+        <div className="dash-modal-actions">
+          <button className="dash-btn" onClick={onClose} disabled={deleting} autoFocus>Cancel</button>
+          <button className="dash-btn dash-btn-danger" onClick={confirm} disabled={deleting}>
+            {deleting ? <><span className="dash-spinner" /> Deleting</> : 'Delete'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function formatDuration(ms: number) {
+  const total = Math.round(ms / 1000)
+  const h = Math.floor(total / 3600)
+  const m = Math.floor((total % 3600) / 60)
+  const s = total % 60
+  return h > 0 ? `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}` : `${m}:${String(s).padStart(2, '0')}`
 }
