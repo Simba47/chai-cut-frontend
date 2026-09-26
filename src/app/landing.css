@@ -1,23 +1,6 @@
 /* ── TOKENS ─────────────────────────────────────────────── */
 .lp-root {
-  --bg: #0A0A0A;
-  --card: #141414;
-  --card-hover: #1A1A1A;
-  --border: rgba(255,255,255,0.08);
-  --border-strong: rgba(255,255,255,0.16);
-  --hover: rgba(255,255,255,0.06);
-  --text: #F4F4F5;
-  --muted: rgba(244,244,245,0.58);
-  --dim: rgba(244,244,245,0.36);
-  --fade: rgba(244,244,245,0.42);   /* end colour of headline gradients */
-  --accent: #C8FF00;                /* brand lime, used sparingly */
-  --logo: #C8FF00;
-  --sheet: #0E0E0F;
-  --title-top: #FFFFFF;
-  --title-bottom: #6B7280;
-  --btn-bg: #F4F4F5;
-  --btn-text: #0A0A0A;
-  --beam: rgba(255,255,255,0.07);
+  /* colours come from the shared brand theme in globals.css */
   --r: 20px;
 
   background: var(--bg);
@@ -319,6 +302,7 @@ a:hover > .brand .brand-bottom { translate: 12px 12px; }
   translate: 0 -50%;
   transition: left .8s cubic-bezier(.23,1,.32,1), right .8s cubic-bezier(.23,1,.32,1), fill .6s;
 }
+:root .fill-btn-icon-stroke { fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; transition: left .8s cubic-bezier(.23,1,.32,1), right .8s cubic-bezier(.23,1,.32,1), stroke .6s; }
 :root .fill-btn-arr-out { right: var(--fill-inset); }
 :root .fill-btn-arr-in  { left: -25%; }
 :root .fill-btn-circle {

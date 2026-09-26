@@ -1,13 +1,12 @@
 'use client'
 
-import { useRef, useState } from 'react'
+import { useState } from 'react'
 import { signIn } from 'next-auth/react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { Eye, EyeOff } from 'lucide-react'
 import { BRAND_BOTTOM, BRAND_TOP, BrandLogo } from '@/components/ui/brand-logo'
 import { FillButtonContent } from '@/components/ui/fill-button'
-import { AuthBackground } from './AuthBackground'
 
 type Mode = 'signin' | 'signup'
 
@@ -19,7 +18,6 @@ type Mode = 'signin' | 'signup'
  */
 export function AuthSlider({ initialMode }: { initialMode: Mode }) {
   const [mode, setMode] = useState<Mode>(initialMode)
-  const cardRef = useRef<HTMLDivElement>(null)
 
   const switchTo = (next: Mode) => {
     setMode(next)
@@ -28,10 +26,9 @@ export function AuthSlider({ initialMode }: { initialMode: Mode }) {
 
   return (
     <div className="auth-root">
-      <AuthBackground cardRef={cardRef} />
       <Link href="/" aria-label="Shortcut home" className="auth-home"><BrandLogo shine /></Link>
 
-      <div ref={cardRef} className="auth-card" data-mode={mode}>
+      <div className="auth-card" data-mode={mode}>
         <div className="auth-form-wrap auth-signup" inert={mode !== 'signup'}>
           <SignUpForm onSwitch={() => switchTo('signin')} />
         </div>

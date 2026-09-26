@@ -675,12 +675,12 @@ export function EditorShell({
             Dashboard
           </a>
           <BreadcrumbChevron />
-          <a href={`/videos/${videoId}`} onClick={e => leaveTo(e, `/videos/${videoId}`)} title={`${videoTitle}: all clips`}
-            className="truncate transition-colors hover:text-[var(--ed-text)]" style={{ color: 'rgb(var(--ed-fg) / 0.5)', maxWidth: 200 }}>
-            {videoTitle}
+          <a href={`/videos/${videoId}`} onClick={e => leaveTo(e, `/videos/${videoId}`)} title={`Clip board: ${videoTitle}`}
+            className="shrink-0 transition-colors hover:text-[var(--ed-text)]" style={{ color: 'rgb(var(--ed-fg) / 0.5)' }}>
+            Clip board
           </a>
           <BreadcrumbChevron />
-          <span aria-current="page" className="font-semibold text-[var(--ed-text)] truncate" title={clipTitle} style={{ maxWidth: 260 }}>{clipTitle}</span>
+          <span aria-current="page" className="font-semibold text-[var(--ed-text)] shrink-0" title={clipTitle}>Editing board</span>
         </nav>
 
         <SaveIndicator state={leaving ? 'saving' : saveState} leaving={leaving} onRetry={handleSave} />

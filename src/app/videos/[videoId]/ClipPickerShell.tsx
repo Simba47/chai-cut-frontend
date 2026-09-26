@@ -2,6 +2,7 @@
 
 import { useState, useRef, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
+import { Breadcrumbs } from '@/components/ui/breadcrumbs'
 
 interface VideoData {
   id: string
@@ -99,7 +100,6 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: P
   const isReady = video.status === 'ready'
   const isProcessing = video.status === 'uploaded' || video.status === 'transcribing'
   const maxMs = video.duration_ms ?? 0
-  const videoTitle = video.title?.trim() || 'Untitled video'
 
   // Poll while processing
   useEffect(() => {
@@ -134,7 +134,7 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: P
     setShowForm(true)
   }
 
-  // Parsed form range, for the live duration readout and the marker on the video bar
+  // Parsed form range, for the live duration readout
   const formStartMs = parseTime(formStart)
   const formEndMs = parseTime(formEnd)
   const formRangeValid = formStartMs !== null && formEndMs !== null && formEndMs > formStartMs
@@ -205,21 +205,11 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: P
   return (
     <div className="h-screen flex flex-col overflow-hidden" style={{ background: '#0d0d0d' }}>
       {/* Nav */}
-      <nav className="flex items-center gap-3 px-3 shrink-0"
-        style={{ height: 52, background: '#111', borderBottom: '1px solid rgba(255,255,255,0.07)' }}>
-        <button onClick={() => router.push('/dashboard')} aria-label="Back to videos" title="Back to videos"
-          className="flex items-center justify-center rounded-lg transition-colors hover:bg-white/10 shrink-0"
-          style={{ width: 34, height: 34, background: 'rgba(255,255,255,0.05)' }}>
-          <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-            <path d="M9 2.5L4.5 7 9 11.5" stroke="rgba(255,255,255,0.75)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/>
-          </svg>
-        </button>
-        <div className="min-w-0 flex-1">
-          <p className="text-sm font-semibold text-white leading-tight truncate" title={videoTitle}>{videoTitle}</p>
-          <p className="text-[11px] leading-tight" style={{ color: 'rgba(255,255,255,0.4)' }}>
-            {maxMs > 0 && `${msToDisplay(maxMs)} · `}{savedClips.length === 0 ? 'No clips yet' : `${savedClips.length} clip${savedClips.length === 1 ? '' : 's'}`}
-          </p>
-        </div>
+      <nav className="flex items-center gap-3 px-4 shrink-0"
+        style={{ height: 56, background: '#111', borderBottom: '1px solid rgba(255,255,255,0.07)' }}>
+        {/* Where am I: Shortcut | Dashboard › Clip board */}
+        <Breadcrumbs shine items={[{ label: 'Dashboard', href: '/dashboard' }, { label: 'Clip board' }]} />
+        <div className="flex-1" />
         {isReady && (
           <button onClick={editFullVideo} disabled={!!busy}
             title="Open the whole video in the editor as one clip"
@@ -267,15 +257,6 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: P
             )}
           </div>
 
-          {isReady && maxMs > 0 && (
-            <ClipMap
-              durationMs={maxMs}
-              nowMs={nowMs}
-              clips={savedClips.map((c, i) => ({ id: c.id, n: i + 1, start: c.start_ms, end: c.end_ms, title: c.title ?? `Clip ${c.index}` }))}
-              draft={showForm && formRangeValid ? { start: formStartMs!, end: formEndMs! } : null}
-              onSeek={ms => seek(ms, false)}
-            />
-          )}
         </div>
 
         {/* ── Clip panel ─────────────────────────────────────────── */}
@@ -413,49 +394,6 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: P
             </div>
           )}
         </aside>
-      </div>
-    </div>
-  )
-}
-
-// ── Clip map: where each clip sits in the video ───────────────────────────────
-
-function ClipMap({ durationMs, nowMs, clips, draft, onSeek }: {
-  durationMs: number
-  nowMs: number
-  clips: { id: string; n: number; start: number; end: number; title: string }[]
-  draft: { start: number; end: number } | null
-  onSeek: (ms: number) => void
-}) {
-  const ref = useRef<HTMLDivElement>(null)
-  const pct = (ms: number) => `${Math.max(0, Math.min(100, (ms / durationMs) * 100))}%`
-
-  function seekFromEvent(e: React.MouseEvent) {
-    const r = ref.current?.getBoundingClientRect()
-    if (!r) return
-    onSeek(Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)) * durationMs)
-  }
-
-  return (
-    <div className="shrink-0 px-4 py-3" style={{ background: '#111', borderTop: '1px solid rgba(255,255,255,0.07)' }}>
-      <div className="flex items-center justify-between mb-2 text-[11px]" style={{ color: 'rgba(255,255,255,0.45)' }}>
-        <span>Clips in this video · click to jump</span>
-        <span className="tabular-nums">{msToDisplay(nowMs)} / {msToDisplay(durationMs)}</span>
-      </div>
-      <div ref={ref} onClick={seekFromEvent} className="relative cursor-pointer rounded-md" style={{ height: 28, background: 'rgba(255,255,255,0.05)' }}>
-        {clips.map(c => (
-          <button key={c.id} onClick={e => { e.stopPropagation(); onSeek(c.start) }}
-            title={`${c.n}. ${c.title} (${msToDisplay(c.start)} – ${msToDisplay(c.end)})`}
-            className="absolute top-1 bottom-1 rounded flex items-center justify-center text-[10px] font-bold overflow-hidden transition-opacity hover:opacity-80"
-            style={{ left: pct(c.start), width: `max(6px, calc(${pct(c.end)} - ${pct(c.start)}))`, background: 'rgba(200,255,0,0.7)', color: '#000' }}>
-            {c.n}
-          </button>
-        ))}
-        {draft && (
-          <div className="absolute top-0.5 bottom-0.5 rounded pointer-events-none"
-            style={{ left: pct(draft.start), width: `max(4px, calc(${pct(draft.end)} - ${pct(draft.start)}))`, border: '1.5px dashed #c8ff00', background: 'rgba(200,255,0,0.1)' }} />
-        )}
-        <div className="absolute -top-1 -bottom-1 w-0.5 pointer-events-none" style={{ left: pct(nowMs), background: '#fff', boxShadow: '0 0 4px rgba(0,0,0,0.8)' }} />
       </div>
     </div>
   )
