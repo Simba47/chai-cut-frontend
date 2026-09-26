@@ -144,16 +144,17 @@ function msToTimestamp(ms: number) {
 
 function buildTranscriptText(words: Word[]) {
   const lines: string[] = []
-  let lineStart = 0, line: string[] = []
+  let lineStart = 0, lineEnd = 0, line: string[] = []
   for (const w of words) {
-    if (line.length > 0 && w.start_ms - lineStart > 2000) {
-      lines.push(`[${msToTimestamp(lineStart)}] ${line.join(' ')}`)
+    if (line.length > 0 && w.start_ms - lineEnd > 2000) {
+      lines.push(`[${msToTimestamp(lineStart)}–${msToTimestamp(lineEnd)}] ${line.join(' ')}`)
       line = []
     }
     if (line.length === 0) lineStart = w.start_ms
     line.push(w.word)
+    lineEnd = w.end_ms
   }
-  if (line.length > 0) lines.push(`[${msToTimestamp(lineStart)}] ${line.join(' ')}`)
+  if (line.length > 0) lines.push(`[${msToTimestamp(lineStart)}–${msToTimestamp(lineEnd)}] ${line.join(' ')}`)
   return lines.join('\n')
 }
 
@@ -186,15 +187,21 @@ async function detectClipsByCriteria(
   transcript: string, durationMs: number, criteria: string, apiKey: string,
 ): Promise<ClipSuggestion[]> {
   const genAI = new GoogleGenerativeAI(apiKey)
-  const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' })
-  const prompt = `You are a video clip finder. Given a video transcript with timestamps and a request describing what to look for, identify up to 8 moments (30–90 seconds each) that match the request. If nothing in the transcript matches, return an empty array.
+  const model = genAI.getGenerativeModel({ model: 'gemini-2.5-pro' })
+  const prompt = `You are a strict, skeptical video clip finder. Given a video transcript with timestamps and a request describing what to look for, find moments (30–90 seconds each) that genuinely match.
+
+Be conservative. Most videos do NOT contain what any given request is looking for — that is the normal case, not an edge case. Only include a moment if a viewer watching just that clip, with no explanation from you, would immediately agree it matches. Do not stretch, do not include a moment just because it is loosely related or you can construct a justification for it — if you find yourself explaining why something "counts", it doesn't.
+
+If nothing in the transcript is a genuine, confident match, you MUST return an empty JSON array: []. Returning [] is the correct and expected answer for most (request, video) combinations — never force a result to avoid returning nothing.
 
 What to look for: ${criteria}
 
 Video duration: ${msToTimestamp(durationMs)}
 
-Transcript:
+Transcript (each line is tagged [start–end] with when that line of speech actually begins and ends):
 ${transcript.slice(0, 8000)}
+
+When picking end_ms, use the END of the last line the moment needs (the second number in that line's [start–end] tag), not its start — cutting off a punchline or reaction early ruins the clip. If in doubt, end a line or two later rather than earlier.
 
 Return ONLY a JSON array, no other text. Each element: {"title":"catchy 3-7 word title","start_ms":number,"end_ms":number,"summary":"one sentence on why this moment matches the request"}`
 
@@ -207,7 +214,9 @@ Return ONLY a JSON array, no other text. Each element: {"title":"catchy 3-7 word
   return parsed
     .map((s, i) => {
       const start_ms = Math.max(0, Math.round(s.start_ms))
-      let end_ms = Math.min(durationMs, Math.round(s.end_ms))
+      // Small trailing buffer — Gemini tends to end right at the punchline/reaction
+      // instead of a beat after it, so a cut-off ending is worse than a couple extra seconds.
+      let end_ms = Math.min(durationMs, Math.round(s.end_ms) + 2000)
       // Gemini sometimes ignores the requested 30–90s length — pad short moments
       // out instead of discarding them outright (same fix ai_edit.ts needed).
       if (end_ms - start_ms < MIN_CLIP_MS) end_ms = Math.min(durationMs, start_ms + MIN_CLIP_MS)
