@@ -1,7 +1,8 @@
 'use client'
 
 import { useRef, useState, useEffect } from 'react'
-import type { SegmentLocal, LayoutType, TextOverlay } from '@chai-cut/shared'
+import type { SegmentLocal, LayoutType, TextOverlay, FrameItem, FrameLane, FrameLayout } from '@chai-cut/shared'
+import { isFrameLayout, FRAME_TEMPLATES, frameLanesFor, frameOf, laneItems, itemBounds, MIN_ITEM_MS } from '@/modules/editor/frames'
 
 export const LAYOUT_COLORS: Record<LayoutType, string> = {
   vertical:   '#22c55e',
@@ -10,6 +11,31 @@ export const LAYOUT_COLORS: Record<LayoutType, string> = {
   spotlight:  '#ef4444',
   centered:   '#06b6d4',
   horizontal: '#ec4899',
+  // Frames share one colour so they read as "a frame" on the timeline
+  frame_single: '#2dd4bf',
+  frame_video_photo: '#2dd4bf',
+  frame_dual: '#2dd4bf',
+  frame_dual_letterbox: '#2dd4bf',
+  frame_triple: '#2dd4bf',
+}
+
+// Frame lane items: one colour per kind of media
+export const FRAME_ITEM_COLORS = { video: '#60a5fa', photo: '#34d399', text: '#f472b6', captions: '#facc15', main: '#2dd4bf' } as const
+export const frameItemColor = (it: FrameItem) => it.captions ? FRAME_ITEM_COLORS.captions : FRAME_ITEM_COLORS[it.kind]
+const FRAME_LANE_H = 26
+// Frames not under the playhead keep their lanes, shrunk to thin lines
+const THIN_H = 4, THIN_GAP = 2
+
+/**
+ * The lanes a frame shows on the timeline. A Single frame's slot is just the main video — the
+ * film strip already shows that — so it only gets a lane once something is put on it.
+ */
+function visibleLanes(seg: SegmentLocal) {
+  const frame = frameOf(seg)
+  const main = frame.main_slots ?? [0]
+  const slots = FRAME_TEMPLATES[seg.layout as FrameLayout].rows.filter(r => r.kind === 'slot').length
+  return frameLanesFor(seg).filter(r =>
+    !(slots === 1 && typeof r.lane === 'number' && main.includes(r.lane) && laneItems(frame, r.lane, seg).length === 0))
 }
 
 function isBroll(seg: SegmentLocal): boolean {
@@ -117,6 +143,19 @@ interface Props {
   activeTextOverlayId?: string | null
   onSelectTextOverlay?: (id: string) => void
   onTextOverlayUpdate?: (id: string, updates: { start_ms?: number; end_ms?: number }) => void
+  /** Frame section under the playhead: its lanes are shown under the film strip */
+  frameSeg?: SegmentLocal | null
+  /** Selected lane item, or `main:<slot>` for a slot's main video */
+  activeFrameItemId?: string | null
+  /** Bumped to point the user at a lane (e.g. after clicking "+" in the preview) */
+  laneHighlight?: { lane: FrameLane; n: number; focusPlus?: boolean; openMenu?: boolean } | null
+  videoTitles?: Record<string, string>
+  onSelectFrameItem?: (id: string | null) => void
+  onUpdateFrameItem?: (id: string, patch: Partial<Pick<FrameItem, 'start_ms' | 'end_ms' | 'source_offset_ms'>>) => void
+  /** "+" on a lane: open the add menu next to it */
+  onAddFrameItem?: (lane: FrameLane, anchor: DOMRect) => void
+  /** A thin line of another frame clicked: go there and select it */
+  onJumpToFrameItem?: (segId: string, itemId: string) => void
 }
 
 export function SegmentTimeline({
@@ -136,6 +175,14 @@ export function SegmentTimeline({
   activeTextOverlayId,
   onSelectTextOverlay,
   onTextOverlayUpdate,
+  frameSeg,
+  activeFrameItemId,
+  laneHighlight,
+  videoTitles = {},
+  onSelectFrameItem,
+  onUpdateFrameItem,
+  onAddFrameItem,
+  onJumpToFrameItem,
 }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const trackRef = useRef<HTMLDivElement>(null)
@@ -143,6 +190,21 @@ export function SegmentTimeline({
   const [viewW, setViewW] = useState(0)
   const [dragging, setDragging] = useState<string | null>(null)
   const [snapLine, setSnapLine] = useState<number | null>(null)
+  // Lane pointed at from the preview: scroll to it, focus its "+", and pulse it for a moment
+  const [pulseLane, setPulseLane] = useState<FrameLane | null>(null)
+  const lanesRef = useRef<HTMLDivElement>(null)
+  const plusRefs = useRef(new Map<string, HTMLButtonElement>())
+  useEffect(() => {
+    if (!laneHighlight) return
+    setPulseLane(laneHighlight.lane)
+    // Opening the lane's menu needs the "+" to have stopped moving, so jump instead of gliding
+    lanesRef.current?.scrollIntoView({ block: 'nearest', behavior: laneHighlight.openMenu ? 'auto' : 'smooth' })
+    const plus = plusRefs.current.get(String(laneHighlight.lane))
+    if (laneHighlight.focusPlus !== false) plus?.focus({ preventScroll: true })
+    if (laneHighlight.openMenu && plus) onAddFrameItem?.(laneHighlight.lane, plus.getBoundingClientRect())
+    const t = setTimeout(() => setPulseLane(null), 1800)
+    return () => clearTimeout(t)
+  }, [laneHighlight])
   // Latest playhead for drag handlers (their closures outlive renders)
   const nowRef = useRef(currentTimeMs)
   nowRef.current = currentTimeMs
@@ -329,6 +391,62 @@ export function SegmentTimeline({
     window.addEventListener('pointerup', up)
   }
 
+  // Frame lane items: drag the body to move, the ends to trim. Items stay inside their format
+  // and never cover a neighbour on the same lane.
+  function handleFrameItemDown(e: React.PointerEvent, item: FrameItem, mode: 'move' | 'start' | 'end') {
+    if (e.button !== 0 || !frameSeg) return
+    e.stopPropagation()
+    e.preventDefault()
+    onSelectFrameItem?.(item.id)
+    const rect = trackRef.current?.getBoundingClientRect()
+    if (!rect || duration <= 0) return
+    const frame = frameOf(frameSeg)
+    const { min, max } = itemBounds(frame, item, frameSeg)
+    // Work with the part that's actually inside the format
+    const s0 = Math.max(item.start_ms, frameSeg.start_ms), e0 = Math.min(item.end_ms, frameSeg.end_ms)
+    const len = Math.min(e0 - s0, max - min)
+    const tol = (SNAP_PX / rect.width) * duration
+    const targets = [nowRef.current, frameSeg.start_ms, frameSeg.end_ms]
+    for (const it of frame.items ?? []) if (it.id !== item.id) targets.push(it.start_ms, it.end_ms)
+    const snapT = (t: number) => {
+      let best = t, bestD = tol
+      for (const x of targets) { const d = Math.abs(x - t); if (d < bestD) { best = x; bestD = d } }
+      return best
+    }
+    const sx = e.clientX
+    let moved = false
+    setDragging(`item-${item.id}`)
+    const move = (ev: PointerEvent) => {
+      if (!moved && Math.abs(ev.clientX - sx) < 3) return
+      moved = true
+      const d = ((ev.clientX - sx) / rect.width) * duration
+      if (mode === 'move') {
+        // Snap whichever end is near something
+        const a = snapT(s0 + d), b = snapT(s0 + d + len) - len
+        const ns = Math.round(Math.max(min, Math.min(max - len, a !== s0 + d ? a : b)))
+        onUpdateFrameItem?.(item.id, { start_ms: ns, end_ms: ns + len })
+      } else if (mode === 'start') {
+        const ns = Math.round(Math.max(min, Math.min(e0 - MIN_ITEM_MS, snapT(s0 + d))))
+        // A video keeps showing the same moment under its other end: move where it starts in the source too
+        const off = item.kind === 'video' ? { source_offset_ms: Math.max(0, (item.source_offset_ms ?? 0) + (ns - item.start_ms)) } : {}
+        onUpdateFrameItem?.(item.id, { start_ms: ns, ...off })
+        setSnapLine(ns)
+      } else {
+        const ne = Math.round(Math.min(max, Math.max(s0 + MIN_ITEM_MS, snapT(e0 + d))))
+        onUpdateFrameItem?.(item.id, { end_ms: ne })
+        setSnapLine(ne)
+      }
+    }
+    const up = () => {
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointerup', up)
+      setDragging(null)
+      setSnapLine(null)
+    }
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', up)
+  }
+
   const pct = (ms: number) => (duration > 0 ? (ms / duration) * 100 : 0)
   const playheadPct = pct(currentTimeMs)
   const byTime = [...segments].sort((a, b) => a.start_ms - b.start_ms)
@@ -475,7 +593,7 @@ export function SegmentTimeline({
             {byTime.flatMap((seg, i) => {
               const color = colorOf(seg)
               const selected = seg.id === activeSegmentId
-              const label = isBroll(seg) ? 'B-roll' : seg.layout === 'split' ? 'Split screen' : seg.layout.charAt(0).toUpperCase() + seg.layout.slice(1)
+              const label = isBroll(seg) ? 'B-roll' : isFrameLayout(seg.layout) ? `Frame · ${FRAME_TEMPLATES[seg.layout].name}` : seg.layout === 'split' ? 'Split screen' : seg.layout.charAt(0).toUpperCase() + seg.layout.slice(1)
               return (['start', 'end'] as const).map(edge => {
                 const t = edge === 'start' ? seg.start_ms : seg.end_ms
                 const key = `${edge}-${seg.id}`
@@ -508,6 +626,25 @@ export function SegmentTimeline({
               })
             })}
 
+            {/* Single frame: its slot is the main video on this strip, so its "+" sits here */}
+            {frameSeg && isFrameLayout(frameSeg.layout) && !visibleLanes(frameSeg).some(r => r.lane === 0)
+              && currentTimeMs >= frameSeg.start_ms && currentTimeMs < frameSeg.end_ms && (
+              <button
+                ref={el => { if (el) plusRefs.current.set('0', el); else plusRefs.current.delete('0') }}
+                onPointerDown={e => e.stopPropagation()}
+                onClick={e => { e.stopPropagation(); onAddFrameItem?.(0, e.currentTarget.getBoundingClientRect()) }}
+                aria-label={`Add to this frame at ${msToLabel(currentTimeMs)}`}
+                title="Add text, or a video on top of the main video"
+                className="absolute flex items-center justify-center rounded-full transition-transform hover:scale-110 focus-visible:outline-none"
+                style={{
+                  left: `${playheadPct}%`, top: STRIP_TOP + STRIP_H / 2, transform: 'translate(-50%, -50%)', width: 20, height: 20, zIndex: 41,
+                  background: '#c8ff00', color: '#000', border: '1.5px solid rgba(0,0,0,0.7)',
+                  boxShadow: pulseLane === 0 ? '0 0 0 4px rgba(200,255,0,0.35), 0 0 12px rgba(200,255,0,0.8)' : '0 1px 4px rgba(0,0,0,0.6)',
+                }}>
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3.5" strokeLinecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+              </button>
+            )}
+
             {/* Snap guide while trimming */}
             {snapLine !== null && (
               <div className="absolute top-0 bottom-0 pointer-events-none z-20" style={{ left: `${pct(snapLine)}%`, width: 1, background: 'rgb(var(--ed-fg) / 0.6)' }} />
@@ -519,6 +656,145 @@ export function SegmentTimeline({
               <div className="absolute" style={{ top: 0, bottom: 0, left: -1, width: 2, background: '#c8ff00', boxShadow: '0 0 6px rgba(200,255,0,0.7)' }} />
             </div>
           </div>
+
+
+          {/* ── Frame lanes: what each slot and the text band shows over this frame's time ── */}
+          {(() => {
+            const active = frameSeg && isFrameLayout(frameSeg.layout) ? frameSeg : null
+            const others = byTime.filter(x => isFrameLayout(x.layout) && x.id !== active?.id)
+            const activeRows = active ? visibleLanes(active) : []
+            const thinRows = Math.max(0, ...others.map(x => visibleLanes(x).length))
+            if (!activeRows.length && !thinRows) return null
+            const seg = active
+            const frame = seg ? frameOf(seg) : null
+            const main = frame?.main_slots ?? [0]
+            const inSection = !!seg && currentTimeMs >= seg.start_ms && currentTimeMs < seg.end_ms
+            const plusAt = seg ? (inSection ? currentTimeMs : seg.start_ms) : 0
+            return (
+              <div ref={lanesRef} className="relative flex flex-col pb-1.5"
+                style={{ gap: 2, paddingTop: 4, borderTop: '1px solid rgb(var(--ed-fg) / 0.05)', minHeight: 4 + thinRows * (THIN_H + THIN_GAP) + 6 }}>
+                {/* Other frames: the same lanes as thin lines (blue video, green photo, pink text) */}
+                {others.flatMap(o => {
+                  const of = frameOf(o)
+                  const om = of.main_slots ?? [0]
+                  return visibleLanes(o).flatMap((row, li) => {
+                    const top = 4 + li * (THIN_H + THIN_GAP)
+                    const bars: React.ReactNode[] = []
+                    if (row.lane !== 'band' && om.includes(row.lane)) {
+                      bars.push(
+                        <button key={`${o.id}-main-${row.lane}`} aria-label={`${row.label} · Main video, ${msToLabel(o.start_ms)}–${msToLabel(o.end_ms)}`}
+                          title={`${row.label} · Main video · ${msToLabel(o.start_ms)}–${msToLabel(o.end_ms)}`}
+                          onPointerDown={e => e.stopPropagation()}
+                          onClick={e => { e.stopPropagation(); onSeek(o.start_ms) }}
+                          className="absolute rounded-full hover:brightness-150"
+                          style={{ top, height: THIN_H, left: `${pct(o.start_ms)}%`, width: `${pct(o.end_ms - o.start_ms)}%`, background: `${FRAME_ITEM_COLORS.main}66`, zIndex: 5 }} />,
+                      )
+                    }
+                    for (const it of laneItems(of, row.lane, o)) {
+                      const from = Math.max(it.start_ms, o.start_ms), to = Math.min(it.end_ms, o.end_ms)
+                      const name = it.kind === 'video' ? (videoTitles[it.source_video_id ?? ''] ?? 'Video')
+                        : it.kind === 'photo' ? 'Photo' : it.captions ? 'Captions' : (it.text?.trim() || 'Text')
+                      bars.push(
+                        <button key={`${o.id}-${it.id}`} aria-label={`${name}, ${row.label}, ${msToLabel(from)}–${msToLabel(to)}`}
+                          title={`${name} · ${row.label} · ${msToLabel(from)}–${msToLabel(to)}`}
+                          onPointerDown={e => e.stopPropagation()}
+                          onClick={e => { e.stopPropagation(); onJumpToFrameItem?.(o.id, it.id) }}
+                          className="absolute rounded-full hover:brightness-125"
+                          style={{ top, height: THIN_H, left: `${pct(from)}%`, width: `max(4px, ${pct(to - from)}%)`, background: frameItemColor(it), zIndex: 6 }} />,
+                      )
+                    }
+                    return bars
+                  })
+                })}
+                {seg && frame && activeRows.map(row => {
+                  const laneKey = String(row.lane)
+                  const isMain = row.lane !== 'band' && main.includes(row.lane)
+                  const mainId = `main:${row.lane}`
+                  const pulsing = pulseLane === row.lane
+                  return (
+                    <div key={laneKey} className="relative" style={{ height: FRAME_LANE_H, cursor: 'pointer' }}
+                      onPointerDown={e => { onSelectFrameItem?.(null); handleTrackDrag(e) }}>
+                      {/* This frame's stretch of the lane */}
+                      <div className="absolute inset-y-0.5 pointer-events-none" style={{
+                        left: `${pct(seg.start_ms)}%`, width: `${pct(seg.end_ms - seg.start_ms)}%`, borderRadius: 5,
+                        background: pulsing ? 'rgba(200,255,0,0.12)' : 'rgb(var(--ed-fg) / 0.045)',
+                        boxShadow: pulsing ? 'inset 0 0 0 1.5px #c8ff00' : 'inset 0 0 0 1px rgb(var(--ed-fg) / 0.06)',
+                        transition: 'background 0.3s, box-shadow 0.3s',
+                      }}>
+                        <span className="absolute top-1/2 -translate-y-1/2 text-[10px] font-semibold whitespace-nowrap" style={{ left: 8, color: 'rgb(var(--ed-fg) / 0.3)' }}>
+                          {row.label}{row.lane === 'band' ? ' band' : ''}
+                        </span>
+                      </div>
+                      {/* The main video under this slot's items */}
+                      {isMain && (() => {
+                        const on = activeFrameItemId === mainId
+                        return (
+                          <div className="absolute inset-y-0.5 flex items-center overflow-hidden"
+                            onPointerDown={e => { e.stopPropagation(); onSelectFrameItem?.(mainId); handleTrackDrag(e) }}
+                            title="Main video · select it to change its sound or take it out of this slot"
+                            style={{
+                              left: `${pct(seg.start_ms)}%`, width: `${pct(seg.end_ms - seg.start_ms)}%`, borderRadius: 5,
+                              background: `${FRAME_ITEM_COLORS.main}${on ? '40' : '24'}`,
+                              boxShadow: on ? `inset 0 0 0 1.5px ${FRAME_ITEM_COLORS.main}` : `inset 2px 0 0 ${FRAME_ITEM_COLORS.main}`,
+                            }}>
+                            <span className="px-2 truncate text-[10px] font-semibold pointer-events-none" style={{ color: 'rgb(var(--ed-fg) / 0.75)' }}>{row.label} · Main video</span>
+                          </div>
+                        )
+                      })()}
+                      {/* Items */}
+                      {laneItems(frame, row.lane, seg).map(it => {
+                        const from = Math.max(it.start_ms, seg.start_ms), to = Math.min(it.end_ms, seg.end_ms)
+                        const on = it.id === activeFrameItemId
+                        const color = frameItemColor(it)
+                        const name = it.kind === 'video' ? (videoTitles[it.source_video_id ?? ''] ?? 'Video')
+                          : it.kind === 'photo' ? 'Photo'
+                          : it.captions ? 'Captions' : (it.text?.trim() || 'Text')
+                        return (
+                          <div key={it.id} className="absolute inset-y-0.5 flex items-center overflow-hidden"
+                            onPointerDown={e => handleFrameItemDown(e, it, 'move')}
+                            title={`${name} · ${msToLabel(from)}–${msToLabel(to)} · drag to move, drag the ends to trim`}
+                            style={{
+                              left: `${pct(from)}%`, width: `max(8px, ${pct(to - from)}%)`, borderRadius: 5, zIndex: on ? 3 : 2,
+                              background: `${color}${on ? '55' : '38'}`,
+                              boxShadow: on ? `inset 0 0 0 1.5px ${color}, 0 0 0 1px rgba(0,0,0,0.5)` : `inset 0 0 0 1px ${color}88`,
+                              cursor: dragging === `item-${it.id}` ? 'grabbing' : 'grab', touchAction: 'none',
+                            }}>
+                            <div className="absolute left-0 inset-y-0 w-2 cursor-col-resize z-10" style={{ background: 'rgba(0,0,0,0.25)' }}
+                              onPointerDown={e => handleFrameItemDown(e, it, 'start')} />
+                            {it.kind === 'photo' && it.image_url && (
+                              <img src={it.image_url} alt="" className="h-full w-7 object-cover shrink-0 pointer-events-none" style={{ marginLeft: 8, opacity: 0.9 }} />
+                            )}
+                            <span className="px-2.5 truncate text-[10px] font-semibold pointer-events-none" style={{ color: 'rgb(var(--ed-fg) / 0.92)' }}>
+                              {it.kind === 'text' && !it.captions ? 'T · ' : ''}{name}
+                            </span>
+                            <div className="absolute right-0 inset-y-0 w-2 cursor-col-resize z-10" style={{ background: 'rgba(0,0,0,0.25)' }}
+                              onPointerDown={e => handleFrameItemDown(e, it, 'end')} />
+                          </div>
+                        )
+                      })}
+                      {/* "+" rides on the playhead: adds from here (splitting an item that's showing) */}
+                      <button
+                        ref={el => { if (el) plusRefs.current.set(laneKey, el); else plusRefs.current.delete(laneKey) }}
+                        onPointerDown={e => e.stopPropagation()}
+                        onClick={e => { e.stopPropagation(); onAddFrameItem?.(row.lane, e.currentTarget.getBoundingClientRect()) }}
+                        aria-label={`Add to the ${row.label.toLowerCase()} ${row.lane === 'band' ? 'band' : 'slot'} at ${msToLabel(plusAt)}`}
+                        title={row.lane === 'band' ? 'Add text or captions here' : 'Add a photo, video or text here'}
+                        className="absolute top-1/2 flex items-center justify-center rounded-full transition-transform hover:scale-110 focus-visible:outline-none"
+                        style={{
+                          left: `${pct(plusAt)}%`, transform: 'translate(-50%, -50%)', width: 18, height: 18, zIndex: 41,
+                          background: '#c8ff00', color: '#000', border: '1.5px solid rgba(0,0,0,0.7)',
+                          boxShadow: pulsing ? '0 0 0 4px rgba(200,255,0,0.35), 0 0 12px rgba(200,255,0,0.8)' : '0 1px 4px rgba(0,0,0,0.6)',
+                        }}>
+                        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3.5" strokeLinecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+                      </button>
+                    </div>
+                  )
+                })}
+                {/* Playhead through the lanes */}
+                <div className="absolute top-0 bottom-0 pointer-events-none" style={{ left: `${playheadPct}%`, width: 2, marginLeft: -1, background: 'rgba(200,255,0,0.5)', zIndex: 40 }} />
+              </div>
+            )
+          })()}
 
           {/* ── Text overlay rows ─────────────────────────────────── */}
           {textOverlays.length > 0 && (

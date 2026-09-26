@@ -38,8 +38,9 @@ export const useCaptionStore = create<CaptionState & CaptionActions>()(set => ({
   retranscribeElapsed: 0,
   retranscribeError: null,
 
+  // Which letters captions use is saved with the caption style (language: 'roman' = English letters)
   hydrate: (words, style = { color: '#FFE700' }, showCaptions = false) =>
-    set({ words, captionStyle: { ...style, enabled: showCaptions }, showCaptions }),
+    set({ words, captionStyle: { ...style, enabled: showCaptions }, showCaptions, romanize: style.language === 'roman' }),
 
   setWords: (words) => set({ words }),
   updateWord: (id, text, field = 'word') => set(s => ({
@@ -48,7 +49,7 @@ export const useCaptionStore = create<CaptionState & CaptionActions>()(set => ({
   updateCaptionStyle: (updates) => set(s => ({ captionStyle: { ...s.captionStyle, ...updates } })),
   setCaptionTextCase: (tc) => set({ captionTextCase: tc }),
   setShowCaptions: (show) => set(s => ({ showCaptions: show, captionStyle: { ...s.captionStyle, enabled: show } })),
-  setRomanize: (v) => set({ romanize: v }),
+  setRomanize: (v) => set(s => ({ romanize: v, captionStyle: { ...s.captionStyle, language: v ? 'roman' : 'auto' } })),
   setRetranscribing: (v) => set({ retranscribing: v }),
   setRetranscribeElapsed: (n) => set({ retranscribeElapsed: n }),
   setRetranscribeError: (e) => set({ retranscribeError: e }),

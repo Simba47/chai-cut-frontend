@@ -1,10 +1,11 @@
 'use client'
 
 import { create } from 'zustand'
-import type { BoxKeyframe, SegmentLocal, CropBoxLocal, LayoutType } from '@chai-cut/shared'
+import type { BoxKeyframe, SegmentLocal, CropBoxLocal, LayoutType, FrameBand, FrameItem, FrameLane, FrameSettings } from '@chai-cut/shared'
 import { LAYOUT_SLOT_COUNT } from '@chai-cut/shared'
 import { getBoxPositionAtLerp, type BoxPosition } from '@/lib/interpolation'
 import { makeBox, defaultCropForSlot } from './utils'
+import { isFrameLayout, DEFAULT_BAND, defaultFrame, frameOf, placeNewItem } from './frames'
 
 export type KeyframeMap = Record<string, BoxKeyframe[]>  // boxId → sorted keyframes
 
@@ -35,6 +36,16 @@ interface EditorActions {
   splitAtMs: (segId: string, tMs: number, getPos: (boxId: string, t: number) => BoxPosition) => string | null
   /** Change a crop position's layout; every slot restarts from its default framing. */
   applyLayout: (segId: string, layout: LayoutType, videoAR?: number) => void
+  /** Frame slots: change what a slot shows (source video, photo, motion, volume, mute) */
+  updateSlot: (segId: string, boxId: string, patch: Partial<Pick<CropBoxLocal, 'source_video_id' | 'source_offset_ms' | 'image_path' | 'image_url' | 'image_motion' | 'volume' | 'muted'>>) => void
+  /** Frame layouts: change the letterbox band's look */
+  updateFrameBand: (segId: string, patch: Partial<FrameBand>) => void
+  /** Frame layouts: main video's slots and sound */
+  updateFrame: (segId: string, patch: Partial<Pick<FrameSettings, 'main_slots' | 'main_volume' | 'main_muted'>>) => void
+  /** Put something on a frame lane at time t (see placeNewItem). Returns its id, or null if there's no room. */
+  addFrameItem: (segId: string, lane: FrameLane, t: number, item: Omit<FrameItem, 'id' | 'lane' | 'start_ms' | 'end_ms'>) => string | null
+  updateFrameItem: (segId: string, itemId: string, patch: Partial<Omit<FrameItem, 'id'>>) => void
+  removeFrameItem: (segId: string, itemId: string) => void
   /** Move one edge of a format. Formats are independent: the neighbour never moves, the edge
    *  just stops at it (no overlap). Uncovered time uses the default framing. */
   setSegmentEdge: (segId: string, edge: 'start' | 'end', tMs: number, durationMs: number) => void
@@ -68,6 +79,29 @@ function withStart(seg: SegmentLocal, start_ms: number): SegmentLocal {
     ...seg,
     start_ms,
     crop_boxes: seg.crop_boxes.map(b => b.source_video_id ? b : { ...b, source_offset_ms: Math.max(0, b.source_offset_ms + delta) }),
+  }
+}
+
+// Frame items that reach an edge of their frame stay attached to it when that edge is dragged
+// (a ◆ key or a join), so a video filling "the rest of the frame" keeps filling it. A video's
+// start in its source moves too, so what's on screen doesn't jump.
+function withFrameEdges(prev: SegmentLocal, next: SegmentLocal): SegmentLocal {
+  const items = next.frame?.items
+  if (!items?.length || (prev.start_ms === next.start_ms && prev.end_ms === next.end_ms)) return next
+  return {
+    ...next,
+    frame: {
+      ...next.frame,
+      items: items.map(it => {
+        let out = it
+        if (next.start_ms !== prev.start_ms && it.start_ms <= prev.start_ms + 1 && it.end_ms > prev.start_ms) {
+          const d = next.start_ms - it.start_ms
+          out = { ...out, start_ms: next.start_ms, ...(it.kind === 'video' ? { source_offset_ms: Math.max(0, (it.source_offset_ms ?? 0) + d) } : {}) }
+        }
+        if (next.end_ms !== prev.end_ms && it.end_ms >= prev.end_ms - 1 && it.start_ms < prev.end_ms) out = { ...out, end_ms: next.end_ms }
+        return out
+      }),
+    },
   }
 }
 
@@ -119,11 +153,11 @@ export const useEditorStore = create<EditorState & EditorActions>()((set, get) =
     if (edge === 'start') {
       const t = Math.round(Math.max(prev?.end_ms ?? 0, Math.min(seg.end_ms - MIN_FORMAT_MS, tMs)))
       if (t === seg.start_ms) return s
-      return { segments: s.segments.map(x => x.id === seg.id ? withStart(x, t) : x) }
+      return { segments: s.segments.map(x => x.id === seg.id ? withFrameEdges(x, withStart(x, t)) : x) }
     }
     const t = Math.round(Math.min(next?.start_ms ?? durationMs, Math.max(seg.start_ms + MIN_FORMAT_MS, tMs)))
     if (t === seg.end_ms) return s
-    return { segments: s.segments.map(x => x.id === seg.id ? { ...x, end_ms: t } : x) }
+    return { segments: s.segments.map(x => x.id === seg.id ? withFrameEdges(x, { ...x, end_ms: t }) : x) }
   }),
 
   moveJunction: (leftId, rightId, tMs) => set(s => {
@@ -132,7 +166,7 @@ export const useEditorStore = create<EditorState & EditorActions>()((set, get) =
     const t = Math.round(Math.max(left.start_ms + MIN_FORMAT_MS, Math.min(right.end_ms - MIN_FORMAT_MS, tMs)))
     if (t === left.end_ms && t === right.start_ms) return s
     return {
-      segments: s.segments.map(x => x.id === leftId ? { ...x, end_ms: t } : x.id === rightId ? withStart(x, t) : x),
+      segments: s.segments.map(x => x.id === leftId ? withFrameEdges(x, { ...x, end_ms: t }) : x.id === rightId ? withFrameEdges(x, withStart(x, t)) : x),
     }
   }),
 
@@ -146,7 +180,10 @@ export const useEditorStore = create<EditorState & EditorActions>()((set, get) =
     set(s => {
       const before = [...s.segments].filter(x => x.start_ms < start).sort((a, b) => b.start_ms - a.start_ms)[0]
       return {
-        segments: [...s.segments, { id, start_ms: start, end_ms: end, layout, sort_order: (before?.sort_order ?? -1) + 0.5, crop_boxes }]
+        segments: [...s.segments, {
+          id, start_ms: start, end_ms: end, layout, sort_order: (before?.sort_order ?? -1) + 0.5, crop_boxes,
+          frame: isFrameLayout(layout) ? defaultFrame(layout) : null,
+        }]
           .sort((a, b) => a.start_ms - b.start_ms),
         keyframes: withBoxes(s.keyframes, crop_boxes),
       }
@@ -161,13 +198,22 @@ export const useEditorStore = create<EditorState & EditorActions>()((set, get) =
     // Going to Vertical keeps the crop centred where the user had already framed the subject
     const prev = first ? getBoxPositionAtLerp(seg.start_ms, s.keyframes[first.id] ?? first.keyframes) : null
     const centerX = layout === 'vertical' && prev && seg.layout !== 'horizontal' ? prev.x + prev.w / 2 : undefined
+    const toFrame = isFrameLayout(layout)
     const crop_boxes: CropBoxLocal[] = Array.from({ length: LAYOUT_SLOT_COUNT[layout] }, (_, i) => {
       const keyframes = [{ t_ms: seg.start_ms, ...defaultCropForSlot(layout, i, videoAR, i === 0 ? centerX : undefined) }]
       const old = seg.crop_boxes[i]
-      return old ? { ...old, keyframes } : makeBox(i, layout, seg.start_ms, keyframes)
+      // Frame crop boxes always frame the main video — other media sits on the frame's lanes
+      const kept = old && toFrame
+        ? { ...old, source_video_id: null, source_offset_ms: seg.start_ms, image_path: null, image_url: null, image_motion: null }
+        : old ? { ...old, image_path: null, image_url: null, image_motion: null } : old
+      // New boxes show the main video from this format's own point in it
+      return kept ? { ...kept, keyframes } : { ...makeBox(i, layout, seg.start_ms, keyframes), source_offset_ms: seg.start_ms, volume: 1, muted: false }
     })
+    // Switching between frames keeps what's on the lanes the new frame still has. Leaving frames
+    // keeps the frame settings unused, so switching back brings them back.
+    const frame = toFrame ? defaultFrame(layout, isFrameLayout(seg.layout) ? frameOf(seg) : seg.frame) : seg.frame ?? null
     return {
-      segments: s.segments.map(x => x.id === segId ? { ...x, layout, crop_boxes } : x),
+      segments: s.segments.map(x => x.id === segId ? { ...x, layout, crop_boxes, frame } : x),
       keyframes: withBoxes(s.keyframes, crop_boxes),
     }
   }),
@@ -197,13 +243,66 @@ export const useEditorStore = create<EditorState & EditorActions>()((set, get) =
       return {
         segments: [
           ...s.segments.map(s => s.id === segId ? { ...s, end_ms: tMs } : s),
-          { id: newId, start_ms: tMs, end_ms: seg.end_ms, layout: seg.layout, sort_order: seg.sort_order + 0.5, crop_boxes: newBoxes },
+          {
+            id: newId, start_ms: tMs, end_ms: seg.end_ms, layout: seg.layout, sort_order: seg.sort_order + 0.5, crop_boxes: newBoxes,
+            // Each half keeps its own copy of the frame; items are cut to each half's range when shown
+            frame: seg.frame ? { ...seg.frame, items: seg.frame.items?.map(it => ({ ...it, id: crypto.randomUUID() })) } : seg.frame,
+          },
         ].sort((a, b) => a.sort_order - b.sort_order),
         keyframes: withBoxes(s.keyframes, newBoxes),
       }
     })
     return newId
   },
+
+  updateSlot: (segId, boxId, patch) => set(s => ({
+    segments: s.segments.map(seg => seg.id !== segId ? seg : {
+      ...seg,
+      crop_boxes: seg.crop_boxes.map(b => b.id === boxId ? { ...b, ...patch } : b),
+    }),
+  })),
+
+  updateFrameBand: (segId, patch) => set(s => ({
+    segments: s.segments.map(seg => seg.id !== segId ? seg : {
+      ...seg,
+      frame: { ...seg.frame, band: { ...DEFAULT_BAND, ...seg.frame?.band, ...patch } },
+    }),
+  })),
+
+  updateFrame: (segId, patch) => set(s => ({
+    segments: s.segments.map(seg => seg.id !== segId ? seg : { ...seg, frame: { ...frameOf(seg), ...patch } }),
+  })),
+
+  addFrameItem: (segId, lane, t, item) => {
+    const seg = get().segments.find(x => x.id === segId)
+    if (!seg || !isFrameLayout(seg.layout)) return null
+    const frame = frameOf(seg)
+    const spot = placeNewItem(frame, lane, t, seg)
+    if (!spot) return null
+    const id = crypto.randomUUID()
+    const items = (frame.items ?? [])
+      .filter(it => it.id !== spot.replace)
+      .map(it => it.id === spot.trim?.id ? { ...it, end_ms: spot.trim.end_ms } : it)
+    items.push({ ...item, id, lane, start_ms: spot.start_ms, end_ms: spot.end_ms })
+    set(s => ({ segments: s.segments.map(x => x.id === segId ? { ...x, frame: { ...frame, items } } : x) }))
+    return id
+  },
+
+  updateFrameItem: (segId, itemId, patch) => set(s => ({
+    segments: s.segments.map(seg => {
+      if (seg.id !== segId) return seg
+      const frame = frameOf(seg)
+      return { ...seg, frame: { ...frame, items: (frame.items ?? []).map(it => it.id === itemId ? { ...it, ...patch } : it) } }
+    }),
+  })),
+
+  removeFrameItem: (segId, itemId) => set(s => ({
+    segments: s.segments.map(seg => {
+      if (seg.id !== segId) return seg
+      const frame = frameOf(seg)
+      return { ...seg, frame: { ...frame, items: (frame.items ?? []).filter(it => it.id !== itemId) } }
+    }),
+  })),
 
   updateBoxSource: (segId, boxId, source_video_id, source_offset_ms) => set(s => ({
     segments: s.segments.map(seg => seg.id !== segId ? seg : {

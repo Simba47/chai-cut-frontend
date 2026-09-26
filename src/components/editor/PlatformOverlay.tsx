@@ -29,6 +29,9 @@ export const PLATFORM_SAFE: Record<Exclude<Platform, 'off'>, SafeZone> = {
   youtube:   { name: 'YouTube Shorts', top: 0.07, bottom: 0.13, right: 0.14, rightFrom: 0.51, edge: 0.035 },
 }
 
+// "Keep clear" red, sampled from the platform-layout reference design (its label pills)
+const KEEP_CLEAR_RED = '#F0395B'
+
 const shadow = 'drop-shadow(0 1px 1.5px rgba(0,0,0,0.55))'
 const TEXT: React.CSSProperties = { color: '#fff', textShadow: '0 1px 2px rgba(0,0,0,0.6)', lineHeight: 1.15, whiteSpace: 'nowrap' }
 
@@ -80,17 +83,36 @@ function Avatar({ size, ring = false, grad }: { size: number; ring?: boolean; gr
   return <span style={{ display: 'block', width: `${size}cqw`, height: `${size}cqw`, borderRadius: '50%', background: grad, border: ring ? '0.4cqw solid rgba(255,255,255,0.9)' : 'none', flexShrink: 0 }} />
 }
 
-/** Dim the area the app covers and outline the (L-shaped) safe area */
+/**
+ * Red "keep clear" areas: straight bands at the top and bottom and strips down each side (the right
+ * one covers the action buttons). What's left in the middle is the safe area.
+ */
 function SafeZoneLayer({ z }: { z: SafeZone }) {
   const H = 177.78 // 9:16 frame in a 100-wide coordinate space
-  const L = z.edge * 100, R = 100 - z.edge * 100, Rc = 100 - z.right * 100
-  const T = z.top * H, B = (1 - z.bottom) * H, Y = z.rightFrom * H
-  const safe = `M${L} ${T}H${R}V${Y}H${Rc}V${B}H${L}Z`
+  const L = z.edge * 100, R = 100 - z.right * 100
+  const T = z.top * H, B = (1 - z.bottom) * H
+  const safe = `M${L} ${T}H${R}V${B}H${L}Z`
   return (
     <svg className="absolute inset-0" width="100%" height="100%" viewBox={`0 0 100 ${H}`} preserveAspectRatio="none" aria-hidden="true">
-      <path d={`M0 0H100V${H}H0Z ${safe}`} fillRule="evenodd" fill="rgba(0,0,0,0.38)" />
-      <path d={safe} fill="none" stroke="#c8ff00" strokeOpacity="0.85" strokeWidth="1.3" strokeDasharray="4 3" vectorEffect="non-scaling-stroke" />
+      <path d={`M0 0H100V${H}H0Z ${safe}`} fillRule="evenodd" fill={KEEP_CLEAR_RED} fillOpacity="0.25" />
     </svg>
+  )
+}
+
+const PILL: React.CSSProperties = {
+  position: 'absolute', fontSize: '2.4cqw', fontWeight: 700, lineHeight: 1.2, color: '#fff', whiteSpace: 'nowrap',
+  background: KEEP_CLEAR_RED, padding: '0.5cqw 1.6cqw', borderRadius: '1.2cqw', boxShadow: '0 1px 3px rgba(0,0,0,0.4)',
+}
+
+/** Red labels naming each covered area — drawn above the app's UI so they're always readable */
+function ZoneLabels({ z }: { z: SafeZone }) {
+  return (
+    <>
+      {/* Each label rides the edge of the area it names */}
+      <span style={{ ...PILL, left: '50%', top: `${z.top * 100}%`, transform: 'translate(-50%, -50%)' }}>Top area</span>
+      <span style={{ ...PILL, left: '50%', top: `${(1 - z.bottom) * 100}%`, transform: 'translate(-50%, -50%)' }}>Bottom area</span>
+      <span style={{ ...PILL, right: `${(z.right / 2) * 100}%`, top: `${z.rightFrom * 100}%`, transform: 'translate(50%, -50%)', fontSize: '2.2cqw', padding: '0.5cqw 1.2cqw' }}>Buttons</span>
+    </>
   )
 }
 
@@ -184,6 +206,7 @@ export function PlatformOverlay({ platform }: { platform: Platform }) {
       style={{ pointerEvents: 'none', containerType: 'inline-size', borderRadius: 10, zIndex: 20, fontFamily: 'Roboto, "Segoe UI", -apple-system, BlinkMacSystemFont, sans-serif' }}>
       <SafeZoneLayer z={PLATFORM_SAFE[platform]} />
       {platform === 'instagram' ? <Instagram /> : <YouTube />}
+      <ZoneLabels z={PLATFORM_SAFE[platform]} />
     </div>
   )
 }
