@@ -9,6 +9,8 @@ interface Props {
   onInsertVideo: (videoId: string) => void
   onInsertImage: (storagePath: string, url: string) => void
   onClose: () => void
+  /** Which tab to open on (e.g. photos when filling a frame's photo slot) */
+  initialTab?: 'videos' | 'upload' | 'image'
 }
 
 type Tab = 'videos' | 'upload' | 'image'
@@ -19,8 +21,8 @@ function msToLabel(ms: number) {
   return `${m}:${String(s % 60).padStart(2, '0')}`
 }
 
-export function MediaPickerModal({ clipId, atMs, onInsertVideo, onInsertImage, onClose }: Props) {
-  const [tab, setTab] = useState<Tab>('videos')
+export function MediaPickerModal({ clipId, atMs, onInsertVideo, onInsertImage, onClose, initialTab }: Props) {
+  const [tab, setTab] = useState<Tab>(initialTab ?? 'videos')
   const [videos, setVideos] = useState<Video[]>([])
   const [loadingVideos, setLoadingVideos] = useState(true)
 

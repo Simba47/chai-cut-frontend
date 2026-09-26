@@ -5,7 +5,68 @@ export type ClipStatus = 'draft' | 'rendering' | 'done' | 'failed'
 export type JobType = 'transcribe' | 'render'
 export type JobStatus = 'queued' | 'processing' | 'done' | 'failed'
 export type SourceType = 'upload' | 'link'
-export type LayoutType = 'vertical' | 'split' | 'trio' | 'spotlight' | 'centered' | 'horizontal'
+export type FrameLayout = 'frame_single' | 'frame_video_photo' | 'frame_dual' | 'frame_dual_letterbox' | 'frame_triple'
+export type LayoutType = 'vertical' | 'split' | 'trio' | 'spotlight' | 'centered' | 'horizontal' | FrameLayout
+/** How a photo slot moves over its format's duration */
+export type SlotMotion = 'none' | 'zoom_in' | 'zoom_out' | 'pan_left' | 'pan_right'
+
+/** Letterbox band of a frame: a solid strip holding text */
+export interface FrameBand {
+  text: string
+  bg: string
+  color: string
+  /** Font size in px at 1080 wide */
+  size: number
+  font?: string | null
+}
+
+/** A lane of a frame: one of its media slots (0 = top) or the letterbox band */
+export type FrameLane = number | 'band'
+export type FrameItemKind = 'video' | 'photo' | 'text'
+
+/**
+ * Something placed on a frame lane for part of the format's time. A lane can hold several items
+ * one after another (a slideshow); they never overlap. Times are clip time, like text overlays,
+ * and anything outside the format's own range isn't shown.
+ */
+export interface FrameItem {
+  id: string
+  lane: FrameLane
+  kind: FrameItemKind
+  start_ms: number
+  end_ms: number
+  // Video: another uploaded video, starting at source_offset_ms at start_ms (loops if shorter)
+  source_video_id?: string | null
+  source_offset_ms?: number
+  /** This video's share in the audio mix (0–1) */
+  volume?: number
+  muted?: boolean
+  // Photo
+  image_path?: string | null
+  /** Signed URL for image_path — preview only, never saved */
+  image_url?: string | null
+  motion?: SlotMotion | null
+  // Text (a card in a slot, or text on the band)
+  text?: string
+  bg?: string
+  color?: string
+  size?: number
+  font?: string | null
+  /** Band only: show the clip's captions here instead of fixed text */
+  captions?: boolean
+}
+
+/** Extra settings of a format that uses a frame layout */
+export interface FrameSettings {
+  /** The band's look when nothing is on it, and the default style for new text */
+  band?: FrameBand
+  /** Slots that show the main video underneath their items (default: the top slot) */
+  main_slots?: number[]
+  /** The main video's sound in this frame */
+  main_volume?: number
+  main_muted?: boolean
+  items?: FrameItem[]
+}
 export type AnimationType = 'karaoke' | 'fade' | 'none'
 export type TransitionType = 'cut' | 'fade' | 'wipe'
 
@@ -59,14 +120,26 @@ export interface Segment {
   end_ms: number
   layout: LayoutType
   sort_order: number
+  /** Frame layouts only: letterbox band settings */
+  frame?: FrameSettings | null
 }
 
 export interface CropBox {
   id: string
   segment_id: string
   slot_index: number
+  /** null = the clip's main video */
   source_video_id: string | null
+  /** Main video: where in it this format starts. Other video: where in that video to start. */
   source_offset_ms: number
+  /** Frame slots: a photo instead of a video (storage path) */
+  image_path?: string | null
+  /** Signed URL for image_path — preview only, never saved */
+  image_url?: string | null
+  image_motion?: SlotMotion | null
+  /** Frame slots: this video's share in the audio mix (0–1) */
+  volume?: number
+  muted?: boolean
 }
 
 export interface BoxKeyframe {
@@ -88,6 +161,7 @@ export interface CaptionStyle {
   position: string | null
   position_y: number | null
   animation: AnimationType
+  /** Letters the captions are shown in: 'roman' = English letters (e.g. Tenglish); 'auto'/null = the spoken language's own script */
   language: string | null
   translated_from_language: string | null
   timing_offset_ms: number | null
@@ -194,4 +268,9 @@ export const LAYOUT_SLOT_COUNT: Record<LayoutType, number> = {
   spotlight: 1,
   centered: 1,
   horizontal: 1,
+  frame_single: 1,
+  frame_video_photo: 2,
+  frame_dual: 2,
+  frame_dual_letterbox: 2,
+  frame_triple: 3,
 }
