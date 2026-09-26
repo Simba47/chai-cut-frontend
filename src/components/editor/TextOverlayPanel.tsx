@@ -36,11 +36,8 @@ export function TextOverlayPanel({ overlays, currentTimeMs, clipDurationMs, onAd
 
   return (
     <div className="flex flex-col gap-3 p-4">
-      <p className="text-xs font-semibold uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>
-        Text overlays
-        <span className="ml-2 normal-case font-normal" style={{ color: 'rgba(255,255,255,0.2)', letterSpacing: 0 }}>
-          — drag on preview to position · drag bar below to adjust timing
-        </span>
+      <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+        Text appears at the playhead for 3 seconds. Drag it on the preview to position it, and drag its bar on the timeline to change timing.
       </p>
 
       {/* Add */}
@@ -51,14 +48,14 @@ export function TextOverlayPanel({ overlays, currentTimeMs, clipDurationMs, onAd
           onChange={e => setNewText(e.target.value)}
           onKeyDown={e => e.key === 'Enter' && handleAdd()}
           placeholder="Type text and press Enter…"
-          className="flex-1 px-3 py-2 rounded-lg text-sm text-white outline-none"
-          style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)' }}
+          className="flex-1 px-3 py-2 rounded-lg text-sm text-[var(--ed-text)] outline-none"
+          style={{ background: 'rgb(var(--ed-fg) / 0.06)', border: '1px solid rgb(var(--ed-fg) / 0.1)' }}
         />
         <button
           onClick={handleAdd}
           disabled={!newText.trim()}
-          className="px-4 py-2 rounded-lg text-sm font-semibold text-white disabled:opacity-40"
-          style={{ background: '#8b5cf6' }}
+          className="px-4 py-2 rounded-lg text-sm font-semibold disabled:opacity-40"
+          style={{ background: 'var(--accent)', color: '#000' }}
         >
           Add
         </button>
@@ -66,26 +63,26 @@ export function TextOverlayPanel({ overlays, currentTimeMs, clipDurationMs, onAd
 
       {/* List */}
       {overlays.length === 0 ? (
-        <p className="text-xs" style={{ color: 'rgba(255,255,255,0.25)' }}>No text overlays yet. Type above and press Add.</p>
+        <p className="text-xs" style={{ color: 'rgb(var(--ed-fg) / 0.25)' }}>No text yet.</p>
       ) : (
         <div className="flex flex-col gap-2">
           {overlays.map(o => (
             <div
               key={o.id}
               className="flex flex-col gap-2 px-3 py-2.5 rounded-lg"
-              style={{ background: 'rgba(139,92,246,0.08)', border: '1px solid rgba(139,92,246,0.2)' }}
+              style={{ background: 'rgb(var(--ed-fg) / 0.04)', border: '1px solid rgb(var(--ed-fg) / 0.08)' }}
             >
               {/* Row 1: color + text + size + delete */}
               <div className="flex items-center gap-2">
-                <label style={{ position: 'relative', width: 22, height: 22, borderRadius: '50%', background: o.color ?? '#fff', flexShrink: 0, cursor: 'pointer', border: '2px solid rgba(255,255,255,0.15)' }}>
+                <label style={{ position: 'relative', width: 22, height: 22, borderRadius: '50%', background: o.color ?? '#fff', flexShrink: 0, cursor: 'pointer', border: '2px solid rgb(var(--ed-fg) / 0.15)' }}>
                   <input type="color" value={o.color ?? '#ffffff'} onChange={e => onUpdate(o.id, { color: e.target.value })}
                     style={{ position: 'absolute', inset: 0, opacity: 0, cursor: 'pointer', width: '100%', height: '100%' }} />
                 </label>
                 <input
                   type="text" value={o.text} onChange={e => onUpdate(o.id, { text: e.target.value })}
-                  className="flex-1 bg-transparent text-sm text-white outline-none min-w-0"
+                  className="flex-1 bg-transparent text-sm text-[var(--ed-text)] outline-none min-w-0"
                 />
-<button onClick={() => onRemove(o.id)} className="shrink-0 text-xs" style={{ color: '#ef4444' }}>✕</button>
+                <button onClick={() => onRemove(o.id)} aria-label="Remove text" title="Remove text" className="shrink-0 w-6 h-6 flex items-center justify-center rounded-md text-xs transition-colors hover:bg-[rgb(var(--ed-fg)/0.1)]" style={{ color: 'rgb(var(--ed-fg) / 0.45)' }}>✕</button>
               </div>
 
               {/* Row 2: font picker */}
