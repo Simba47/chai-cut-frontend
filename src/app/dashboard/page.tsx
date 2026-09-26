@@ -4,10 +4,10 @@ import './dashboard.css'
 import { useState, useEffect, useRef, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
-import { useSession, signOut } from 'next-auth/react'
 import type { Video } from '@chai-cut/shared'
 import { ACCEPTED_VIDEO_EXTENSIONS, MAX_UPLOAD_BYTES } from '@chai-cut/shared'
 import { Breadcrumbs } from '@/components/ui/breadcrumbs'
+import { AccountMenu } from '@/components/ui/account-menu'
 import { FillButtonContent } from '@/components/ui/fill-button'
 
 type DashVideo = Video & { video_url?: string | null; clip_count?: number }
@@ -43,7 +43,6 @@ function useDismiss(open: boolean, close: () => void) {
 
 export default function DashboardPage() {
   const router = useRouter()
-  const { data: session } = useSession()
   const [videos, setVideos] = useState<DashVideo[]>([])
   const [loading, setLoading] = useState(true)
   const [planInfo, setPlanInfo] = useState<PlanInfo | null>(null)
@@ -239,7 +238,7 @@ export default function DashboardPage() {
           {planInfo?.plan === 'free' && (
             <a href="/pricing" className="dash-btn-fill fill-btn fill-btn-sm"><FillButtonContent>Upgrade</FillButtonContent></a>
           )}
-          <AccountMenu email={session?.user?.email ?? ''} planInfo={planInfo} />
+          <AccountMenu planInfo={planInfo} />
         </div>
       </nav>
 
@@ -421,28 +420,6 @@ function SortMenu({ value, onChange }: { value: SortKey; onChange: (v: SortKey) 
             </li>
           ))}
         </ul>
-      )}
-    </div>
-  )
-}
-
-function AccountMenu({ email, planInfo }: { email: string; planInfo: PlanInfo | null }) {
-  const [open, setOpen] = useState(false)
-  const ref = useDismiss(open, () => setOpen(false))
-  return (
-    <div ref={ref} style={{ position: 'relative' }}>
-      <button className="dash-avatar" aria-label="Account menu" aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen(o => !o)}>
-        {email.charAt(0) || '?'}
-      </button>
-      {open && (
-        <div className="dash-popover" role="menu" style={{ minWidth: 220 }}>
-          <div className="dash-popover-head">
-            <p>{email}</p>
-            {planInfo && <p>{planInfo.planName} plan · {planInfo.usage.videos}/{planInfo.maxVideos} videos</p>}
-          </div>
-          <a href="/pricing" className="dash-menu-item" role="menuitem">Plans &amp; billing</a>
-          <button className="dash-menu-item" role="menuitem" onClick={() => signOut({ callbackUrl: '/login' })}>Sign out</button>
-        </div>
       )}
     </div>
   )
