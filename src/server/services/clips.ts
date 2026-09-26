@@ -1,5 +1,5 @@
 import sql from '@/lib/db'
-import type { SegmentLocal, BoxKeyframeLocal, CaptionStyle, TextOverlay, AudioTrack, Transition, Overlay } from '@chai-cut/shared'
+import type { SegmentLocal, BoxKeyframeLocal, CaptionStyle, TextOverlay, AudioTrack, Transition, Overlay, FrameSettings, FrameItem } from '@chai-cut/shared'
 
 interface CreateClipInput {
   video_id: string; start_ms?: number; end_ms?: number; layout?: string; title?: string
@@ -75,10 +75,15 @@ export async function saveClip(userId: string, clipId: string, body: SaveClipInp
 
   const segRows = sortedSegments.map((seg, si) => ({
     id: seg.id, clip_id: clipId, start_ms: ms(seg.start_ms), end_ms: ms(seg.end_ms), layout: seg.layout, sort_order: si,
+    frame: seg.frame ? sql.json(cleanFrame(seg.frame) as never) : null,
   }))
   const boxRows = sortedSegments.flatMap(seg => seg.crop_boxes.map(box => ({
     id: box.id, segment_id: seg.id, slot_index: box.slot_index,
     source_video_id: box.source_video_id ?? null, source_offset_ms: ms(box.source_offset_ms ?? 0),
+    image_path: box.image_path ?? null,
+    image_motion: box.image_motion && motions.includes(box.image_motion) ? box.image_motion : null,
+    volume: Math.max(0, Math.min(1, Number(box.volume ?? 1))),
+    muted: !!box.muted,
   })))
   const keyframeRows = sortedSegments.flatMap(seg => seg.crop_boxes.flatMap(box =>
     (box.keyframes ?? []).map((kf: BoxKeyframeLocal) => ({ box_id: box.id, t_ms: ms(kf.t_ms), x: kf.x, y: kf.y, w: kf.w, h: kf.h }))))
@@ -95,7 +100,7 @@ export async function saveClip(userId: string, clipId: string, body: SaveClipInp
       q.push(tx`
         INSERT INTO segments ${tx(segRows)}
         ON CONFLICT (id) DO UPDATE SET start_ms = EXCLUDED.start_ms, end_ms = EXCLUDED.end_ms,
-          layout = EXCLUDED.layout, sort_order = EXCLUDED.sort_order
+          layout = EXCLUDED.layout, sort_order = EXCLUDED.sort_order, frame = EXCLUDED.frame
       `)
       // Formats removed in the editor (cascades to their crop boxes and keyframes)
       q.push(tx`DELETE FROM segments WHERE clip_id = ${clipId} AND id != ALL(${segIds})`)
@@ -104,7 +109,9 @@ export async function saveClip(userId: string, clipId: string, body: SaveClipInp
       q.push(tx`
         INSERT INTO crop_boxes ${tx(boxRows)}
         ON CONFLICT (id) DO UPDATE SET segment_id = EXCLUDED.segment_id, slot_index = EXCLUDED.slot_index,
-          source_video_id = EXCLUDED.source_video_id, source_offset_ms = EXCLUDED.source_offset_ms
+          source_video_id = EXCLUDED.source_video_id, source_offset_ms = EXCLUDED.source_offset_ms,
+          image_path = EXCLUDED.image_path, image_motion = EXCLUDED.image_motion,
+          volume = EXCLUDED.volume, muted = EXCLUDED.muted
       `)
       // Boxes left over from a layout with more slots (e.g. Split → Vertical)
       q.push(tx`DELETE FROM crop_boxes WHERE segment_id = ANY(${segIds}) AND id != ALL(${boxIds})`)
@@ -169,4 +176,42 @@ export async function reeditClip(userId: string, clipId: string) {
   if (!clip) throw Object.assign(new Error('Clip not found'), { status: 404 })
   if (clip.user_id !== userId) throw Object.assign(new Error('Forbidden'), { status: 403 })
   await sql`UPDATE clips SET status = 'draft', output_url = NULL WHERE id = ${clipId}`
+}
+
+const motions = ['none', 'zoom_in', 'zoom_out', 'pan_left', 'pan_right']
+const hex = (v: unknown) => typeof v === 'string' && /^#[0-9a-fA-F]{6}$/.test(v) ? v : undefined
+const num = (v: unknown, lo: number, hi: number) => typeof v === 'number' && isFinite(v) ? Math.max(lo, Math.min(hi, v)) : undefined
+
+// Keep only what a frame needs from the client: known fields, sane values, and never the
+// preview-only signed image URLs (they expire; the editor signs fresh ones on load)
+function cleanFrame(frame: FrameSettings): FrameSettings {
+  const items: FrameItem[] = (frame.items ?? []).slice(0, 300).flatMap((it): FrameItem[] => {
+    if (!it || typeof it.id !== 'string' || !['video', 'photo', 'text'].includes(it.kind)) return []
+    const lane = it.lane === 'band' ? 'band' as const : num(it.lane, 0, 2)
+    const start = num(it.start_ms, 0, 1e9), end = num(it.end_ms, 0, 1e9)
+    if (lane === undefined || start === undefined || end === undefined || end <= start) return []
+    const base: FrameItem = { id: it.id.slice(0, 64), lane: lane === 'band' ? lane : Math.round(lane), kind: it.kind, start_ms: Math.round(start), end_ms: Math.round(end) }
+    if (it.kind === 'video') {
+      if (typeof it.source_video_id !== 'string') return []
+      return [{ ...base, source_video_id: it.source_video_id, source_offset_ms: Math.round(num(it.source_offset_ms, 0, 1e9) ?? 0), volume: num(it.volume, 0, 1) ?? 1, muted: !!it.muted }]
+    }
+    if (it.kind === 'photo') {
+      if (typeof it.image_path !== 'string') return []
+      return [{ ...base, image_path: it.image_path, motion: it.motion && motions.includes(it.motion) ? it.motion : 'none' }]
+    }
+    return [{
+      ...base, text: typeof it.text === 'string' ? it.text.slice(0, 500) : '', captions: !!it.captions,
+      bg: hex(it.bg), color: hex(it.color), size: num(it.size, 16, 200),
+    }]
+  })
+  return {
+    band: frame.band ? {
+      text: '', bg: hex(frame.band.bg) ?? '#000000', color: hex(frame.band.color) ?? '#ffffff',
+      size: num(frame.band.size, 16, 200) ?? 64, font: null,
+    } : undefined,
+    main_slots: Array.isArray(frame.main_slots) ? [...new Set(frame.main_slots.filter(i => Number.isInteger(i) && i >= 0 && i <= 2))] : undefined,
+    main_volume: num(frame.main_volume, 0, 1),
+    main_muted: frame.main_muted === undefined ? undefined : !!frame.main_muted,
+    items,
+  }
 }

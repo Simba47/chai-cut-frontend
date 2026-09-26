@@ -2,11 +2,13 @@
 
 import { useRef, useEffect, useCallback, useState, useMemo, useId } from 'react'
 import type { RefObject } from 'react'
-import type { SegmentLocal, Overlay, TextOverlay as TextOverlayType, CaptionStyle, TranscriptWord } from '@chai-cut/shared'
+import type { SegmentLocal, Overlay, TextOverlay as TextOverlayType, CaptionStyle, TranscriptWord, FrameItem, FrameLane } from '@chai-cut/shared'
 import type { BoxPosition } from '@/lib/interpolation'
 import type { TextCase } from './CaptionStyler'
 import { applyCase } from './CaptionStyler'
 import { normalizedSlotAspect, fitToAspect } from '@/modules/editor/utils'
+import { isFrameLayout, frameSlotLabels, frameLanesFor, frameBandShown, frameOf, itemAt, captionBandAt } from '@/modules/editor/frames'
+import type { FrameMediaPool } from '@/modules/editor/frameMedia'
 
 const BOX_COLORS = ['#22c55e', '#3b82f6', '#f59e0b']
 // What each slot becomes in the 9:16 output, top to bottom
@@ -78,11 +80,15 @@ export function VideoPreview({
             inside the box is exactly what gets exported */}
         {activeSegment && (() => {
           const layout = activeSegment.layout
-          const aspect = normalizedSlotAspect(layout, videoAR ?? undefined)
-          const count = layout === 'trio' ? 3 : layout === 'split' ? 2 : 1
-          const boxes = activeSegment.crop_boxes.slice(0, count).map(box => ({
-            box, pos: fitToAspect(getPositionAt(box.id, currentTimeMs), aspect),
-          }))
+          const aspect = normalizedSlotAspect(layout, videoAR ?? undefined, frameBandShown(activeSegment))
+          const frame = isFrameLayout(layout)
+          const count = frame ? activeSegment.crop_boxes.length : layout === 'trio' ? 3 : layout === 'split' ? 2 : 1
+          const labels = frame ? frameSlotLabels(layout) : SLOT_LABELS[layout]
+          const mainSlots = frame ? frameOf(activeSegment).main_slots ?? [0] : null
+          const boxes = activeSegment.crop_boxes.slice(0, count)
+            // In a frame only the slots showing the main video are framed on it
+            .filter(box => !mainSlots || mainSlots.includes(box.slot_index))
+            .map(box => ({ box, label: labels?.[box.slot_index] ?? String(box.slot_index + 1), pos: fitToAspect(getPositionAt(box.id, currentTimeMs), aspect) }))
           return (
             <div className="absolute inset-0" style={{ pointerEvents: 'none', zIndex: 10 }}>
               {/* One shared dim layer with a hole per box, so boxes never darken each other */}
@@ -95,14 +101,14 @@ export function VideoPreview({
                 </defs>
                 <rect x="0" y="0" width="1" height="1" fill="rgba(0,0,0,0.55)" mask={`url(#${maskId})`} />
               </svg>
-              {boxes.map(({ box, pos }, slotIdx) => (
+              {boxes.map(({ box, pos, label }, slotIdx) => (
                 <DraggableBox
                   key={box.id}
                   pos={pos}
                   aspect={aspect}
                   color={BOX_COLORS[slotIdx % BOX_COLORS.length]}
-                  isActive={box.id === activeBoxId || count === 1}
-                  label={SLOT_LABELS[layout]?.[slotIdx] ?? String(slotIdx + 1)}
+                  isActive={box.id === activeBoxId || boxes.length === 1}
+                  label={label}
                   onSelect={() => onSelectBox(activeSegment.id, box.id)}
                   onChange={newPos => onBoxChange(box.id, newPos)}
                 />
@@ -144,13 +150,147 @@ function easeInOut(t: number) {
   return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2
 }
 
+/** Cover-fit any image/video source into a rect, with an optional zoom and horizontal pan */
+function coverSource(
+  ctx: CanvasRenderingContext2D,
+  src: CanvasImageSource, sw: number, sh: number,
+  dx: number, dy: number, dw: number, dh: number,
+  zoom = 1, panX = 0,
+) {
+  if (!sw || !sh) return
+  const scale = Math.max(dw / sw, dh / sh) * zoom
+  const w = dw / scale, h = dh / scale
+  const spareX = sw - w
+  const sx = Math.max(0, Math.min(spareX, spareX / 2 + panX * spareX / 2))
+  const sy = (sh - h) / 2
+  ctx.drawImage(src, sx, sy, w, h, dx, dy, dw, dh)
+}
+
+/** Zoom and pan of a photo slot at progress p (0–1) through its format */
+function photoMotion(motion: string | null | undefined, p: number): { zoom: number; panX: number } {
+  const e = Math.max(0, Math.min(1, p))
+  switch (motion) {
+    case 'zoom_in': return { zoom: 1 + 0.15 * e, panX: 0 }
+    case 'zoom_out': return { zoom: 1.15 - 0.15 * e, panX: 0 }
+    case 'pan_left': return { zoom: 1.15, panX: 1 - 2 * e }
+    case 'pan_right': return { zoom: 1.15, panX: -1 + 2 * e }
+    default: return { zoom: 1, panX: 0 }
+  }
+}
+
+/**
+ * Line breaks for frame text. Counts characters rather than measuring, exactly like render.py's
+ * wrap_band_text, so the preview breaks lines in the same places as the export.
+ */
+function wrapFrameText(text: string, widthPx: number, sizePx: number): string[] {
+  const maxChars = Math.max(8, Math.floor((widthPx * 0.88) / Math.max(1, sizePx * 0.56)))
+  const lines: string[] = []
+  for (const para of (text || '').split('\n')) {
+    let line = ''
+    for (const word of para.split(/\s+/).filter(Boolean)) {
+      const probe = line ? `${line} ${word}` : word
+      if (line && probe.length > maxChars) { lines.push(line); line = word } else line = probe
+    }
+    lines.push(line)
+  }
+  while (lines.length && !lines[lines.length - 1]) lines.pop()
+  return lines
+}
+
+// Frame text is drawn in Montserrat Bold on export; make sure the preview has it too
+let frameFontRequested = false
+function ensureFrameFont() {
+  if (frameFontRequested || typeof document === 'undefined') return
+  frameFontRequested = true
+  const href = 'https://fonts.googleapis.com/css2?family=Montserrat:wght@700&display=swap'
+  if (document.querySelector(`link[href="${href}"]`)) return
+  const link = document.createElement('link')
+  link.rel = 'stylesheet'
+  link.href = href
+  document.head.appendChild(link)
+}
+
+/** A text item: its background filling the row, its text centred */
+function paintFrameText(ctx: CanvasRenderingContext2D, it: FrameItem, fallbackBg: string, y: number, h: number) {
+  const W = ctx.canvas.width
+  ctx.fillStyle = it.bg || fallbackBg
+  ctx.fillRect(0, y, W, h)
+  const text = it.text?.trim()
+  if (!text) return
+  ensureFrameFont()
+  const size1080 = it.size ?? 64
+  const size = Math.round((size1080 / 1080) * W)
+  // Wrap at export scale (1080 wide) so the breaks don't depend on the preview's size
+  const lines = wrapFrameText(text, 1080, size1080)
+  const lh = size * 1.2
+  ctx.save()
+  ctx.beginPath(); ctx.rect(0, y, W, h); ctx.clip()
+  ctx.font = `700 ${size}px Montserrat, ${it.font || 'sans-serif'}`
+  ctx.fillStyle = it.color || '#ffffff'
+  ctx.textAlign = 'center'
+  ctx.textBaseline = 'middle'
+  lines.forEach((ln, i) => ctx.fillText(ln, W / 2, y + h / 2 + (i - (lines.length - 1) / 2) * lh))
+  ctx.restore()
+}
+
+function paintFrame(
+  ctx: CanvasRenderingContext2D,
+  video: HTMLVideoElement,
+  seg: SegmentLocal,
+  tMs: number,
+  getPositionAt: (id: string, t: number) => BoxPosition,
+  pool: FrameMediaPool | null | undefined,
+) {
+  const W = ctx.canvas.width, H = ctx.canvas.height
+  const vW = video.videoWidth, vH = video.videoHeight
+  const frame = frameOf(seg)
+  const main = new Set(frame.main_slots ?? [0])
+  const bandBg = frame.band?.bg || '#000000'
+  for (const row of frameLanesFor(seg)) {
+    const y = Math.round(row.y * H), h = Math.round((row.y + row.h) * H) - Math.round(row.y * H)
+    const it = itemAt(frame, row.lane, tMs, seg)
+    if (row.lane === 'band') {
+      ctx.fillStyle = bandBg
+      ctx.fillRect(0, y, W, h)
+      // Captions on the band are drawn with the other captions, positioned here
+      if (it?.kind === 'text' && !it.captions) paintFrameText(ctx, it, bandBg, y, h)
+      continue
+    }
+    // Underneath: the main video if this slot shows it, otherwise an empty (dark) slot
+    ctx.fillStyle = '#111'
+    ctx.fillRect(0, y, W, h)
+    if (main.has(row.lane) && vW && vH) {
+      const box = seg.crop_boxes.find(b => b.slot_index === row.lane)
+      if (box) {
+        const p = getPositionAt(box.id, tMs)
+        coverCrop(ctx, video, p.x * vW, p.y * vH, p.w * vW, p.h * vH, 0, y, W, h)
+      }
+    }
+    if (!it) continue
+    if (it.kind === 'text') { paintFrameText(ctx, it, '#000000', y, h); continue }
+    if (it.kind === 'photo') {
+      const img = it.image_url ? pool?.image(it.image_url) : null
+      if (img && img.complete && img.naturalWidth) {
+        const from = Math.max(it.start_ms, seg.start_ms), to = Math.min(it.end_ms, seg.end_ms)
+        const m = photoMotion(it.motion, (tMs - from) / Math.max(1, to - from))
+        coverSource(ctx, img, img.naturalWidth, img.naturalHeight, 0, y, W, h, m.zoom, m.panX)
+      }
+      continue
+    }
+    const v = pool?.video(it)
+    if (v && v.readyState >= 2) coverSource(ctx, v, v.videoWidth, v.videoHeight, 0, y, W, h)
+  }
+}
+
 function paintSegment(
   ctx: CanvasRenderingContext2D,
   video: HTMLVideoElement,
   seg: SegmentLocal | null,
   tMs: number,
   getPositionAt: (id: string, t: number) => BoxPosition,
+  pool?: FrameMediaPool | null,
 ) {
+  if (seg && isFrameLayout(seg.layout)) { paintFrame(ctx, video, seg, tMs, getPositionAt, pool); return }
   const W = ctx.canvas.width, H = ctx.canvas.height
   ctx.fillStyle = '#000'
   ctx.fillRect(0, 0, W, H)
@@ -298,6 +438,8 @@ function drawCaptions(
   tMs: number,
   style: Partial<CaptionStyle>,
   textCase: TextCase,
+  /** A frame's text band showing the captions: centre them in it instead of at position_y */
+  band?: { y: number; h: number } | null,
 ) {
   const W = ctx.canvas.width, H = ctx.canvas.height
   const chunk = findCaptionChunk(chunks, tMs)
@@ -336,7 +478,9 @@ function drawCaptions(
   if (cur.length > 0) lines.push(cur)
 
   const totalH = lines.length * lineHeight
-  const yBase  = (style.position_y ?? 0.84) * H - totalH + lineHeight / 2
+  const yBase  = band
+    ? (band.y + band.h / 2) * H - totalH / 2 + lineHeight / 2
+    : (style.position_y ?? 0.84) * H - totalH + lineHeight / 2
 
   // Only do per-word karaoke when timestamps are real (not evenly distributed from a phrase split).
   // Estimated words (_est=true) have proportional-but-approximate timestamps that look wrong when highlighted.
@@ -429,6 +573,13 @@ interface OutputCanvasProps {
   onSelectTextOverlay?: (id: string | null) => void
   onDeleteTextOverlay?: (id: string) => void
   onCaptionPositionChange?: (y: number) => void
+  /** Other videos and photos shown in frame slots */
+  frameMedia?: FrameMediaPool | null
+  /** "+" on an empty frame slot or band: takes the user to that lane on the timeline */
+  onFrameLaneClick?: (lane: FrameLane) => void
+  /** Clicking a photo, video or text in a frame selects it */
+  onFrameItemClick?: (id: string) => void
+  activeFrameItemId?: string | null
 }
 
 export function OutputCanvas({
@@ -437,9 +588,11 @@ export function OutputCanvas({
   className, style, skipTransitionRef,
   words, captionStyle, captionTextCase = 'title', showCaptions = false,
   textOverlays = [], activeTextOverlayId, onTextOverlayChange, onSelectTextOverlay, onDeleteTextOverlay,
-  onCaptionPositionChange,
+  onCaptionPositionChange, frameMedia, onFrameLaneClick, onFrameItemClick, activeFrameItemId,
 }: OutputCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
+  const frameMediaRef = useRef(frameMedia)
+  frameMediaRef.current = frameMedia
 
   // Updated synchronously during render so the RAF loop always reads fresh values
   // without needing to be recreated or scheduled via useEffect.
@@ -514,8 +667,9 @@ export function OutputCanvas({
           // Caption words use absolute timestamps matching liveMs directly.
           const clipRelativeMs = Math.max(0, liveMs - clipStartMsRef.current)
 
-          // Draw the incoming segment's live frame
-          paintSegment(ctx, video, seg, clipRelativeMs, getPositionAtRef.current)
+          // Keep frame slots' own videos in step with the main player, then draw
+          frameMediaRef.current?.sync(seg, clipRelativeMs, !video.paused, video)
+          paintSegment(ctx, video, seg, clipRelativeMs, getPositionAtRef.current, frameMediaRef.current)
 
           // Composite the outgoing snapshot on top with decreasing alpha
           if (transitionStart.current !== null && snapshotRef.current) {
@@ -534,7 +688,7 @@ export function OutputCanvas({
           // Draw captions on top of the video frame
           if (showCaptionsRef.current && captionChunksRef.current.length > 0) {
             const captionLookupMs = liveMs - (captionStyleRef.current?.timing_offset_ms ?? 0)
-            drawCaptions(ctx, captionChunksRef.current, captionLookupMs, captionStyleRef.current ?? {}, captionCaseRef.current)
+            drawCaptions(ctx, captionChunksRef.current, captionLookupMs, captionStyleRef.current ?? {}, captionCaseRef.current, captionBandAt(seg, clipRelativeMs))
           }
 
           // Draw text overlays (clip-relative time)
@@ -555,6 +709,26 @@ export function OutputCanvas({
   const activeOverlays = overlays.filter(o => o.start_ms <= currentTimeMs && currentTimeMs < o.end_ms)
   const activeTextOverlays = textOverlays.filter(o => currentTimeMs >= o.start_ms && currentTimeMs < o.end_ms)
 
+  // Frame rows with nothing in them right now get a "+" that leads to their timeline lane
+  const emptyLanes = useMemo(() => {
+    if (!onFrameLaneClick || !activeSegment || !isFrameLayout(activeSegment.layout)) return []
+    const frame = frameOf(activeSegment)
+    const main = frame.main_slots ?? [0]
+    return frameLanesFor(activeSegment).filter(r =>
+      !itemAt(frame, r.lane, currentTimeMs, activeSegment) && (r.lane === 'band' || !main.includes(r.lane)))
+  }, [activeSegment, currentTimeMs, onFrameLaneClick])
+
+  // Frame rows showing an item right now: click to select it (text opens in the Text tool).
+  // No z-index on these or the "+" tiles: overlay boxes come later in the DOM and stay clickable above them.
+  const itemRows = useMemo(() => {
+    if (!onFrameItemClick || !activeSegment || !isFrameLayout(activeSegment.layout)) return []
+    const frame = frameOf(activeSegment)
+    return frameLanesFor(activeSegment).flatMap(r => {
+      const it = itemAt(frame, r.lane, currentTimeMs, activeSegment)
+      return it ? [{ ...r, item: it }] : []
+    })
+  }, [activeSegment, currentTimeMs, onFrameItemClick])
+
   return (
     <div className={className} style={{ ...style, position: 'relative', containerType: 'inline-size' }} onClick={() => onSelectTextOverlay?.(null)}>
       <canvas
@@ -563,6 +737,30 @@ export function OutputCanvas({
         height={960}
         style={{ width: '100%', height: 'auto', display: 'block' }}
       />
+      {itemRows.map(r => {
+        const on = r.item.id === activeFrameItemId
+        return (
+          <button key={r.item.id}
+            onClick={e => { e.stopPropagation(); onFrameItemClick?.(r.item.id) }}
+            aria-label={`Select the ${r.item.kind === 'text' ? 'text' : r.item.kind} in the ${r.label.toLowerCase()} ${r.lane === 'band' ? 'band' : 'slot'}`}
+            className="absolute left-0 right-0 transition-shadow hover:shadow-[inset_0_0_0_1px_rgba(255,255,255,0.35)]"
+            style={{ top: `${r.y * 100}%`, height: `${r.h * 100}%`, boxShadow: on ? 'inset 0 0 0 2px #c8ff00' : undefined }} />
+        )
+      })}
+      {emptyLanes.map(r => (
+        <button key={String(r.lane)}
+          onClick={e => { e.stopPropagation(); onFrameLaneClick?.(r.lane) }}
+          aria-label={`Add to the ${r.label.toLowerCase()} ${r.lane === 'band' ? 'band' : 'slot'} on the timeline`}
+          title="Add a photo, video or text on the timeline"
+          className="group absolute left-0 right-0 flex items-center justify-center"
+          style={{ top: `${r.y * 100}%`, height: `${r.h * 100}%` }}>
+          <span className="flex items-center gap-1.5 rounded-full transition-transform group-hover:scale-105"
+            style={{ padding: '5px 11px 5px 7px', background: 'rgba(255,255,255,0.1)', border: '1px dashed rgba(255,255,255,0.35)', color: 'rgba(255,255,255,0.85)', fontSize: 'max(10px, 3.2cqw)', fontWeight: 600 }}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+            {r.lane === 'band' ? 'Text' : 'Add'}
+          </span>
+        </button>
+      ))}
       {/* Image overlay boxes */}
       {activeOverlays.map(ov => (
         <OverlayBox

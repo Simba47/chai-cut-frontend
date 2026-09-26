@@ -9,18 +9,25 @@ import { CaptionStyler } from '@/components/editor/CaptionStyler'
 import { TextOverlayPanel } from '@/components/editor/TextOverlayPanel'
 import { MediaPickerModal } from '@/components/editor/MediaPickerModal'
 import { AccountMenu } from '@/components/editor/AccountMenu'
+import { FramesPanel } from '@/components/editor/FramesPanel'
+import { FrameTextPanel } from '@/components/editor/FrameTextPanel'
+import { useConfirm } from '@/components/editor/ConfirmDialog'
+import { FrameAddMenu, type AddChoice } from '@/components/editor/FrameAddMenu'
+import { createFrameMediaPool } from '@/modules/editor/frameMedia'
+import { FRAME_TEMPLATES, isFrameLayout, frameOf, frameLanes, frameHasBand, frameSlotLabels, emptySlotStretches, DEFAULT_BAND } from '@/modules/editor/frames'
 import { useSession, signOut } from 'next-auth/react'
 import { PlatformOverlay, PLATFORM_SAFE, type Platform } from '@/components/editor/PlatformOverlay'
 // ── Domain stores ──────────────────────────────────────────────────────────────
 import { useEditorStore, type KeyframeMap } from '@/modules/editor/store'
+import { startHistory, undo, redo, useHistory } from '@/modules/editor/history'
 import { usePlayerStore } from '@/modules/player/store'
 import { useVideoSync } from '@/modules/player/useSync'
 import { useCaptionStore } from '@/modules/captions/store'
 import { useMediaStore } from '@/modules/media/store'
 import { rowsToLocal, normalizeCoverage, uncoveredRanges, defaultCropForSlot, msToLabel } from '@/modules/editor/utils'
-import type { SegmentLocal } from '@chai-cut/shared'
+import type { SegmentLocal, FrameLayout, FrameLane, FrameItem } from '@chai-cut/shared'
 
-type Tool = 'format' | 'captions' | 'text' | 'media'
+type Tool = 'format' | 'frames' | 'captions' | 'text'
 type SaveState = 'idle' | 'saving' | 'saved' | 'error'
 
 interface SegmentRow extends Omit<Segment, never> {
@@ -63,6 +70,11 @@ const TOOLS: { id: Tool; label: string; title: string; hint: string; icon: React
     icon: <path d="M6 2v14a2 2 0 002 2h14M2 6h14a2 2 0 012 2v14" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" fill="none" />,
   },
   {
+    id: 'frames', label: 'Frames', title: 'Frames',
+    hint: 'Combine videos, photos and a text letterbox in one reel. Pick a frame for the selected format.',
+    icon: <><rect x="6" y="2.5" width="12" height="19" rx="2.5" stroke="currentColor" strokeWidth="1.8" fill="none" /><path d="M6 9.5h12M6 14.5h12" stroke="currentColor" strokeWidth="1.8" fill="none" /></>,
+  },
+  {
     id: 'captions', label: 'Captions', title: 'Captions',
     hint: 'Auto-generated from the audio. Style changes show on the preview straight away.',
     icon: <><rect x="2.5" y="5" width="19" height="14" rx="3" stroke="currentColor" strokeWidth="1.8" fill="none" /><path d="M10 10.2a2.2 2.2 0 100 3.6M17 10.2a2.2 2.2 0 100 3.6" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" fill="none" /></>,
@@ -71,11 +83,6 @@ const TOOLS: { id: Tool; label: string; title: string; hint: string; icon: React
     id: 'text', label: 'Text', title: 'Text',
     hint: 'Add titles, hooks or call-outs on top of the video.',
     icon: <path d="M5 6V4h14v2M12 4v16M9 20h6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" fill="none" />,
-  },
-  {
-    id: 'media', label: 'Media', title: 'B-roll & images',
-    hint: 'Cut away to another video, or place an image over the clip.',
-    icon: <><rect x="3" y="4" width="18" height="16" rx="3" stroke="currentColor" strokeWidth="1.8" fill="none" /><circle cx="9" cy="10" r="1.8" fill="currentColor" /><path d="M21 16l-5-5-8 9" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" fill="none" /></>,
   },
 ]
 
@@ -97,7 +104,8 @@ export function EditorShell({
     segments, keyframes, activeSegmentId, activeBoxId,
     hydrate: hydrateEditor, updateSegment, removeSegment,
     splitAtMs, updateBoxSource, insertBrollAtMs, applyLayout, setSegmentEdge, addFormat, moveJunction,
-    upsertKeyframe, setBoxKeyframes, getPositionAt,
+    upsertKeyframe, setBoxKeyframes, getPositionAt, updateFrameBand,
+    updateFrame, addFrameItem, updateFrameItem, removeFrameItem,
     setActiveSegmentId, setActiveBoxId,
   } = useEditorStore()
 
@@ -139,14 +147,20 @@ export function EditorShell({
       transitions: initialTransitions,
     })
 
-    return () => useEditorStore.getState().reset()
+    // Undo/redo records from here on: the loaded clip is the starting point
+    const stopHistory = startHistory()
+    return () => { stopHistory(); useEditorStore.getState().reset() }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Local UI state (not shared across components) ─────────────────────────────
   const [activeTextOverlayId, setActiveTextOverlayId] = useState<string | null>(null)
   const videoStatus = (clip as unknown as { video_status?: string }).video_status
+  // Captions are on their way while a caption job for this video is waiting/running (e.g. the
+  // whole-video job right after upload) and this clip doesn't have its words yet
+  const captionsPending = !!(clip as unknown as { captions_pending?: boolean }).captions_pending
+  const clipHasWords = (list: { start_ms: number }[]) => list.some(w => w.start_ms >= clip.start_ms && w.start_ms < clip.end_ms)
   const [transcribing, setTranscribing] = useState(
-    initialWords.length === 0 && videoStatus !== 'ready' && videoStatus !== 'failed'
+    !clipHasWords(initialWords) && (captionsPending || (videoStatus !== 'ready' && videoStatus !== 'failed'))
   )
   const [isFreePlan, setIsFreePlan] = useState(false)
   const [planName, setPlanName] = useState<string | null>(null)
@@ -154,8 +168,25 @@ export function EditorShell({
   const [tool, setTool] = useState<Tool>('format')
   const [optionsOpen, setOptionsOpen] = useState(true)
   const [editingTranscript, setEditingTranscript] = useState(false)
-  const [confirmReset, setConfirmReset] = useState(false)
   const [pickerAtMs, setPickerAtMs] = useState<number | null>(null)
+  // Frames: the selected lane item (or `main:<slot>`), the "+" menu, and the media picker filling a lane
+  const [activeFrameItemId, setActiveFrameItemId] = useState<string | null>(null)
+  const [laneHighlight, setLaneHighlight] = useState<{ lane: FrameLane; n: number; focusPlus?: boolean; openMenu?: boolean } | null>(null)
+  const [addMenu, setAddMenu] = useState<{ segId: string; lane: FrameLane; t: number; anchor: DOMRect } | null>(null)
+  const [framePicker, setFramePicker] = useState<{ segId: string; kind: 'video' | 'photo'; lane?: FrameLane; t?: number; replaceId?: string } | null>(null)
+  const [videoLibrary, setVideoLibrary] = useState<Record<string, { url: string; title: string }>>({})
+  const videoLibraryRef = useRef(videoLibrary)
+  videoLibraryRef.current = videoLibrary
+  const framePool = useMemo(() => createFrameMediaPool(id => videoLibraryRef.current[id]?.url), [])
+  useEffect(() => () => framePool.dispose(), [framePool])
+  async function loadVideoLibrary() {
+    const res = await fetch('/api/videos').catch(() => null)
+    if (!res?.ok) return
+    const { videos } = await res.json() as { videos: { id: string; title?: string | null; video_url?: string | null; index?: number }[] }
+    setVideoLibrary(Object.fromEntries(videos.filter(v => v.video_url).map(v => [v.id, { url: v.video_url!, title: v.title?.trim() || `Video ${v.index ?? ''}`.trim() }])))
+  }
+  useEffect(() => { loadVideoLibrary() }, [])
+  const videoTitles = useMemo(() => Object.fromEntries(Object.entries(videoLibrary).map(([id, v]) => [id, v.title])), [videoLibrary])
   const [pendingBrollMs, setPendingBrollMs] = useState<number | null>(null)
   const [clipStatus, setClipStatus] = useState<string>(clip.status)
   const [outputUrl, setOutputUrl] = useState<string | null>(clip.output_url)
@@ -230,8 +261,6 @@ export function EditorShell({
     [segments],
   )
   const uncovered = useMemo(() => uncoveredRanges(segments, clipLengthMs), [segments, clipLengthMs])
-  const brollSegments = cropPositions.filter(s => s.crop_boxes.some(b => b.source_video_id))
-  const imageOverlays = overlays.filter(o => o.type === 'image')
 
   function getVideoAR() {
     const v = videoRef.current
@@ -271,13 +300,15 @@ export function EditorShell({
     const interval = setInterval(async () => {
       const res = await fetch(`/api/transcribe/words?video_id=${videoId}`)
       if (!res.ok) return
-      const { words: newWords, video_status: vs } = await res.json()
-      if (newWords && newWords.length > 0) {
+      const { words: newWords, video_status: vs, pending } = await res.json()
+      if (newWords && clipHasWords(newWords)) {
         setWords(newWords)
         setShowCaptions(true)
         setTranscribing(false)
         clearInterval(interval)
-      } else if (vs === 'ready' || vs === 'failed') {
+      } else if (!pending && (vs === 'ready' || vs === 'failed')) {
+        // Nothing left running: show whatever exists (e.g. a clip with no speech)
+        if (newWords?.length) setWords(newWords)
         setTranscribing(false)
         clearInterval(interval)
       }
@@ -340,12 +371,6 @@ export function EditorShell({
     try { localStorage.setItem('editor.optionsOpen', String(open)) } catch { /* storage blocked */ }
   }
 
-  // Two-step reset: the button arms for 3 s, a second click confirms
-  useEffect(() => {
-    if (!confirmReset) return
-    const t = setTimeout(() => setConfirmReset(false), 3000)
-    return () => clearTimeout(t)
-  }, [confirmReset])
 
   // ── Save / export ─────────────────────────────────────────────────────────────
 
@@ -500,7 +525,8 @@ export function EditorShell({
       return
     }
     const seg = activeSegment
-    if (!seg || seg.layout === layout) return
+    // A frame already is Vertical as a format: picking Vertical keeps the frame
+    if (!seg || seg.layout === layout || formatLayoutOf(seg.layout) === layout) return
     pause()
     skipCanvasTransitionRef.current = true
     setActiveBoxId(null)
@@ -548,6 +574,160 @@ export function EditorShell({
     setBoxKeyframes(boxId, [{ t_ms: seg?.start_ms ?? 0, ...pos }])
   }
 
+  // Frames work like the Format layouts: picking one mid-frame starts a new frame at the playhead
+  // (e.g. Single 0:00–0:15, then Dual Video from 0:15), each with its own ◆ keys and lanes
+  function handleApplyFrame(layout: FrameLayout) {
+    handleLayoutChange(layout)
+  }
+  // What a frame picked now will cover (see handleLayoutChange)
+  const frameTarget = (() => {
+    const t = currentTimeMs
+    if (activeSegment) {
+      const whole = t - activeSegment.start_ms <= LAYOUT_SNAP_MS || activeSegment.end_ms - t <= LAYOUT_SNAP_MS
+      return `${msToLabel(whole ? activeSegment.start_ms : t)}–${msToLabel(activeSegment.end_ms)}`
+    }
+    if (currentGap) return `${msToLabel(t - currentGap.start_ms <= LAYOUT_SNAP_MS ? currentGap.start_ms : t)}–${msToLabel(currentGap.end_ms)}`
+    return null
+  })()
+
+  // ── Frame lanes ─────────────────────────────────────────────────────────────
+  const frameSeg = activeSegment && isFrameLayout(activeSegment.layout) ? activeSegment : null
+  // A selection belongs to the frame it was made in
+  // (a pick made in the Frames list for another frame lands once the playhead has moved there)
+  const pendingFrameSelectRef = useRef<string | null>(null)
+  useEffect(() => {
+    setActiveFrameItemId(pendingFrameSelectRef.current)
+    pendingFrameSelectRef.current = null
+    setAddMenu(null)
+  }, [frameSeg?.id])
+
+  // Text (band text, text cards, captions) is edited in the Text tool; photos, videos and the main video in Frames
+  function selectFrameItem(id: string | null, segId = frameSeg?.id) {
+    if (segId && segId !== frameSeg?.id) pendingFrameSelectRef.current = id
+    else setActiveFrameItemId(id)
+    if (!id) return
+    const seg = segments.find(x => x.id === segId)
+    const it = seg ? frameOf(seg).items?.find(x => x.id === id) : undefined
+    setTool(it?.kind === 'text' ? 'text' : 'frames')
+    toggleOptions(true)
+  }
+
+  function addToLane(segId: string, lane: FrameLane, t: number, item: Omit<FrameItem, 'id' | 'lane' | 'start_ms' | 'end_ms'>) {
+    const id = addFrameItem(segId, lane, t, item)
+    if (id) {
+      setActiveFrameItemId(id)
+      setTool(item.kind === 'text' ? 'text' : 'frames')
+      toggleOptions(true)
+    }
+    else setLaneHighlight(h => ({ lane, n: (h?.n ?? 0) + 1 }))
+    return id
+  }
+
+  // Text on a frame's band: added straight away at the playhead, then typed in the Text tool
+  function addBandText(segId: string, t: number) {
+    const seg = segments.find(x => x.id === segId)
+    if (!seg) return
+    pause()
+    const band = { ...DEFAULT_BAND, ...seg.frame?.band }
+    addToLane(segId, 'band', t, { kind: 'text', text: '', bg: band.bg, color: band.color, size: band.size })
+  }
+
+  function handleAddChoice(choice: AddChoice) {
+    if (!addMenu) return
+    const { segId, lane, t } = addMenu
+    setAddMenu(null)
+    const seg = segments.find(x => x.id === segId)
+    if (!seg) return
+    if (choice === 'photo' || choice === 'video') { setFramePicker({ segId, kind: choice, lane, t }); return }
+    // Text on the band — the band appears with its first text
+    if (choice === 'bandtext') { addBandText(segId, t); return }
+    if (choice === 'main') {
+      const main = frameOf(seg).main_slots ?? [0]
+      if (typeof lane === 'number' && !main.includes(lane)) updateFrame(segId, { main_slots: [...main, lane].sort() })
+      selectFrameItem(`main:${lane}`)
+    }
+  }
+
+  function handlePickedVideo(videoId: string) {
+    const p = framePicker
+    setFramePicker(null)
+    if (!videoLibraryRef.current[videoId]) loadVideoLibrary()
+    if (!p) return
+    if (p.replaceId) { updateFrameItem(p.segId, p.replaceId, { kind: 'video', source_video_id: videoId, source_offset_ms: 0, image_path: null, image_url: null }); return }
+    if (p.lane !== undefined) addToLane(p.segId, p.lane, p.t ?? currentTimeMs, { kind: 'video', source_video_id: videoId, source_offset_ms: 0, volume: 1, muted: false })
+  }
+
+  function handlePickedPhoto(storagePath: string, url: string) {
+    const p = framePicker
+    setFramePicker(null)
+    if (!p) return
+    if (p.replaceId) { updateFrameItem(p.segId, p.replaceId, { kind: 'photo', image_path: storagePath, image_url: url || null, source_video_id: null }); return }
+    if (p.lane !== undefined) addToLane(p.segId, p.lane, p.t ?? currentTimeMs, { kind: 'photo', image_path: storagePath, image_url: url || null, motion: 'none' })
+  }
+
+  // "+" in the preview (or an empty lane in the panel) points at the lane on the timeline.
+  // On the band it adds the text right away: it shows up on the band lane, ready to type and time.
+  function focusLane(lane: FrameLane) {
+    pause()
+    // Band: the new text's box takes the keyboard focus, so the lane's "+" doesn't.
+    // Slot: the lane's own "+" menu opens on the timeline (same video / upload video / photo).
+    setLaneHighlight(h => ({ lane, n: (h?.n ?? 0) + 1, focusPlus: lane !== 'band', openMenu: lane !== 'band' }))
+    if (lane === 'band' && frameSeg) addBandText(frameSeg.id, currentTimeMs)
+  }
+
+  // Frames list: pick something in a frame. The playhead moves onto it unless it's already showing.
+  function selectInFrame(segId: string, id: string | null, atMs?: number) {
+    const seg = segments.find(x => x.id === segId)
+    if (!seg) return
+    const it = id ? frameOf(seg).items?.find(x => x.id === id) : undefined
+    const from = it ? Math.max(it.start_ms, seg.start_ms) : seg.start_ms
+    const to = it ? Math.min(it.end_ms, seg.end_ms) : seg.end_ms
+    if (id && atMs !== undefined && (currentTimeMs < from || currentTimeMs >= to)) { pause(); seekToMs(atMs) }
+    selectFrameItem(id, segId)
+  }
+
+  function openFrame(segId: string) {
+    const seg = segments.find(x => x.id === segId)
+    if (!seg) return
+    setActiveSegmentId(seg.id)
+    if (currentTimeMs < seg.start_ms || currentTimeMs >= seg.end_ms) seekToMs(seg.start_ms)
+  }
+
+  function removeFrame(segId: string) {
+    pause()
+    skipCanvasTransitionRef.current = true
+    applyLayout(segId, 'vertical', getVideoAR())
+  }
+
+  // ── Reset all edits ─────────────────────────────────────────────────────────
+  // Back to how a fresh clip starts: one Vertical format over the whole clip, no frames, text,
+  // media, music, transitions or filters, and the default caption look. The captions themselves
+  // (words, language, on/off) stay. It's one undo step, so Undo brings everything back.
+  const [confirmResetAll, setConfirmResetAll] = useState(false)
+  function handleResetAll() {
+    setConfirmResetAll(false)
+    pause()
+    skipCanvasTransitionRef.current = true
+    setActiveFrameItemId(null)
+    setActiveTextOverlayId(null)
+    useEditorStore.setState({ segments: [], keyframes: {}, activeSegmentId: null, activeBoxId: null })
+    addFormat(0, clipLengthMs, 'vertical', getVideoAR())
+    useMediaStore.setState({
+      overlays: [], textOverlays: [], audioTracks: [], transitions: [],
+      filters: { brightness: 100, contrast: 100, saturation: 100 }, activeOverlayId: null,
+    })
+    // Explicit defaults (not blanks): the save only writes caption fields that have a value
+    useCaptionStore.setState(st => ({
+      captionStyle: { ...st.captionStyle, font: null, size: null, color: '#FFE700', position: null, position_y: null, animation: 'karaoke' },
+    }))
+  }
+  useEffect(() => {
+    if (!confirmResetAll) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setConfirmResetAll(false) }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [confirmResetAll])
+
   function trimSelectedTo(edge: 'start' | 'end') {
     if (!activeSegment) return
     setSegmentEdge(activeSegment.id, edge, currentTimeMs, clipLengthMs)
@@ -559,8 +739,6 @@ export function EditorShell({
   }
 
   function handleResetPositions() {
-    if (!confirmReset) { setConfirmReset(true); return }
-    setConfirmReset(false)
     const first = [...segments].sort((a, b) => a.start_ms - b.start_ms)[0]
     if (!first) return
     segments.filter(s => s.id !== first.id).forEach(s => removeSegment(s.id))
@@ -575,6 +753,126 @@ export function EditorShell({
     pause()
     skipCanvasTransitionRef.current = true
     applyLayout(seg.id, 'vertical', getVideoAR())
+  }
+
+  // ── Every delete asks first ─────────────────────────────────────────────────
+  const { confirm, dialog: confirmDialog } = useConfirm()
+  const UNDO_NOTE = 'You can undo this.'
+
+  function askDeleteFormat(segId: string) {
+    const i = cropPositions.findIndex(x => x.id === segId)
+    const seg = cropPositions[i]
+    if (!seg) return
+    const range = `${msToLabel(seg.start_ms)}–${msToLabel(seg.end_ms)}`
+    const frameNote = isFrameLayout(seg.layout) ? ' Everything in its frame (photos, videos, text) is removed too.' : ''
+    if (cropPositions.length === 1) {
+      confirm({ title: 'Reset this format to Vertical?', body: `It becomes a plain Vertical format again.${frameNote} ${UNDO_NOTE}`, confirmLabel: 'Reset' }, () => handleDeleteFormat(segId))
+      return
+    }
+    confirm({ title: `Delete format ${i + 1}?`, body: `${range} goes back to the default framing.${frameNote} ${UNDO_NOTE}` }, () => handleDeleteFormat(segId))
+  }
+
+  function askRemoveFrame(segId: string) {
+    confirm({ title: 'Remove this frame?', body: `This part goes back to Vertical, and the photos, videos and text in the frame are removed. ${UNDO_NOTE}`, confirmLabel: 'Remove' },
+      () => removeFrame(segId))
+  }
+
+  function frameItemName(segId: string, id: string) {
+    const seg = segments.find(x => x.id === segId)
+    const it = seg ? frameOf(seg).items?.find(x => x.id === id) : undefined
+    if (!it) return 'this'
+    if (it.kind === 'video') return `the video "${videoTitles[it.source_video_id ?? ''] ?? 'Video'}"`
+    if (it.kind === 'photo') return 'this photo'
+    if (it.captions) return 'the captions from the band'
+    return it.text?.trim() ? `the text "${it.text.trim().slice(0, 40)}"` : 'this text'
+  }
+
+  function askRemoveFrameItem(segId: string, id: string) {
+    confirm({ title: `Remove ${frameItemName(segId, id)}?`, body: UNDO_NOTE, confirmLabel: 'Remove' }, () => {
+      removeFrameItem(segId, id)
+      setActiveFrameItemId(cur => cur === id ? null : cur)
+    })
+  }
+
+  function askRemoveMain(segId: string, slot: number) {
+    const seg = segments.find(x => x.id === segId)
+    if (!seg || !isFrameLayout(seg.layout)) return
+    const label = frameLanes(seg.layout).find(l => l.lane === slot)?.label ?? ''
+    confirm({ title: `Take the main video out of the ${label.toLowerCase()} slot?`, body: `The slot will be empty until you add something. ${UNDO_NOTE}`, confirmLabel: 'Take it out' }, () => {
+      updateFrame(segId, { main_slots: (frameOf(seg).main_slots ?? [0]).filter(i => i !== slot) })
+      setActiveFrameItemId(cur => cur === `main:${slot}` ? null : cur)
+    })
+  }
+
+  function askDeleteTextOverlay(id: string) {
+    const o = textOverlays.find(x => x.id === id)
+    confirm({ title: o?.text?.trim() ? `Delete the text "${o.text.trim().slice(0, 40)}"?` : 'Delete this text?', body: UNDO_NOTE }, () => {
+      deleteTextOverlay(id)
+      setActiveTextOverlayId(cur => cur === id ? null : cur)
+    })
+  }
+
+  // ── Export: warn about empty frame slots first ─────────────────────────────
+  // If the user goes ahead, the time where a slot is empty becomes plain Vertical (the main
+  // video) — visible on the timeline, and one Undo step — and then the export starts.
+  function requestExport(retranscribe = false) {
+    const frames = cropPositions.filter(x => isFrameLayout(x.layout))
+    const found = frames.flatMap(seg => emptySlotStretches(seg).map(st => ({ seg, ...st })))
+    if (!found.length) { handleExport(retranscribe); return }
+    pause()
+    const lines = found.slice(0, 6).map(f => {
+      const names = frameSlotLabels(f.seg.layout as FrameLayout)
+      const slots = f.slots.map(i => names[i] ?? `Slot ${i + 1}`).join(' & ')
+      return `• Frame ${frames.indexOf(f.seg) + 1} · ${FRAME_TEMPLATES[f.seg.layout as FrameLayout].name}: ${slots} slot empty ${msToLabel(f.start_ms)}–${msToLabel(f.end_ms)}`
+    })
+    if (found.length > 6) lines.push(`…and ${found.length - 6} more`)
+    confirm({
+      title: found.length === 1 ? 'A frame slot is empty' : 'Some frame slots are empty',
+      body: `${lines.join('\n')}\n\nIf you export anyway, these parts become plain Vertical (just the main video). You can undo this afterwards.`,
+      confirmLabel: 'Convert to Vertical & export',
+      cancelLabel: 'Go to it',
+      tone: 'warning',
+      onCancel: () => { seekToMs(found[0].start_ms); setTool('frames'); toggleOptions(true) },
+    }, () => {
+      convertEmptyToVertical(found)
+      handleExport(retranscribe)
+    })
+  }
+
+  function convertEmptyToVertical(found: { seg: SegmentLocal; start_ms: number; end_ms: number }[]) {
+    skipCanvasTransitionRef.current = true
+    // Per frame, the empty time as merged stretches
+    const bySeg = new Map<string, { a: number; b: number }[]>()
+    for (const f of found) {
+      const list = bySeg.get(f.seg.id) ?? []
+      list.push({ a: f.start_ms, b: f.end_ms })
+      bySeg.set(f.seg.id, list)
+    }
+    for (const [segId, raw] of bySeg) {
+      const merged: { a: number; b: number }[] = []
+      for (const r of raw.sort((x, y) => x.a - y.a)) {
+        const last = merged[merged.length - 1]
+        if (last && r.a <= last.b) last.b = Math.max(last.b, r.b)
+        else merged.push({ ...r })
+      }
+      // Right to left: splitting keeps the left part's id, so the rest of the frame stays addressable
+      for (const { a, b } of merged.reverse()) {
+        const cur = useEditorStore.getState().segments.find(x => x.id === segId)
+        if (!cur) break
+        if (b < cur.end_ms - 100) splitAtMs(cur.id, b, getPositionAt)
+        let target = cur.id
+        if (a > cur.start_ms + 100) target = splitAtMs(cur.id, a, getPositionAt) ?? cur.id
+        applyLayout(target, 'vertical', getVideoAR())
+      }
+    }
+  }
+
+  function askDeleteOverlay(id: string) {
+    const o = overlays.find(x => x.id === id)
+    confirm({ title: `Delete this ${o?.type === 'video' ? 'video' : 'image'}?`, body: UNDO_NOTE }, () => {
+      deleteOverlay(id)
+      if (activeOverlayId === id) setActiveOverlayId(null)
+    })
   }
 
   function handleInsertBroll(videoId: string) {
@@ -612,15 +910,28 @@ export function EditorShell({
     deleteSelected: () => {
       const onScreen = (o: { start_ms: number; end_ms: number }) => currentTimeMs >= o.start_ms && currentTimeMs < o.end_ms
       const text = textOverlays.find(o => o.id === activeTextOverlayId && onScreen(o))
-      if (text) { deleteTextOverlay(text.id); setActiveTextOverlayId(null); return }
+      if (text) { askDeleteTextOverlay(text.id); return }
       const image = overlays.find(o => o.id === activeOverlayId && onScreen(o))
-      if (image) { deleteOverlay(image.id); setActiveOverlayId(null); return }
-      if (activeSegment) handleDeleteFormat(activeSegment.id)
+      if (image) { askDeleteOverlay(image.id); return }
+      if (frameSeg && activeFrameItemId) {
+        if (activeFrameItemId.startsWith('main:')) askRemoveMain(frameSeg.id, Number(activeFrameItemId.slice(5)))
+        else askRemoveFrameItem(frameSeg.id, activeFrameItemId)
+        return
+      }
+      if (activeSegment) askDeleteFormat(activeSegment.id)
     },
   }
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       const target = e.target as HTMLElement | null
+      // Ctrl/⌘+Z undo · Ctrl/⌘+Shift+Z or Ctrl+Y redo. While typing in a text box the browser's own
+      // text undo applies (sliders, colour pickers and the like don't count)
+      if ((e.metaKey || e.ctrlKey) && !e.altKey && (e.key === 'z' || e.key === 'Z' || e.key === 'y' || e.key === 'Y')) {
+        if (isTextEntry(target)) return
+        e.preventDefault()
+        if (e.key.toLowerCase() === 'y' || e.shiftKey) redo(); else undo()
+        return
+      }
       if (e.metaKey || e.ctrlKey || e.altKey) return
       if (target?.closest('input, textarea, select, [contenteditable="true"]')) return
       const s = shortcutsRef.current
@@ -642,7 +953,16 @@ export function EditorShell({
       }
     }
     window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
+    // Pressing anywhere outside a text box ends typing in it. The timeline's handles stop the
+    // browser from moving focus, so without this a text box stays focused through a drag and
+    // takes the next Ctrl+Z (or Delete) for itself.
+    function onPointerDown(e: PointerEvent) {
+      const el = document.activeElement as HTMLElement | null
+      if (!isTextEntry(el) || el!.contains(e.target as Node) || isTextEntry(e.target as HTMLElement)) return
+      el!.blur()
+    }
+    window.addEventListener('pointerdown', onPointerDown, true)
+    return () => { window.removeEventListener('keydown', onKey); window.removeEventListener('pointerdown', onPointerDown, true) }
   }, [])
 
   // ── Render ────────────────────────────────────────────────────────────────────
@@ -683,6 +1003,7 @@ export function EditorShell({
           <span aria-current="page" className="font-semibold text-[var(--ed-text)] truncate" title={clipTitle} style={{ maxWidth: 260 }}>{clipTitle}</span>
         </nav>
 
+        <UndoRedo />
         <SaveIndicator state={leaving ? 'saving' : saveState} leaving={leaving} onRetry={handleSave} />
 
         <div className="flex-1" />
@@ -729,6 +1050,38 @@ export function EditorShell({
             )
           })}
           <div className="flex-1" />
+          <div className="relative">
+            <button onClick={() => setConfirmResetAll(v => !v)} aria-expanded={confirmResetAll}
+              title="Reset all edits"
+              className="flex flex-col items-center justify-center gap-1 rounded-xl transition-colors hover:bg-[rgb(var(--ed-fg)/0.05)]"
+              style={{ width: 60, height: 52, color: confirmResetAll ? '#f87171' : 'rgb(var(--ed-fg) / 0.5)' }}>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M3 12a9 9 0 109-9 9.75 9.75 0 00-6.74 2.74L3 8" /><path d="M3 3v5h5" />
+              </svg>
+              <span className="text-[11px] font-medium">Reset</span>
+            </button>
+            {confirmResetAll && (
+              <>
+                <div className="fixed inset-0" style={{ zIndex: 70 }} onClick={() => setConfirmResetAll(false)} aria-hidden="true" />
+                <div role="alertdialog" aria-labelledby="reset-all-title" aria-describedby="reset-all-desc"
+                  className="absolute left-full bottom-0 ml-2 flex flex-col gap-3 p-4 rounded-xl"
+                  style={{ width: 280, zIndex: 71, background: 'var(--ed-panel)', border: '1px solid rgb(var(--ed-fg) / 0.12)', boxShadow: '0 12px 32px rgba(0,0,0,0.55)' }}>
+                  <p id="reset-all-title" className="text-sm font-semibold text-[var(--ed-text)]">Reset all edits?</p>
+                  <p id="reset-all-desc" className="text-xs leading-relaxed" style={{ color: 'rgb(var(--ed-fg) / 0.55)' }}>
+                    Formats, frames, text, media, music and the caption look go back to the start. Your captions stay. You can undo this.
+                  </p>
+                  <div className="flex justify-end gap-2">
+                    <button onClick={() => setConfirmResetAll(false)} autoFocus
+                      className="h-8 px-3 rounded-lg text-xs font-medium transition-colors hover:bg-[rgb(var(--ed-fg)/0.08)]"
+                      style={{ color: 'rgb(var(--ed-fg) / 0.75)' }}>Cancel</button>
+                    <button onClick={handleResetAll}
+                      className="h-8 px-3 rounded-lg text-xs font-semibold transition-opacity hover:opacity-90"
+                      style={{ background: '#ef4444', color: '#fff' }}>Reset everything</button>
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
           <button onClick={() => toggleOptions(!optionsOpen)}
             aria-label={optionsOpen ? 'Close options sidebar' : 'Open options sidebar'}
             aria-expanded={optionsOpen} aria-controls="options-sidebar"
@@ -776,13 +1129,15 @@ export function EditorShell({
                   </span>
                   <div className="flex-1" />
                   {cropPositions.length > 1 && (
-                    <button onClick={handleResetPositions}
+                    <button onClick={() => confirm({
+                        title: 'Remove every format except the first?',
+                        body: 'The first format will cover the whole clip, and any frames among the others are removed too. You can undo this.',
+                        confirmLabel: 'Remove',
+                      }, handleResetPositions)}
                       title="Remove every format except the first"
-                      className="px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors"
-                      style={confirmReset
-                        ? { background: '#ef4444', color: '#fff', border: '1px solid #ef4444' }
-                        : { color: 'rgb(var(--ed-fg) / 0.55)', border: '1px solid rgb(var(--ed-fg) / 0.12)' }}>
-                      {confirmReset ? 'Confirm' : 'Reset'}
+                      className="px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors hover:bg-[rgb(var(--ed-fg)/0.06)]"
+                      style={{ color: 'rgb(var(--ed-fg) / 0.55)', border: '1px solid rgb(var(--ed-fg) / 0.12)' }}>
+                      Reset
                     </button>
                   )}
                 </div>
@@ -793,8 +1148,14 @@ export function EditorShell({
                   ))}
                   {cropPositions.map((seg, i) => {
                     const gapAfter = uncovered.find(g => g.start_ms === seg.end_ms)
+                    const gapRow = gapAfter && (
+                      <GapRow gap={gapAfter} active={currentGap?.start_ms === gapAfter.start_ms}
+                        onSelect={() => seekToMs(gapAfter.start_ms)} onAdd={() => addFormatInGap(gapAfter)} />
+                    )
+                    // A frame is one vertical 9:16 reel, so as a format it's Vertical (its contents live in Frames)
+                    const shown = formatLayoutOf(seg.layout)
                     const broll = seg.crop_boxes.some(b => b.source_video_id)
-                    const col = broll ? BROLL_COLOR : LAYOUT_COLORS[seg.layout]
+                    const col = broll ? BROLL_COLOR : LAYOUT_COLORS[shown]
                     const box = seg.crop_boxes[0]
                     const p = box ? getPositionAt(box.id, seg.start_ms) : { x: 0, w: 1, y: 0, h: 1 }
                     const isActiveSeg = seg.id === activeSegment?.id
@@ -814,29 +1175,46 @@ export function EditorShell({
                           <div className="flex items-center gap-2">
                             <span className="w-2 h-2 rounded-full shrink-0" style={{ background: col }} />
                             <span className="text-xs font-medium tabular-nums" style={{ color: 'rgb(var(--ed-fg) / 0.85)' }}>{msToLabel(seg.start_ms)} – {msToLabel(seg.end_ms)}</span>
-                            <span className="text-xs truncate" style={{ color: 'rgb(var(--ed-fg) / 0.4)' }}>{broll ? 'B-roll' : LAYOUTS.find(l => l.id === seg.layout)?.label ?? seg.layout}</span>
+                            <span className="text-xs truncate" style={{ color: 'rgb(var(--ed-fg) / 0.4)' }}>{broll ? 'B-roll' : LAYOUTS.find(l => l.id === shown)?.label ?? shown}</span>
                           </div>
                           {/* Where the crop sits horizontally in the source frame */}
                           <div className="relative h-1 rounded-full overflow-hidden mt-2" style={{ background: 'rgb(var(--ed-fg) / 0.08)' }}>
                             <div className="absolute h-full rounded-full" style={{ left: `${p.x * 100}%`, width: `${p.w * 100}%`, background: col }} />
                           </div>
                         </div>
-                        <button onClick={e => { e.stopPropagation(); handleDeleteFormat(seg.id) }}
+                        <button onClick={e => { e.stopPropagation(); askDeleteFormat(seg.id) }}
                           aria-label={deleteLabel} title={`${deleteLabel} (Delete)`}
                           className={`shrink-0 w-7 h-7 flex items-center justify-center rounded-md transition-opacity hover:bg-[rgb(var(--ed-fg)/0.1)] ${isActiveSeg ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 focus:opacity-100'}`}
                           style={{ color: 'rgb(var(--ed-fg) / 0.5)' }}>
                           <TrashIcon />
                         </button>
                       </div>
-                      {gapAfter && (
-                        <GapRow gap={gapAfter} active={currentGap?.start_ms === gapAfter.start_ms}
-                          onSelect={() => seekToMs(gapAfter.start_ms)} onAdd={() => addFormatInGap(gapAfter)} />
-                      )}
+                      {gapRow}
                       </Fragment>
                     )
                   })}
                 </div>
               </div>
+            )}
+
+            {tool === 'frames' && (
+              <FramesPanel
+                frames={cropPositions.filter(x => isFrameLayout(x.layout))}
+                segment={activeSegment ?? null}
+                targetLabel={frameTarget}
+                currentTimeMs={currentTimeMs}
+                videoTitles={videoTitles}
+                selected={activeFrameItemId}
+                onApply={handleApplyFrame}
+                onOpenFrame={openFrame}
+                onSelectItem={selectInFrame}
+                onUpdateItem={updateFrameItem}
+                onRemoveItem={askRemoveFrameItem}
+                onUpdateFrame={updateFrame}
+                onReplaceMedia={(segId, id, kind) => { pause(); setFramePicker({ segId, kind, replaceId: id }) }}
+                onRemoveFrame={askRemoveFrame}
+                onRemoveMain={askRemoveMain}
+              />
             )}
 
             {tool === 'captions' && (
@@ -871,8 +1249,24 @@ export function EditorShell({
                     ) : (
                       <p className="text-xs" style={{ color: 'rgb(var(--ed-fg) / 0.45)' }}>No captions for this clip yet.</p>
                     )}
-                    {showCaptions && hasRoman && (
-                      <SwitchRow label={scriptLabel} description="Show captions in English letters" checked={romanize} onChange={setRomanize} />
+                    {showCaptions && words.length > 0 && (
+                      <div className="flex flex-col gap-1.5">
+                        <span className="text-xs font-medium" style={{ color: 'rgb(var(--ed-fg) / 0.5)' }}>Caption language</span>
+                        <div role="radiogroup" aria-label="Caption language" className="grid grid-cols-2 gap-1 p-0.5 rounded-lg" style={{ background: 'rgb(var(--ed-fg) / 0.05)' }}>
+                          {([[false, 'Auto language', 'As spoken, in its own script'], [true, 'English', hasRoman ? `In English letters (${scriptLabel})` : "English letters aren't available for these captions"]] as const).map(([v, label, title]) => {
+                            const on = romanize === v
+                            const disabled = v && !hasRoman
+                            return (
+                              <button key={label} role="radio" aria-checked={on} disabled={disabled} title={title}
+                                onClick={() => setRomanize(v)}
+                                className="h-8 rounded-md text-xs font-medium transition-colors disabled:opacity-40"
+                                style={on ? { background: 'rgb(var(--ed-fg) / 0.14)', color: 'var(--ed-text)' } : { color: 'rgb(var(--ed-fg) / 0.6)' }}>
+                                {label}
+                              </button>
+                            )
+                          })}
+                        </div>
+                      </div>
                     )}
                     {showCaptions && words.length > 0 && (
                       <button onClick={() => setEditingTranscript(true)}
@@ -901,49 +1295,28 @@ export function EditorShell({
             )}
 
             {tool === 'text' && (
+              <>
+              <FrameTextPanel
+                segment={frameSeg}
+                currentTimeMs={currentTimeMs}
+                selectedId={activeFrameItemId}
+                onSelect={setActiveFrameItemId}
+                onAdd={lane => { if (frameSeg && lane === 'band') addBandText(frameSeg.id, currentTimeMs) }}
+                onUpdate={(id, patch) => { if (frameSeg) updateFrameItem(frameSeg.id, id, patch) }}
+                onRemove={id => { if (frameSeg) askRemoveFrameItem(frameSeg.id, id) }}
+                onUpdateBand={patch => { if (frameSeg) updateFrameBand(frameSeg.id, patch) }}
+              />
               <TextOverlayPanel
                 overlays={textOverlays}
                 currentTimeMs={currentTimeMs}
                 clipDurationMs={clip.end_ms - clip.start_ms}
                 onAdd={o => setTextOverlays(prev => [...prev, { ...o, id: crypto.randomUUID(), clip_id: clip.id }])}
                 onUpdate={updateTextOverlay}
-                onRemove={deleteTextOverlay}
+                onRemove={askDeleteTextOverlay}
               />
+              </>
             )}
 
-            {tool === 'media' && (
-              <div className="p-4 flex flex-col gap-5">
-                <button onClick={() => { pause(); setPickerAtMs(currentTimeMs) }}
-                  className="flex items-center justify-center gap-2 w-full py-2.5 rounded-lg text-sm font-semibold transition-opacity hover:opacity-90"
-                  style={{ background: ACCENT, color: '#000' }}>
-                  + Add at {msToLabel(currentTimeMs)}
-                </button>
-                <p className="text-xs -mt-3 leading-relaxed" style={{ color: 'rgb(var(--ed-fg) / 0.45)' }}>
-                  B-roll replaces the main video for 5 seconds. Images stay on screen until the end of the current format.
-                </p>
-
-                <MediaList
-                  title="B-roll"
-                  empty="No B-roll yet."
-                  items={brollSegments.map(seg => ({
-                    id: seg.id, start: seg.start_ms, end: seg.end_ms, color: BROLL_COLOR,
-                    onSelect: () => { setActiveSegmentId(seg.id); seekToMs(seg.start_ms) },
-                    // Back to the main video at this format's own point in it (render.py trims from source_offset_ms)
-                    onRemove: () => seg.crop_boxes.forEach(b => { if (b.source_video_id) updateBoxSource(seg.id, b.id, null, seg.start_ms) }),
-                  }))}
-                />
-                <MediaList
-                  title="Images"
-                  empty="No images yet."
-                  items={imageOverlays.map(ov => ({
-                    id: ov.id, start: ov.start_ms, end: ov.end_ms, color: 'rgb(var(--ed-fg) / 0.6)',
-                    thumb: ov.preview_url,
-                    onSelect: () => { setActiveOverlayId(ov.id); seekToMs(ov.start_ms) },
-                    onRemove: () => deleteOverlay(ov.id),
-                  }))}
-                />
-              </div>
-            )}
           </div>
           </div>
         </aside>
@@ -955,7 +1328,7 @@ export function EditorShell({
             <div role="radiogroup" aria-label="Format" className="flex items-center gap-1 p-1 rounded-xl shrink-0"
               style={{ background: 'rgb(var(--ed-fg) / 0.04)', border: '1px solid rgb(var(--ed-fg) / 0.07)' }}>
               {LAYOUTS.map(l => {
-                const on = activeSegment?.layout === l.id
+                const on = !!activeSegment && formatLayoutOf(activeSegment.layout) === l.id
                 // Shortcut theme: lime when selected, neutral otherwise (like the preview toggle)
                 const color = on ? 'var(--ed-accent-text)' : 'rgb(var(--ed-fg) / 0.45)'
                 return (
@@ -1049,6 +1422,23 @@ export function EditorShell({
               textOverlays={textOverlays} activeTextOverlayId={activeTextOverlayId}
               onSelectTextOverlay={id => { setActiveTextOverlayId(id); if (id) { setTool('text'); toggleOptions(true) } }}
               onTextOverlayUpdate={updateTextOverlay}
+              frameSeg={frameSeg}
+              activeFrameItemId={activeFrameItemId}
+              laneHighlight={laneHighlight}
+              videoTitles={videoTitles}
+              onSelectFrameItem={selectFrameItem}
+              onUpdateFrameItem={(id, patch) => { if (frameSeg) updateFrameItem(frameSeg.id, id, patch) }}
+              onJumpToFrameItem={(segId, itemId) => {
+                const sg = segments.find(x => x.id === segId)
+                const it = sg ? frameOf(sg).items?.find(x => x.id === itemId) : undefined
+                if (sg && it) selectInFrame(segId, itemId, Math.max(it.start_ms, sg.start_ms))
+              }}
+              onAddFrameItem={(lane, anchor) => {
+                if (!frameSeg) return
+                pause()
+                if (lane === 'band') { addBandText(frameSeg.id, currentTimeMs); return }
+                setAddMenu({ segId: frameSeg.id, lane, t: currentTimeMs, anchor })
+              }}
             />
           </div>
         </main>
@@ -1066,7 +1456,7 @@ export function EditorShell({
                 </span>
               ) : hasOutput ? (
                 <>
-                  <button onClick={() => handleExport(true)} aria-label="Re-render"
+                  <button onClick={() => requestExport(true)} aria-label="Re-render"
                     title="Render again with your latest edits. Captions are regenerated too."
                     className="w-8 h-8 flex items-center justify-center rounded-lg transition-colors hover:bg-[rgb(var(--ed-fg)/0.1)]"
                     style={{ color: 'rgb(var(--ed-fg) / 0.75)', boxShadow: 'inset 0 0 0 1px rgb(var(--ed-fg) / 0.14)' }}>
@@ -1081,7 +1471,7 @@ export function EditorShell({
                   </a>
                 </>
               ) : (
-                <button onClick={() => handleExport()}
+                <button onClick={() => requestExport()}
                   title="Render the reel so you can download it"
                   className="flex items-center gap-1.5 h-8 px-3 rounded-lg text-xs font-bold transition-opacity hover:opacity-90"
                   style={{ background: ACCENT, color: '#000' }}>
@@ -1142,10 +1532,14 @@ export function EditorShell({
                   skipTransitionRef={skipCanvasTransitionRef} words={displayWords}
                   captionStyle={captionStyle} captionTextCase={captionTextCase} showCaptions={showCaptions}
                   overlays={overlays} activeOverlayId={activeOverlayId}
-                  onOverlayChange={updateOverlay} onSelectOverlay={setActiveOverlayId} onDeleteOverlay={deleteOverlay}
+                  onOverlayChange={updateOverlay} onSelectOverlay={setActiveOverlayId} onDeleteOverlay={askDeleteOverlay}
                   textOverlays={textOverlays} activeTextOverlayId={activeTextOverlayId}
-                  onTextOverlayChange={updateTextOverlay} onSelectTextOverlay={setActiveTextOverlayId} onDeleteTextOverlay={deleteTextOverlay}
+                  onTextOverlayChange={updateTextOverlay} onSelectTextOverlay={setActiveTextOverlayId} onDeleteTextOverlay={askDeleteTextOverlay}
                   onCaptionPositionChange={y => updateCaptionStyle({ position_y: y })}
+                  frameMedia={framePool}
+                  onFrameLaneClick={focusLane}
+                  activeFrameItemId={activeFrameItemId}
+                  onFrameItemClick={selectFrameItem}
                   style={{ width: '100%', height: 'auto', display: 'block', borderRadius: 10, border: '1px solid rgb(var(--ed-fg) / 0.1)', boxShadow: '0 4px 24px rgba(0,0,0,0.6)' }}
                 />
               )}
@@ -1156,6 +1550,29 @@ export function EditorShell({
 
         </aside>
       </div>
+
+      {confirmDialog}
+
+      {addMenu && (() => {
+        const seg = segments.find(x => x.id === addMenu.segId)
+        if (!seg || !isFrameLayout(seg.layout)) return null
+        const lane = frameLanes(seg.layout).find(l => l.lane === addMenu.lane)
+        const main = frameOf(seg).main_slots ?? [0]
+        return (
+          <FrameAddMenu lane={addMenu.lane} laneLabel={lane?.label ?? ''} anchor={addMenu.anchor}
+            slotKind={typeof addMenu.lane === 'number' ? FRAME_TEMPLATES[seg.layout].defaults[addMenu.lane] ?? 'video' : 'video'}
+            canAddMain={typeof addMenu.lane === 'number' && !main.includes(addMenu.lane)}
+            bandText={frameHasBand(seg.layout)}
+            onChoose={handleAddChoice}
+            onClose={() => setAddMenu(null)} />
+        )
+      })()}
+
+      {framePicker && (
+        <MediaPickerModal clipId={clip.id} atMs={currentTimeMs} initialTab={framePicker.kind === 'photo' ? 'image' : framePicker.replaceId ? 'videos' : 'upload'}
+          onInsertVideo={handlePickedVideo} onInsertImage={handlePickedPhoto}
+          onClose={() => setFramePicker(null)} />
+      )}
 
       {pickerAtMs !== null && (
         <MediaPickerModal clipId={clip.id} atMs={pickerAtMs}
@@ -1227,6 +1644,37 @@ function BreadcrumbChevron() {
 }
 
 /** Save status chip next to the breadcrumb */
+/** The format a section counts as: frames are one vertical 9:16 reel, so they're Vertical */
+function formatLayoutOf(layout: LayoutType): LayoutType {
+  return isFrameLayout(layout) ? 'vertical' : layout
+}
+
+/** A field the user types text into (not a slider, colour picker, checkbox…) */
+function isTextEntry(el: Element | null | undefined): boolean {
+  if (!el) return false
+  if ((el as HTMLElement).isContentEditable || el.tagName === 'TEXTAREA') return true
+  if (el.tagName !== 'INPUT') return false
+  return ['text', 'number', 'search', 'email', 'url', 'tel', 'password', ''].includes((el as HTMLInputElement).type)
+}
+
+// Header undo/redo buttons (shortcuts: Ctrl/⌘+Z, Ctrl/⌘+Shift+Z)
+function UndoRedo() {
+  const { canUndo, canRedo } = useHistory()
+  const mac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform)
+  const mod = mac ? '⌘' : 'Ctrl+'
+  const btn = 'w-8 h-8 flex items-center justify-center rounded-lg transition-colors hover:bg-[rgb(var(--ed-fg)/0.1)] disabled:opacity-30 disabled:hover:bg-transparent'
+  return (
+    <div className="flex items-center gap-0.5 shrink-0 pl-3" style={{ borderLeft: '1px solid rgb(var(--ed-fg) / 0.1)', color: 'rgb(var(--ed-fg) / 0.75)' }}>
+      <button onClick={undo} disabled={!canUndo} aria-label="Undo" title={`Undo (${mod}Z)`} className={btn}>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M9 14L4 9l5-5" /><path d="M4 9h10.5a5.5 5.5 0 010 11H11" /></svg>
+      </button>
+      <button onClick={redo} disabled={!canRedo} aria-label="Redo" title={`Redo (${mod}${mac ? '⇧Z' : 'Shift+Z'})`} className={btn}>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M15 14l5-5-5-5" /><path d="M20 9H9.5a5.5 5.5 0 000 11H13" /></svg>
+      </button>
+    </div>
+  )
+}
+
 function SaveIndicator({ state, leaving, onRetry }: { state: SaveState; leaving?: boolean; onRetry: () => void }) {
   const chip = 'flex items-center gap-1.5 shrink-0 h-6 px-2 rounded-full text-[11px] font-medium'
   if (state === 'error') {
@@ -1275,35 +1723,6 @@ function StatusChip({ color, children }: { color: string; children: React.ReactN
       <span className="w-1.5 h-1.5 rounded-full" style={{ background: color }} />
       {children}
     </span>
-  )
-}
-
-function MediaList({ title, empty, items }: {
-  title: string
-  empty: string
-  items: { id: string; start: number; end: number; color: string; thumb?: string; onSelect: () => void; onRemove: () => void }[]
-}) {
-  return (
-    <div className="flex flex-col gap-1.5">
-      <p className="text-xs font-medium" style={{ color: 'rgb(var(--ed-fg) / 0.5)' }}>{title}</p>
-      {items.length === 0 ? (
-        <p className="text-xs" style={{ color: 'rgb(var(--ed-fg) / 0.3)' }}>{empty}</p>
-      ) : items.map(item => (
-        <div key={item.id} role="button" tabIndex={0} onClick={item.onSelect}
-          onKeyDown={e => { if (e.key === 'Enter') item.onSelect() }}
-          className="group flex items-center gap-2.5 px-2.5 py-2 rounded-lg cursor-pointer transition-colors hover:bg-[rgb(var(--ed-fg)/0.05)]">
-          {item.thumb
-            ? <img src={item.thumb} alt="" className="w-8 h-8 rounded object-cover shrink-0" />
-            : <span className="w-2 h-2 rounded-full shrink-0" style={{ background: item.color }} />}
-          <span className="flex-1 text-xs tabular-nums" style={{ color: 'rgb(var(--ed-fg) / 0.8)' }}>{msToLabel(item.start)} – {msToLabel(item.end)}</span>
-          <button onClick={e => { e.stopPropagation(); item.onRemove() }} aria-label={`Remove ${title.toLowerCase()} item`} title="Remove"
-            className="shrink-0 w-7 h-7 flex items-center justify-center rounded-md opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity hover:bg-[rgb(var(--ed-fg)/0.1)]"
-            style={{ color: 'rgb(var(--ed-fg) / 0.5)' }}>
-            <TrashIcon />
-          </button>
-        </div>
-      ))}
-    </div>
   )
 }
 
