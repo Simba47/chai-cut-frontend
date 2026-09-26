@@ -1,11 +1,13 @@
 'use client'
 
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { signIn } from 'next-auth/react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
-import { BrandLogo } from '@/components/ui/brand-logo'
+import { Eye, EyeOff } from 'lucide-react'
+import { BRAND_BOTTOM, BRAND_TOP, BrandLogo } from '@/components/ui/brand-logo'
 import { FillButtonContent } from '@/components/ui/fill-button'
+import { AuthBackground } from './AuthBackground'
 
 type Mode = 'signin' | 'signup'
 
@@ -17,6 +19,7 @@ type Mode = 'signin' | 'signup'
  */
 export function AuthSlider({ initialMode }: { initialMode: Mode }) {
   const [mode, setMode] = useState<Mode>(initialMode)
+  const cardRef = useRef<HTMLDivElement>(null)
 
   const switchTo = (next: Mode) => {
     setMode(next)
@@ -25,9 +28,10 @@ export function AuthSlider({ initialMode }: { initialMode: Mode }) {
 
   return (
     <div className="auth-root">
+      <AuthBackground cardRef={cardRef} />
       <Link href="/" aria-label="Shortcut home" className="auth-home"><BrandLogo shine /></Link>
 
-      <div className="auth-card" data-mode={mode}>
+      <div ref={cardRef} className="auth-card" data-mode={mode}>
         <div className="auth-form-wrap auth-signup" inert={mode !== 'signup'}>
           <SignUpForm onSwitch={() => switchTo('signin')} />
         </div>
@@ -38,14 +42,14 @@ export function AuthSlider({ initialMode }: { initialMode: Mode }) {
         <div className="auth-overlay-wrap">
           <div className="auth-overlay">
             <div className="auth-panel auth-panel-left" inert={mode !== 'signup'}>
-              <h2>Welcome back!</h2>
+              <PanelTitle active={mode === 'signup'}>Welcome back!</PanelTitle>
               <p>Already cutting reels with Shortcut? Sign in to pick up right where you left off.</p>
               <button type="button" className="auth-ghost" onClick={() => switchTo('signin')}>
                 Sign in
               </button>
             </div>
             <div className="auth-panel auth-panel-right" inert={mode !== 'signin'}>
-              <h2>New to Shortcut?</h2>
+              <PanelTitle active={mode === 'signin'}>New to Shortcut?</PanelTitle>
               <p>Turn long videos into scroll-stopping shorts in minutes. Free to start, no credit card.</p>
               <button type="button" className="auth-ghost" onClick={() => switchTo('signup')}>
                 Create account
@@ -86,8 +90,8 @@ function SignInForm({ onSwitch }: { onSwitch: () => void }) {
         type="email" value={email} onChange={e => setEmail(e.target.value)}
         required placeholder="Email" aria-label="Email" autoComplete="email"
       />
-      <input
-        type="password" value={password} onChange={e => setPassword(e.target.value)}
+      <PasswordInput
+        value={password} onChange={e => setPassword(e.target.value)}
         required placeholder="Password" aria-label="Password" autoComplete="current-password"
       />
       <Link href="/forgot-password" className="auth-link">Forgot your password?</Link>
@@ -133,12 +137,12 @@ function SignUpForm({ onSwitch }: { onSwitch: () => void }) {
         type="email" value={email} onChange={e => setEmail(e.target.value)}
         required placeholder="Email" aria-label="Email" autoComplete="email"
       />
-      <input
-        type="password" value={password} onChange={e => setPassword(e.target.value)}
+      <PasswordInput
+        value={password} onChange={e => setPassword(e.target.value)}
         required placeholder="Password (8+ chars, 1 uppercase, 1 number)" aria-label="Password" autoComplete="new-password"
       />
-      <input
-        type="password" value={confirm} onChange={e => setConfirm(e.target.value)}
+      <PasswordInput
+        value={confirm} onChange={e => setConfirm(e.target.value)}
         required placeholder="Confirm password" aria-label="Confirm password" autoComplete="new-password"
       />
       {error && <p className="auth-error" role="alert">{error}</p>}
@@ -149,5 +153,44 @@ function SignUpForm({ onSwitch }: { onSwitch: () => void }) {
         Already have an account? <button type="button" onClick={onSwitch}>Sign in</button>
       </p>
     </form>
+  )
+}
+
+// Password box with an eye button that toggles the characters visible/hidden
+function PasswordInput(props: Omit<React.InputHTMLAttributes<HTMLInputElement>, 'type'>) {
+  const [visible, setVisible] = useState(false)
+  return (
+    <div className="auth-password">
+      <input {...props} type={visible ? 'text' : 'password'} />
+      <button
+        type="button"
+        className="auth-eye"
+        onClick={() => setVisible(v => !v)}
+        aria-label={visible ? 'Hide password' : 'Show password'}
+        aria-pressed={visible}
+      >
+        {visible ? <EyeOff aria-hidden /> : <Eye aria-hidden />}
+      </button>
+    </div>
+  )
+}
+
+/**
+ * Lime panel heading with a logo intro: the Shortcut "S" pops in, then splits down
+ * the middle (top slash slides left, bottom slash slides right) while the heading
+ * is revealed from the centre outward. Replays each time the panel becomes active
+ * (the key change remounts it, restarting the CSS animations in auth.css).
+ */
+function PanelTitle({ active, children }: { active: boolean; children: React.ReactNode }) {
+  return (
+    <h2 key={active ? 'on' : 'off'} className={`auth-title${active ? ' play' : ''}`}>
+      <span className="auth-title-text">{children}</span>
+      <span className="auth-title-half auth-title-left" aria-hidden>
+        <svg viewBox="0 0 102 118"><path d={BRAND_TOP} /></svg>
+      </span>
+      <span className="auth-title-half auth-title-right" aria-hidden>
+        <svg viewBox="0 0 102 118"><path d={BRAND_BOTTOM} /></svg>
+      </span>
+    </h2>
   )
 }

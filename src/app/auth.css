@@ -21,7 +21,26 @@
   color: var(--text);
   font-family: var(--font-display), system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif;
 }
-.auth-home { position: absolute; top: 22px; left: 28px; text-decoration: none; }
+.auth-home { position: absolute; top: 22px; left: 28px; z-index: 2; text-decoration: none; }
+
+/* ── animated circuit background (components/auth/AuthBackground.tsx) ── */
+.auth-bg {
+  position: absolute; inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+  background-image: radial-gradient(circle, color-mix(in srgb, var(--text) 16%, transparent) 1px, transparent 1.2px);
+  background-size: 28px 28px;
+  /* fade the dot grid toward the edges */
+  -webkit-mask-image: radial-gradient(ellipse 75% 75% at 50% 50%, #000 40%, transparent 100%);
+          mask-image: radial-gradient(ellipse 75% 75% at 50% 50%, #000 40%, transparent 100%);
+}
+.auth-bg-svg { position: absolute; inset: 0; display: block; }
+.auth-bg-line  { fill: none; stroke: color-mix(in srgb, var(--text) 14%, transparent); stroke-width: 1; }
+.auth-bg-glow  { fill: none; stroke: var(--accent); stroke-width: 6; stroke-linecap: round; opacity: .18; }
+.auth-bg-pulse { fill: none; stroke: var(--accent); stroke-width: 2; stroke-linecap: round; }
+.auth-bg-tile  { fill: color-mix(in srgb, var(--surface) 92%, #000); stroke: color-mix(in srgb, var(--text) 12%, transparent); stroke-width: 1; }
+.auth-bg-icon  { color: color-mix(in srgb, var(--text) 80%, transparent); }
 
 .auth-card {
   position: relative;
@@ -31,6 +50,7 @@
   border-radius: 28px;
   background: var(--surface);
   border: 1px solid var(--border-strong);
+  z-index: 1;   /* above the circuit background */
   box-shadow:
     0 40px 100px -30px rgba(0,0,0,0.7),
     0 30px 120px -50px color-mix(in srgb, var(--accent) 35%, transparent);
@@ -70,23 +90,45 @@
   -webkit-background-clip: text; background-clip: text; color: transparent;
 }
 .auth-sub { margin: 0 0 14px; font-size: 14px; color: var(--text-muted); }
+/* Soft white input boxes with dark text; lime ring on focus */
 .auth-form input {
   width: 100%;
   padding: 13px 16px;
   border-radius: 12px;
-  border: 1px solid var(--border-strong);
-  background: color-mix(in srgb, var(--text) 4%, transparent);
-  color: var(--text);
+  border: 1px solid transparent;
+  background: #E4E4E7;
+  color: #0A0A0A;
   font-size: 14px;
   outline: none;
-  transition: border-color .2s, box-shadow .2s, background .2s;
+  transition: border-color .2s, box-shadow .2s;
 }
-.auth-form input::placeholder { color: var(--text-dim); }
+.auth-form input::placeholder { color: rgba(10,10,10,0.45); }
 .auth-form input:focus {
-  border-color: color-mix(in srgb, var(--accent) 70%, transparent);
-  background: color-mix(in srgb, var(--text) 6%, transparent);
-  box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 14%, transparent);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 28%, transparent);
 }
+/* Keep browser autofill from tinting the white boxes */
+.auth-form input:-webkit-autofill {
+  -webkit-text-fill-color: #0A0A0A;
+  -webkit-box-shadow: 0 0 0 40px #E4E4E7 inset;
+  caret-color: #0A0A0A;
+}
+/* Password box: room on the right for the show/hide eye */
+.auth-password { position: relative; width: 100%; }
+.auth-form .auth-password input { padding-right: 48px; }
+.auth-eye {
+  position: absolute; top: 50%; right: 8px; translate: 0 -50%;
+  width: 34px; height: 34px;
+  display: grid; place-items: center;
+  border: 0; border-radius: 8px;
+  background: transparent;
+  color: rgba(10,10,10,0.55);
+  cursor: pointer;
+  transition: color .15s, background .15s;
+}
+.auth-eye:hover { color: #0A0A0A; background: rgba(10,10,10,0.06); }
+.auth-eye:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; color: #0A0A0A; }
+.auth-eye svg { width: 18px; height: 18px; }
 .auth-link { margin: 4px 0; font-size: 13px; color: var(--text-muted); text-decoration: none; transition: color .15s; }
 .auth-link:hover { color: var(--text); }
 .auth-error { margin: 0; font-size: 13px; color: var(--danger); }
@@ -117,30 +159,36 @@
   width: 50%; height: 100%;
   overflow: hidden;
   z-index: 100;
+  background: var(--surface);          /* dark strips either side of the lime band */
   transition: transform var(--auth-dur) var(--auth-ease);
+  --band-inset: 64px;
 }
 .auth-card[data-mode="signup"] .auth-overlay-wrap { transform: translateX(-100%); }
+/* The lime band: centred in the sliding half, with the card colour left and right */
+.auth-overlay-wrap::before {
+  content: ''; position: absolute; top: 0; bottom: 0; left: var(--band-inset); right: var(--band-inset);
+  background:
+    radial-gradient(ellipse 70% 60% at 50% 110%, rgba(255,255,255,0.35), transparent 70%),
+    linear-gradient(120deg, var(--auth-lime) 0%, var(--auth-lime-deep) 100%);
+}
 .auth-overlay {
   position: relative; left: -100%;
   width: 200%; height: 100%;
   color: var(--auth-ink);
-  background:
-    radial-gradient(rgba(0,0,0,0.13) 1px, transparent 1.4px) 0 0 / 18px 18px,
-    radial-gradient(ellipse 70% 60% at 50% 110%, rgba(255,255,255,0.35), transparent 70%),
-    linear-gradient(120deg, var(--auth-lime) 0%, var(--auth-lime-deep) 100%);
   transform: translateX(0);
   transition: transform var(--auth-dur) var(--auth-ease);
 }
 .auth-card[data-mode="signup"] .auth-overlay { transform: translateX(50%); }
-/* A light beam sweeps across the panel on every switch */
-.auth-overlay::after {
-  content: ''; position: absolute; inset: 0; pointer-events: none;
+/* A light beam sweeps across the lime band on every switch */
+.auth-overlay-wrap::after {
+  content: ''; position: absolute; top: 0; bottom: 0; left: var(--band-inset); right: var(--band-inset);
+  pointer-events: none;
   background: linear-gradient(105deg, transparent 35%, rgba(255,255,255,0.45) 50%, transparent 65%);
   background-size: 250% 100%;
   background-position: 120% 0;
 }
-.auth-card[data-mode="signup"] .auth-overlay::after { animation: auth-beam var(--auth-dur) var(--auth-ease); }
-.auth-card[data-mode="signin"] .auth-overlay::after { animation: auth-beam-back var(--auth-dur) var(--auth-ease); }
+.auth-card[data-mode="signup"] .auth-overlay-wrap::after { animation: auth-beam var(--auth-dur) var(--auth-ease); }
+.auth-card[data-mode="signin"] .auth-overlay-wrap::after { animation: auth-beam-back var(--auth-dur) var(--auth-ease); }
 @keyframes auth-beam      { from { background-position: 120% 0; } to { background-position: -20% 0; } }
 @keyframes auth-beam-back { from { background-position: 120% 0; } to { background-position: -20% 0; } }
 
@@ -148,12 +196,33 @@
   position: absolute; top: 0;
   width: 50%; height: 100%;
   display: flex; flex-direction: column; align-items: center; justify-content: center;
-  padding: 0 52px;
+  padding: 0 calc(var(--band-inset) + 24px);   /* keep the text inside the lime band */
   text-align: center;
   transition: transform var(--auth-dur) var(--auth-ease), opacity var(--auth-dur) var(--auth-ease);
 }
-.auth-panel h2 { margin: 0; font-size: 34px; font-weight: 900; letter-spacing: -0.03em; line-height: 1.05; }
+.auth-panel h2 { margin: 0; font-size: 28px; font-weight: 900; letter-spacing: -0.03em; line-height: 1.05; }
 .auth-panel p { margin: 16px 0 28px; font-size: 15px; line-height: 1.55; color: rgba(10,10,10,0.72); }
+/* Heading logo intro (PanelTitle): S pops in → splits left/right → text opens from the centre */
+.auth-title { position: relative; display: inline-block; }
+.auth-title-half {
+  position: absolute; top: 50%; left: 50%;
+  translate: -50% -50%;
+  opacity: 0;
+  pointer-events: none;
+}
+.auth-title-half svg { display: block; height: 1.15em; width: auto; overflow: visible; fill: var(--auth-ink); }
+.auth-title.play .auth-title-half { animation: auth-half-hold 1.7s linear .25s both; }
+.auth-title.play .auth-title-half svg { animation: auth-mark-in .45s cubic-bezier(.2,.8,.2,1.2) .25s both; }
+.auth-title.play .auth-title-left  { animation: auth-half-hold 1.7s linear .25s both, auth-split-left  .75s cubic-bezier(.65,0,.35,1) 1s both; }
+.auth-title.play .auth-title-right { animation: auth-half-hold 1.7s linear .25s both, auth-split-right .75s cubic-bezier(.65,0,.35,1) 1s both; }
+.auth-title.play .auth-title-text  { animation: auth-title-open .75s cubic-bezier(.65,0,.35,1) 1s both; }
+/* visible while the S shows and splits, gone once the halves reach the text edges */
+@keyframes auth-half-hold   { 0%, 75% { opacity: 1; } 100% { opacity: 0; } }
+@keyframes auth-mark-in     { from { scale: .4; opacity: 0; } to { scale: 1; opacity: 1; } }
+@keyframes auth-split-left  { from { left: 50%; } to { left: 0%; } }
+@keyframes auth-split-right { from { left: 50%; } to { left: 100%; } }
+@keyframes auth-title-open  { from { clip-path: inset(-10% 50% -10% 50%); } to { clip-path: inset(-10% 0 -10% 0); } }
+
 .auth-panel-left  { transform: translateX(-20%); opacity: 0; }
 .auth-panel-right { right: 0; }
 .auth-card[data-mode="signup"] .auth-panel-left  { transform: translateX(0); opacity: 1; }
@@ -190,4 +259,6 @@
 
 @media (prefers-reduced-motion: reduce) {
   .auth-root *, .auth-root *::after { transition-duration: .01ms !important; animation-duration: .01ms !important; }
+  .auth-title .auth-title-half { display: none; }
+  .auth-title .auth-title-text { animation: none !important; }
 }

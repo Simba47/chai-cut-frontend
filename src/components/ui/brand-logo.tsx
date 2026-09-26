@@ -7,8 +7,8 @@ import { useId } from 'react'
 // `shine` adds a one-time light sweep (left → right) after the logo assembles.
 // It uses SVG SMIL, whose clock starts at document load, so it plays on a
 // full page load/refresh but not when the logo mounts later via client navigation.
-const BRAND_TOP = 'M36 2H92Q98 2 94 6L34 66A32 32 0 0 1 36 2Z'
-const BRAND_BOTTOM = 'M66 116H10Q4 116 8 112L68 52A32 32 0 0 1 66 116Z' // BRAND_TOP rotated 180° about (51, 59)
+export const BRAND_TOP = 'M36 2H92Q98 2 94 6L34 66A32 32 0 0 1 36 2Z'
+export const BRAND_BOTTOM = 'M66 116H10Q4 116 8 112L68 52A32 32 0 0 1 66 116Z' // BRAND_TOP rotated 180° about (51, 59)
 
 export function BrandLogo({ size = 'md', shine = false }: { size?: 'md' | 'sm'; shine?: boolean }) {
   const gradId = `brand-shine-${useId().replace(/[^a-zA-Z0-9_-]/g, '')}`
