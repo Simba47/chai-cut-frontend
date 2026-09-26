@@ -203,12 +203,17 @@ Return ONLY a JSON array, no other text. Each element: {"title":"catchy 3-7 word
   const match = text.match(/\[[\s\S]*\]/)
   if (!match) throw new Error(`Gemini did not return a JSON array: ${text.slice(0, 300)}`)
   const parsed = JSON.parse(match[0]) as Array<{ title: string; start_ms: number; end_ms: number; summary: string }>
-  return parsed.map((s, i) => ({
-    id: `ai-criteria-${i}`, title: s.title,
-    start_ms: Math.max(0, Math.round(s.start_ms)),
-    end_ms: Math.min(durationMs, Math.round(s.end_ms)),
-    summary: s.summary ?? '',
-  }))
+  const MIN_CLIP_MS = 20_000
+  return parsed
+    .map((s, i) => {
+      const start_ms = Math.max(0, Math.round(s.start_ms))
+      let end_ms = Math.min(durationMs, Math.round(s.end_ms))
+      // Gemini sometimes ignores the requested 30–90s length — pad short moments
+      // out instead of discarding them outright (same fix ai_edit.ts needed).
+      if (end_ms - start_ms < MIN_CLIP_MS) end_ms = Math.min(durationMs, start_ms + MIN_CLIP_MS)
+      return { id: `ai-criteria-${i}`, title: s.title, start_ms, end_ms, summary: s.summary ?? '' }
+    })
+    .filter(s => s.end_ms - s.start_ms >= 10_000) // still too short (e.g. right at the end of the video) — drop it
 }
 
 function makeWordChunks(words: Word[], durationMs: number): ClipSuggestion[] {
