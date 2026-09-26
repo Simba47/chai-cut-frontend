@@ -174,7 +174,6 @@ export function CaptionStyler({
 }: Props) {
   const color = style.color ?? DEFAULT_CAPTION_STYLE.color
   const isPreset = PRESET_COLORS.includes(color)
-  const currentLang = style.language ?? 'original'
 
   return (
     <div className="flex flex-col gap-3 p-4">

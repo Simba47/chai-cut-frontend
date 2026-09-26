@@ -28,8 +28,14 @@ export async function GET(req: NextRequest) {
           AND EXISTS (SELECT 1 FROM transcript_words WHERE transcript_id = t.id)
         ORDER BY t.created_at DESC LIMIT 1`
 
-  if (!rows.length) return NextResponse.json({ words: null, video_status: video.status })
+  // True while any caption job for this video is waiting or running — the editor keeps polling
+  const [job] = await sql`
+    SELECT 1 FROM jobs WHERE type = 'transcribe' AND payload->>'video_id' = ${videoId}
+      AND status IN ('queued', 'processing') LIMIT 1`
+  const pending = !!job
+
+  if (!rows.length) return NextResponse.json({ words: null, video_status: video.status, pending })
 
   const words = await sql`SELECT * FROM transcript_words WHERE transcript_id = ${rows[0].id} ORDER BY start_ms`
-  return NextResponse.json({ words, video_status: video.status })
+  return NextResponse.json({ words, video_status: video.status, pending })
 }

@@ -22,6 +22,23 @@ export default async function VideoPickerPage({
   ` as unknown as VideoRow[]
   if (!video || video.user_id !== user.id) notFound()
 
+  if (video.status === 'ready' && video.storage_path) {
+    const { getUserPlanConfig } = await import('@/server/services/quota')
+    const plan = await getUserPlanConfig(user.id)
+    if (plan.autoCaption) {
+      // A whole-video caption job that is done, running or waiting counts; a failed one can retry
+      const [full] = await sql`
+        SELECT 1 FROM jobs
+        WHERE type = 'transcribe' AND payload->>'video_id' = ${video.id}
+          AND payload->>'transcribe_full' = 'true' AND status <> 'failed'
+        LIMIT 1`
+      if (!full) {
+        const payload = { video_id: video.id, storage_path: video.storage_path, transcribe_full: true }
+        await sql`INSERT INTO jobs (type, payload, status) VALUES ('transcribe', ${sql.json(payload)}, 'queued')`
+      }
+    }
+  }
+
   let videoUrl = ''
   if (video.status === 'ready' && video.storage_path) {
     videoUrl = await getSignedUrl(

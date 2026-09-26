@@ -12,6 +12,7 @@ import { TextOverlayPanel } from '@/components/editor/TextOverlayPanel'
 import { AudioMixerPanel } from '@/components/editor/AudioMixerPanel'
 import { FilterPanel } from '@/components/editor/FilterPanel'
 import { TranscriptPanel } from '@/components/editor/TranscriptPanel'
+import { useConfirm } from '@/components/editor/ConfirmDialog'
 import { useEditorStore, type KeyframeMap } from '@/modules/editor/store'
 import { usePlayerStore } from '@/modules/player/store'
 import { useVideoSync } from '@/modules/player/useSync'
@@ -349,6 +350,30 @@ export function EditorShellMobile({
     }
   }
 
+  // ── Every delete asks first ─────────────────────────────────────────────────
+  const { confirm, dialog: confirmDialog } = useConfirm()
+  function askResetPositions() {
+    confirm({ title: 'Remove all crop positions except the first?', body: 'The first one will cover the whole clip.', confirmLabel: 'Remove' }, () => {
+      const f = segments[0]; if (!f) return
+      segments.slice(1).forEach(s => removeSegment(s.id))
+      updateSegment(f.id, { start_ms: 0, end_ms: clip.end_ms - clip.start_ms })
+      setActiveSegmentId(f.id)
+    })
+  }
+  function askDeleteSegment(id: string) {
+    const i = segments.findIndex(s => s.id === id)
+    confirm({ title: `Delete crop position ${i + 1}?` }, () => removeSegment(id))
+  }
+  function askDeleteTextOverlay(id: string) {
+    confirm({ title: 'Delete this text?' }, () => deleteTextOverlay(id))
+  }
+  function askDeleteOverlay(id: string) {
+    confirm({ title: 'Delete this image?' }, () => deleteOverlay(id))
+  }
+  function askRemoveTrack(id: string) {
+    confirm({ title: 'Remove this music track?', confirmLabel: 'Remove' }, () => setAudioTracks(prev => prev.filter(t => t.id !== id)))
+  }
+
   function handleLayoutChange(layout: LayoutType) {
     const seg = playingSegment ?? activeSegment
     if (!seg) return
@@ -519,9 +544,9 @@ export function EditorShellMobile({
                 skipTransitionRef={skipCanvasTransitionRef}
                 words={displayWords} captionStyle={captionStyle} captionTextCase={captionTextCase} showCaptions={showCaptions}
                 overlays={overlays} activeOverlayId={activeOverlayId}
-                onOverlayChange={updateOverlay} onSelectOverlay={setActiveOverlayId} onDeleteOverlay={deleteOverlay}
+                onOverlayChange={updateOverlay} onSelectOverlay={setActiveOverlayId} onDeleteOverlay={askDeleteOverlay}
                 textOverlays={textOverlays} activeTextOverlayId={activeTextOverlayId}
-                onTextOverlayChange={updateTextOverlay} onSelectTextOverlay={setActiveTextOverlayId} onDeleteTextOverlay={deleteTextOverlay}
+                onTextOverlayChange={updateTextOverlay} onSelectTextOverlay={setActiveTextOverlayId} onDeleteTextOverlay={askDeleteTextOverlay}
                 onCaptionPositionChange={y => updateCaptionStyle({ position_y: y })}
                 style={{ width: '100%', height: '100%', display: 'block' }}
               />
@@ -551,7 +576,7 @@ export function EditorShellMobile({
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
           <span style={{ fontSize: 10, fontWeight: 700, color: 'rgba(255,255,255,0.5)', letterSpacing: 0.5, textTransform: 'uppercase' as const }}>Crop Positions</span>
           {segments.length > 1 && (
-            <button onClick={() => { const f = segments[0]; if (!f) return; segments.slice(1).forEach(s => removeSegment(s.id)); updateSegment(f.id, { start_ms: 0, end_ms: clip.end_ms - clip.start_ms }); setActiveSegmentId(f.id) }}
+            <button onClick={askResetPositions}
               style={{ fontSize: 10, padding: '2px 6px', borderRadius: 5, background: 'rgba(239,68,68,0.12)', color: '#f87171', border: '1px solid rgba(239,68,68,0.2)', cursor: 'pointer' }}>Reset</button>
           )}
         </div>
@@ -564,7 +589,7 @@ export function EditorShellMobile({
               <div style={{ width: 6, height: 6, borderRadius: 3, background: col, flexShrink: 0 }} />
               <span style={{ fontSize: 10, color: 'rgba(255,255,255,0.6)', fontVariantNumeric: 'tabular-nums', flex: 1 }}>{msToLabel(seg.start_ms)}–{msToLabel(seg.end_ms)}</span>
               <span style={{ fontSize: 10, color: 'rgba(255,255,255,0.3)', textTransform: 'capitalize' as const }}>{seg.layout}</span>
-              {segments.length > 1 && <button onClick={e => { e.stopPropagation(); removeSegment(seg.id) }} style={{ width: 18, height: 18, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(239,68,68,0.1)', borderRadius: 4, border: 'none', cursor: 'pointer', color: '#f87171', fontSize: 12 }}>×</button>}
+              {segments.length > 1 && <button onClick={e => { e.stopPropagation(); askDeleteSegment(seg.id) }} style={{ width: 18, height: 18, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(239,68,68,0.1)', borderRadius: 4, border: 'none', cursor: 'pointer', color: '#f87171', fontSize: 12 }}>×</button>}
             </div>
           )
         })}
@@ -653,6 +678,7 @@ export function EditorShellMobile({
 
   return (
     <div style={{ height: '100dvh', display: 'flex', flexDirection: 'column', background: '#0d0d0d', overflow: 'hidden' }}>
+      {confirmDialog}
       {headerJSX}
 
       {/* ══ LANDSCAPE: exactly like the desktop — video left, sidebar right ══ */}
@@ -714,7 +740,7 @@ export function EditorShellMobile({
                 <div style={{ padding: '10px 12px', display: 'flex', gap: 8, borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
                   <button onClick={handleCut} style={{ flex: 1, padding: '10px 0', borderRadius: 10, background: 'rgba(200,255,0,0.12)', color: '#c8ff00', fontSize: 13, fontWeight: 600, border: '1px solid rgba(200,255,0,0.25)', cursor: 'pointer' }}>✂ Cut here</button>
                   {segments.length > 1 && (
-                    <button onClick={() => { const f = segments[0]; if (!f) return; segments.slice(1).forEach(s => removeSegment(s.id)); updateSegment(f.id, { start_ms: 0, end_ms: clip.end_ms - clip.start_ms }); setActiveSegmentId(f.id) }}
+                    <button onClick={askResetPositions}
                       style={{ padding: '10px 16px', borderRadius: 10, background: 'rgba(239,68,68,0.1)', color: '#f87171', fontSize: 13, fontWeight: 600, border: '1px solid rgba(239,68,68,0.2)', cursor: 'pointer' }}>Reset</button>
                   )}
                 </div>
@@ -729,7 +755,7 @@ export function EditorShellMobile({
                         <span style={{ fontSize: 12, color: 'rgba(255,255,255,0.6)', fontVariantNumeric: 'tabular-nums' }}>{msToLabel(seg.start_ms)} — {msToLabel(seg.end_ms)}</span>
                         <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.3)', textTransform: 'capitalize' }}>{seg.layout}</span>
                         <div style={{ flex: 1 }} />
-                        {segments.length > 1 && <button onClick={e => { e.stopPropagation(); removeSegment(seg.id) }} style={{ width: 28, height: 28, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(239,68,68,0.1)', borderRadius: 7, border: 'none', cursor: 'pointer', color: '#f87171', fontSize: 14 }}>×</button>}
+                        {segments.length > 1 && <button onClick={e => { e.stopPropagation(); askDeleteSegment(seg.id) }} style={{ width: 28, height: 28, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(239,68,68,0.1)', borderRadius: 7, border: 'none', cursor: 'pointer', color: '#f87171', fontSize: 14 }}>×</button>}
                       </div>
                     )
                   })}
@@ -824,7 +850,7 @@ export function EditorShellMobile({
               <div style={{ padding: 12 }}>
                 <TextOverlayPanel overlays={textOverlays} currentTimeMs={currentTimeMs} clipDurationMs={clip.end_ms - clip.start_ms}
                   onAdd={o => setTextOverlays(prev => [...prev, { ...o, id: crypto.randomUUID(), clip_id: clip.id }])}
-                  onUpdate={updateTextOverlay} onRemove={deleteTextOverlay} />
+                  onUpdate={updateTextOverlay} onRemove={askDeleteTextOverlay} />
               </div>
             )}
 
@@ -832,7 +858,7 @@ export function EditorShellMobile({
               <div style={{ padding: 12 }}>
                 <AudioMixerPanel tracks={audioTracks}
                   onAddTrack={f => setAudioTracks(prev => [...prev, { id: crypto.randomUUID(), clip_id: clip.id, storage_path: f.name, start_ms: 0, volume: 0.5, duck_under_speech: true }])}
-                  onRemoveTrack={id => setAudioTracks(prev => prev.filter(t => t.id !== id))}
+                  onRemoveTrack={askRemoveTrack}
                   onUpdateTrack={(id, u) => setAudioTracks(prev => prev.map(t => t.id === id ? { ...t, ...u } : t))} />
               </div>
             )}
@@ -860,9 +886,9 @@ export function EditorShellMobile({
                       skipTransitionRef={skipCanvasTransitionRef}
                       words={displayWords} captionStyle={captionStyle} captionTextCase={captionTextCase} showCaptions={showCaptions}
                       overlays={overlays} activeOverlayId={activeOverlayId}
-                      onOverlayChange={updateOverlay} onSelectOverlay={setActiveOverlayId} onDeleteOverlay={deleteOverlay}
+                      onOverlayChange={updateOverlay} onSelectOverlay={setActiveOverlayId} onDeleteOverlay={askDeleteOverlay}
                       textOverlays={textOverlays} activeTextOverlayId={activeTextOverlayId}
-                      onTextOverlayChange={updateTextOverlay} onSelectTextOverlay={setActiveTextOverlayId} onDeleteTextOverlay={deleteTextOverlay}
+                      onTextOverlayChange={updateTextOverlay} onSelectTextOverlay={setActiveTextOverlayId} onDeleteTextOverlay={askDeleteTextOverlay}
                       onCaptionPositionChange={y => updateCaptionStyle({ position_y: y })}
                       style={{ width: '100%', height: 'auto', display: 'block' }}
                     />

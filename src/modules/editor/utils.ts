@@ -1,5 +1,6 @@
 import type { CropBoxLocal, BoxKeyframeLocal, LayoutType, SegmentLocal, Segment, CropBox, BoxKeyframe } from '@chai-cut/shared'
 import type { BoxPosition } from '@/lib/interpolation'
+import { isFrameLayout, frameSlotHeight, frameOf } from './frames'
 
 // ── Crop geometry ─────────────────────────────────────────────────────────────
 // Crop boxes are stored normalised to the source frame (0–1 on each axis). The renderer
@@ -12,7 +13,8 @@ const OUT_H = 1920
 const DEFAULT_SOURCE_AR = 16 / 9
 
 /** Pixel aspect (w/h) of one output slot, or null when the slot takes the whole frame letterboxed. */
-export function slotPixelAspect(layout: LayoutType): number | null {
+export function slotPixelAspect(layout: LayoutType, frameBand = false): number | null {
+  if (isFrameLayout(layout)) return OUT_W / (OUT_H * frameSlotHeight(layout, frameBand))
   switch (layout) {
     case 'horizontal': return null
     case 'split': return OUT_W / (OUT_H / 2)   // 9:8
@@ -22,8 +24,8 @@ export function slotPixelAspect(layout: LayoutType): number | null {
 }
 
 /** Slot aspect expressed in normalised source units (box.w / box.h), or null if unlocked. */
-export function normalizedSlotAspect(layout: LayoutType, videoAR = DEFAULT_SOURCE_AR): number | null {
-  const a = slotPixelAspect(layout)
+export function normalizedSlotAspect(layout: LayoutType, videoAR = DEFAULT_SOURCE_AR, frameBand = false): number | null {
+  const a = slotPixelAspect(layout, frameBand)
   return a === null ? null : a / (videoAR || DEFAULT_SOURCE_AR)
 }
 
@@ -52,6 +54,8 @@ export function defaultCropForSlot(layout: LayoutType, slotIdx: number, videoAR 
   const a = normalizedSlotAspect(layout, videoAR)
   if (a === null) return { x: 0, y: 0, w: 1, h: 1 }
   const portrait = a > 1 // source narrower than the slot: stack slots vertically instead
+  // Frame slots each show their own media, so every slot starts centred on it
+  if (isFrameLayout(layout)) return rectAt(a, 0.5, 0.5, 1)
   switch (layout) {
     case 'split':
       return portrait
@@ -89,20 +93,43 @@ interface SegmentRow extends Omit<Segment, never> {
 }
 
 export function rowsToLocal(rows: SegmentRow[]): SegmentLocal[] {
-  return rows.map(s => ({
+  return rows.map(toLocal).map(upgradeFrame)
+}
+
+// Frames saved before lanes existed kept a photo or another video on a slot's crop box; those
+// become lane items, and every frame crop box goes back to framing the main video
+function upgradeFrame(seg: SegmentLocal): SegmentLocal {
+  if (!isFrameLayout(seg.layout) || seg.frame?.items) return seg
+  return {
+    ...seg,
+    frame: frameOf(seg),
+    crop_boxes: seg.crop_boxes.map(b => b.source_video_id || b.image_path
+      ? { ...b, source_video_id: null, source_offset_ms: seg.start_ms, image_path: null, image_url: null, image_motion: null }
+      : b),
+  }
+}
+
+function toLocal(s: SegmentRow): SegmentLocal {
+  return ({
     id: s.id,
     start_ms: s.start_ms,
     end_ms: s.end_ms,
     layout: s.layout,
     sort_order: s.sort_order,
+    frame: s.frame ?? null,
     crop_boxes: s.crop_boxes.map(b => ({
       id: b.id,
       slot_index: b.slot_index,
       source_video_id: b.source_video_id ?? null,
       source_offset_ms: b.source_offset_ms ?? 0,
+      image_path: b.image_path ?? null,
+      image_url: b.image_url ?? null,
+      image_motion: b.image_motion ?? null,
+      volume: b.volume ?? 1,
+      muted: b.muted ?? false,
       keyframes: b.box_keyframes,
     })),
-  }))
+  })
 }
 
 export function msToLabel(ms: number) {
