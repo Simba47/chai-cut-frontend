@@ -1,4 +1,5 @@
 import { DeleteObjectCommand, DeleteObjectsCommand } from '@aws-sdk/client-s3'
+import { GoogleGenerativeAI } from '@google/generative-ai'
 import { r2, R2_BUCKET } from '@/lib/r2'
 import sql from '@/lib/db'
 
@@ -99,6 +100,43 @@ export async function getVideoSuggestions(userId: string, videoId: string): Prom
   }
 }
 
+// Criteria-steered clip detection ("find me the funniest moments", "controversial takes", etc.) —
+// same transcript source as getVideoSuggestions, but the caller picks what to look for.
+export async function getVideoSuggestionsByCriteria(
+  userId: string, videoId: string, criteria: string,
+): Promise<{ suggestions: ClipSuggestion[] }> {
+  const trimmedCriteria = criteria.trim().slice(0, 200)
+  if (!trimmedCriteria) throw Object.assign(new Error('Tell the AI what to look for'), { status: 400 })
+
+  const [video] = await sql`
+    SELECT id, user_id, duration_ms, status FROM videos WHERE id = ${videoId}
+  `
+  if (!video || video.user_id !== userId) {
+    throw Object.assign(new Error('Not found'), { status: 404 })
+  }
+
+  const [transcriptRow] = await sql`
+    SELECT id FROM transcripts WHERE video_id = ${videoId} ORDER BY created_at DESC LIMIT 1
+  `
+  const words: Word[] = transcriptRow
+    ? await sql`SELECT word, start_ms, end_ms FROM transcript_words WHERE transcript_id = ${transcriptRow.id} ORDER BY start_ms`
+    : []
+
+  const durationMs = video.duration_ms ?? 0
+  if (words.length === 0) {
+    throw Object.assign(new Error('This video has no transcript yet'), { status: 400 })
+  }
+
+  const geminiKey = process.env.GEMINI_API_KEY
+  if (!geminiKey) throw Object.assign(new Error('AI clip detection is not configured'), { status: 500 })
+
+  return {
+    suggestions: await detectClipsByCriteria(
+      buildTranscriptText(words), durationMs, trimmedCriteria, geminiKey,
+    ),
+  }
+}
+
 function msToTimestamp(ms: number) {
   const s = Math.floor(ms / 1000)
   return `${Math.floor(s / 60)}:${(s % 60).toString().padStart(2, '0')}`
@@ -138,6 +176,35 @@ async function detectClipsWithClaude(transcript: string, durationMs: number, api
   const parsed = JSON.parse(match[0]) as Array<{ title: string; start_ms: number; end_ms: number; summary: string }>
   return parsed.map((s, i) => ({
     id: `ai-${i}`, title: s.title,
+    start_ms: Math.max(0, Math.round(s.start_ms)),
+    end_ms: Math.min(durationMs, Math.round(s.end_ms)),
+    summary: s.summary ?? '',
+  }))
+}
+
+async function detectClipsByCriteria(
+  transcript: string, durationMs: number, criteria: string, apiKey: string,
+): Promise<ClipSuggestion[]> {
+  const genAI = new GoogleGenerativeAI(apiKey)
+  const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' })
+  const prompt = `You are a video clip finder. Given a video transcript with timestamps and a request describing what to look for, identify up to 8 moments (30–90 seconds each) that match the request. If nothing in the transcript matches, return an empty array.
+
+What to look for: ${criteria}
+
+Video duration: ${msToTimestamp(durationMs)}
+
+Transcript:
+${transcript.slice(0, 8000)}
+
+Return ONLY a JSON array, no other text. Each element: {"title":"catchy 3-7 word title","start_ms":number,"end_ms":number,"summary":"one sentence on why this moment matches the request"}`
+
+  const result = await model.generateContent(prompt)
+  const text = result.response.text()
+  const match = text.match(/\[[\s\S]*\]/)
+  if (!match) throw new Error(`Gemini did not return a JSON array: ${text.slice(0, 300)}`)
+  const parsed = JSON.parse(match[0]) as Array<{ title: string; start_ms: number; end_ms: number; summary: string }>
+  return parsed.map((s, i) => ({
+    id: `ai-criteria-${i}`, title: s.title,
     start_ms: Math.max(0, Math.round(s.start_ms)),
     end_ms: Math.min(durationMs, Math.round(s.end_ms)),
     summary: s.summary ?? '',
