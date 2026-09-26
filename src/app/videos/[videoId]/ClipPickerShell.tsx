@@ -95,6 +95,10 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: P
   const [suggestions, setSuggestions] = useState<Suggestion[] | null>(null)
   const [loadingSuggestions, setLoadingSuggestions] = useState(false)
   const [suggestionsError, setSuggestionsError] = useState<string | null>(null)
+  const [aiCriteria, setAiCriteria] = useState('')
+  const [aiSuggestions, setAiSuggestions] = useState<Suggestion[] | null>(null)
+  const [loadingAi, setLoadingAi] = useState(false)
+  const [aiError, setAiError] = useState<string | null>(null)
 
   const isReady = video.status === 'ready'
   const isProcessing = video.status === 'uploaded' || video.status === 'transcribing'
@@ -202,6 +206,28 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: P
     }
   }
 
+  // On demand — asks Claude to find moments matching a specific, user-typed criteria
+  async function findByCriteria() {
+    const q = aiCriteria.trim()
+    if (!q) return
+    setLoadingAi(true)
+    setAiError(null)
+    try {
+      const res = await fetch(`/api/videos/${video.id}/ai-detect`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ criteria: q }),
+      })
+      if (!res.ok) throw new Error((await res.json()).error ?? 'Could not find clips')
+      const { suggestions } = await res.json()
+      setAiSuggestions(suggestions ?? [])
+    } catch (e) {
+      setAiError(e instanceof Error ? e.message : 'Could not find clips')
+    } finally {
+      setLoadingAi(false)
+    }
+  }
+
   return (
     <div className="h-screen flex flex-col overflow-hidden" style={{ background: '#0d0d0d' }}>
       {/* Nav */}
@@ -233,7 +259,7 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: P
 
       <div className="flex-1 flex min-h-0 overflow-hidden">
 
-        {/* ── Video + clip map ────────────────────────────────────── */}
+        {/* ── Video ────────────────────────────────────────────────── */}
         <div className="flex-1 min-w-0 flex flex-col">
           <div className="flex-1 min-h-0 flex items-center justify-center bg-black">
             {isReady && videoUrl ? (
@@ -266,16 +292,6 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: P
               </div>
             )}
           </div>
-
-          {isReady && maxMs > 0 && (
-            <ClipMap
-              durationMs={maxMs}
-              nowMs={nowMs}
-              clips={savedClips.map((c, i) => ({ id: c.id, n: i + 1, start: c.start_ms, end: c.end_ms, title: c.title ?? `Clip ${c.index}` }))}
-              draft={showForm && formRangeValid ? { start: formStartMs!, end: formEndMs! } : null}
-              onSeek={ms => seek(ms, false)}
-            />
-          )}
         </div>
 
         {/* ── Clip panel ─────────────────────────────────────────── */}
@@ -294,7 +310,7 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: P
               {savedClips.length === 0 && !showForm && (
                 <p className="text-xs leading-relaxed" style={{ color: 'rgba(255,255,255,0.45)' }}>
                   {isReady
-                    ? 'Scrub the video to a moment you like, then press New clip. Or let AI find the best moments below.'
+                    ? 'Scrub the video to a moment you like, then press New clip. Or let AI find moments below.'
                     : 'You can start clipping once the video has finished processing.'}
                 </p>
               )}
@@ -351,6 +367,43 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: P
               )}
             </section>
 
+            {/* Ask AI */}
+            {isReady && (
+              <section className="p-4 flex flex-col gap-2" style={{ borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+                <h2 className="text-sm font-semibold text-white">Ask AI</h2>
+                <p className="text-xs leading-relaxed" style={{ color: 'rgba(255,255,255,0.45)' }}>
+                  Describe what to look for — an emotion, a controversial moment, a specific topic — and AI scans the transcript for matching clips.
+                </p>
+                <form className="flex gap-2" onSubmit={e => { e.preventDefault(); findByCriteria() }}>
+                  <input
+                    type="text"
+                    placeholder="e.g. funny reactions, controversial takes…"
+                    aria-label="What should AI look for?"
+                    value={aiCriteria}
+                    onChange={e => setAiCriteria(e.target.value)}
+                    className="min-w-0 flex-1 px-3 py-2 rounded-lg text-sm text-white outline-none focus:border-[#c8ff00]"
+                    style={{ background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.12)' }}
+                  />
+                  <button type="submit" disabled={loadingAi || !aiCriteria.trim()}
+                    className="shrink-0 flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-bold disabled:opacity-40"
+                    style={{ background: ACCENT, color: '#000' }}>
+                    {loadingAi ? <Spinner /> : '✦'} Find
+                  </button>
+                </form>
+                {aiError && <p className="text-xs" style={{ color: '#f87171' }}>{aiError}</p>}
+                {loadingAi && (
+                  <p className="flex items-center gap-2 text-xs py-2" style={{ color: ACCENT }}><Spinner /> Scanning the transcript…</p>
+                )}
+                {!loadingAi && aiSuggestions && aiSuggestions.length === 0 && (
+                  <p className="text-xs" style={{ color: 'rgba(255,255,255,0.45)' }}>Nothing matched that. Try a different description.</p>
+                )}
+                {!loadingAi && aiSuggestions?.map(s => (
+                  <SuggestionCard key={s.id} suggestion={s} busy={busy}
+                    onSeek={() => seek(s.start_ms)} onUse={() => createClip(s.start_ms, s.end_ms, s.id, s.title)} />
+                ))}
+              </section>
+            )}
+
             {/* AI suggestions */}
             {isReady && (
               <section className="p-4 flex flex-col gap-2">
@@ -381,23 +434,8 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: P
                   <p className="text-xs" style={{ color: 'rgba(255,255,255,0.45)' }}>No suggestions for this video.</p>
                 )}
                 {suggestions && !loadingSuggestions && suggestions.map(s => (
-                  <div key={s.id} className="rounded-xl p-3" style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)' }}>
-                    <p className="text-sm font-medium text-white leading-snug">{s.title}</p>
-                    {s.summary && <p className="text-xs mt-1 leading-relaxed" style={{ color: 'rgba(255,255,255,0.5)' }}>{s.summary}</p>}
-                    <div className="flex items-center gap-2 mt-2.5">
-                      <button onClick={() => seek(s.start_ms)} title="Play this moment"
-                        className="text-xs font-mono tabular-nums px-2 py-1 rounded-md transition-colors hover:bg-white/10" style={{ color: 'rgba(255,255,255,0.6)', background: 'rgba(255,255,255,0.05)' }}>
-                        ▶ {msToDisplay(s.start_ms)} – {msToDisplay(s.end_ms)}
-                      </button>
-                      <span className="text-xs" style={{ color: 'rgba(255,255,255,0.35)' }}>{durLabel(s.start_ms, s.end_ms)}</span>
-                      <div className="flex-1" />
-                      <button onClick={() => createClip(s.start_ms, s.end_ms, s.id, s.title)} disabled={!!busy}
-                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold disabled:opacity-40 transition-colors hover:bg-white/15"
-                        style={{ color: '#fff', background: 'rgba(255,255,255,0.08)' }}>
-                        {busy === s.id ? <Spinner /> : '+'} Use
-                      </button>
-                    </div>
-                  </div>
+                  <SuggestionCard key={s.id} suggestion={s} busy={busy}
+                    onSeek={() => seek(s.start_ms)} onUse={() => createClip(s.start_ms, s.end_ms, s.id, s.title)} />
                 ))}
               </section>
             )}
@@ -413,49 +451,6 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: P
             </div>
           )}
         </aside>
-      </div>
-    </div>
-  )
-}
-
-// ── Clip map: where each clip sits in the video ───────────────────────────────
-
-function ClipMap({ durationMs, nowMs, clips, draft, onSeek }: {
-  durationMs: number
-  nowMs: number
-  clips: { id: string; n: number; start: number; end: number; title: string }[]
-  draft: { start: number; end: number } | null
-  onSeek: (ms: number) => void
-}) {
-  const ref = useRef<HTMLDivElement>(null)
-  const pct = (ms: number) => `${Math.max(0, Math.min(100, (ms / durationMs) * 100))}%`
-
-  function seekFromEvent(e: React.MouseEvent) {
-    const r = ref.current?.getBoundingClientRect()
-    if (!r) return
-    onSeek(Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)) * durationMs)
-  }
-
-  return (
-    <div className="shrink-0 px-4 py-3" style={{ background: '#111', borderTop: '1px solid rgba(255,255,255,0.07)' }}>
-      <div className="flex items-center justify-between mb-2 text-[11px]" style={{ color: 'rgba(255,255,255,0.45)' }}>
-        <span>Clips in this video · click to jump</span>
-        <span className="tabular-nums">{msToDisplay(nowMs)} / {msToDisplay(durationMs)}</span>
-      </div>
-      <div ref={ref} onClick={seekFromEvent} className="relative cursor-pointer rounded-md" style={{ height: 28, background: 'rgba(255,255,255,0.05)' }}>
-        {clips.map(c => (
-          <button key={c.id} onClick={e => { e.stopPropagation(); onSeek(c.start) }}
-            title={`${c.n}. ${c.title} (${msToDisplay(c.start)} – ${msToDisplay(c.end)})`}
-            className="absolute top-1 bottom-1 rounded flex items-center justify-center text-[10px] font-bold overflow-hidden transition-opacity hover:opacity-80"
-            style={{ left: pct(c.start), width: `max(6px, calc(${pct(c.end)} - ${pct(c.start)}))`, background: 'rgba(200,255,0,0.7)', color: '#000' }}>
-            {c.n}
-          </button>
-        ))}
-        {draft && (
-          <div className="absolute top-0.5 bottom-0.5 rounded pointer-events-none"
-            style={{ left: pct(draft.start), width: `max(4px, calc(${pct(draft.end)} - ${pct(draft.start)}))`, border: '1.5px dashed #c8ff00', background: 'rgba(200,255,0,0.1)' }} />
-        )}
-        <div className="absolute -top-1 -bottom-1 w-0.5 pointer-events-none" style={{ left: pct(nowMs), background: '#fff', boxShadow: '0 0 4px rgba(0,0,0,0.8)' }} />
       </div>
     </div>
   )
@@ -481,6 +476,33 @@ function TimeField({ id, label, value, onChange, onUseNow }: { id: string; label
 
 function Spinner() {
   return <span className="inline-block w-3 h-3 border-2 border-current border-t-transparent rounded-full animate-spin" />
+}
+
+function SuggestionCard({ suggestion, busy, onSeek, onUse }: {
+  suggestion: Suggestion
+  busy: string | null
+  onSeek: () => void
+  onUse: () => void
+}) {
+  return (
+    <div className="rounded-xl p-3" style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)' }}>
+      <p className="text-sm font-medium text-white leading-snug">{suggestion.title}</p>
+      {suggestion.summary && <p className="text-xs mt-1 leading-relaxed" style={{ color: 'rgba(255,255,255,0.5)' }}>{suggestion.summary}</p>}
+      <div className="flex items-center gap-2 mt-2.5">
+        <button onClick={onSeek} title="Play this moment"
+          className="text-xs font-mono tabular-nums px-2 py-1 rounded-md transition-colors hover:bg-white/10" style={{ color: 'rgba(255,255,255,0.6)', background: 'rgba(255,255,255,0.05)' }}>
+          ▶ {msToDisplay(suggestion.start_ms)} – {msToDisplay(suggestion.end_ms)}
+        </button>
+        <span className="text-xs" style={{ color: 'rgba(255,255,255,0.35)' }}>{durLabel(suggestion.start_ms, suggestion.end_ms)}</span>
+        <div className="flex-1" />
+        <button onClick={onUse} disabled={!!busy}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold disabled:opacity-40 transition-colors hover:bg-white/15"
+          style={{ color: '#fff', background: 'rgba(255,255,255,0.08)' }}>
+          {busy === suggestion.id ? <Spinner /> : '+'} Use
+        </button>
+      </div>
+    </div>
+  )
 }
 
 function ClipCard({ number, title, startMs, endMs, status, outputUrl, playing, onSeek, onEdit, disabled }: {
