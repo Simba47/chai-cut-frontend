@@ -25,15 +25,10 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" suppressHydrationWarning>
-      {/* Apply saved theme before first paint to prevent flash */}
+      {/* The app is always dark (the light/dark switch was removed). Clear any
+          theme saved by the old switch so nobody stays stuck in light mode. */}
       <head>
-        <script dangerouslySetInnerHTML={{ __html: `
-          try {
-            var t = localStorage.getItem('theme');
-            if (t === 'light' || (!t && window.matchMedia('(prefers-color-scheme: light)').matches))
-              document.documentElement.setAttribute('data-theme', 'light');
-          } catch(e){}
-        `}} />
+        <script dangerouslySetInnerHTML={{ __html: `try { localStorage.removeItem('theme') } catch (e) {}` }} />
       </head>
       <body className={displayFont.variable}>
         <Providers>{children}</Providers>

@@ -3,10 +3,12 @@
 import './dashboard.css'
 import { useState, useEffect, useRef, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
-import { useSession, signOut } from 'next-auth/react'
+import Link from 'next/link'
 import type { Video } from '@chai-cut/shared'
 import { ACCEPTED_VIDEO_EXTENSIONS, MAX_UPLOAD_BYTES } from '@chai-cut/shared'
-import { ThemeToggle } from '@/components/ThemeToggle'
+import { Breadcrumbs } from '@/components/ui/breadcrumbs'
+import { AccountMenu } from '@/components/ui/account-menu'
+import { FillButtonContent } from '@/components/ui/fill-button'
 
 type DashVideo = Video & { video_url?: string | null; clip_count?: number }
 type SortKey = 'newest' | 'oldest' | 'name'
@@ -41,7 +43,6 @@ function useDismiss(open: boolean, close: () => void) {
 
 export default function DashboardPage() {
   const router = useRouter()
-  const { data: session } = useSession()
   const [videos, setVideos] = useState<DashVideo[]>([])
   const [loading, setLoading] = useState(true)
   const [planInfo, setPlanInfo] = useState<PlanInfo | null>(null)
@@ -223,10 +224,7 @@ export default function DashboardPage() {
       onDrop={onDrop}
     >
       <nav className="dash-nav">
-        <a href="/dashboard" className="dash-brand">
-          <img src="/logo-icon.png" alt="" />
-          <span>Shortcut</span>
-        </a>
+        <Breadcrumbs shine items={[{ label: 'Dashboard' }]} />
         <div className="dash-nav-right">
           {planInfo && (
             <div
@@ -237,19 +235,17 @@ export default function DashboardPage() {
               <div className="dash-usage-bar"><div style={{ width: `${usagePct}%` }} /></div>
             </div>
           )}
-          {planInfo && (planInfo.plan === 'free'
-            ? <a href="/pricing" className="dash-btn dash-btn-primary dash-btn-sm">Upgrade</a>
-            : <a href="/pricing" className="dash-plan" title="View plans">{planInfo.planName}</a>
+          {planInfo?.plan === 'free' && (
+            <a href="/pricing" className="dash-btn-fill fill-btn fill-btn-sm"><FillButtonContent>Upgrade</FillButtonContent></a>
           )}
-          <ThemeToggle />
-          <AccountMenu email={session?.user?.email ?? ''} planInfo={planInfo} />
+          <AccountMenu planInfo={planInfo} />
         </div>
       </nav>
 
       <main className="dash-main">
         {!isEmpty && (
           <div className="dash-head">
-            <h1>Your videos<span>{videos.length}</span></h1>
+            <h1><span className="dash-title">Your videos</span><span className="dash-count">{videos.length}</span></h1>
             <div className="dash-tools">
               <label className="dash-search">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -265,11 +261,7 @@ export default function DashboardPage() {
                   onChange={e => setQuery(e.target.value)}
                 />
               </label>
-              <select className="dash-select" aria-label="Sort videos" value={sort} onChange={e => setSort(e.target.value as SortKey)}>
-                <option value="newest">Newest</option>
-                <option value="oldest">Oldest</option>
-                <option value="name">Name</option>
-              </select>
+              <SortMenu value={sort} onChange={setSort} />
             </div>
           </div>
         )}
@@ -312,8 +304,8 @@ export default function DashboardPage() {
             )}
           </div>
           {!atLimit && (
-            <button className="dash-btn dash-btn-primary" disabled={uploading} onClick={() => fileInputRef.current?.click()}>
-              {uploading ? <><span className="dash-spinner" /> Uploading</> : 'Upload video'}
+            <button className="dash-btn-fill fill-btn" disabled={uploading} onClick={() => fileInputRef.current?.click()}>
+              {uploading ? <><span className="dash-spinner" /> Uploading</> : <FillButtonContent>Upload video</FillButtonContent>}
             </button>
           )}
         </div>
@@ -356,23 +348,78 @@ export default function DashboardPage() {
   )
 }
 
-function AccountMenu({ email, planInfo }: { email: string; planInfo: PlanInfo | null }) {
+const SORT_OPTIONS: { value: SortKey; label: string }[] = [
+  { value: 'newest', label: 'Newest' },
+  { value: 'oldest', label: 'Oldest' },
+  { value: 'name', label: 'Name' },
+]
+
+// Brand-styled replacement for the native <select> (whose open list can't be styled).
+// Keyboard: ↑/↓ move, Enter/Space pick, Esc closes.
+function SortMenu({ value, onChange }: { value: SortKey; onChange: (v: SortKey) => void }) {
   const [open, setOpen] = useState(false)
+  const [active, setActive] = useState(0)
   const ref = useDismiss(open, () => setOpen(false))
+  const buttonRef = useRef<HTMLButtonElement>(null)
+  const current = SORT_OPTIONS.find(o => o.value === value) ?? SORT_OPTIONS[0]
+
+  function openMenu() {
+    setActive(SORT_OPTIONS.findIndex(o => o.value === value))
+    setOpen(true)
+  }
+  function pick(v: SortKey) {
+    onChange(v)
+    setOpen(false)
+    buttonRef.current?.focus()
+  }
+  function onKeyDown(e: React.KeyboardEvent) {
+    if (!open) {
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); openMenu() }
+      return
+    }
+    if (e.key === 'ArrowDown') { e.preventDefault(); setActive(i => (i + 1) % SORT_OPTIONS.length) }
+    if (e.key === 'ArrowUp') { e.preventDefault(); setActive(i => (i - 1 + SORT_OPTIONS.length) % SORT_OPTIONS.length) }
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pick(SORT_OPTIONS[active].value) }
+    if (e.key === 'Tab') setOpen(false)
+  }
+
   return (
-    <div ref={ref} style={{ position: 'relative' }}>
-      <button className="dash-avatar" aria-label="Account menu" aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen(o => !o)}>
-        {email.charAt(0) || '?'}
+    <div ref={ref} className="dash-sort" onKeyDown={onKeyDown}>
+      <button
+        ref={buttonRef}
+        type="button"
+        className="dash-sort-btn"
+        aria-label={`Sort videos: ${current.label}`}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        onClick={() => (open ? setOpen(false) : openMenu())}
+      >
+        {current.label}
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path d="M6 9l6 6 6-6" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
       </button>
       {open && (
-        <div className="dash-popover" role="menu" style={{ minWidth: 220 }}>
-          <div className="dash-popover-head">
-            <p>{email}</p>
-            {planInfo && <p>{planInfo.planName} plan · {planInfo.usage.videos}/{planInfo.maxVideos} videos</p>}
-          </div>
-          <a href="/pricing" className="dash-menu-item" role="menuitem">Plans &amp; billing</a>
-          <button className="dash-menu-item" role="menuitem" onClick={() => signOut({ callbackUrl: '/login' })}>Sign out</button>
-        </div>
+        <ul className="dash-popover dash-sort-list" role="listbox" aria-label="Sort videos" aria-activedescendant={`sort-${SORT_OPTIONS[active].value}`}>
+          {SORT_OPTIONS.map((o, i) => (
+            <li
+              key={o.value}
+              id={`sort-${o.value}`}
+              role="option"
+              aria-selected={o.value === value}
+              className={`dash-menu-item${i === active ? ' is-active' : ''}`}
+              onMouseEnter={() => setActive(i)}
+              onClick={() => pick(o.value)}
+            >
+              {o.label}
+              {o.value === value && (
+                <svg className="dash-sort-check" width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                  <path d="M5 12.5l4.5 4.5L19 7.5" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              )}
+            </li>
+          ))}
+        </ul>
       )}
     </div>
   )
@@ -384,9 +431,6 @@ function VideoCard({ video, title, onRename, onDelete }: {
   onRename: (title: string) => void
   onDelete: () => void
 }) {
-  const router = useRouter()
-  const [menuOpen, setMenuOpen] = useState(false)
-  const menuRef = useDismiss(menuOpen, () => setMenuOpen(false))
   const [renaming, setRenaming] = useState(false)
   const [draft, setDraft] = useState(title)
   // Keep the first signed URL — polling returns a fresh signature every 3s,
@@ -416,10 +460,6 @@ function VideoCard({ video, title, onRename, onDelete }: {
   const clipLabel = clips === 0 ? 'No clips yet' : `${clips} clip${clips === 1 ? '' : 's'}`
   const durationLabel = video.duration_ms ? formatDuration(video.duration_ms) : null
 
-  function open() {
-    if (ready && !renaming) router.push(`/videos/${video.id}`)
-  }
-
   function commitRename() {
     const next = draft.trim()
     setRenaming(false)
@@ -430,11 +470,6 @@ function VideoCard({ video, title, onRename, onDelete }: {
   return (
     <div
       className={`vcard${ready ? ' is-ready' : ''}`}
-      role={ready ? 'link' : undefined}
-      tabIndex={ready ? 0 : -1}
-      aria-label={ready ? `Open ${title}` : undefined}
-      onClick={open}
-      onKeyDown={e => { if (e.key === 'Enter' && e.target === e.currentTarget) open() }}
     >
       <div className="vcard-thumb">
         {!thumbLoaded && (
@@ -471,58 +506,77 @@ function VideoCard({ video, title, onRename, onDelete }: {
           <div className="vcard-overlay is-failed">Couldn&apos;t process this video</div>
         )}
 
-        {durationLabel && <span className="vcard-duration">{durationLabel}</span>}
+
+        {/* Details on the thumbnail: date (top-left), clips (bottom-left), length (bottom-right) */}
+        <span className="vcard-chip vcard-date">{dateStr}</span>
+        {ready && (
+          <span className="vcard-chip vcard-clips">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <circle cx="6" cy="6" r="3" stroke="currentColor" strokeWidth="2" /><circle cx="6" cy="18" r="3" stroke="currentColor" strokeWidth="2" />
+              <path d="M20 4L8.1 15.9M14.5 14.5L20 20M8.1 8.1L12 12" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+            </svg>
+            {clipLabel}
+          </span>
+        )}
+        {durationLabel && <span className="vcard-chip vcard-duration">{durationLabel}</span>}
       </div>
 
-      <div ref={menuRef}>
+      {/* Quick actions: frosted pill in the thumbnail's top-right corner */}
+      <div className="vcard-actions" onClick={e => e.stopPropagation()} onKeyDown={e => e.stopPropagation()}>
         <button
-          className="vcard-menu-btn"
-          aria-label={`Options for ${title}`}
-          aria-haspopup="menu"
-          aria-expanded={menuOpen}
-          onClick={e => { e.stopPropagation(); setMenuOpen(o => !o) }}
-          onKeyDown={e => e.stopPropagation()}
+          type="button"
+          className="vcard-action"
+          aria-label={`Rename ${title}`}
+          title="Rename"
+          onClick={() => { setDraft(title); setRenaming(true) }}
         >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-            <circle cx="5" cy="12" r="2" /><circle cx="12" cy="12" r="2" /><circle cx="19" cy="12" r="2" />
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M4 20h4L18.5 9.5a2.12 2.12 0 0 0-3-3L5 17v3z" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" />
+            <path d="M13.5 8.5l2 2" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
           </svg>
         </button>
-        {menuOpen && (
-          <div className="dash-popover" role="menu" onClick={e => e.stopPropagation()}>
-            <button className="dash-menu-item" role="menuitem" onClick={() => { setMenuOpen(false); setDraft(title); setRenaming(true) }}>
-              Rename
-            </button>
-            <button className="dash-menu-item is-danger" role="menuitem" onClick={() => { setMenuOpen(false); onDelete() }}>
-              Delete
-            </button>
-          </div>
-        )}
+        <button
+          type="button"
+          className="vcard-action is-danger"
+          aria-label={`Delete ${title}`}
+          title="Delete"
+          onClick={onDelete}
+        >
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M4 7h16M10 11v6M14 11v6M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        </button>
       </div>
 
       <div className="vcard-info">
-        {renaming ? (
-          <input
-            className="vcard-rename"
-            autoFocus
-            maxLength={120}
-            aria-label="Video title"
-            value={draft}
-            onChange={e => setDraft(e.target.value)}
-            onClick={e => e.stopPropagation()}
-            onFocus={e => e.target.select()}
-            onBlur={commitRename}
-            onKeyDown={e => {
-              e.stopPropagation()
-              if (e.key === 'Enter') e.currentTarget.blur()
-              if (e.key === 'Escape') { setDraft(title); setRenaming(false) }
-            }}
-          />
-        ) : (
-          <p className="vcard-title" title={title}>{title}</p>
+        <div className="vcard-text">
+          {renaming ? (
+            <input
+              className="vcard-rename"
+              autoFocus
+              maxLength={120}
+              aria-label="Video title"
+              value={draft}
+              onChange={e => setDraft(e.target.value)}
+              onClick={e => e.stopPropagation()}
+              onFocus={e => e.target.select()}
+              onBlur={commitRename}
+              onKeyDown={e => {
+                e.stopPropagation()
+                if (e.key === 'Enter') e.currentTarget.blur()
+                if (e.key === 'Escape') { setDraft(title); setRenaming(false) }
+              }}
+            />
+          ) : (
+            <p className="vcard-title" title={title}>{title}</p>
+          )}
+        </div>
+        {/* The only way into the clip picker, so a stray click on the card doesn't navigate */}
+        {ready && (
+          <Link href={`/videos/${video.id}`} className="vcard-open fill-btn fill-btn-sm" aria-label={`Make clips from ${title}`}>
+            <FillButtonContent icon="scissors">Make clips</FillButtonContent>
+          </Link>
         )}
-        <p className="vcard-meta">
-          {video.status === 'failed' ? <span style={{ color: 'var(--danger)' }}>Failed</span> : clipLabel} · {dateStr}
-        </p>
       </div>
     </div>
   )
