@@ -14,7 +14,7 @@ import { FrameTextPanel } from '@/components/editor/FrameTextPanel'
 import { useConfirm } from '@/components/editor/ConfirmDialog'
 import { FrameAddMenu, type AddChoice } from '@/components/editor/FrameAddMenu'
 import { createFrameMediaPool } from '@/modules/editor/frameMedia'
-import { FRAME_TEMPLATES, isFrameLayout, frameOf, frameLanes, frameHasBand, frameSlotLabels, emptySlotStretches, DEFAULT_BAND } from '@/modules/editor/frames'
+import { FRAME_TEMPLATES, isFrameLayout, frameOf, frameLanes, frameSlotLabels, emptySlotStretches, slotOffers, DEFAULT_BAND } from '@/modules/editor/frames'
 import { useSession, signOut } from 'next-auth/react'
 import { PlatformOverlay, PLATFORM_SAFE, type Platform } from '@/components/editor/PlatformOverlay'
 // ── Domain stores ──────────────────────────────────────────────────────────────
@@ -642,8 +642,17 @@ export function EditorShell({
     // Text on the band — the band appears with its first text
     if (choice === 'bandtext') { addBandText(segId, t); return }
     if (choice === 'main') {
-      const main = frameOf(seg).main_slots ?? [0]
-      if (typeof lane === 'number' && !main.includes(lane)) updateFrame(segId, { main_slots: [...main, lane].sort() })
+      const f = frameOf(seg)
+      const main = f.main_slots ?? [0]
+      // "Same video" is the same sound as the slot already showing it, so this slot starts muted
+      // (its own sound setting; unmute it to hear both)
+      if (typeof lane === 'number' && !main.includes(lane)) {
+        updateFrame(segId, {
+          main_slots: [...main, lane].sort(),
+          main_mutes: { ...f.main_mutes, [String(lane)]: main.length > 0 },
+          main_volumes: { ...f.main_volumes, [String(lane)]: 1 },
+        })
+      }
       selectFrameItem(`main:${lane}`)
     }
   }
@@ -1540,6 +1549,7 @@ export function EditorShell({
                   onFrameLaneClick={focusLane}
                   activeFrameItemId={activeFrameItemId}
                   onFrameItemClick={selectFrameItem}
+                  onFrameItemChange={(id, patch) => { if (frameSeg) updateFrameItem(frameSeg.id, id, patch) }}
                   style={{ width: '100%', height: 'auto', display: 'block', borderRadius: 10, border: '1px solid rgb(var(--ed-fg) / 0.1)', boxShadow: '0 4px 24px rgba(0,0,0,0.6)' }}
                 />
               )}
@@ -1560,9 +1570,8 @@ export function EditorShell({
         const main = frameOf(seg).main_slots ?? [0]
         return (
           <FrameAddMenu lane={addMenu.lane} laneLabel={lane?.label ?? ''} anchor={addMenu.anchor}
-            slotKind={typeof addMenu.lane === 'number' ? FRAME_TEMPLATES[seg.layout].defaults[addMenu.lane] ?? 'video' : 'video'}
+            offers={slotOffers(seg.layout, typeof addMenu.lane === 'number' ? addMenu.lane : 0)}
             canAddMain={typeof addMenu.lane === 'number' && !main.includes(addMenu.lane)}
-            bandText={frameHasBand(seg.layout)}
             onChoose={handleAddChoice}
             onClose={() => setAddMenu(null)} />
         )
@@ -1570,6 +1579,7 @@ export function EditorShell({
 
       {framePicker && (
         <MediaPickerModal clipId={clip.id} atMs={currentTimeMs} initialTab={framePicker.kind === 'photo' ? 'image' : framePicker.replaceId ? 'videos' : 'upload'}
+          only={framePicker.kind === 'photo' ? 'photo' : 'video'}
           onInsertVideo={handlePickedVideo} onInsertImage={handlePickedPhoto}
           onClose={() => setFramePicker(null)} />
       )}

@@ -1,5 +1,5 @@
 import type { SegmentLocal, FrameItem } from '@chai-cut/shared'
-import { isFrameLayout, frameOf } from './frames'
+import { isFrameLayout, frameOf, mainAudioVolume } from './frames'
 
 // Media a frame's lanes show besides the main video: other uploaded videos and photos. The
 // preview canvas draws them; this keeps one element per video item, in step with the main
@@ -64,7 +64,8 @@ export function createFrameMediaPool(getVideoUrl: (videoId: string) => string | 
     const frame = seg && isFrameLayout(seg.layout) ? frameOf(seg) : null
     // The main video's own sound in this frame
     if (main) {
-      const vol = frame ? (frame.main_muted ? 0 : frame.main_volume ?? 1) : 1
+      // Every slot showing the main video adds its own sound (one element: capped at full volume)
+      const vol = frame ? Math.min(1, mainAudioVolume(frame)) : 1
       if (Math.abs(main.volume - vol) > 0.01) main.volume = Math.max(0, Math.min(1, vol))
     }
     const inUse = new Set<string>()
