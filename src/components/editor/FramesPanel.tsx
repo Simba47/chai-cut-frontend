@@ -252,7 +252,10 @@ function FrameContents({ seg, currentTimeMs, videoTitles, selected, onSelectItem
                     {r.item.kind === 'photo' && (
                       <>
                         <div className="flex items-center gap-2">
-                          {r.item.image_url && <img src={r.item.image_url} alt="" className="w-9 h-9 rounded object-cover shrink-0" />}
+                          {/* crossOrigin must match FrameMediaPool's <img> for the same URL (frameMedia.ts) —
+                              browsers cache a URL per CORS mode, so a mismatched second request for the same
+                              URL fails as a CORS error instead of a fresh fetch. */}
+                          {r.item.image_url && <img src={r.item.image_url} alt="" crossOrigin="anonymous" className="w-9 h-9 rounded object-cover shrink-0" />}
                           <button onClick={() => onReplaceMedia(r.id, 'photo')} className="text-[11px] font-medium hover:underline" style={{ color: 'var(--ed-accent-text)' }}>Change photo</button>
                         </div>
                         <Chips title="Motion" options={MOTIONS} value={r.item.motion ?? 'none'} onChange={motion => onUpdateItem(r.id, { motion })} />

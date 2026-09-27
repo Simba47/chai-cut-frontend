@@ -762,7 +762,9 @@ export function SegmentTimeline({
                             <div className="absolute left-0 inset-y-0 w-2 cursor-col-resize z-10" style={{ background: 'rgba(0,0,0,0.25)' }}
                               onPointerDown={e => handleFrameItemDown(e, it, 'start')} />
                             {it.kind === 'photo' && it.image_url && (
-                              <img src={it.image_url} alt="" className="h-full w-7 object-cover shrink-0 pointer-events-none" style={{ marginLeft: 8, opacity: 0.9 }} />
+                              // crossOrigin must match FrameMediaPool's <img> for the same URL (frameMedia.ts) —
+                              // a mismatched second request for the same URL fails as a CORS error, not a fresh fetch.
+                              <img src={it.image_url} alt="" crossOrigin="anonymous" className="h-full w-7 object-cover shrink-0 pointer-events-none" style={{ marginLeft: 8, opacity: 0.9 }} />
                             )}
                             <span className="px-2.5 truncate text-[10px] font-semibold pointer-events-none" style={{ color: 'rgb(var(--ed-fg) / 0.92)' }}>
                               {it.kind === 'text' && !it.captions ? 'T · ' : ''}{name}
