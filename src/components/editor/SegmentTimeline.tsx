@@ -27,15 +27,20 @@ const FRAME_LANE_H = 26
 const THIN_H = 4, THIN_GAP = 2
 
 /**
- * The lanes a frame shows on the timeline. A Single frame's slot is just the main video — the
- * film strip already shows that — so it only gets a lane once something is put on it.
+ * The lanes a frame shows on the timeline. The band's lane appears once text is on it (the band
+ * itself is always in the preview, with its own "Add text" button). A Single frame's slot is just
+ * the main video — the film strip already shows that — so it only gets a lane once something is
+ * put on it.
  */
 function visibleLanes(seg: SegmentLocal) {
   const frame = frameOf(seg)
   const main = frame.main_slots ?? [0]
   const slots = FRAME_TEMPLATES[seg.layout as FrameLayout].rows.filter(r => r.kind === 'slot').length
-  return frameLanesFor(seg).filter(r =>
-    !(slots === 1 && typeof r.lane === 'number' && main.includes(r.lane) && laneItems(frame, r.lane, seg).length === 0))
+  return frameLanesFor(seg).filter(r => {
+    const empty = laneItems(frame, r.lane, seg).length === 0
+    if (r.lane === 'band') return !empty
+    return !(slots === 1 && main.includes(r.lane) && empty)
+  })
 }
 
 function isBroll(seg: SegmentLocal): boolean {

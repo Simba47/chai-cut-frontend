@@ -1,5 +1,5 @@
 import sql from '@/lib/db'
-import type { SegmentLocal, BoxKeyframeLocal, CaptionStyle, TextOverlay, AudioTrack, Transition, Overlay, FrameSettings, FrameItem } from '@chai-cut/shared'
+import type { SegmentLocal, BoxKeyframeLocal, CaptionStyle, TextOverlay, AudioTrack, Transition, Overlay, FrameSettings, FrameItem, CornerStyle } from '@chai-cut/shared'
 
 interface CreateClipInput {
   video_id: string; start_ms?: number; end_ms?: number; layout?: string; title?: string
@@ -180,6 +180,20 @@ export async function reeditClip(userId: string, clipId: string) {
 
 const motions = ['none', 'zoom_in', 'zoom_out', 'pan_left', 'pan_right']
 const hex = (v: unknown) => typeof v === 'string' && /^#[0-9a-fA-F]{6}$/.test(v) ? v : undefined
+// Corners slider 0–100 (0 = square, saved as nothing). 's'/'m'/'l' from the first version of the
+// feature become their slider values, so clips saved then keep their corners.
+const OLD_CORNERS: Record<string, number> = { s: 35, m: 60, l: 100 }
+const corner = (v: unknown): CornerStyle | undefined => {
+  const n = typeof v === 'string' ? OLD_CORNERS[v] : v
+  return typeof n === 'number' && isFinite(n) && n > 0 ? Math.round(Math.min(100, n)) : undefined
+}
+// Per-slot settings keyed "0"–"2"; anything else is dropped
+function slotMap<T>(m: unknown, pick: (v: unknown) => T | undefined): Record<string, T> | undefined {
+  if (!m || typeof m !== 'object') return undefined
+  const out: Record<string, T> = {}
+  for (const [k, v] of Object.entries(m)) { const p = pick(v); if (/^[0-2]$/.test(k) && p !== undefined) out[k] = p }
+  return out
+}
 const num = (v: unknown, lo: number, hi: number) => typeof v === 'number' && isFinite(v) ? Math.max(lo, Math.min(hi, v)) : undefined
 
 // Keep only what a frame needs from the client: known fields, sane values, and never the
@@ -193,15 +207,16 @@ function cleanFrame(frame: FrameSettings): FrameSettings {
     const base: FrameItem = { id: it.id.slice(0, 64), lane: lane === 'band' ? lane : Math.round(lane), kind: it.kind, start_ms: Math.round(start), end_ms: Math.round(end) }
     if (it.kind === 'video') {
       if (typeof it.source_video_id !== 'string') return []
-      return [{ ...base, source_video_id: it.source_video_id, source_offset_ms: Math.round(num(it.source_offset_ms, 0, 1e9) ?? 0), volume: num(it.volume, 0, 1) ?? 1, muted: !!it.muted }]
+      return [{ ...base, source_video_id: it.source_video_id, source_offset_ms: Math.round(num(it.source_offset_ms, 0, 1e9) ?? 0), volume: num(it.volume, 0, 1) ?? 1, muted: !!it.muted, corners: corner(it.corners) }]
     }
     if (it.kind === 'photo') {
       if (typeof it.image_path !== 'string') return []
-      return [{ ...base, image_path: it.image_path, motion: it.motion && motions.includes(it.motion) ? it.motion : 'none' }]
+      return [{ ...base, image_path: it.image_path, motion: it.motion && motions.includes(it.motion) ? it.motion : 'none', corners: corner(it.corners) }]
     }
     return [{
       ...base, text: typeof it.text === 'string' ? it.text.slice(0, 500) : '', captions: !!it.captions,
       bg: hex(it.bg), color: hex(it.color), size: num(it.size, 16, 200),
+      x: num(it.x, 0, 1), y: num(it.y, 0, 1),
     }]
   })
   return {
@@ -212,6 +227,11 @@ function cleanFrame(frame: FrameSettings): FrameSettings {
     main_slots: Array.isArray(frame.main_slots) ? [...new Set(frame.main_slots.filter(i => Number.isInteger(i) && i >= 0 && i <= 2))] : undefined,
     main_volume: num(frame.main_volume, 0, 1),
     main_muted: frame.main_muted === undefined ? undefined : !!frame.main_muted,
+    main_volumes: slotMap(frame.main_volumes, v => num(v, 0, 1)),
+    main_mutes: slotMap(frame.main_mutes, v => typeof v === 'boolean' ? v : undefined),
+    main_corners: frame.main_corners && typeof frame.main_corners === 'object'
+      ? Object.fromEntries(Object.entries(frame.main_corners).filter(([k, v]) => /^[0-2]$/.test(k) && corner(v)).map(([k, v]) => [k, corner(v)!]))
+      : undefined,
     items,
   }
 }
