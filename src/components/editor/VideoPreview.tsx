@@ -2,12 +2,12 @@
 
 import { useRef, useEffect, useCallback, useState, useMemo, useId } from 'react'
 import type { RefObject } from 'react'
-import type { SegmentLocal, Overlay, TextOverlay as TextOverlayType, CaptionStyle, TranscriptWord, FrameItem, FrameLane } from '@chai-cut/shared'
+import type { SegmentLocal, Overlay, TextOverlay as TextOverlayType, CaptionStyle, TranscriptWord, FrameItem, FrameLane, CornerStyle } from '@chai-cut/shared'
 import type { BoxPosition } from '@/lib/interpolation'
 import type { TextCase } from './CaptionStyler'
 import { applyCase } from './CaptionStyler'
 import { normalizedSlotAspect, fitToAspect } from '@/modules/editor/utils'
-import { isFrameLayout, frameSlotLabels, frameLanesFor, frameBandShown, frameOf, itemAt, captionBandAt } from '@/modules/editor/frames'
+import { isFrameLayout, frameSlotLabels, frameLanesFor, frameBandShown, frameOf, itemAt, captionBandAt, cornerGeometry } from '@/modules/editor/frames'
 import type { FrameMediaPool } from '@/modules/editor/frameMedia'
 
 const BOX_COLORS = ['#22c55e', '#3b82f6', '#f59e0b']
@@ -229,7 +229,102 @@ function paintFrameText(ctx: CanvasRenderingContext2D, it: FrameItem, fallbackBg
   ctx.fillStyle = it.color || '#ffffff'
   ctx.textAlign = 'center'
   ctx.textBaseline = 'middle'
-  lines.forEach((ln, i) => ctx.fillText(ln, W / 2, y + h / 2 + (i - (lines.length - 1) / 2) * lh))
+  const cx = (it.x ?? 0.5) * W, cy = y + (it.y ?? 0.5) * h
+  lines.forEach((ln, i) => ctx.fillText(ln, cx, cy + (i - (lines.length - 1) / 2) * lh))
+  ctx.restore()
+}
+
+// Size of a text block as shares of the 1080×1920 frame, measured with the same font as the preview
+let measureCtx: CanvasRenderingContext2D | null = null
+function frameTextBlock(text: string, size1080: number): { lines: string[]; w: number; h: number } {
+  const lines = text.trim() ? wrapFrameText(text, 1080, size1080) : ['Your text']
+  if (!measureCtx && typeof document !== 'undefined') measureCtx = document.createElement('canvas').getContext('2d')
+  let widest = 0
+  if (measureCtx) {
+    measureCtx.font = `700 ${size1080}px Montserrat, sans-serif`
+    for (const ln of lines) widest = Math.max(widest, measureCtx.measureText(ln).width)
+  } else widest = Math.max(...lines.map(l => l.length)) * size1080 * 0.56
+  const pad = size1080 * 0.4
+  return { lines, w: Math.min(1, (widest + pad) / 1080), h: (lines.length * size1080 * 1.2 + pad) / 1920 }
+}
+
+/**
+ * A frame's text in the preview: drag it to move it around its band (or slot), drag the corner to
+ * make it bigger or smaller. Position and size are saved on the text, and the export uses them.
+ */
+function FrameTextBox({ row, item, selected, onSelect, onChange }: {
+  row: { y: number; h: number }
+  item: FrameItem
+  selected: boolean
+  onSelect: () => void
+  onChange: (patch: Partial<Pick<FrameItem, 'x' | 'y' | 'size'>>) => void
+}) {
+  const ref = useRef<HTMLDivElement>(null)
+  const size = item.size ?? 64
+  const empty = !item.text?.trim()
+  const block = frameTextBlock(item.text ?? '', size)
+  const x = item.x ?? 0.5, y = item.y ?? 0.5
+  // Keep the whole block inside its row
+  const clampX = (v: number) => block.w >= 1 ? 0.5 : Math.max(block.w / 2, Math.min(1 - block.w / 2, v))
+  const halfH = block.h / 2 / row.h
+  const clampY = (v: number) => halfH >= 0.5 ? 0.5 : Math.max(halfH, Math.min(1 - halfH, v))
+  const cx = clampX(x), cy = row.y + row.h * clampY(y)
+
+  function start(e: React.PointerEvent, mode: 'move' | 'resize') {
+    e.stopPropagation(); e.preventDefault()
+    onSelect()
+    const rect = ref.current?.parentElement?.getBoundingClientRect()
+    if (!rect) return
+    const sx = e.clientX, sy = e.clientY, x0 = cx, y0 = clampY(y), size0 = size, w0 = block.w * rect.width
+    const move = (ev: PointerEvent) => {
+      const dx = (ev.clientX - sx) / rect.width, dy = (ev.clientY - sy) / rect.height
+      if (mode === 'move') onChange({ x: clampX(x0 + dx), y: clampY(y0 + dy / row.h) })
+      else onChange({ size: Math.round(Math.max(24, Math.min(200, size0 * (w0 + 2 * (ev.clientX - sx)) / w0))) })
+    }
+    const up = () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up) }
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', up)
+  }
+
+  return (
+    <div ref={ref} role="button" tabIndex={-1} aria-label="Text in the frame: drag to move, drag the corner to resize"
+      onPointerDown={e => start(e, 'move')} onClick={e => e.stopPropagation()}
+      className="group absolute flex items-center justify-center"
+      style={{
+        left: `${(cx - block.w / 2) * 100}%`, top: `${(cy - block.h / 2) * 100}%`, width: `${block.w * 100}%`, height: `${block.h * 100}%`,
+        cursor: 'move', touchAction: 'none', borderRadius: 4,
+        outline: selected ? '1.5px dashed #c8ff00' : undefined,
+      }}>
+      <span className="absolute inset-0 rounded pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity"
+        style={{ boxShadow: selected ? undefined : 'inset 0 0 0 1px rgba(255,255,255,0.45)' }} />
+      {empty && (
+        <span className="pointer-events-none font-bold" style={{ fontSize: `${(size / 1080) * 100}cqw`, color: 'rgba(255,255,255,0.35)' }}>Your text</span>
+      )}
+      {selected && (
+        <span onPointerDown={e => start(e, 'resize')} aria-label="Drag to resize the text"
+          className="absolute rounded-full" style={{ right: -6, bottom: -6, width: 12, height: 12, background: '#c8ff00', border: '1.5px solid #000', cursor: 'nwse-resize', touchAction: 'none' }} />
+      )}
+    </div>
+  )
+}
+
+/**
+ * Draw media into a slot row. With rounded corners the row is black and the media sits inset in a
+ * rounded box (the same look render.py builds with its corner mask); without, it fills the row.
+ */
+function inSlot(ctx: CanvasRenderingContext2D, corners: CornerStyle | undefined, y: number, h: number,
+  draw: (dx: number, dy: number, dw: number, dh: number) => void) {
+  const W = ctx.canvas.width
+  const g = cornerGeometry(corners)
+  if (!g) { draw(0, y, W, h); return }
+  const k = W / 1080, m = g.inset * k, r = g.radius * k
+  ctx.fillStyle = '#000'
+  ctx.fillRect(0, y, W, h)
+  ctx.save()
+  ctx.beginPath()
+  ctx.roundRect(m, y + m, W - 2 * m, h - 2 * m, r)
+  ctx.clip()
+  draw(m, y + m, W - 2 * m, h - 2 * m)
   ctx.restore()
 }
 
@@ -263,7 +358,8 @@ function paintFrame(
       const box = seg.crop_boxes.find(b => b.slot_index === row.lane)
       if (box) {
         const p = getPositionAt(box.id, tMs)
-        coverCrop(ctx, video, p.x * vW, p.y * vH, p.w * vW, p.h * vH, 0, y, W, h)
+        inSlot(ctx, frame.main_corners?.[String(row.lane)], y, h,
+          (dx, dy, dw, dh) => coverCrop(ctx, video, p.x * vW, p.y * vH, p.w * vW, p.h * vH, dx, dy, dw, dh))
       }
     }
     if (!it) continue
@@ -273,12 +369,12 @@ function paintFrame(
       if (img && img.complete && img.naturalWidth) {
         const from = Math.max(it.start_ms, seg.start_ms), to = Math.min(it.end_ms, seg.end_ms)
         const m = photoMotion(it.motion, (tMs - from) / Math.max(1, to - from))
-        coverSource(ctx, img, img.naturalWidth, img.naturalHeight, 0, y, W, h, m.zoom, m.panX)
+        inSlot(ctx, it.corners, y, h, (dx, dy, dw, dh) => coverSource(ctx, img, img.naturalWidth, img.naturalHeight, dx, dy, dw, dh, m.zoom, m.panX))
       }
       continue
     }
     const v = pool?.video(it)
-    if (v && v.readyState >= 2) coverSource(ctx, v, v.videoWidth, v.videoHeight, 0, y, W, h)
+    if (v && v.readyState >= 2) inSlot(ctx, it.corners, y, h, (dx, dy, dw, dh) => coverSource(ctx, v, v.videoWidth, v.videoHeight, dx, dy, dw, dh))
   }
 }
 
@@ -580,6 +676,8 @@ interface OutputCanvasProps {
   /** Clicking a photo, video or text in a frame selects it */
   onFrameItemClick?: (id: string) => void
   activeFrameItemId?: string | null
+  /** A frame text dragged or resized in the preview */
+  onFrameItemChange?: (id: string, patch: Partial<Pick<FrameItem, 'x' | 'y' | 'size'>>) => void
 }
 
 export function OutputCanvas({
@@ -588,7 +686,7 @@ export function OutputCanvas({
   className, style, skipTransitionRef,
   words, captionStyle, captionTextCase = 'title', showCaptions = false,
   textOverlays = [], activeTextOverlayId, onTextOverlayChange, onSelectTextOverlay, onDeleteTextOverlay,
-  onCaptionPositionChange, frameMedia, onFrameLaneClick, onFrameItemClick, activeFrameItemId,
+  onCaptionPositionChange, frameMedia, onFrameLaneClick, onFrameItemClick, activeFrameItemId, onFrameItemChange,
 }: OutputCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const frameMediaRef = useRef(frameMedia)
@@ -744,9 +842,14 @@ export function OutputCanvas({
             onClick={e => { e.stopPropagation(); onFrameItemClick?.(r.item.id) }}
             aria-label={`Select the ${r.item.kind === 'text' ? 'text' : r.item.kind} in the ${r.label.toLowerCase()} ${r.lane === 'band' ? 'band' : 'slot'}`}
             className="absolute left-0 right-0 transition-shadow hover:shadow-[inset_0_0_0_1px_rgba(255,255,255,0.35)]"
-            style={{ top: `${r.y * 100}%`, height: `${r.h * 100}%`, boxShadow: on ? 'inset 0 0 0 2px #c8ff00' : undefined }} />
+            style={{ top: `${r.y * 100}%`, height: `${r.h * 100}%`, boxShadow: on && r.item.kind !== 'text' ? 'inset 0 0 0 2px #c8ff00' : undefined }} />
         )
       })}
+      {itemRows.filter(r => r.item.kind === 'text' && !r.item.captions && onFrameItemChange).map(r => (
+        <FrameTextBox key={`box-${r.item.id}`} row={r} item={r.item} selected={r.item.id === activeFrameItemId}
+          onSelect={() => onFrameItemClick?.(r.item.id)}
+          onChange={patch => onFrameItemChange?.(r.item.id, patch)} />
+      ))}
       {emptyLanes.map(r => (
         <button key={String(r.lane)}
           onClick={e => { e.stopPropagation(); onFrameLaneClick?.(r.lane) }}
@@ -757,7 +860,7 @@ export function OutputCanvas({
           <span className="flex items-center gap-1.5 rounded-full transition-transform group-hover:scale-105"
             style={{ padding: '5px 11px 5px 7px', background: 'rgba(255,255,255,0.1)', border: '1px dashed rgba(255,255,255,0.35)', color: 'rgba(255,255,255,0.85)', fontSize: 'max(10px, 3.2cqw)', fontWeight: 600 }}>
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
-            {r.lane === 'band' ? 'Text' : 'Add'}
+            {r.lane === 'band' ? 'Add text' : 'Add'}
           </span>
         </button>
       ))}

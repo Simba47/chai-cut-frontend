@@ -20,6 +20,9 @@ export interface FrameBand {
   font?: string | null
 }
 
+/** Rounded corners on a video/photo in a frame slot, 0–100: 0 = square edge to edge; more = rounder corners and a wider black border */
+export type CornerStyle = number
+
 /** A lane of a frame: one of its media slots (0 = top) or the letterbox band */
 export type FrameLane = number | 'band'
 export type FrameItemKind = 'video' | 'photo' | 'text'
@@ -46,12 +49,17 @@ export interface FrameItem {
   /** Signed URL for image_path — preview only, never saved */
   image_url?: string | null
   motion?: SlotMotion | null
+  /** Video/photo: rounded corners with a black border around it */
+  corners?: CornerStyle
   // Text (a card in a slot, or text on the band)
   text?: string
   bg?: string
   color?: string
   size?: number
   font?: string | null
+  /** Text: where its centre sits in its band/slot, as shares of the row (default 0.5, 0.5 = centred) */
+  x?: number
+  y?: number
   /** Band only: show the clip's captions here instead of fixed text */
   captions?: boolean
 }
@@ -62,9 +70,14 @@ export interface FrameSettings {
   band?: FrameBand
   /** Slots that show the main video underneath their items (default: the top slot) */
   main_slots?: number[]
-  /** The main video's sound in this frame */
+  /** The main video's sound in this frame (older frames; see main_volumes) */
   main_volume?: number
   main_muted?: boolean
+  /** Sound of the main video in each slot that shows it, by slot index — each slot is set on its own */
+  main_volumes?: Record<string, number>
+  main_mutes?: Record<string, boolean>
+  /** Rounded corners of the main video, per slot index */
+  main_corners?: Record<string, CornerStyle>
   items?: FrameItem[]
 }
 export type AnimationType = 'karaoke' | 'fade' | 'none'

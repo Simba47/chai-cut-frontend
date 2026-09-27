@@ -11,6 +11,8 @@ interface Props {
   onClose: () => void
   /** Which tab to open on (e.g. photos when filling a frame's photo slot) */
   initialTab?: 'videos' | 'upload' | 'image'
+  /** Offer only videos (your videos + upload) or only a photo — e.g. for a frame's video or photo slot */
+  only?: 'video' | 'photo'
 }
 
 type Tab = 'videos' | 'upload' | 'image'
@@ -21,7 +23,7 @@ function msToLabel(ms: number) {
   return `${m}:${String(s % 60).padStart(2, '0')}`
 }
 
-export function MediaPickerModal({ clipId, atMs, onInsertVideo, onInsertImage, onClose, initialTab }: Props) {
+export function MediaPickerModal({ clipId, atMs, onInsertVideo, onInsertImage, onClose, initialTab, only }: Props) {
   const [tab, setTab] = useState<Tab>(initialTab ?? 'videos')
   const [videos, setVideos] = useState<Video[]>([])
   const [loadingVideos, setLoadingVideos] = useState(true)
@@ -112,7 +114,7 @@ export function MediaPickerModal({ clipId, atMs, onInsertVideo, onInsertImage, o
     }
   }
 
-  const TABS: { id: Tab; label: string; icon: React.ReactNode }[] = [
+  const ALL_TABS: { id: Tab; label: string; icon: React.ReactNode }[] = [
     {
       id: 'videos', label: 'My Videos',
       icon: <svg width="11" height="11" viewBox="0 0 12 12" fill="none"><path d="M2 2h6a1 1 0 0 1 1 1v1.5l2-1.5v6l-2-1.5V9a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1z" stroke="currentColor" strokeWidth="1.2"/></svg>,
@@ -126,6 +128,7 @@ export function MediaPickerModal({ clipId, atMs, onInsertVideo, onInsertImage, o
       icon: <svg width="11" height="11" viewBox="0 0 12 12" fill="none"><rect x="1" y="1" width="10" height="10" rx="1.5" stroke="currentColor" strokeWidth="1.2"/><circle cx="4" cy="4" r="1" fill="currentColor"/><path d="M1 8l3-3 2 2 2-2.5L11 8" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/></svg>,
     },
   ]
+  const TABS = ALL_TABS.filter(t => !only || (only === 'photo' ? t.id === 'image' : t.id !== 'image'))
 
   return (
     <div
@@ -141,7 +144,7 @@ export function MediaPickerModal({ clipId, atMs, onInsertVideo, onInsertImage, o
         {/* Header */}
         <div className="shrink-0 flex items-center justify-between px-4 pt-4 pb-2">
           <div>
-            <p className="text-sm font-bold text-white">Insert media</p>
+            <p className="text-sm font-bold text-white">{only === 'video' ? 'Add a video' : only === 'photo' ? 'Add a photo' : 'Insert media'}</p>
             <p className="text-xs mt-0.5" style={{ color: 'rgba(255,255,255,0.3)' }}>at {msToLabel(atMs)}</p>
           </div>
           <button onClick={onClose} className="flex items-center justify-center rounded-xl" style={{ width: 30, height: 30, background: 'rgba(255,255,255,0.07)' }}>
@@ -149,8 +152,8 @@ export function MediaPickerModal({ clipId, atMs, onInsertVideo, onInsertImage, o
           </button>
         </div>
 
-        {/* Tabs */}
-        <div className="shrink-0 flex px-3 pb-3 gap-1.5">
+        {/* Tabs (hidden when there's only one kind to pick) */}
+        <div className="shrink-0 flex px-3 pb-3 gap-1.5" style={TABS.length < 2 ? { display: 'none' } : undefined}>
           {TABS.map(t => (
             <button
               key={t.id}

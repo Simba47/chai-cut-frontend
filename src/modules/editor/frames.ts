@@ -1,4 +1,4 @@
-import type { FrameLayout, FrameBand, FrameItem, FrameLane, FrameSettings, LayoutType, SegmentLocal } from '@chai-cut/shared'
+import type { FrameLayout, FrameBand, FrameItem, FrameLane, FrameSettings, LayoutType, SegmentLocal, CornerStyle } from '@chai-cut/shared'
 
 // Frame templates: the 9:16 reel divided top-to-bottom into media slots and (optionally) one
 // letterbox band for text. Heights are shares of the 1920 px frame. render.py mirrors these
@@ -92,13 +92,64 @@ export function frameLanes(layout: FrameLayout, showBand = true): FrameLaneInfo[
 
 export const MIN_ITEM_MS = 200
 
-/** The text band shows only while the frame has text on it (render.py: frame_band_shown) */
-export function frameBandShown(seg: Pick<SegmentLocal, 'layout' | 'frame' | 'crop_boxes' | 'start_ms' | 'end_ms'>): boolean {
-  if (!isFrameLayout(seg.layout) || !frameHasBand(seg.layout)) return false
-  return laneItems(frameOf(seg), 'band', seg).length > 0
+/**
+ * What a slot's "+" offers in each frame. Video slots offer the same (main) video or a different
+ * one; photo slots a photo; Triple's slots both. Text goes on the band — offered from a slot's "+"
+ * only where the frame has no other way to add it on the timeline (Single, Video + Photo); in
+ * Dual + Letterbox the middle band has its own "Add text".
+ */
+export function slotOffers(layout: FrameLayout, slot: number): { video: boolean; photo: boolean; text: boolean } {
+  switch (layout) {
+    case 'frame_single': return { video: true, photo: false, text: true }
+    case 'frame_video_photo': return { video: slot === 0, photo: slot !== 0, text: true }
+    case 'frame_dual': return { video: true, photo: false, text: false }
+    case 'frame_dual_letterbox': return { video: true, photo: false, text: false }
+    case 'frame_triple': return { video: true, photo: true, text: false }
+  }
 }
 
-/** The lanes a frame has right now (no band lane until text is added) */
+/**
+ * Sound of the main video in one slot. Each slot has its own volume and mute. A slot without its
+ * own setting: the first slot showing the main video uses the frame's older main setting; any
+ * other starts muted (it's the same sound as the first). render.py (frames.py) mirrors this.
+ */
+export function mainSlotSound(frame: FrameSettings, slot: number): { volume: number; muted: boolean } {
+  const key = String(slot)
+  const first = Math.min(...(frame.main_slots ?? [0]))
+  const volume = frame.main_volumes?.[key] ?? (slot === first ? frame.main_volume ?? 1 : 1)
+  const muted = frame.main_mutes?.[key] ?? (slot === first ? !!frame.main_muted : true)
+  return { volume, muted }
+}
+
+/** How loud the main video plays in a frame: every slot showing it adds its own sound */
+export function mainAudioVolume(frame: FrameSettings): number {
+  return (frame.main_slots ?? [0]).reduce((sum, slot) => {
+    const s = mainSlotSound(frame, slot)
+    return sum + (s.muted ? 0 : s.volume)
+  }, 0)
+}
+
+/**
+ * Rounded corners of frame media from the Corners slider (0–100), in px at 1080 wide: the black
+ * border (inset) around the media and the corner radius. render.py (frames.py corner_geometry)
+ * uses the same numbers. Values saved as 's'/'m'/'l' by the first version map onto the slider.
+ */
+export const CORNER_MAX = { inset: 44, radius: 96 }
+export function cornerGeometry(v: CornerStyle | string | null | undefined): { inset: number; radius: number } | null {
+  const n = typeof v === 'number' ? v : v === 's' ? 35 : v === 'm' ? 60 : v === 'l' ? 100 : 0
+  const k = Math.max(0, Math.min(100, n)) / 100
+  return k > 0 ? { inset: CORNER_MAX.inset * k, radius: CORNER_MAX.radius * k } : null
+}
+
+/**
+ * Whether the frame shows its band: always, for templates that have one — a black space ready
+ * for text (render.py: frame_band_shown). Its timeline lane only appears once text is added.
+ */
+export function frameBandShown(seg: Pick<SegmentLocal, 'layout'>): boolean {
+  return isFrameLayout(seg.layout) && frameHasBand(seg.layout)
+}
+
+/** The lanes a frame has, top to bottom (the same rows as the preview) */
 export function frameLanesFor(seg: SegmentLocal): FrameLaneInfo[] {
   return frameLanes(seg.layout as FrameLayout, frameBandShown(seg))
 }
