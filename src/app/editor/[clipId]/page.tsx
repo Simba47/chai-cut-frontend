@@ -132,13 +132,17 @@ export default async function EditorPage({
   }
 
   // Frame photos (lane items, and slots saved before lanes existed): sign them so the preview can draw them
-  const sign = (key: string) => getSignedUrl(r2, new GetObjectCommand({ Bucket: R2_BUCKET, Key: key }), { expiresIn: 43200 }).catch(() => undefined)
+  const sign = (key: string) => getSignedUrl(r2, new GetObjectCommand({ Bucket: R2_BUCKET, Key: key }), { expiresIn: 43200 })
+    .catch(e => { console.error('[frame-photo-debug] sign failed for', key, e); return undefined })
+  console.error('[frame-photo-debug] segments frame field:', JSON.stringify(segments.map(s => ({ id: s.id, frame: s.frame }))).slice(0, 2000))
   await Promise.all(segments.flatMap(seg => [
     ...(seg.crop_boxes ?? []).map(async (box: { image_path?: string | null; image_url?: string }) => {
       if (box.image_path) box.image_url = await sign(box.image_path)
     }),
     ...((seg.frame as { items?: { image_path?: string | null; image_url?: string | null }[] } | null)?.items ?? []).map(async it => {
+      console.error('[frame-photo-debug] item before sign:', JSON.stringify(it))
       if (it.image_path) it.image_url = (await sign(it.image_path)) ?? null
+      console.error('[frame-photo-debug] item after sign:', JSON.stringify(it))
     }),
   ]))
 
