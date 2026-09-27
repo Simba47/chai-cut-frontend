@@ -13,6 +13,7 @@ import { EditorMockup } from '@/components/ui/editor-mockup'
 import { BrandLogo } from '@/components/ui/brand-logo'
 import { CircularCarousel, type CarouselItem } from '@/components/ui/circular-carousel'
 import { SectionTransition } from '@/components/ui/section-transition'
+import { neutralStyle, useLiteMotion } from '@/components/ui/use-lite-motion'
 import { PLANS } from '@/lib/plans'
 
 const free = PLANS.free
@@ -211,11 +212,25 @@ function fitSectionsToScreen(ids: string[]) {
     const el = section?.querySelector<HTMLElement>('[data-fit]')
     if (!section || !el) continue
     el.style.zoom = ''
-    if (window.innerWidth < 960) continue
+    el.style.width = ''
+    if (window.innerWidth < 960) { fitToWidth(el); continue }
     const excess = sectionContent(section).height - (window.innerHeight - NAV_H - FIT_GAP * 2)
     if (excess <= 0) continue
     el.style.zoom = String(Math.max(0.55, (el.offsetHeight - excess) / el.offsetHeight))
   }
+}
+
+// Phones: an element with data-fit-width="N" is laid out at N px (its full desktop
+// layout) and zoomed down to the available width, so nothing has to be hidden
+function fitToWidth(el: HTMLElement) {
+  const design = Number(el.dataset.fitWidth)
+  const parent = el.parentElement
+  if (!design || !parent) return
+  const cs = getComputedStyle(parent)
+  const avail = parent.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight)
+  if (avail >= design) return
+  el.style.width = `${design}px`
+  el.style.zoom = String(avail / design)
 }
 
 // Scroll so a section's content (inside its padding) sits in the space below the
@@ -248,7 +263,9 @@ export function LandingPage() {
   const { scrollYProgress: raw } = useScroll({ target: sheetRef, offset: ['start end', 'start start'] })
   const p = useSpring(raw, { stiffness: 120, damping: 24, mass: 0.3 })
   const reduceMotion = useReducedMotion()
-  const fx = (style: MotionStyle) => (reduceMotion ? undefined : style)
+  // Phones/touch screens scroll plainly: per-frame blur/scale effects stutter there
+  const lite = useLiteMotion()
+  const fx = (style: MotionStyle) => (reduceMotion || lite ? neutralStyle(style) : style)
 
   // Hero breaks apart: lines drift in opposite directions, text blurs and recedes
   const line1X = useTransform(p, [0, 1], ['0%', '-22%'])
@@ -389,7 +406,7 @@ export function LandingPage() {
         <div className="hero-shade" aria-hidden />
         {/* Interactive dot field: lights up around the cursor, ripples on click */}
         <motion.div className="hero-field" aria-hidden style={fx({ opacity: fieldOpacity })}>
-          <DotField hostRef={heroRef} />
+          {!lite && <DotField hostRef={heroRef} />}
         </motion.div>
 
         <motion.div className="hero-text" style={fx({ opacity: textOpacity, scale: textScale, filter: textBlur })}>
@@ -479,7 +496,7 @@ export function LandingPage() {
             <p className="section-eyebrow">Inside the editor</p>
             <h2 className="section-title">Crop, caption and cut in one place</h2>
           </div>
-          <div data-fit className="editor-showcase reveal">
+          <div data-fit data-fit-width="680" className="editor-showcase reveal">
             <EditorMockup />
           </div>
         </section>

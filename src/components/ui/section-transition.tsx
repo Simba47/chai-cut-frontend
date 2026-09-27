@@ -3,6 +3,7 @@
 import React, { useRef } from 'react'
 import { motion, useReducedMotion, useScroll, useSpring, useTransform, type MotionStyle } from 'framer-motion'
 import { cn } from '@/lib/utils'
+import { neutralStyle, useLiteMotion } from './use-lite-motion'
 
 export type SectionTransitionVariant = 'tilt' | 'iris' | 'zoom'
 
@@ -22,6 +23,7 @@ type Props = {
 export function SectionTransition({ id, className, variant, children }: Props) {
   const ref = useRef<HTMLDivElement>(null)
   const reduceMotion = useReducedMotion()
+  const lite = useLiteMotion()
   const { scrollYProgress } = useScroll({ target: ref, offset: ['start end', 'start 0.25'] })
   const p = useSpring(scrollYProgress, { stiffness: 140, damping: 26, mass: 0.35 })
 
@@ -52,6 +54,13 @@ export function SectionTransition({ id, className, variant, children }: Props) {
     inner = { scale: irisScale, opacity: fade }
   } else {
     inner = { scale: zoomScale, y: zoomY, opacity: fade, transformOrigin: '50% 0%' }
+  }
+
+  // Phones: no scroll-driven transforms, just the resting state (same element tree,
+  // so nothing remounts when the media query flips after hydration)
+  if (lite) {
+    outer = neutralStyle(outer)
+    inner = neutralStyle(inner)
   }
 
   return (
