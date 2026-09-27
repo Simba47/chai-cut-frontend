@@ -75,6 +75,7 @@ export function CircularCarousel({
   const [internalIndex, setInternalIndex] = useState(0)
   const [isFocused, setIsFocused] = useState(false)
   const [pageHidden, setPageHidden] = useState(false)
+  const [onScreen, setOnScreen] = useState(true)
   const [trackWidth, setTrackWidth] = useState(1000)
   const containerRef = useRef<HTMLDivElement | null>(null)
   const trackRef = useRef<HTMLDivElement | null>(null)
@@ -105,6 +106,15 @@ export function CircularCarousel({
     return () => ro.disconnect()
   }, [])
 
+  // No slide animations while scrolled out of view (saves work mid-scroll on phones)
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+    const io = new IntersectionObserver(([entry]) => setOnScreen(entry.isIntersecting))
+    io.observe(el)
+    return () => io.disconnect()
+  }, [])
+
   // Don't queue up slides while the tab is in the background
   useEffect(() => {
     const onVisibility = () => setPageHidden(document.hidden)
@@ -114,12 +124,13 @@ export function CircularCarousel({
 
   // Loops forever at a steady pace (6 → 1 wraps via goTo). Each slide change —
   // automatic or clicked — restarts the countdown, so every slide gets the full
-  // interval. Pauses only for keyboard focus and while the tab is in the background.
+  // interval. Pauses only for keyboard focus, while scrolled out of view, and while
+  // the tab is in the background.
   useEffect(() => {
-    if (!autoPlay || reduceMotion || isFocused || pageHidden) return
+    if (!autoPlay || reduceMotion || isFocused || pageHidden || !onScreen) return
     const id = setTimeout(next, autoPlayInterval)
     return () => clearTimeout(id)
-  }, [autoPlay, autoPlayInterval, reduceMotion, isFocused, pageHidden, activeIndex, next])
+  }, [autoPlay, autoPlayInterval, reduceMotion, isFocused, pageHidden, onScreen, activeIndex, next])
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -159,16 +170,16 @@ export function CircularCarousel({
               key={item.id}
               type="button"
               initial={false}
-              animate={{ x: pos.x, y: pos.y, scale: pos.scale, opacity: pos.opacity, zIndex: pos.zIndex }}
+              animate={{ x: pos.x, y: pos.y, scale: pos.scale, opacity: pos.opacity }}
               transition={{ duration: reduceMotion ? 0 : 0.65, ease: [0.22, 1, 0.36, 1] }}
               onClick={() => goTo(i)}
               aria-label={item.title}
               aria-current={isActive}
               aria-hidden={hidden || undefined}
               tabIndex={hidden ? -1 : undefined}
-              style={{ pointerEvents: hidden ? 'none' : undefined }}
+              style={{ zIndex: pos.zIndex, pointerEvents: hidden ? 'none' : undefined }}
               className={cn(
-                'absolute left-1/2 top-1/2 -ml-[132px] -mt-[88px] flex h-[176px] w-[264px] cursor-pointer flex-col items-start gap-3 rounded-2xl border p-5 text-left backdrop-blur-sm transition-[box-shadow,border-color] duration-300',
+                'absolute left-1/2 top-1/2 -ml-[132px] -mt-[88px] flex h-[176px] w-[264px] cursor-pointer flex-col items-start gap-3 rounded-2xl border p-5 text-left md:backdrop-blur-sm transition-[box-shadow,border-color] duration-300',
                 'bg-[linear-gradient(180deg,var(--card-hover),var(--card))]',
                 isActive
                   ? 'border-[var(--border-strong)] shadow-[0_24px_60px_-12px_rgba(0,0,0,0.6)]'
