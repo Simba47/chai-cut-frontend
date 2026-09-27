@@ -187,7 +187,7 @@ async function detectClipsByCriteria(
   transcript: string, durationMs: number, criteria: string, apiKey: string,
 ): Promise<ClipSuggestion[]> {
   const genAI = new GoogleGenerativeAI(apiKey)
-  const model = genAI.getGenerativeModel({ model: 'gemini-2.5-pro' })
+  const model = genAI.getGenerativeModel({ model: 'gemini-3.1-pro-preview' })
   const prompt = `You are a strict, skeptical video clip finder. Given a video transcript with timestamps and a request describing what to look for, find moments (30–90 seconds each) that genuinely match.
 
 Be conservative. Most videos do NOT contain what any given request is looking for — that is the normal case, not an edge case. Only include a moment if a viewer watching just that clip, with no explanation from you, would immediately agree it matches. Do not stretch, do not include a moment just because it is loosely related or you can construct a justification for it — if you find yourself explaining why something "counts", it doesn't.
