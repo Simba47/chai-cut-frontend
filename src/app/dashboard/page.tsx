@@ -8,6 +8,7 @@ import type { Video } from '@chai-cut/shared'
 import { ACCEPTED_VIDEO_EXTENSIONS, MAX_UPLOAD_BYTES } from '@chai-cut/shared'
 import { Breadcrumbs } from '@/components/ui/breadcrumbs'
 import { AccountMenu } from '@/components/ui/account-menu'
+import { BrandLoader } from '@/components/ui/brand-loader'
 import { FillButtonContent } from '@/components/ui/fill-button'
 
 type DashVideo = Video & { video_url?: string | null; clip_count?: number }
@@ -207,7 +208,7 @@ export default function DashboardPage() {
   if (loading) {
     return (
       <div className="dash" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--accent)' }}>
-        <div className="dash-spinner" style={{ width: 32, height: 32 }} />
+        <BrandLoader label="Loading your videos…" />
       </div>
     )
   }
@@ -304,8 +305,17 @@ export default function DashboardPage() {
             )}
           </div>
           {!atLimit && (
-            <button className="dash-btn-fill fill-btn" disabled={uploading} onClick={() => fileInputRef.current?.click()}>
-              {uploading ? <><span className="dash-spinner" /> Uploading</> : <FillButtonContent>Upload video</FillButtonContent>}
+            <button className="dash-upload-btn" disabled={uploading} onClick={() => fileInputRef.current?.click()}>
+              {/* Arrow flies out to the top-right on hover while a copy slides in from the bottom-left */}
+              <span className="dash-upload-icon" aria-hidden>
+                {uploading ? <span className="dash-spinner" /> : (
+                  <>
+                    <svg viewBox="0 0 14 15" width="10" fill="none" className="dash-upload-arrow"><path d="M13.376 11.552l-.264-10.44-10.44-.24.024 2.28 6.96-.048L.2 12.56l1.488 1.488 9.432-9.432-.048 6.912 2.304.024z" fill="currentColor" /></svg>
+                    <svg viewBox="0 0 14 15" width="10" fill="none" className="dash-upload-arrow dash-upload-arrow--copy"><path d="M13.376 11.552l-.264-10.44-10.44-.24.024 2.28 6.96-.048L.2 12.56l1.488 1.488 9.432-9.432-.048 6.912 2.304.024z" fill="currentColor" /></svg>
+                  </>
+                )}
+              </span>
+              {uploading ? 'Uploading' : 'Upload video'}
             </button>
           )}
         </div>

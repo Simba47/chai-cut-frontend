@@ -70,30 +70,30 @@ body {
   margin: 0;
 }
 
-/* ── Editor theme: always dark ──
+/* ── Editor theme: always dark, in the app's brand colours ──
    --ed-fg is an RGB triple so any tint can be written rgb(var(--ed-fg) / alpha). The app-wide
-   tokens are pinned to their dark values too, so the editor stays dark even when the rest of the
-   app is in light mode (e.g. the transcript panel reads --text / --text-muted). */
+   tokens are pinned here too so editor panels (e.g. the transcript) read the same values. */
 .editor-theme {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;   /* editor keeps its own font */
-  --bg: #0d0d0d;
-  --surface: #1a1a1a;
-  --border: rgba(255,255,255,0.07);
-  --border-strong: rgba(255,255,255,0.13);
-  --text: #ffffff;
-  --text-muted: rgba(255,255,255,0.35);
-  --text-dim: rgba(255,255,255,0.22);
-  --accent: #c8ff00;
-  --ed-fg: 255 255 255;
-  --ed-text: #ffffff;
-  --ed-app: #0d0d0d;
-  --ed-panel: #111111;
-  --ed-canvas: #0a0a0a;
-  --ed-track: #0f0f0f;
-  --ed-ruler: #0c0c0c;
-  --ed-raise: #1a1a1a;
-  --ed-popover: #16161a;
-  --ed-accent-text: #c8ff00;
+  /* Same font and colours as the rest of the app (brand theme in :root), kept always-dark */
+  font-family: var(--font-display), -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --bg: #0A0A0A;
+  --surface: #141414;
+  --border: rgba(255,255,255,0.08);
+  --border-strong: rgba(255,255,255,0.16);
+  --text: #F4F4F5;
+  --text-muted: rgba(244,244,245,0.58);
+  --text-dim: rgba(244,244,245,0.36);
+  --accent: #C8FF00;
+  --ed-fg: 244 244 245;
+  --ed-text: #F4F4F5;
+  --ed-app: #0A0A0A;
+  --ed-panel: #0E0E0F;
+  --ed-canvas: #070708;
+  --ed-track: #0C0C0D;
+  --ed-ruler: #0B0B0C;
+  --ed-raise: #1A1A1A;
+  --ed-popover: #1A1A1A;
+  --ed-accent-text: #C8FF00;
   color-scheme: dark;
 }
 
@@ -200,4 +200,22 @@ body {
 .dash-menu-item.is-danger { color: var(--danger); }
 @media (prefers-reduced-motion: reduce) {
   .dash-account-menu, .dash-account-menu > * { animation-duration: .01ms !important; animation-delay: 0s !important; }
+}
+
+/* ── Brand loader (components/ui/brand-loader.tsx): the two slashes of the "S" drift apart,
+   snap back together with a lime glow, and repeat ── */
+.brand-loader { display: flex; flex-direction: column; align-items: center; gap: 16px; }
+.brand-loader svg { overflow: visible; fill: #C8FF00; animation: brand-loader-glow 1.6s cubic-bezier(.65,0,.35,1) infinite; }
+.brand-loader-top, .brand-loader-bottom { transform-box: fill-box; transform-origin: center; }
+.brand-loader-top    { animation: brand-loader-top 1.6s cubic-bezier(.65,0,.35,1) infinite; }
+.brand-loader-bottom { animation: brand-loader-bottom 1.6s cubic-bezier(.65,0,.35,1) infinite; }
+@keyframes brand-loader-top    { 0%, 100% { transform: translate(-9px, -9px) scale(.94); opacity: .35; } 40%, 68% { transform: none; opacity: 1; } }
+@keyframes brand-loader-bottom { 0%, 100% { transform: translate(9px, 9px) scale(.94); opacity: .35; } 40%, 68% { transform: none; opacity: 1; } }
+@keyframes brand-loader-glow {
+  0%, 36%, 80%, 100% { filter: drop-shadow(0 0 0 rgba(200,255,0,0)); }
+  50% { filter: drop-shadow(0 0 14px rgba(200,255,0,0.55)); }
+}
+.brand-loader-label { margin: 0; font-size: 13px; font-weight: 500; color: rgba(244,244,245,0.58); }
+@media (prefers-reduced-motion: reduce) {
+  .brand-loader svg, .brand-loader-top, .brand-loader-bottom { animation: none; }
 }

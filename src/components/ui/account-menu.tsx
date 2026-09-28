@@ -6,15 +6,20 @@ import { useSession, signOut } from 'next-auth/react'
 /**
  * Profile button (black rounded rectangle with the name; a light sweeps across the name on hover)
  * with an animated menu: email, plan and
- * usage, Plans & billing, Sign out. Used in the dashboard and clip board headers.
+ * usage, Plans & billing, Sign out. Used in the dashboard, clip board and editor headers.
  * (styles: .acct-* / .dash-popover / .dash-account-menu in app/globals.css)
  *
  * Pass `planInfo` when the page already has it; otherwise it's fetched here.
+ * The editor passes `onNavigate` / `onSignOut` so it can save pending edits before leaving.
  */
 
 type PlanSummary = { planName: string; maxVideos: number; usage: { videos: number } }
 
-export function AccountMenu({ planInfo }: { planInfo?: PlanSummary | null }) {
+export function AccountMenu({ planInfo, onNavigate, onSignOut }: {
+  planInfo?: PlanSummary | null
+  onNavigate?: (href: string) => void
+  onSignOut?: () => void
+}) {
   const { data: session } = useSession()
   const email = session?.user?.email ?? ''
   // "narasimham.m@x.com" → "Narasimham"
@@ -59,8 +64,14 @@ export function AccountMenu({ planInfo }: { planInfo?: PlanSummary | null }) {
             <p>{email}</p>
             {plan && <p>{plan.planName} plan · {plan.usage.videos}/{plan.maxVideos} videos</p>}
           </div>
-          <a href="/pricing" className="dash-menu-item" role="menuitem">Plans &amp; billing</a>
-          <button className="dash-menu-item" role="menuitem" onClick={() => signOut({ callbackUrl: '/login' })}>Sign out</button>
+          <a href="/pricing" className="dash-menu-item" role="menuitem"
+            onClick={onNavigate ? e => { e.preventDefault(); setOpen(false); onNavigate('/pricing') } : undefined}>
+            Plans &amp; billing
+          </a>
+          <button className="dash-menu-item" role="menuitem"
+            onClick={() => { setOpen(false); if (onSignOut) onSignOut(); else signOut({ callbackUrl: '/login' }) }}>
+            Sign out
+          </button>
         </div>
       )}
     </div>
