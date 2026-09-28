@@ -4,6 +4,7 @@ import { useState, useRef, useEffect, useSyncExternalStore } from 'react'
 import { useRouter } from 'next/navigation'
 import { Breadcrumbs } from '@/components/ui/breadcrumbs'
 import { AccountMenu } from '@/components/ui/account-menu'
+import { BrandLoader } from '@/components/ui/brand-loader'
 
 interface VideoData {
   id: string
@@ -273,7 +274,7 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: P
         </>
       ) : (
         <>
-          <div className="w-9 h-9 border-2 border-t-transparent rounded-full animate-spin" style={{ borderColor: ACCENT, borderTopColor: 'transparent' }} />
+          <BrandLoader size={40} />
           <p className="text-sm font-medium text-white">{isProcessing ? stageLabel(video.download_progress ?? 0) : 'Loading video…'}</p>
           {isProcessing && (
             <div className="w-48 h-1.5 rounded-full overflow-hidden" style={{ background: 'rgba(255,255,255,0.1)' }}>
@@ -287,7 +288,7 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: P
 
   // ── Under the video: Edit full video + New clip (which opens the start/end form in place) ──
   const newClipBar = showForm ? (
-    <form className="shrink-0 rounded-2xl p-4 flex flex-col gap-3" style={{ background: 'rgba(200,255,0,0.05)', border: '1px solid rgba(200,255,0,0.3)' }}
+    <form className="shrink-0 rounded-2xl p-4 flex flex-col gap-3" style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.14)' }}
       onSubmit={e => { e.preventDefault(); submitForm() }}>
       <div className="flex flex-wrap items-end gap-3">
         <div className="flex flex-col gap-1 flex-1" style={{ minWidth: 200 }}>
@@ -574,9 +575,9 @@ function ClipCard({ number, title, startMs, endMs, status, outputUrl, playing, o
     { label: 'Draft', color: 'rgba(255,255,255,0.45)' }
 
   return (
-    <div className="rounded-xl p-3" style={{ background: 'rgba(255,255,255,0.03)', border: `1px solid ${playing ? 'rgba(200,255,0,0.4)' : 'rgba(255,255,255,0.07)'}` }}>
+    <div className="rounded-xl p-3" style={{ background: 'rgba(255,255,255,0.03)', border: `1px solid ${playing ? 'rgba(255,255,255,0.3)' : 'rgba(255,255,255,0.07)'}` }}>
       <div className="flex items-start gap-2.5">
-        <span className="shrink-0 w-6 h-6 rounded-md flex items-center justify-center text-[11px] font-bold" style={{ background: 'rgba(200,255,0,0.7)', color: '#000' }}>
+        <span className="shrink-0 w-6 h-6 rounded-md flex items-center justify-center text-[11px] font-bold" style={{ background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.12)', color: '#fff' }}>
           {number}
         </span>
         <div className="flex-1 min-w-0">

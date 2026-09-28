@@ -8,14 +8,16 @@ import { TranscriptPanel } from '@/components/editor/TranscriptPanel'
 import { CaptionStyler } from '@/components/editor/CaptionStyler'
 import { TextOverlayPanel } from '@/components/editor/TextOverlayPanel'
 import { MediaPickerModal } from '@/components/editor/MediaPickerModal'
-import { AccountMenu } from '@/components/editor/AccountMenu'
+import { AccountMenu } from '@/components/ui/account-menu'
+import { BrandLogo } from '@/components/ui/brand-logo'
+import { BrandLoader } from '@/components/ui/brand-loader'
 import { FramesPanel } from '@/components/editor/FramesPanel'
 import { FrameTextPanel } from '@/components/editor/FrameTextPanel'
 import { useConfirm } from '@/components/editor/ConfirmDialog'
 import { FrameAddMenu, type AddChoice } from '@/components/editor/FrameAddMenu'
 import { createFrameMediaPool } from '@/modules/editor/frameMedia'
 import { FRAME_TEMPLATES, isFrameLayout, frameOf, frameLanes, frameSlotLabels, emptySlotStretches, slotOffers, DEFAULT_BAND } from '@/modules/editor/frames'
-import { useSession, signOut } from 'next-auth/react'
+import { signOut } from 'next-auth/react'
 import { PlatformOverlay, PLATFORM_SAFE, type Platform } from '@/components/editor/PlatformOverlay'
 // ── Domain stores ──────────────────────────────────────────────────────────────
 import { useEditorStore, type KeyframeMap } from '@/modules/editor/store'
@@ -163,8 +165,6 @@ export function EditorShell({
     !clipHasWords(initialWords) && (captionsPending || (videoStatus !== 'ready' && videoStatus !== 'failed'))
   )
   const [isFreePlan, setIsFreePlan] = useState(false)
-  const [planName, setPlanName] = useState<string | null>(null)
-  const { data: session } = useSession()
   const [tool, setTool] = useState<Tool>('format')
   const [optionsOpen, setOptionsOpen] = useState(true)
   const [editingTranscript, setEditingTranscript] = useState(false)
@@ -282,8 +282,7 @@ export function EditorShell({
   useEffect(() => {
     fetch('/api/billing/plan')
       .then(r => r.json())
-      .then((d: { autoCaption?: boolean; planName?: string }) => {
-        if (d.planName) setPlanName(d.planName)
+      .then((d: { autoCaption?: boolean }) => {
         if (d.autoCaption === false) {
           setIsFreePlan(true)
           setTranscribing(false)
@@ -987,13 +986,10 @@ export function EditorShell({
       {/* Above everything in the body (preview overlays use z-index 10–20), so the account menu isn't drawn underneath them */}
       <header className="relative shrink-0 flex items-center gap-3 px-4"
         style={{ height: 56, background: 'var(--ed-panel)', borderBottom: '1px solid rgb(var(--ed-fg) / 0.07)', zIndex: 60 }}>
-        <a href="/dashboard" onClick={e => leaveTo(e, '/dashboard')} title="Go to the dashboard"
-          className="flex items-center gap-2 shrink-0 rounded-lg transition-opacity hover:opacity-85">
-          {/* The logo file has a black square around the mark: crop to the mark, blend the black away */}
-          <span className="relative block overflow-hidden rounded-lg" style={{ width: 28, height: 28 }}>
-            <img src="/logo-icon.png" alt="" style={{ position: 'absolute', width: 56, height: 56, left: -14, top: -12, maxWidth: 'none', mixBlendMode: 'screen' }} />
-          </span>
-          <span className="text-[15px] font-bold text-[var(--ed-text)]" style={{ letterSpacing: '-0.02em' }}>Shortcut</span>
+        {/* Same vector logo (with its intro) as the landing page, dashboard and clip board */}
+        <a href="/dashboard" onClick={e => leaveTo(e, '/dashboard')} title="Go to the dashboard" aria-label="Shortcut dashboard"
+          className="flex items-center shrink-0 rounded-lg">
+          <BrandLogo shine />
         </a>
 
         <div className="w-px h-6 shrink-0" style={{ background: 'rgb(var(--ed-fg) / 0.1)' }} />
@@ -1018,9 +1014,8 @@ export function EditorShell({
         <div className="flex-1" />
 
         <div className="flex items-center gap-3 shrink-0">
+          {/* Shared profile button; saves pending edits before leaving the editor */}
           <AccountMenu
-            email={session?.user?.email ?? ''}
-            planName={planName}
             onNavigate={href => leave(() => { window.location.href = href })}
             onSignOut={() => leave(() => { signOut({ callbackUrl: '/login' }) })}
           />
@@ -1520,7 +1515,7 @@ export function EditorShell({
               <div className="relative">
               {rendering ? (
                 <div className="flex flex-col items-center justify-center gap-4 rounded-xl" style={{ aspectRatio: '9/16', background: 'var(--ed-app)', border: '1px solid rgb(var(--ed-fg) / 0.08)' }}>
-                  <span className="w-10 h-10 rounded-full border-2 border-t-transparent animate-spin" style={{ borderColor: ACCENT, borderTopColor: 'transparent' }} />
+                  <BrandLoader size={48} />
                   <div className="text-center flex flex-col gap-1 px-6">
                     <p className="text-sm font-semibold text-[var(--ed-text)]">Rendering your reel…</p>
                     <p className="text-xs" style={{ color: 'rgb(var(--ed-fg) / 0.45)' }}>Usually takes a minute or two. You can keep editing.</p>

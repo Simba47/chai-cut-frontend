@@ -51,6 +51,29 @@
 .dash-btn-fill.fill-btn-sm { font-size: 13px; }
 .dash-btn-fill:disabled { opacity: .6; pointer-events: none; }
 
+/* Upload button: white pill with a round icon; on hover the arrow flies out to the
+   top-right while a copy slides in from the bottom-left */
+.dash-upload-btn {
+  display: inline-flex; align-items: center; gap: 12px; flex-shrink: 0;
+  padding: 7px 22px 7px 7px; border-radius: 999px; border: 0; cursor: pointer;
+  font: inherit; font-size: 14px; font-weight: 700; line-height: 1; white-space: nowrap;
+  color: #0A0A0A; background: #F4F4F5;
+  transition: scale .15s;
+}
+.dash-upload-btn:active { scale: .96; }
+.dash-upload-btn:disabled { opacity: .7; pointer-events: none; }
+.dash-upload-icon {
+  position: relative; overflow: hidden; flex-shrink: 0;
+  width: 30px; height: 30px; border-radius: 50%;
+  display: grid; place-items: center;
+  background: #0A0A0A; color: var(--accent);
+  transition: color .3s;
+}
+.dash-upload-arrow--copy { position: absolute; transform: translate(-150%, 150%); }
+.dash-upload-btn:hover .dash-upload-arrow:first-child { transition: transform .3s ease-in-out; transform: translate(150%, -150%); }
+.dash-upload-btn:hover .dash-upload-arrow--copy { transition: transform .3s ease-in-out .1s; transform: translate(0); }
+.dash-upload-icon .dash-spinner { color: var(--accent); }
+
 .dash :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 /* Account menu (profile button + popover) lives in globals.css — shared with the clip board */
@@ -75,18 +98,28 @@
 .dash-tools { display: flex; align-items: center; gap: 10px; }
 
 .dash-search { position: relative; }
-.dash-search svg { position: absolute; left: 14px; top: 50%; transform: translateY(-50%); color: var(--text-muted); pointer-events: none; }
+.dash-search svg {
+  position: absolute; left: 14px; top: 50%; transform: translateY(-50%); color: var(--text-muted); pointer-events: none;
+  transition: color .25s, scale .3s cubic-bezier(.34,1.56,.64,1);
+}
+/* Search icon pops and turns white while typing */
+.dash-search:focus-within svg { color: var(--text); scale: 1.15; }
 .dash-input {
   font: inherit; font-size: 13px; color: var(--text);
   height: 40px; padding: 0 16px; border-radius: 999px;
   background: var(--surface); border: 1px solid var(--border-strong);
-  outline: none; transition: border-color 0.2s, box-shadow 0.2s;
+  outline: none;
+  transition: border-color .2s, width .35s cubic-bezier(.2,.8,.2,1), background-color .2s;
 }
-.dash-input:focus {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 16%, transparent);
+.dash-input:hover { border-color: rgba(255,255,255,0.22); }
+/* Active state: no coloured ring, just a slightly brighter neutral outline */
+.dash-input:focus, .dash-input:focus-visible {
+  border-color: rgba(255,255,255,0.3);
+  outline: none;
 }
 .dash-input { width: 240px; padding-left: 38px; }
+/* Widens smoothly while typing (and stays wide while there's a search) */
+.dash-input:focus, .dash-input:not(:placeholder-shown) { width: 300px; background: var(--surface-2); }
 .dash-input::placeholder { color: var(--text-muted); }
 /* Sort dropdown (SortMenu) — pill button + rounded menu instead of the native select */
 .dash-sort { position: relative; }
@@ -95,14 +128,28 @@
   height: 40px; padding: 0 16px 0 18px; border-radius: 999px; cursor: pointer;
   font: inherit; font-size: 13px; font-weight: 600; color: var(--text);
   background: var(--surface); border: 1px solid var(--border-strong);
-  outline: none; transition: border-color 0.2s, box-shadow 0.2s;
+  outline: none;
+  position: relative; overflow: hidden;
+  transition: border-color .2s, translate .2s, scale .15s;
 }
-.dash-sort-btn svg { color: var(--text-muted); transition: rotate 0.2s; }
+/* A soft light sweeps across on hover */
+.dash-sort-btn::after {
+  content: ''; position: absolute; inset: 0; pointer-events: none;
+  background: linear-gradient(110deg, transparent 30%, rgba(255,255,255,0.12) 50%, transparent 70%);
+  translate: -110% 0;
+}
+.dash-sort-btn:hover::after { translate: 110% 0; transition: translate .7s ease; }
+.dash-sort-btn:hover { translate: 0 -1px; }
+.dash-sort-btn:active { scale: .96; }
+.dash-sort-btn svg { color: var(--text-muted); transition: rotate 0.2s, color .2s; }
+.dash-sort-btn:hover svg { color: var(--text); }
+/* the ▾ gives a little bounce on hover (only while closed) */
+.dash-sort-btn[aria-expanded="false"]:hover svg { animation: dash-chevron-bob .6s ease; }
+@keyframes dash-chevron-bob { 0%, 100% { transform: translateY(0); } 40% { transform: translateY(3px); } 70% { transform: translateY(-1px); } }
 .dash-sort-btn[aria-expanded="true"] svg { rotate: 180deg; }
 .dash-sort-btn:hover { border-color: color-mix(in srgb, var(--text) 30%, transparent); }
 .dash-sort-btn[aria-expanded="true"], .dash-sort-btn:focus-visible {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 16%, transparent);
+  border-color: rgba(255,255,255,0.3);
   outline: none;
 }
 .dash-sort-list {
@@ -308,12 +355,14 @@
   .dash-main { padding: 28px 16px 48px; }
   .dash-tools { width: 100%; }
   .dash-search { flex: 1; }
-  .dash-input { width: 100%; }
+  .dash-input, .dash-input:focus, .dash-input:not(:placeholder-shown) { width: 100%; }
   .dash-drop:not(.is-empty) { flex-wrap: wrap; }
-  .dash-drop:not(.is-empty) .dash-btn-fill { width: 100%; }
+  .dash-drop:not(.is-empty) .dash-upload-btn { width: 100%; justify-content: center; }
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .dash-input, .dash-search svg, .dash-sort-btn { transition: none; }
+  .dash-sort-btn[aria-expanded="false"]:hover svg { animation: none; }
   .vcard, .vcard-actions, .vcard-action { transition-duration: .01ms !important; transition-delay: 0s !important; }
   .vcard.is-ready:hover { transform: none; }
 }
