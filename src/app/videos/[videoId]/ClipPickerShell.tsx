@@ -5,7 +5,6 @@ import { useRouter } from 'next/navigation'
 import { Breadcrumbs } from '@/components/ui/breadcrumbs'
 import { AccountMenu } from '@/components/ui/account-menu'
 import { BrandLoader } from '@/components/ui/brand-loader'
-import { PostText } from '@/components/clips/PostText'
 
 interface VideoData {
   id: string
@@ -298,6 +297,12 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: P
     setAutoClips(data.clips ?? [])
   }
   const autoRunning = autoJob?.status === 'queued' || autoJob?.status === 'running'
+  // A run that finishes while this page is open goes straight to its clips
+  const wasRunningRef = useRef(false)
+  useEffect(() => {
+    if (autoRunning) wasRunningRef.current = true
+    else if (wasRunningRef.current && autoJob?.status === 'done') router.push(`/videos/${video.id}/clips`)
+  }, [autoRunning, autoJob?.status, router, video.id])
   const autoRendering = autoClips.some(c => c.status === 'rendering')
   // Show an earlier run on load, then poll every 3 s while the job runs or its clips export
   useEffect(() => { if (video.status === 'ready') loadAutoClips().catch(() => {}) }, [video.id, video.status]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -509,13 +514,12 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: P
             Making clips failed{autoJob.error ? `: ${autoJob.error}` : ''}. Try again, or make clips by hand below.
           </p>
         )}
-        {autoClips.length > 0 && (
-          <div className="flex-1 min-h-0 overflow-y-auto flex flex-col gap-2 -mr-2 pr-2">
-            {autoClips.map(c => (
-              <AutoClipCard key={c.id} clip={c} onSeek={() => seek(c.start_ms)} onEdit={() => router.push(`/editor/${c.id}`)}
-                onText={t => setAutoClips(cs => cs.map(x => x.id === c.id ? { ...x, title: t.title, post_caption: t.post_caption, hashtags: t.hashtags } : x))} />
-            ))}
-          </div>
+        {autoClips.length > 0 && !autoRunning && (
+          <button onClick={() => router.push(`/videos/${video.id}/clips`)}
+            className="flex items-center justify-center gap-2 py-2 rounded-lg text-xs font-semibold transition-colors hover:bg-white/10"
+            style={{ color: '#fff', border: '1px solid rgba(255,255,255,0.14)' }}>
+            ▶ View {autoClips.length} AI clip{autoClips.length === 1 ? '' : 's'}
+          </button>
         )}
       </section>
 
@@ -806,55 +810,6 @@ function SuggestionCard({ suggestion, busy, onSeek, onUse }: {
           {busy === suggestion.id ? <Spinner /> : '+'} Use
         </button>
       </div>
-    </div>
-  )
-}
-
-function AutoClipCard({ clip, onSeek, onEdit, onText }: {
-  clip: AutoClip; onSeek: () => void; onEdit: () => void
-  onText: (t: { title: string | null; post_caption: string | null; hashtags: string[] | null }) => void
-}) {
-  const chip =
-    clip.status === 'rendering' ? { label: 'Exporting', color: ACCENT } :
-    clip.status === 'done' ? { label: 'Ready', color: '#4ade80' } :
-    clip.status === 'failed' ? { label: 'Export failed', color: '#f87171' } :
-    { label: 'Draft', color: 'rgba(255,255,255,0.45)' }
-  return (
-    <div className="shrink-0 rounded-xl p-3" style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)' }}>
-      <div className="flex items-start gap-2">
-        <p className="flex-1 text-sm font-medium text-white leading-snug">{clip.title || 'Untitled clip'}</p>
-        {typeof clip.ai_score === 'number' && (
-          <span title="Viral score (0–99)"
-            className="shrink-0 text-[11px] font-bold tabular-nums px-1.5 py-0.5 rounded-md"
-            style={{ color: ACCENT, background: 'rgba(200,255,0,0.1)', border: '1px solid rgba(200,255,0,0.25)' }}>
-            {clip.ai_score}
-          </span>
-        )}
-      </div>
-      {clip.ai_reason && <p className="text-[11px] mt-1 leading-relaxed italic" style={{ color: 'rgba(255,255,255,0.4)' }}>{clip.ai_reason}</p>}
-      <div className="flex items-center gap-2 mt-2.5">
-        <button onClick={onSeek} title="Play this moment"
-          className="text-xs font-mono tabular-nums px-2 py-1 rounded-md transition-colors hover:bg-white/10" style={{ color: 'rgba(255,255,255,0.6)', background: 'rgba(255,255,255,0.05)' }}>
-          ▶ {msToDisplay(clip.start_ms)}
-        </button>
-        <span className="flex items-center gap-1 text-[11px] font-medium" style={{ color: chip.color }}>
-          {clip.status === 'rendering' && <Spinner />} {chip.label}
-        </span>
-        <div className="flex-1" />
-        {clip.output_url && (
-          <a href={clip.output_url} target="_blank" rel="noreferrer"
-            className="px-2 py-1.5 rounded-lg text-xs font-semibold transition-colors hover:bg-white/15"
-            style={{ color: '#fff', background: 'rgba(255,255,255,0.08)' }}>
-            Preview
-          </a>
-        )}
-        <button onClick={onEdit}
-          className="px-2 py-1.5 rounded-lg text-xs font-semibold transition-colors hover:bg-white/15"
-          style={{ color: '#fff', background: 'rgba(255,255,255,0.08)' }}>
-          Open in editor
-        </button>
-      </div>
-      <PostText compact clipId={clip.id} value={{ title: clip.title, post_caption: clip.post_caption, hashtags: clip.hashtags }} onChange={onText} />
     </div>
   )
 }
