@@ -4,6 +4,18 @@ import { GoogleGenerativeAI } from '@google/generative-ai'
 import { r2, R2_BUCKET } from '@/lib/r2'
 import sql from '@/lib/db'
 import { findClips, type FoundClip, type Subscores } from './clipFinder'
+import { logSuggestionEvents, type SuggestionSource } from './suggestionEvents'
+
+const BEST_MOMENTS_MODEL = 'claude-haiku-4-5-20251001'
+const CLIP_SEARCH_MODEL = 'gemini-3.1-pro-preview'
+
+/** 'shown' for each AI suggestion returned (plain fallback chunks are not AI picks) */
+function logShown(userId: string, videoId: string, source: SuggestionSource, model: string, suggestions: ClipSuggestion[]) {
+  logSuggestionEvents(suggestions.filter(s => typeof s.score === 'number').map(s => ({
+    user_id: userId, video_id: videoId, source, event: 'shown' as const,
+    suggestion: { start_ms: s.start_ms, end_ms: s.end_ms, title: s.title, score: s.score, subscores: s.subscores, reason: s.reason, model },
+  })))
+}
 
 export async function listVideos(userId: string) {
   return sql`
@@ -130,7 +142,9 @@ export async function getVideoSuggestions(userId: string, videoId: string): Prom
   if (!anthropicKey) return { suggestions: makeWordChunks(words, durationMs) }
 
   try {
-    return { suggestions: await detectClipsWithClaude(words, durationMs, anthropicKey) }
+    const suggestions = await detectClipsWithClaude(words, durationMs, anthropicKey)
+    logShown(userId, videoId, 'best_moments', BEST_MOMENTS_MODEL, suggestions)
+    return { suggestions }
   } catch (e) {
     console.error('[suggestions] Claude error:', e)
     return { suggestions: makeWordChunks(words, durationMs) }
@@ -167,9 +181,9 @@ export async function getVideoSuggestionsByCriteria(
   const geminiKey = process.env.GEMINI_API_KEY
   if (!geminiKey) throw Object.assign(new Error('AI clip detection is not configured'), { status: 500 })
 
-  return {
-    suggestions: await detectClipsByCriteria(words, durationMs, trimmedCriteria, geminiKey),
-  }
+  const suggestions = await detectClipsByCriteria(words, durationMs, trimmedCriteria, geminiKey)
+  logShown(userId, videoId, 'clip_search', CLIP_SEARCH_MODEL, suggestions)
+  return { suggestions }
 }
 
 function toSuggestion(c: FoundClip, id: string): ClipSuggestion {
@@ -186,7 +200,7 @@ async function detectClipsWithClaude(words: Word[], durationMs: number, apiKey: 
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
       body: JSON.stringify({
-        model: 'claude-haiku-4-5-20251001',
+        model: BEST_MOMENTS_MODEL,
         max_tokens: 2048,
         system,
         messages: [{ role: 'user', content: user }],
@@ -210,7 +224,7 @@ async function detectClipsByCriteria(
 ): Promise<ClipSuggestion[]> {
   const genAI = new GoogleGenerativeAI(apiKey)
   const ask = async (system: string, user: string) => {
-    const model = genAI.getGenerativeModel({ model: 'gemini-3.1-pro-preview', systemInstruction: system })
+    const model = genAI.getGenerativeModel({ model: CLIP_SEARCH_MODEL, systemInstruction: system })
     const result = await model.generateContent(user)
     return result.response.text()
   }

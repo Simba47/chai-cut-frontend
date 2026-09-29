@@ -30,6 +30,7 @@ interface SavedClip {
 
 interface Suggestion {
   id: string
+  subscores?: Record<string, number>
   title: string
   start_ms: number
   end_ms: number
@@ -238,7 +239,19 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: P
     createClip(formStartMs, formEndMs, 'form', formTitle.trim() || undefined)
   }
 
-  async function createClip(startMs: number, endMs: number, key: string, title?: string) {
+  // What the user does with an AI suggestion (logged for improving clip picking; fire and forget)
+  function logSuggestion(event: 'previewed' | 'used', s: Suggestion, source: 'best_moments' | 'clip_search', clipId?: string) {
+    fetch(`/api/videos/${video.id}/suggestion-events`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
+      body: JSON.stringify({
+        event, source, clip_id: clipId,
+        suggestion: { start_ms: s.start_ms, end_ms: s.end_ms, title: s.title, score: s.score, subscores: s.subscores, reason: s.reason,
+          model: source === 'best_moments' ? 'claude-haiku-4-5-20251001' : 'gemini-3.1-pro-preview' },
+      }),
+    }).catch(() => {})
+  }
+
+  async function createClip(startMs: number, endMs: number, key: string, title?: string, from?: { s: Suggestion; source: 'best_moments' | 'clip_search' }) {
     setBusy(key)
     setClipError(null)
     try {
@@ -249,6 +262,7 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: P
       })
       if (!res.ok) throw new Error((await res.json()).error ?? 'Failed to create clip')
       const { clip_id } = await res.json()
+      if (from && typeof from.s.score === 'number') logSuggestion('used', from.s, from.source, clip_id)
       router.push(`/editor/${clip_id}?layout=horizontal`)
     } catch (e) {
       console.error(e)
@@ -537,7 +551,8 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: P
         )}
         {!loadingAi && aiSuggestions?.map(s => (
           <SuggestionCard key={s.id} suggestion={s} busy={busy}
-            onSeek={() => seek(s.start_ms)} onUse={() => createClip(s.start_ms, s.end_ms, s.id, s.title)} />
+            onSeek={() => { seek(s.start_ms); if (typeof s.score === 'number') logSuggestion('previewed', s, 'clip_search') }}
+            onUse={() => createClip(s.start_ms, s.end_ms, s.id, s.title, { s, source: 'clip_search' })} />
         ))}
         </div>
       </section>
@@ -572,7 +587,8 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: P
         )}
         {suggestions && !loadingSuggestions && suggestions.map(s => (
           <SuggestionCard key={s.id} suggestion={s} busy={busy}
-            onSeek={() => seek(s.start_ms)} onUse={() => createClip(s.start_ms, s.end_ms, s.id, s.title)} />
+            onSeek={() => { seek(s.start_ms); if (typeof s.score === 'number') logSuggestion('previewed', s, 'best_moments') }}
+            onUse={() => createClip(s.start_ms, s.end_ms, s.id, s.title, { s, source: 'best_moments' })} />
         ))}
         </div>
       </section>

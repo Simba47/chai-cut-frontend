@@ -41,5 +41,7 @@ export async function queueRender(userId: string, clipId: string, quality: Rende
     await sql`UPDATE clips SET status = 'draft' WHERE id = ${clipId}`
     throw Object.assign(new Error('Failed to queue render job'), { status: 500 })
   }
+  // Not awaited: the log never slows the export down
+  import('./suggestionEvents').then(m => m.logClipEvents(userId, [clipId], 'exported')).catch(() => {})
   return { job_id: job.id }
 }

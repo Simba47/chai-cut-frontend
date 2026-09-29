@@ -242,6 +242,9 @@ export async function deleteClips(userId: string, clipIds: unknown) {
 
   await deleteR2Keys(clips.map(c => c.output_storage_path as string | null).filter((k): k is string => !!k))
   // Formats, captions, overlays… go with their clip (foreign keys cascade)
+  // Before the rows go (it reads them); it never throws
+  const { logClipEvents } = await import('./suggestionEvents')
+  await logClipEvents(userId, ids, 'deleted')
   await sql`DELETE FROM clips WHERE id = ANY(${ids})`
   return { deleted: ids.length }
 }
