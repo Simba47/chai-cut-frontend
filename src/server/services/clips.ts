@@ -118,6 +118,7 @@ export async function saveClip(userId: string, clipId: string, body: SaveClipInp
   }
 
   const hasEnabledField = await captionEnabledField()
+  const hasPresetFields = await captionPresetFields()
 
   // Every statement is built up front and pipelined in one transaction: the database is far
   // from the server (~300–500 ms per round trip), and awaiting each statement made saves take
@@ -157,15 +158,21 @@ export async function saveClip(userId: string, clipId: string, body: SaveClipInp
     if (!captionEnabled && !hasEnabledField) {
       q.push(tx`DELETE FROM caption_styles WHERE clip_id = ${clipId}`)
     } else if (Object.keys(captionStyle).length > 0) {
-      const styleFields = ['font', 'size', 'color', 'position', 'position_y', 'animation', 'language', 'translated_from_language', 'timing_offset_ms']
+      const styleFields = ['font', 'size', 'color', 'position', 'position_y', 'animation', 'language', 'translated_from_language', 'timing_offset_ms',
+        // Animated presets. Not emphasis: the export fills that in, and the editor's copy may be stale.
+        ...(hasPresetFields ? PRESET_STYLE_FIELDS : [])]
       const onOff = hasEnabledField ? { enabled: captionEnabled } : {}
+      const entries = Object.entries(captionStyle).filter(([k, v]) => styleFields.includes(k) && v !== undefined)
+      const fields: Record<string, unknown> = Object.fromEntries(entries)
+      // A database the backend hasn't updated yet only accepts the original animations
+      if (!hasPresetFields && typeof fields.animation === 'string' && !['karaoke', 'fade', 'none'].includes(fields.animation)) {
+        fields.animation = 'karaoke'
+      }
       if (existingStyle?.id) {
-        const entries = Object.entries(captionStyle).filter(([k, v]) => styleFields.includes(k) && v !== undefined)
-        const set = { ...Object.fromEntries(entries), ...onOff }
+        const set = { ...fields, ...onOff }
         if (Object.keys(set).length > 0) q.push(tx`UPDATE caption_styles SET ${tx(set)} WHERE id = ${existingStyle.id}`)
       } else {
-        const { id: _id, clip_id: _clip_id, enabled: _en, ...rest } = captionStyle as CaptionStyle & { enabled?: boolean }
-        q.push(tx`INSERT INTO caption_styles ${tx({ clip_id: clipId, ...rest, ...onOff })}`)
+        q.push(tx`INSERT INTO caption_styles ${tx({ clip_id: clipId, ...fields, ...onOff })}`)
       }
     }
 
@@ -255,6 +262,16 @@ async function captionEnabledField(): Promise<boolean> {
   const rows = await sql`SELECT 1 FROM information_schema.columns WHERE table_name = 'caption_styles' AND column_name = 'enabled'`.catch(() => [])
   enabledFieldKnown = rows.length > 0
   return enabledFieldKnown
+}
+
+// Caption preset fields (added by the backend with the presets): same remember-a-yes rule
+const PRESET_STYLE_FIELDS = ['highlight_color', 'words_per_line', 'uppercase', 'stroke_width']
+let presetFieldsKnown = false
+async function captionPresetFields(): Promise<boolean> {
+  if (presetFieldsKnown) return true
+  const rows = await sql`SELECT 1 FROM information_schema.columns WHERE table_name = 'caption_styles' AND column_name = 'highlight_color'`.catch(() => [])
+  presetFieldsKnown = rows.length > 0
+  return presetFieldsKnown
 }
 
 const OLD_CORNERS: Record<string, number> = { s: 35, m: 60, l: 100 }

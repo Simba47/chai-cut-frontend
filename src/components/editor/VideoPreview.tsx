@@ -443,7 +443,7 @@ const CAPTION_GAP_MS = 300
 // Tag words whose timestamps were estimated from a phrase-level Sarvam token.
 type FlatWord = TranscriptWord & { _est?: true }
 
-function buildCaptionChunks(words: TranscriptWord[]): FlatWord[][] {
+function buildCaptionChunks(words: TranscriptWord[], maxWords = CAPTION_MAX_WORDS): FlatWord[][] {
   if (words.length === 0) return []
   const sorted = [...words].sort((a, b) => a.start_ms - b.start_ms)
   const chunks: FlatWord[][] = []
@@ -465,7 +465,7 @@ function buildCaptionChunks(words: TranscriptWord[]): FlatWord[][] {
       const gap = prev ? w.start_ms - prev.end_ms : 0
       // A different speaker always starts a new line (never mix two people's words)
       const speakerChange = !!prev && prev.speaker_id != null && w.speaker_id != null && prev.speaker_id !== w.speaker_id
-      if (wordChunk.length >= CAPTION_MAX_WORDS || (prev && gap > CAPTION_GAP_MS) || speakerChange) {
+      if (wordChunk.length >= maxWords || (prev && gap > CAPTION_GAP_MS) || speakerChange) {
         flushWordChunk()
       }
       wordChunk.push(w)
@@ -479,12 +479,12 @@ function buildCaptionChunks(words: TranscriptWord[]): FlatWord[][] {
       // phrase start/end instead of drifting with character-count estimates.
       flushWordChunk()
 
-      const numDisplayChunks = Math.ceil(parts.length / CAPTION_MAX_WORDS)
+      const numDisplayChunks = Math.ceil(parts.length / maxWords)
       const phraseDurMs = w.end_ms - w.start_ms
       const chunkDurMs = phraseDurMs / numDisplayChunks
 
       for (let ci = 0; ci < numDisplayChunks; ci++) {
-        const chunkWords = parts.slice(ci * CAPTION_MAX_WORDS, (ci + 1) * CAPTION_MAX_WORDS)
+        const chunkWords = parts.slice(ci * maxWords, (ci + 1) * maxWords)
         const chunkStartMs = Math.round(w.start_ms + ci * chunkDurMs)
         const chunkEndMs = ci === numDisplayChunks - 1
           ? w.end_ms
@@ -528,6 +528,149 @@ function findCaptionChunk(chunks: FlatWord[][], tMs: number) {
   return chunks.find(c => tMs >= c[0].start_ms && tMs <= c[c.length - 1].end_ms) ?? null
 }
 
+// ── Animated caption presets ──────────────────────────────────────────────────
+// Mirrors render.py _preset_events: same lines, timing and colours as the export.
+//   pop       — each word appears when spoken, scaling 80% → 110% → 100% in 150 ms
+//   highlight — 3 words a line; a highlight_color box behind the spoken word
+//   bounce    — the line slides up into place and fades in; the spoken word in highlight_color
+//   word      — one big word at a time, centre screen
+// Emphasised words (style.emphasis, keyed by the word's start_ms) are highlight_color and 15% larger.
+
+export const PRESET_ANIMATIONS = ['pop', 'highlight', 'bounce', 'word'] as const
+const isPreset = (a?: string | null) => (PRESET_ANIMATIONS as readonly string[]).includes(a ?? '')
+const POP_MS = 150
+const BOUNCE_MS = 180
+const BOX_PAD = 14
+const WORD_SCALE = 1.5
+const EMPHASIS_SCALE = 1.15
+
+// The export draws captions with these bundled fonts (render.py _FONT_FILES; anything else falls
+// back to Roboto) through libass, which sizes a font so its full height (OS/2 winAscent +
+// winDescent) equals the caption size. The preview loads the same files (public/caption-fonts)
+// and applies the same factor (unitsPerEm / (winAscent + winDescent)), so preset captions come
+// out the size they will be in the download.
+const EXPORT_FONTS: Record<string, { family: string; file: string; em: number }> = {
+  'noto-sans-telugu':     { family: 'CC Noto Sans Telugu', file: 'NotoSansTelugu-Regular.ttf', em: 0.677 },
+  'noto-sans-devanagari': { family: 'CC Noto Sans Devanagari', file: 'NotoSansDevanagari-Regular.ttf', em: 0.525 },
+  'roboto':               { family: 'CC Roboto', file: 'Roboto-Regular.ttf', em: 0.758 },
+  'montserrat-bold':      { family: 'CC Montserrat Bold', file: 'Montserrat-Bold.ttf', em: 0.640 },
+}
+const loadedExportFonts = new Set<string>()
+function exportFont(id?: string | null) {
+  const f = EXPORT_FONTS[id ?? ''] ?? EXPORT_FONTS.roboto
+  if (!loadedExportFonts.has(f.family) && typeof FontFace !== 'undefined') {
+    loadedExportFonts.add(f.family)
+    new FontFace(f.family, `url(/caption-fonts/${f.file})`).load()
+      .then(face => document.fonts.add(face))
+      .catch(() => loadedExportFonts.delete(f.family))
+  }
+  return f
+}
+
+/** Words per caption line for a style (render.py _preset_events uses the same rule) */
+export function captionWordsPerLine(style: Partial<CaptionStyle>) {
+  if (style.animation === 'word') return 1
+  if (style.words_per_line) return Math.max(1, Math.min(8, style.words_per_line))
+  return style.animation === 'highlight' ? 3 : CAPTION_MAX_WORDS
+}
+
+/** Black or white, whichever reads on a box of this colour (render.py _text_on) */
+function textOn(hex: string) {
+  let h = hex.replace('#', '')
+  if (h.length === 3) h = h.split('').map(c => c + c).join('')
+  const r = parseInt(h.slice(0, 2), 16), g = parseInt(h.slice(2, 4), 16), b = parseInt(h.slice(4, 6), 16)
+  return 0.299 * r + 0.587 * g + 0.114 * b > 150 ? '#000000' : '#FFFFFF'
+}
+
+function drawPresetCaptions(
+  ctx: CanvasRenderingContext2D,
+  chunk: FlatWord[],
+  tMs: number,
+  style: Partial<CaptionStyle>,
+  band?: { y: number; h: number } | null,
+) {
+  const W = ctx.canvas.width, H = ctx.canvas.height
+  const k = W / 1080                                   // export is laid out at 1080 wide
+  const anim = style.animation!
+  const color = style.color ?? '#FFFFFF'
+  const hl = style.highlight_color ?? '#FFE700'
+  const stroke = (style.stroke_width ?? 4) * k
+  const emphasis = style.emphasis ?? {}
+  const baseScale = anim === 'word' ? WORD_SCALE : 1
+  // The Noto Indic fonts have no Latin letters: Roman-letter captions use Roboto (as render.py)
+  const font = exportFont(style.language === 'roman' ? 'roboto' : style.font)
+  const fontPx = (style.size ?? 52) * k * font.em
+  const fontFamily = `"${font.family}", sans-serif`
+  const lineStart = chunk[0].start_ms
+  const lineEnd = chunk[chunk.length - 1].end_ms
+
+  const posY = style.position_y ?? (anim === 'word' ? 0.5 : 0.84)
+  let y = band ? (band.y + band.h / 2) * H : posY * H
+  let alpha = 1
+  if (anim === 'bounce') {
+    const p = Math.min(1, Math.max(0, (tMs - lineStart) / BOUNCE_MS))
+    y += (1 - p) * H * 0.02
+    alpha = Math.min(1, Math.max(0, (tMs - lineStart) / 80))
+  }
+
+  // Per word: text, scale, colour, visibility, spoken
+  const items = chunk.map((w, j) => {
+    const text = style.uppercase ? w.word.toUpperCase() : w.word
+    const on = w.start_ms, off = chunk[j + 1]?.start_ms ?? lineEnd
+    const emph = !!emphasis[String(w.start_ms)]
+    let scale = baseScale * (emph ? EMPHASIS_SCALE : 1)
+    let visible = true
+    if (anim === 'pop' || anim === 'word') {
+      const dt = tMs - on
+      if (dt < 0) { visible = false; scale *= 0.8 }
+      else if (dt < POP_MS / 2) scale *= 0.8 + 0.3 * (dt / (POP_MS / 2))
+      else if (dt < POP_MS) scale *= 1.1 - 0.1 * ((dt - POP_MS / 2) / (POP_MS / 2))
+    }
+    const spoken = tMs >= on && tMs < off
+    const rest = emph ? hl : color
+    const fill = anim === 'word' ? rest : spoken ? (anim === 'highlight' ? textOn(hl) : hl) : rest
+    return { text, scale, visible, spoken, fill }
+  })
+
+  ctx.save()
+  ctx.globalAlpha = alpha
+  ctx.textBaseline = 'middle'
+  ctx.lineJoin = 'round'
+  const widthOf = (it: typeof items[number]) => {
+    ctx.font = `700 ${fontPx * it.scale}px ${fontFamily}`
+    return ctx.measureText(it.text).width
+  }
+  ctx.font = `700 ${fontPx}px ${fontFamily}`
+  const space = ctx.measureText(' ').width
+  const widths = items.map(widthOf)
+  const total = widths.reduce((a, b) => a + b, 0) + space * (items.length - 1)
+  let x = (W - total) / 2
+  items.forEach((it, j) => {
+    const w = widths[j]
+    ctx.font = `700 ${fontPx * it.scale}px ${fontFamily}`
+    if (it.visible) {
+      if (anim === 'highlight' && it.spoken) {
+        // libass boxes the font's full height (the caption size) plus the padding
+        const pad = BOX_PAD * k, hPx = (fontPx / font.em) * it.scale
+        ctx.fillStyle = hl
+        ctx.fillRect(x - pad, y - hPx / 2 - pad, w + pad * 2, hPx + pad * 2)
+      } else {
+        ctx.shadowColor = 'rgba(0,0,0,0.5)'
+        ctx.shadowOffsetX = ctx.shadowOffsetY = 2 * k
+        ctx.lineWidth = stroke * 2
+        ctx.strokeStyle = '#000000'
+        if (stroke > 0) ctx.strokeText(it.text, x, y)
+        ctx.shadowColor = 'transparent'
+      }
+      ctx.fillStyle = it.fill
+      ctx.textAlign = 'left'
+      ctx.fillText(it.text, x, y)
+    }
+    x += w + space
+  })
+  ctx.restore()
+}
+
 function drawCaptions(
   ctx: CanvasRenderingContext2D,
   chunks: FlatWord[][],
@@ -540,6 +683,7 @@ function drawCaptions(
   const W = ctx.canvas.width, H = ctx.canvas.height
   const chunk = findCaptionChunk(chunks, tMs)
   if (!chunk) return
+  if (isPreset(style.animation)) { drawPresetCaptions(ctx, chunk, tMs, style, band); return }
 
   const color     = style.color    ?? '#FFFFFF'
   const animation = style.animation ?? 'karaoke'
@@ -722,9 +866,13 @@ export function OutputCanvas({
   // Rebuild only when the words array identity changes.
   const captionChunksRef  = useRef<FlatWord[][]>([])
   const prevWordsRef      = useRef<typeof words>(undefined)
-  if (words !== prevWordsRef.current) {
+  // Presets change how many words a line holds
+  const wordsPerLine = captionWordsPerLine(captionStyle ?? {})
+  const prevPerLineRef    = useRef(wordsPerLine)
+  if (words !== prevWordsRef.current || wordsPerLine !== prevPerLineRef.current) {
     prevWordsRef.current   = words
-    captionChunksRef.current = buildCaptionChunks(words ?? [])
+    prevPerLineRef.current = wordsPerLine
+    captionChunksRef.current = buildCaptionChunks(words ?? [], wordsPerLine)
   }
 
   useEffect(() => {

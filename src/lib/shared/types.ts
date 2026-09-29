@@ -81,6 +81,8 @@ export interface FrameSettings {
   items?: FrameItem[]
 }
 export type AnimationType = 'karaoke' | 'fade' | 'none'
+  // Animated presets (render.py _preset_events, VideoPreview drawPresetCaptions)
+  | 'pop' | 'highlight' | 'bounce' | 'word'
 export type TransitionType = 'cut' | 'fade' | 'wipe'
 
 export interface Video {
@@ -180,6 +182,16 @@ export interface CaptionStyle {
   timing_offset_ms: number | null
   /** Captions switched on for this clip (false = the user turned them off) */
   enabled?: boolean
+  /** Presets: colour of the spoken / emphasised word (the box, for 'highlight') */
+  highlight_color?: string | null
+  /** Presets: words per caption line (null = the preset's own: 3 for highlight, 5 otherwise) */
+  words_per_line?: number | null
+  /** Capital letters (only changes Latin text) */
+  uppercase?: boolean
+  /** Presets: outline thickness in px at 1080 wide */
+  stroke_width?: number | null
+  /** Words the AI marked important, keyed by the word's start_ms; set by the export */
+  emphasis?: Record<string, boolean> | null
 }
 
 export interface TextOverlay {
