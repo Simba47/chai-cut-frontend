@@ -7,8 +7,9 @@
  * carries five 0–10 sub-scores that add up to a 0–99 viral score. Candidates from all windows
  * are merged, de-duplicated and held to 15–90 s.
  *
- * No framework or database imports: the model call is passed in, so this file can be copied
- * as-is into the worker (chai-cut-backend/src/lib/clipFinder.ts).
+ * No framework or database imports: the model call is passed in, so this file is copied as-is
+ * between the repos: chai-cut-frontend/src/server/services/clipFinder.ts and
+ * chai-cut-backend/src/lib/clipFinder.ts. Keep the two identical.
  */
 
 export type FinderWord = { word: string; start_ms: number; end_ms: number }
@@ -27,6 +28,8 @@ export interface FoundClip {
   reason: string
   score: number
   subscores: Subscores
+  /** Which window found it */
+  window: number
 }
 
 /** 'best' = the strongest moments in general; 'search' = only moments matching the user's request */
@@ -129,12 +132,12 @@ const LINE_RULES = `Each transcript line is written as "L<number> [mm:ss] text".
 
 const ITEM_SHAPE = `{"start_line":number,"end_line":number,"title":"catchy 3-7 word title","summary":"one sentence","reason":"why it works, max 15 words","hook":0-10,"emotion":0-10,"story":0-10,"value":0-10,"clarity":0-10}`
 
-export function buildPrompt(mode: FinderMode, window: TranscriptLine[], durationMs: number, mostlyRoman: boolean) {
+export function buildPrompt(mode: FinderMode, window: TranscriptLine[], durationMs: number, mostlyRoman: boolean, perWindow = BEST_PER_WINDOW) {
   const transcript = window.map(l => `L${l.index} [${mmss(l.start_ms)}] ${l.text}`).join('\n')
   const part = `Video duration: ${mmss(durationMs)}. This part covers ${mmss(window[0].start_ms)}–${mmss(window[window.length - 1].end_ms)}.`
 
   if (mode.kind === 'best') {
-    const system = `You are a viral short-clip detector for Reels and Shorts. From this part of a video transcript, pick up to ${BEST_PER_WINDOW} moments that would work best as standalone vertical clips. Fewer is fine if this part is weak.
+    const system = `You are a viral short-clip detector for Reels and Shorts. From this part of a video transcript, pick up to ${perWindow} moments that would work best as standalone vertical clips. Fewer is fine if this part is weak.
 
 ${LINE_RULES}
 
@@ -170,7 +173,7 @@ const sub = (v: unknown) => {
 }
 
 /** Turns the model's answer into clips, dropping anything with bad or out-of-window line numbers */
-export function parseCandidates(text: string, window: TranscriptLine[], lines: TranscriptLine[]): FoundClip[] {
+export function parseCandidates(text: string, window: TranscriptLine[], lines: TranscriptLine[], windowIndex = 0): FoundClip[] {
   const match = text.match(/\[[\s\S]*\]/)
   if (!match) throw new Error(`No JSON array in model response: ${text.slice(0, 200)}`)
   const parsed: unknown = JSON.parse(match[0])
@@ -197,6 +200,7 @@ export function parseCandidates(text: string, window: TranscriptLine[], lines: T
       reason: typeof r.reason === 'string' ? r.reason.trim().split(/\s+/).slice(0, 15).join(' ') : '',
       score: Math.min(99, Math.round(total * 2)),
       subscores,
+      window: windowIndex,
     })
   }
   return out
@@ -246,6 +250,23 @@ async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T, i: number
 }
 
 /**
+ * Top `limit` clips by score, taking at most `perWindow` from any one window first so the
+ * picks come from across the video; leftover places go to the best of the rest.
+ */
+export function pickSpread(clips: FoundClip[], limit: number, windowCount: number): FoundClip[] {
+  const cap = Math.ceil(limit / Math.max(1, windowCount)) + 1
+  const taken = new Map<number, number>()
+  const picked: FoundClip[] = []
+  const rest: FoundClip[] = []
+  for (const c of clips) {
+    const n = taken.get(c.window) ?? 0
+    if (picked.length < limit && n < cap) { picked.push(c); taken.set(c.window, n + 1) } else rest.push(c)
+  }
+  for (const c of rest) if (picked.length < limit) picked.push(c)
+  return picked.sort((a, b) => b.score - a.score)
+}
+
+/**
  * Finds clips over the whole transcript. Windows that fail are logged and skipped; throws only
  * when every window fails, so the caller can fall back.
  */
@@ -255,6 +276,12 @@ export async function findClips(opts: {
   mode: FinderMode
   ask: AskModel
   log?: (msg: string) => void
+  /** Best moments: how many clips to return (default 8) */
+  limit?: number
+  /** Best moments: candidates to ask for per window (default 4) */
+  perWindow?: number
+  /** Best moments: spread the picks across the video instead of pure top-by-score */
+  spread?: boolean
 }): Promise<FoundClip[]> {
   const log = opts.log ?? (() => {})
   const lines = buildLines(opts.words)
@@ -265,8 +292,8 @@ export async function findClips(opts: {
   let failures = 0
   const perWindow = await mapLimit(windows, MAX_PARALLEL, async (window, i) => {
     try {
-      const { system, user } = buildPrompt(opts.mode, window, opts.durationMs, mostlyRoman)
-      return parseCandidates(await opts.ask(system, user), window, lines)
+      const { system, user } = buildPrompt(opts.mode, window, opts.durationMs, mostlyRoman, opts.perWindow)
+      return parseCandidates(await opts.ask(system, user), window, lines, i)
     } catch (e) {
       failures++
       log(`window ${i + 1}/${windows.length} failed: ${e instanceof Error ? e.message : String(e)}`)
@@ -279,7 +306,7 @@ export async function findClips(opts: {
     .map(c => fitLength(c, lines))
     .filter((c): c is FoundClip => c !== null)
   const merged = dedupe(fitted) // sorted by score, highest first
-  return opts.mode.kind === 'best'
-    ? merged.slice(0, BEST_TOP_N)
-    : merged.filter(c => c.score >= SEARCH_MIN_SCORE)
+  if (opts.mode.kind === 'search') return merged.filter(c => c.score >= SEARCH_MIN_SCORE)
+  const limit = opts.limit ?? BEST_TOP_N
+  return opts.spread ? pickSpread(merged, limit, windows.length) : merged.slice(0, limit)
 }

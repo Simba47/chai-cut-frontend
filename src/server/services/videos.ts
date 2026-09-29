@@ -1,4 +1,5 @@
-import { DeleteObjectCommand, DeleteObjectsCommand } from '@aws-sdk/client-s3'
+import { DeleteObjectCommand, DeleteObjectsCommand, GetObjectCommand } from '@aws-sdk/client-s3'
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 import { GoogleGenerativeAI } from '@google/generative-ai'
 import { r2, R2_BUCKET } from '@/lib/r2'
 import sql from '@/lib/db'
@@ -243,4 +244,86 @@ function makeTimeChunks(durationMs: number): ClipSuggestion[] {
     id: `time-${i}`, title: `Segment ${i + 1}`,
     start_ms: i * chunkMs, end_ms: Math.min((i + 1) * chunkMs, durationMs), summary: '',
   }))
+}
+
+// ── "Make my clips": the worker's AI Edit job picks, frames and exports clips on its own ──
+
+export const AUTO_CLIP_COUNTS = [3, 5, 10] as const
+
+export async function createAutoClips(userId: string, videoId: string, clipCount = 5) {
+  const count = Math.round(Number(clipCount))
+  if (!Number.isFinite(count) || count < 1 || count > 10) {
+    throw Object.assign(new Error('Choose between 1 and 10 clips'), { status: 400 })
+  }
+  const [video] = await sql`
+    SELECT id, status, storage_path FROM videos WHERE id = ${videoId} AND user_id = ${userId}
+  `
+  if (!video) throw Object.assign(new Error('Not found'), { status: 404 })
+  if (video.status !== 'ready' || !video.storage_path) {
+    throw Object.assign(new Error('This video is still processing. Try again once it is ready.'), { status: 409 })
+  }
+
+  const { checkClipQuota, getUserPlanConfig } = await import('./quota')
+  await checkClipQuota(userId)
+  const plan = await getUserPlanConfig(userId)
+  if (plan.maxClips) {
+    const [row] = await sql<{ count: string }[]>`
+      SELECT COUNT(*) AS count FROM clips c JOIN videos v ON v.id = c.video_id WHERE v.user_id = ${userId}
+    `
+    const left = plan.maxClips - parseInt(row?.count ?? '0', 10)
+    if (count > left) {
+      throw Object.assign(
+        new Error(`Your ${plan.name} plan allows ${plan.maxClips} clips and you have room for ${Math.max(0, left)} more. Choose fewer clips or upgrade.`),
+        { status: 403 },
+      )
+    }
+  }
+
+  const [running] = await sql`
+    SELECT id FROM ai_edit_jobs WHERE video_id = ${videoId} AND status IN ('queued', 'running') LIMIT 1
+  `
+  if (running) throw Object.assign(new Error('AI is already making clips for this video. Wait for it to finish.'), { status: 409 })
+
+  const [aiJob] = await sql`
+    INSERT INTO ai_edit_jobs (video_id, clip_count, status) VALUES (${videoId}, ${count}, 'queued') RETURNING id
+  `
+  const payload = { ai_edit_job_id: aiJob.id, video_id: videoId, clip_count: count }
+  await sql`INSERT INTO jobs (type, payload, status) VALUES ('ai_edit', ${sql.json(payload)}, 'queued')`
+  return { ai_edit_job_id: aiJob.id as string }
+}
+
+export interface AutoClip {
+  id: string; title: string | null; start_ms: number; end_ms: number; status: string
+  output_url: string | null; ai_score: number | null; ai_reason: string | null
+}
+
+/** The video's latest AI Edit job (status, progress, error) and the clips it made, best first */
+export async function getAutoClips(userId: string, videoId: string) {
+  const [video] = await sql`SELECT id FROM videos WHERE id = ${videoId} AND user_id = ${userId}`
+  if (!video) throw Object.assign(new Error('Not found'), { status: 404 })
+
+  // progress / ai_score / ai_reason are read through to_jsonb so this works before the worker adds them
+  const [job] = await sql`
+    SELECT id, status, error, clip_count, created_at, COALESCE((to_jsonb(j)->>'progress')::int, 0) AS progress
+    FROM ai_edit_jobs j WHERE video_id = ${videoId} ORDER BY created_at DESC LIMIT 1
+  `
+  if (!job) return { job: null, clips: [] as AutoClip[] }
+
+  const rows = await sql`
+    SELECT id, title, start_ms, end_ms, status, output_storage_path,
+      (to_jsonb(c)->>'ai_score')::int AS ai_score, to_jsonb(c)->>'ai_reason' AS ai_reason
+    FROM clips c WHERE ai_edit_job_id = ${job.id}
+  `
+  const clips: AutoClip[] = await Promise.all(rows.map(async r => ({
+    id: r.id, title: r.title, start_ms: r.start_ms, end_ms: r.end_ms, status: r.status,
+    ai_score: r.ai_score, ai_reason: r.ai_reason,
+    output_url: r.status === 'done' && r.output_storage_path
+      ? await getSignedUrl(r2, new GetObjectCommand({ Bucket: R2_BUCKET, Key: r.output_storage_path }), { expiresIn: 43200 }).catch(() => null)
+      : null,
+  })))
+  clips.sort((a, b) => (b.ai_score ?? -1) - (a.ai_score ?? -1))
+  return {
+    job: { id: job.id, status: job.status, progress: job.progress, error: job.error, clip_count: job.clip_count },
+    clips,
+  }
 }
