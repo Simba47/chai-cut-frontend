@@ -341,3 +341,43 @@ function cleanFrame(frame: FrameSettings): FrameSettings {
     items,
   }
 }
+
+/**
+ * Writes the clip's hook, title, post caption and hashtags again (Gemini, src/lib/clipText.ts)
+ * and saves them. The hook text overlay already on the clip is left as the user has it.
+ */
+export async function regenerateClipText(userId: string, clipId: string) {
+  const [clip] = await sql`
+    SELECT c.id, c.start_ms, c.end_ms, c.video_id, v.user_id, v.title AS video_title
+    FROM clips c JOIN videos v ON v.id = c.video_id WHERE c.id = ${clipId}
+  `
+  if (!clip) throw Object.assign(new Error('Clip not found'), { status: 404 })
+  if (clip.user_id !== userId) throw Object.assign(new Error('Forbidden'), { status: 403 })
+  const apiKey = process.env.GEMINI_API_KEY
+  if (!apiKey) throw Object.assign(new Error('AI text is not configured'), { status: 500 })
+
+  const [transcript] = await sql`SELECT id FROM transcripts WHERE video_id = ${clip.video_id} ORDER BY created_at DESC LIMIT 1`
+  const words = transcript
+    ? await sql<{ word: string; start_ms: number; end_ms: number }[]>`
+        SELECT word, start_ms, end_ms FROM transcript_words
+        WHERE transcript_id = ${transcript.id} AND start_ms >= ${clip.start_ms} AND start_ms < ${clip.end_ms}
+        ORDER BY start_ms`
+    : []
+  if (!words.length) throw Object.assign(new Error('This clip has no captions yet, so there is nothing to write from'), { status: 400 })
+
+  const { generateClipText } = await import('@/lib/clipText')
+  let text
+  try {
+    text = await generateClipText(words, clip.video_title ?? null, apiKey)
+  } catch (e) {
+    console.error('[ai-text] Gemini error:', e)
+    throw Object.assign(new Error('AI could not write the text right now. Try again in a moment.'), { status: 502 })
+  }
+  const [hasColumns] = await sql`SELECT 1 FROM information_schema.columns WHERE table_name = 'clips' AND column_name = 'post_caption'`
+  if (!hasColumns) throw Object.assign(new Error('AI text needs the latest backend. Try again after it restarts.'), { status: 503 })
+  await sql`
+    UPDATE clips SET title = ${text.title}, hook_text = ${text.hook}, post_caption = ${text.post_caption}, hashtags = ${text.hashtags}
+    WHERE id = ${clipId}
+  `
+  return text
+}

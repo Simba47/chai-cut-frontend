@@ -295,6 +295,7 @@ export async function createAutoClips(userId: string, videoId: string, clipCount
 export interface AutoClip {
   id: string; title: string | null; start_ms: number; end_ms: number; status: string
   output_url: string | null; ai_score: number | null; ai_reason: string | null
+  post_caption: string | null; hashtags: string[] | null
 }
 
 /** The video's latest AI Edit job (status, progress, error) and the clips it made, best first */
@@ -311,12 +312,14 @@ export async function getAutoClips(userId: string, videoId: string) {
 
   const rows = await sql`
     SELECT id, title, start_ms, end_ms, status, output_storage_path,
-      (to_jsonb(c)->>'ai_score')::int AS ai_score, to_jsonb(c)->>'ai_reason' AS ai_reason
+      (to_jsonb(c)->>'ai_score')::int AS ai_score, to_jsonb(c)->>'ai_reason' AS ai_reason,
+      to_jsonb(c)->>'post_caption' AS post_caption, to_jsonb(c)->'hashtags' AS hashtags
     FROM clips c WHERE ai_edit_job_id = ${job.id}
   `
   const clips: AutoClip[] = await Promise.all(rows.map(async r => ({
     id: r.id, title: r.title, start_ms: r.start_ms, end_ms: r.end_ms, status: r.status,
     ai_score: r.ai_score, ai_reason: r.ai_reason,
+    post_caption: r.post_caption ?? null, hashtags: Array.isArray(r.hashtags) ? r.hashtags : null,
     output_url: r.status === 'done' && r.output_storage_path
       ? await getSignedUrl(r2, new GetObjectCommand({ Bucket: R2_BUCKET, Key: r.output_storage_path }), { expiresIn: 43200 }).catch(() => null)
       : null,

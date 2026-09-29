@@ -4,6 +4,7 @@ import { useState, useEffect, useRef, useMemo, Fragment } from 'react'
 import type { Clip, Segment, CropBox, BoxKeyframe, CaptionStyle, TextOverlay, AudioTrack, Transition, TranscriptWord, LayoutType, Overlay } from '@chai-cut/shared'
 import { VideoPreview, OutputCanvas } from '@/components/editor/VideoPreview'
 import { computeCutRanges, removedMs } from '@/lib/cuts'
+import { PostText, type PostTextValue } from '@/components/clips/PostText'
 import { SegmentTimeline, LAYOUT_COLORS } from '@/components/editor/SegmentTimeline'
 import { TranscriptPanel } from '@/components/editor/TranscriptPanel'
 import { CaptionStyler } from '@/components/editor/CaptionStyler'
@@ -206,6 +207,11 @@ export function EditorShell({
   // Remove pauses and filler words (the cut is made by the export; see src/lib/cuts.ts)
   const [removeFillers, setRemoveFillersState] = useState(!!(clip as Clip & { remove_fillers?: boolean }).remove_fillers)
   const removeFillersRef = useRef(removeFillers)
+  // Words to post the clip with (AI clips come with them; any clip can have them written)
+  const [postText, setPostText] = useState<PostTextValue>(() => {
+    const c = clip as Clip & { title?: string | null; post_caption?: string | null; hashtags?: string[] | null }
+    return { title: c.title ?? null, post_caption: c.post_caption ?? null, hashtags: c.hashtags ?? null }
+  })
   const [exportError, setExportError] = useState<string | null>(null)
   // What exports have always been rendered at (the worker ignored the 2160p asked for here)
   const renderQuality = '1080p' as const
@@ -1531,6 +1537,17 @@ export function EditorShell({
                 </span>
               </span>
             </label>
+          )}
+
+          {/* Post text: title, caption and hashtags to copy */}
+          {words.length > 0 && (
+            <details className="shrink-0 mx-4 mt-3 px-3 py-2.5 rounded-xl" open={!!postText.post_caption}
+              style={{ background: 'rgb(var(--ed-fg) / 0.04)', border: '1px solid rgb(var(--ed-fg) / 0.07)' }}>
+              <summary className="text-xs font-semibold text-[var(--ed-text)] cursor-pointer select-none">Post text</summary>
+              <div className="mt-2">
+                <PostText clipId={clip.id} value={postText} onChange={v => setPostText({ title: v.title, post_caption: v.post_caption, hashtags: v.hashtags })} />
+              </div>
+            </details>
           )}
 
           {/* How the reel looks inside each app */}

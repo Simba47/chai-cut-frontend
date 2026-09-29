@@ -769,6 +769,7 @@ function drawTextOverlays(
   const W = ctx.canvas.width, H = ctx.canvas.height
   for (const o of overlays) {
     if (tMs < o.start_ms || tMs >= o.end_ms) continue
+    if (o.x == null) { drawCenteredText(ctx, o); continue }
     const x = (o.x ?? 0.1) * W
     const y = (o.y ?? 0.4) * H
     const fontSize = Math.max(14, Math.round(((o.size ?? 72) / 1080) * H))
@@ -782,6 +783,36 @@ function drawTextOverlays(
     ctx.fillText(o.text, x, y)
     ctx.restore()
   }
+}
+
+/**
+ * A text overlay with no x (the AI hook): centred, in the export's font and size, shrunk to fit
+ * 90% of the width — as render.py draws it (drawtext x=(w-text_w)/2, _fit_font_size).
+ */
+function drawCenteredText(ctx: CanvasRenderingContext2D, o: TextOverlayType) {
+  const W = ctx.canvas.width, H = ctx.canvas.height
+  const font = EXPORT_FONTS[o.font ?? ''] ? exportFont(o.font) : null
+  const family = font ? `"${font.family}", sans-serif` : (o.font ?? 'sans-serif')
+  const weight = font ? 400 : 700                      // drawtext uses the font file as it is
+  let px = (o.size ?? 48) * W / 1080
+  ctx.save()
+  ctx.font = `${weight} ${px}px ${family}`
+  const width = ctx.measureText(o.text).width
+  if (width > W * 0.9) px = Math.max(28 * W / 1080, px * (W * 0.9) / width)
+  ctx.font = `${weight} ${px}px ${family}`
+  ctx.textAlign = 'center'
+  ctx.textBaseline = 'top'
+  ctx.shadowColor = 'rgba(0,0,0,0.7)'
+  ctx.shadowOffsetX = ctx.shadowOffsetY = 2 * W / 1080
+  // Black outline, as drawtext borderw=4 (px at 1080 wide)
+  ctx.lineJoin = 'round'
+  ctx.lineWidth = 2 * Math.max(2, 4 * W / 1080)
+  ctx.strokeStyle = '#000000'
+  ctx.strokeText(o.text, W / 2, (o.y ?? 0.15) * H)
+  ctx.shadowColor = 'transparent'
+  ctx.fillStyle = o.color ?? '#ffffff'
+  ctx.fillText(o.text, W / 2, (o.y ?? 0.15) * H)
+  ctx.restore()
 }
 
 // ── 9:16 output canvas ────────────────────────────────────────────────────────
@@ -1227,7 +1258,12 @@ function TextOverlayBox({ overlay, isActive, onChange, onSelect, onDelete }: Tex
     e.stopPropagation()
     onSelect(overlay.id)
     const sx = e.clientX, sy = e.clientY
-    const ox = overlay.x ?? 0.1, oy = overlay.y ?? 0.4
+    // A centred overlay (no x) starts its drag from where it is drawn
+    const centredX = () => {
+      const el = ref.current, parent = el?.parentElement
+      return el && parent ? el.getBoundingClientRect().left / 1 - parent.getBoundingClientRect().left : 0
+    }
+    const ox = overlay.x ?? (centredX() / cRect().w), oy = overlay.y ?? 0.4
     function move(ev: MouseEvent) {
       const { w, h } = cRect()
       onChange({
@@ -1254,7 +1290,8 @@ function TextOverlayBox({ overlay, isActive, onChange, onSelect, onDelete }: Tex
     window.addEventListener('mouseup', up)
   }
 
-  const x = overlay.x ?? 0.1
+  const centred = overlay.x == null
+  const x = overlay.x ?? 0.5
   const y = overlay.y ?? 0.4
   const color = overlay.color ?? '#ffffff'
   const accent = '#c8ff00'
@@ -1268,6 +1305,7 @@ function TextOverlayBox({ overlay, isActive, onChange, onSelect, onDelete }: Tex
         position: 'absolute',
         left: `${x * 100}%`,
         top: `${y * 100}%`,
+        transform: centred ? 'translateX(-50%)' : undefined,
         cursor: 'move',
         userSelect: 'none',
         border: `1.5px solid ${isActive ? accent : 'transparent'}`,
@@ -1280,7 +1318,7 @@ function TextOverlayBox({ overlay, isActive, onChange, onSelect, onDelete }: Tex
       }}
     >
       {/* Invisible text — sized to match canvas text (canvas 540×960; size/6.075 cqw = size/1080*960/540 of container width) */}
-      <span style={{ color: 'transparent', fontSize: `${(overlay.size ?? 72) / 6.075}cqw`, fontWeight: 700, fontFamily: 'sans-serif', whiteSpace: 'nowrap', display: 'block', pointerEvents: 'none', lineHeight: 1, userSelect: 'none', margin: 0, padding: 0 }}>
+      <span style={{ color: 'transparent', fontSize: centred ? `${(overlay.size ?? 72) / 10.8}cqw` : `${(overlay.size ?? 72) / 6.075}cqw`, fontWeight: 700, fontFamily: 'sans-serif', whiteSpace: 'nowrap', display: 'block', pointerEvents: 'none', lineHeight: 1, userSelect: 'none', margin: 0, padding: 0 }}>
         {overlay.text || '…'}
       </span>
       {isActive && (

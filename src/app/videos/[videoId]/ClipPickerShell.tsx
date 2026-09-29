@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation'
 import { Breadcrumbs } from '@/components/ui/breadcrumbs'
 import { AccountMenu } from '@/components/ui/account-menu'
 import { BrandLoader } from '@/components/ui/brand-loader'
+import { PostText } from '@/components/clips/PostText'
 
 interface VideoData {
   id: string
@@ -42,6 +43,7 @@ interface AutoJob { id: string; status: 'queued' | 'running' | 'done' | 'failed'
 interface AutoClip {
   id: string; title: string | null; start_ms: number; end_ms: number; status: string
   output_url: string | null; ai_score: number | null; ai_reason: string | null
+  post_caption: string | null; hashtags: string[] | null
 }
 const AUTO_COUNTS = [3, 5, 10] as const
 
@@ -490,7 +492,8 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: P
         {autoClips.length > 0 && (
           <div className="flex-1 min-h-0 overflow-y-auto flex flex-col gap-2 -mr-2 pr-2">
             {autoClips.map(c => (
-              <AutoClipCard key={c.id} clip={c} onSeek={() => seek(c.start_ms)} onEdit={() => router.push(`/editor/${c.id}`)} />
+              <AutoClipCard key={c.id} clip={c} onSeek={() => seek(c.start_ms)} onEdit={() => router.push(`/editor/${c.id}`)}
+                onText={t => setAutoClips(cs => cs.map(x => x.id === c.id ? { ...x, title: t.title, post_caption: t.post_caption, hashtags: t.hashtags } : x))} />
             ))}
           </div>
         )}
@@ -785,7 +788,10 @@ function SuggestionCard({ suggestion, busy, onSeek, onUse }: {
   )
 }
 
-function AutoClipCard({ clip, onSeek, onEdit }: { clip: AutoClip; onSeek: () => void; onEdit: () => void }) {
+function AutoClipCard({ clip, onSeek, onEdit, onText }: {
+  clip: AutoClip; onSeek: () => void; onEdit: () => void
+  onText: (t: { title: string | null; post_caption: string | null; hashtags: string[] | null }) => void
+}) {
   const chip =
     clip.status === 'rendering' ? { label: 'Exporting', color: ACCENT } :
     clip.status === 'done' ? { label: 'Ready', color: '#4ade80' } :
@@ -826,6 +832,7 @@ function AutoClipCard({ clip, onSeek, onEdit }: { clip: AutoClip; onSeek: () => 
           Open in editor
         </button>
       </div>
+      <PostText compact clipId={clip.id} value={{ title: clip.title, post_caption: clip.post_caption, hashtags: clip.hashtags }} onChange={onText} />
     </div>
   )
 }
