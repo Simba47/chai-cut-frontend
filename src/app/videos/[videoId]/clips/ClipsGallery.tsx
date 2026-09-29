@@ -10,6 +10,8 @@ import { PostText } from '@/components/clips/PostText'
 
 export interface GalleryClip {
   id: string; title: string | null; start_ms: number; end_ms: number; status: string
+  /** The Make my clips run it came from, and when */
+  batch: string; batch_at: string
   ai_score: number | null; ai_reason: string | null
   post_caption: string | null; hashtags: string[] | null; output_url: string | null
   segments: SegmentLocal[]; words: TranscriptWord[]
@@ -18,7 +20,10 @@ export interface GalleryClip {
 
 const ACCENT = '#c8ff00'
 
-/** The clips "Make my clips" made, each playable in 9:16 here; Edit opens the editor, Export renders one */
+/**
+ * AI edits: every clip "Make my clips" made from the video, a section per run (newest first), each
+ * playable in 9:16 here; Edit opens the editor, Export renders one
+ */
 export function ClipsGallery({ video, videoUrl, job, clips: initial }: {
   video: { id: string; title: string | null }
   videoUrl: string
@@ -30,6 +35,13 @@ export function ClipsGallery({ video, videoUrl, job, clips: initial }: {
   useEffect(() => { setClips(initial) }, [initial])
   const [exportError, setExportError] = useState<string | null>(null)
   const running = job?.status === 'queued' || job?.status === 'running'
+  // One section per Make my clips run, newest first (clips arrive in that order)
+  const batches = clips.reduce<Array<{ id: string; at: string; clips: GalleryClip[] }>>((acc, c) => {
+    const last = acc[acc.length - 1]
+    if (last?.id === c.batch) last.clips.push(c)
+    else acc.push({ id: c.batch, at: c.batch_at, clips: [c] })
+    return acc
+  }, [])
   const exporting = clips.some(c => c.status === 'rendering')
 
   // While the AI is still making clips, or clips are exporting, check every 3 s
@@ -65,7 +77,7 @@ export function ClipsGallery({ video, videoUrl, job, clips: initial }: {
         <Breadcrumbs shine items={[
           { label: 'Dashboard', href: '/dashboard' },
           { label: 'Clip board', href: `/videos/${video.id}` },
-          { label: 'AI clips' },
+          { label: 'AI edits' },
         ]} />
         <div className="flex-1" />
         <AccountMenu />
@@ -74,7 +86,7 @@ export function ClipsGallery({ video, videoUrl, job, clips: initial }: {
       <main className="flex-1 w-full max-w-6xl mx-auto px-4 py-6 flex flex-col gap-5">
         <div className="flex items-end justify-between gap-4 flex-wrap">
           <div>
-            <h1 className="text-xl font-semibold text-white">AI clips{video.title ? ` · ${video.title}` : ''}</h1>
+            <h1 className="text-xl font-semibold text-white">AI edits{video.title ? ` · ${video.title}` : ''}</h1>
             <p className="text-sm mt-1" style={{ color: 'rgba(255,255,255,0.5)' }}>
               Play any clip to see it as a reel. Open it in the editor to change it, or export the ones you want to download.
             </p>
@@ -99,8 +111,14 @@ export function ClipsGallery({ video, videoUrl, job, clips: initial }: {
           <p className="text-sm" style={{ color: 'rgba(255,255,255,0.5)' }}>No AI clips yet. Use “Make my clips” on the clip board.</p>
         )}
 
+        {batches.map((b, bi) => (
+        <section key={b.id} className="flex flex-col gap-3">
+          <h2 className="text-sm font-semibold" style={{ color: 'rgba(255,255,255,0.7)' }}>
+            {bi === 0 ? 'Latest batch' : `Batch ${batches.length - bi}`}
+            <span className="font-normal" style={{ color: 'rgba(255,255,255,0.4)' }}> · {b.clips.length} clip{b.clips.length === 1 ? '' : 's'} · {new Date(b.at).toLocaleString()}</span>
+          </h2>
         <div className="grid gap-5" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))' }}>
-          {clips.map(c => (
+          {b.clips.map(c => (
             <article key={c.id} className="flex flex-col gap-2.5 p-3 rounded-2xl"
               style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)' }}>
               <ClipPlayer videoUrl={videoUrl} startMs={c.start_ms} endMs={c.end_ms} segments={c.segments}
@@ -141,6 +159,8 @@ export function ClipsGallery({ video, videoUrl, job, clips: initial }: {
             </article>
           ))}
         </div>
+        </section>
+        ))}
       </main>
     </div>
   )

@@ -313,7 +313,7 @@ export interface AutoClip {
   post_caption: string | null; hashtags: string[] | null
 }
 
-/** The video's latest AI Edit job (status, progress, error) and the clips it made, best first */
+/** The video's latest AI Edit job (status, progress, error) and every clip AI Edit made from it, newest batch first */
 export async function getAutoClips(userId: string, videoId: string) {
   const [video] = await sql`SELECT id FROM videos WHERE id = ${videoId} AND user_id = ${userId}`
   if (!video) throw Object.assign(new Error('Not found'), { status: 404 })
@@ -329,7 +329,9 @@ export async function getAutoClips(userId: string, videoId: string) {
     SELECT id, title, start_ms, end_ms, status, output_storage_path,
       (to_jsonb(c)->>'ai_score')::int AS ai_score, to_jsonb(c)->>'ai_reason' AS ai_reason,
       to_jsonb(c)->>'post_caption' AS post_caption, to_jsonb(c)->'hashtags' AS hashtags
-    FROM clips c WHERE ai_edit_job_id = ${job.id}
+    FROM clips c JOIN ai_edit_jobs j ON j.id = c.ai_edit_job_id
+    WHERE j.video_id = ${videoId}
+    ORDER BY j.created_at DESC, (to_jsonb(c)->>'ai_score')::int DESC NULLS LAST
   `
   const clips: AutoClip[] = await Promise.all(rows.map(async r => ({
     id: r.id, title: r.title, start_ms: r.start_ms, end_ms: r.end_ms, status: r.status,
@@ -339,7 +341,6 @@ export async function getAutoClips(userId: string, videoId: string) {
       ? await getSignedUrl(r2, new GetObjectCommand({ Bucket: R2_BUCKET, Key: r.output_storage_path }), { expiresIn: 43200 }).catch(() => null)
       : null,
   })))
-  clips.sort((a, b) => (b.ai_score ?? -1) - (a.ai_score ?? -1))
   return {
     job: { id: job.id, status: job.status, progress: job.progress, error: job.error, clip_count: job.clip_count },
     clips,

@@ -475,7 +475,7 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: P
       <section className="shrink-0 max-h-[50%] p-4 flex flex-col gap-2 rounded-2xl" style={CARD}>
         <h2 className="text-sm font-semibold text-white">Make my clips</h2>
         <p className="text-xs leading-relaxed" style={{ color: 'rgba(255,255,255,0.45)' }}>
-          AI picks the best moments, frames them vertically, adds captions and exports them for you.
+          AI picks the best moments, frames them vertically and adds captions. Each new batch finds new moments.
         </p>
         <div className="flex gap-2">
           <div className="flex rounded-lg overflow-hidden" role="radiogroup" aria-label="How many clips" style={{ border: '1px solid rgba(255,255,255,0.12)' }}>
@@ -518,7 +518,7 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: P
           <button onClick={() => router.push(`/videos/${video.id}/clips`)}
             className="flex items-center justify-center gap-2 py-2 rounded-lg text-xs font-semibold transition-colors hover:bg-white/10"
             style={{ color: '#fff', border: '1px solid rgba(255,255,255,0.14)' }}>
-            ▶ View {autoClips.length} AI clip{autoClips.length === 1 ? '' : 's'}
+            ▶ AI edits ({autoClips.length} clip{autoClips.length === 1 ? '' : 's'})
           </button>
         )}
       </section>

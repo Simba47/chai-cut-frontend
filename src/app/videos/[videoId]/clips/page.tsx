@@ -8,7 +8,8 @@ import { r2, R2_BUCKET } from '@/lib/r2'
 import { rowsToLocal } from '@/modules/editor/utils'
 import { ClipsGallery, type GalleryClip } from './ClipsGallery'
 
-// "Make my clips" results: every clip playable in 9:16 without exporting it
+// AI edits: every clip "Make my clips" has made from this video (all batches, newest first),
+// each playable in 9:16 without exporting it
 export default async function AutoClipsPage({ params }: { params: Promise<{ videoId: string }> }) {
   const { videoId } = await params
   const user = await requireUser()
@@ -21,11 +22,12 @@ export default async function AutoClipsPage({ params }: { params: Promise<{ vide
     SELECT id, status, error, clip_count FROM ai_edit_jobs WHERE video_id = ${videoId} ORDER BY created_at DESC LIMIT 1
   `
   const clipRows = job ? await sql`
-    SELECT id, title, start_ms, end_ms, status, output_storage_path,
+    SELECT c.id, c.title, c.start_ms, c.end_ms, c.status, c.output_storage_path, c.ai_edit_job_id, j.created_at AS batch_at,
       (to_jsonb(c)->>'ai_score')::int AS ai_score, to_jsonb(c)->>'ai_reason' AS ai_reason,
       to_jsonb(c)->>'post_caption' AS post_caption, to_jsonb(c)->'hashtags' AS hashtags
-    FROM clips c WHERE ai_edit_job_id = ${job.id}
-    ORDER BY (to_jsonb(c)->>'ai_score')::int DESC NULLS LAST, start_ms
+    FROM clips c JOIN ai_edit_jobs j ON j.id = c.ai_edit_job_id
+    WHERE j.video_id = ${videoId}
+    ORDER BY j.created_at DESC, (to_jsonb(c)->>'ai_score')::int DESC NULLS LAST, c.start_ms
   ` : []
   const ids = clipRows.map(c => c.id as string)
 
@@ -56,6 +58,7 @@ export default async function AutoClipsPage({ params }: { params: Promise<{ vide
   const allWords = words as unknown as TranscriptWord[]
   const clips: GalleryClip[] = await Promise.all(clipRows.map(async c => ({
     id: c.id, title: c.title, start_ms: c.start_ms, end_ms: c.end_ms, status: c.status,
+    batch: c.ai_edit_job_id, batch_at: new Date(c.batch_at).toISOString(),
     ai_score: c.ai_score, ai_reason: c.ai_reason, post_caption: c.post_caption ?? null,
     hashtags: Array.isArray(c.hashtags) ? c.hashtags : null,
     output_url: c.status === 'done' && c.output_storage_path
