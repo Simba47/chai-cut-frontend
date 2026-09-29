@@ -2,6 +2,7 @@ import { DeleteObjectCommand, DeleteObjectsCommand } from '@aws-sdk/client-s3'
 import { GoogleGenerativeAI } from '@google/generative-ai'
 import { r2, R2_BUCKET } from '@/lib/r2'
 import sql from '@/lib/db'
+import { findClips, type FoundClip, type Subscores } from './clipFinder'
 
 export async function listVideos(userId: string) {
   return sql`
@@ -94,7 +95,14 @@ export async function deleteVideos(userId: string, videoIds: string[]) {
   return { deleted: ids.length }
 }
 
-interface ClipSuggestion { id: string; title: string; start_ms: number; end_ms: number; summary: string }
+export interface ClipSuggestion {
+  id: string; title: string; start_ms: number; end_ms: number; summary: string
+  /** Viral score 0–99 (AI suggestions only) */
+  score?: number
+  /** One line on why the clip should work */
+  reason?: string
+  subscores?: Subscores
+}
 type Word = { word: string; start_ms: number; end_ms: number }
 
 export async function getVideoSuggestions(userId: string, videoId: string): Promise<{ suggestions: ClipSuggestion[] }> {
@@ -120,7 +128,7 @@ export async function getVideoSuggestions(userId: string, videoId: string): Prom
   if (!anthropicKey) return { suggestions: makeWordChunks(words, durationMs) }
 
   try {
-    return { suggestions: await detectClipsWithClaude(buildTranscriptText(words), durationMs, anthropicKey) }
+    return { suggestions: await detectClipsWithClaude(words, durationMs, anthropicKey) }
   } catch (e) {
     console.error('[suggestions] Claude error:', e)
     return { suggestions: makeWordChunks(words, durationMs) }
@@ -158,99 +166,57 @@ export async function getVideoSuggestionsByCriteria(
   if (!geminiKey) throw Object.assign(new Error('AI clip detection is not configured'), { status: 500 })
 
   return {
-    suggestions: await detectClipsByCriteria(
-      buildTranscriptText(words), durationMs, trimmedCriteria, geminiKey,
-    ),
+    suggestions: await detectClipsByCriteria(words, durationMs, trimmedCriteria, geminiKey),
   }
 }
 
-function msToTimestamp(ms: number) {
-  const s = Math.floor(ms / 1000)
-  return `${Math.floor(s / 60)}:${(s % 60).toString().padStart(2, '0')}`
-}
-
-function buildTranscriptText(words: Word[]) {
-  const lines: string[] = []
-  let lineStart = 0, lineEnd = 0, line: string[] = []
-  for (const w of words) {
-    if (line.length > 0 && w.start_ms - lineEnd > 2000) {
-      lines.push(`[${msToTimestamp(lineStart)}–${msToTimestamp(lineEnd)}] ${line.join(' ')}`)
-      line = []
-    }
-    if (line.length === 0) lineStart = w.start_ms
-    line.push(w.word)
-    lineEnd = w.end_ms
+function toSuggestion(c: FoundClip, id: string): ClipSuggestion {
+  return {
+    id, title: c.title, start_ms: c.start_ms, end_ms: c.end_ms, summary: c.summary,
+    score: c.score, reason: c.reason, subscores: c.subscores,
   }
-  if (line.length > 0) lines.push(`[${msToTimestamp(lineStart)}–${msToTimestamp(lineEnd)}] ${line.join(' ')}`)
-  return lines.join('\n')
 }
 
-async function detectClipsWithClaude(transcript: string, durationMs: number, apiKey: string): Promise<ClipSuggestion[]> {
-  const res = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
-    body: JSON.stringify({
-      model: 'claude-haiku-4-5-20251001',
-      max_tokens: 1024,
-      system: `You are a viral short-clip detector. Given a video transcript with timestamps, identify 5-8 engaging moments suitable for social media clips (30–90 seconds each). Return ONLY a JSON array, no other text. Each element: {"title":"catchy 3-7 word title","start_ms":number,"end_ms":number,"summary":"one sentence why it is a good clip"}`,
-      messages: [{ role: 'user', content: `Video duration: ${msToTimestamp(durationMs)}\n\nTranscript:\n${transcript.slice(0, 8000)}` }],
-    }),
+// Best moments: Claude reads the whole transcript in ~10-minute windows (see clipFinder.ts)
+async function detectClipsWithClaude(words: Word[], durationMs: number, apiKey: string): Promise<ClipSuggestion[]> {
+  const ask = async (system: string, user: string) => {
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+      body: JSON.stringify({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 2048,
+        system,
+        messages: [{ role: 'user', content: user }],
+      }),
+    })
+    if (!res.ok) throw new Error(`Anthropic API ${res.status}`)
+    const data = await res.json()
+    return (data.content?.[0]?.text ?? '') as string
+  }
+  const clips = await findClips({
+    words, durationMs, mode: { kind: 'best' }, ask,
+    log: msg => console.error('[suggestions]', msg),
   })
-  if (!res.ok) throw new Error(`Anthropic API ${res.status}`)
-  const data = await res.json()
-  const text: string = data.content?.[0]?.text ?? ''
-  const match = text.match(/\[[\s\S]*\]/)
-  if (!match) throw new Error('No JSON in Claude response')
-  const parsed = JSON.parse(match[0]) as Array<{ title: string; start_ms: number; end_ms: number; summary: string }>
-  return parsed.map((s, i) => ({
-    id: `ai-${i}`, title: s.title,
-    start_ms: Math.max(0, Math.round(s.start_ms)),
-    end_ms: Math.min(durationMs, Math.round(s.end_ms)),
-    summary: s.summary ?? '',
-  }))
+  return clips.map((c, i) => toSuggestion(c, `ai-${i}`))
 }
 
+// Clip search: Gemini reads the whole transcript in windows and keeps only genuine matches.
+// Clips end on a line the model chose, so the old +5 s end padding is no longer needed.
 async function detectClipsByCriteria(
-  transcript: string, durationMs: number, criteria: string, apiKey: string,
+  words: Word[], durationMs: number, criteria: string, apiKey: string,
 ): Promise<ClipSuggestion[]> {
   const genAI = new GoogleGenerativeAI(apiKey)
-  const model = genAI.getGenerativeModel({ model: 'gemini-3.1-pro-preview' })
-  const prompt = `You are a strict, skeptical video clip finder. Given a video transcript with timestamps and a request describing what to look for, find moments (30–90 seconds each) that genuinely match.
-
-Be conservative. Most videos do NOT contain what any given request is looking for — that is the normal case, not an edge case. Only include a moment if a viewer watching just that clip, with no explanation from you, would immediately agree it matches. Do not stretch, do not include a moment just because it is loosely related or you can construct a justification for it — if you find yourself explaining why something "counts", it doesn't.
-
-If nothing in the transcript is a genuine, confident match, you MUST return an empty JSON array: []. Returning [] is the correct and expected answer for most (request, video) combinations — never force a result to avoid returning nothing.
-
-What to look for: ${criteria}
-
-Video duration: ${msToTimestamp(durationMs)}
-
-Transcript (each line is tagged [start–end] with when that line of speech actually begins and ends):
-${transcript.slice(0, 8000)}
-
-Choosing end_ms is the part you must get generously right, not minimally right. Do not stop at the line that merely contains the key moment — deliberately continue past it and include the NEXT 2-3 full lines of transcript after it as trailing context (the reaction, the response, the rest of the thought), then set end_ms to the end of that later line. A clip that runs a few seconds longer than strictly necessary is fine; a clip that cuts off before the payoff, reaction, or the speaker finishing their sentence is a failure. When genuinely unsure exactly where something ends, always round end_ms UP to a later line, never down to an earlier one.
-
-Return ONLY a JSON array, no other text. Each element: {"title":"catchy 3-7 word title","start_ms":number,"end_ms":number,"summary":"one sentence on why this moment matches the request"}`
-
-  const result = await model.generateContent(prompt)
-  const text = result.response.text()
-  const match = text.match(/\[[\s\S]*\]/)
-  if (!match) throw new Error(`Gemini did not return a JSON array: ${text.slice(0, 300)}`)
-  const parsed = JSON.parse(match[0]) as Array<{ title: string; start_ms: number; end_ms: number; summary: string }>
-  const MIN_CLIP_MS = 20_000
-  return parsed
-    .map((s, i) => {
-      const start_ms = Math.max(0, Math.round(s.start_ms))
-      // Trailing buffer — Gemini persistently ends right at the punchline/reaction
-      // instead of past it, even when told to include trailing context. A cut-off
-      // ending is a much worse failure than a clip running a bit long, so pad hard.
-      let end_ms = Math.min(durationMs, Math.round(s.end_ms) + 5000)
-      // Gemini sometimes ignores the requested 30–90s length — pad short moments
-      // out instead of discarding them outright (same fix ai_edit.ts needed).
-      if (end_ms - start_ms < MIN_CLIP_MS) end_ms = Math.min(durationMs, start_ms + MIN_CLIP_MS)
-      return { id: `ai-criteria-${i}`, title: s.title, start_ms, end_ms, summary: s.summary ?? '' }
-    })
-    .filter(s => s.end_ms - s.start_ms >= 10_000) // still too short (e.g. right at the end of the video) — drop it
+  const ask = async (system: string, user: string) => {
+    const model = genAI.getGenerativeModel({ model: 'gemini-3.1-pro-preview', systemInstruction: system })
+    const result = await model.generateContent(user)
+    return result.response.text()
+  }
+  const clips = await findClips({
+    words, durationMs, mode: { kind: 'search', criteria }, ask,
+    log: msg => console.error('[ai-detect]', msg),
+  })
+  return clips.map((c, i) => toSuggestion(c, `ai-criteria-${i}`))
 }
 
 function makeWordChunks(words: Word[], durationMs: number): ClipSuggestion[] {

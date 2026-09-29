@@ -33,6 +33,9 @@ interface Suggestion {
   start_ms: number
   end_ms: number
   summary: string
+  /** Viral score 0–99, missing on the plain fallback chunks */
+  score?: number
+  reason?: string
 }
 
 interface Props {
@@ -656,8 +659,18 @@ function SuggestionCard({ suggestion, busy, onSeek, onUse }: {
 }) {
   return (
     <div className="shrink-0 rounded-xl p-3" style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)' }}>
-      <p className="text-sm font-medium text-white leading-snug">{suggestion.title}</p>
+      <div className="flex items-start gap-2">
+        <p className="flex-1 text-sm font-medium text-white leading-snug">{suggestion.title}</p>
+        {typeof suggestion.score === 'number' && (
+          <span title="Viral score (0–99)"
+            className="shrink-0 text-[11px] font-bold tabular-nums px-1.5 py-0.5 rounded-md"
+            style={{ color: ACCENT, background: 'rgba(200,255,0,0.1)', border: '1px solid rgba(200,255,0,0.25)' }}>
+            {suggestion.score}
+          </span>
+        )}
+      </div>
       {suggestion.summary && <p className="text-xs mt-1 leading-relaxed" style={{ color: 'rgba(255,255,255,0.5)' }}>{suggestion.summary}</p>}
+      {suggestion.reason && <p className="text-[11px] mt-1 leading-relaxed italic" style={{ color: 'rgba(255,255,255,0.4)' }}>{suggestion.reason}</p>}
       <div className="flex items-center gap-2 mt-2.5">
         <button onClick={onSeek} title="Play this moment"
           className="text-xs font-mono tabular-nums px-2 py-1 rounded-md transition-colors hover:bg-white/10" style={{ color: 'rgba(255,255,255,0.6)', background: 'rgba(255,255,255,0.05)' }}>
