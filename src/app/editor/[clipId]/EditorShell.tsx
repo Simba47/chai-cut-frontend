@@ -21,7 +21,7 @@ import { signOut } from 'next-auth/react'
 import { PlatformOverlay, PLATFORM_SAFE, type Platform } from '@/components/editor/PlatformOverlay'
 // ── Domain stores ──────────────────────────────────────────────────────────────
 import { useEditorStore, type KeyframeMap } from '@/modules/editor/store'
-import { startHistory, undo, redo, useHistory } from '@/modules/editor/history'
+import { startHistory, undo, redo, useHistory, editableSnapshot, sameEditable, type EditableSnapshot } from '@/modules/editor/history'
 import { usePlayerStore } from '@/modules/player/store'
 import { useVideoSync } from '@/modules/player/useSync'
 import { useCaptionStore } from '@/modules/captions/store'
@@ -126,6 +126,11 @@ export function EditorShell({
     updateTextOverlay, deleteTextOverlay,
   } = useMediaStore()
 
+  // Loading the clip changes the stores but isn't an edit: remember the loaded state, and only
+  // start auto-saving once the state differs from it (opening a clip must not write anything)
+  const loadedStateRef = useRef<EditableSnapshot | null>(null)
+  const editedSinceLoadRef = useRef(false)
+
   // ── Hydrate stores from server props (once on mount) ─────────────────────────
   useEffect(() => {
     const localSegments = normalizeCoverage(rowsToLocal(initialSegments), clip.end_ms - clip.start_ms)
@@ -139,8 +144,11 @@ export function EditorShell({
     }
     hydrateEditor(localSegments, initialKeyframeMap)
 
-    const showCaptions = initialCaptionStyles.length > 0 || initialWords.length > 0
-    hydrateCaptions(initialWords, initialCaptionStyles[0] ?? { color: '#FFE700' }, showCaptions)
+    // Captions on/off: the saved choice when the clip has a caption style; a clip without one yet
+    // starts with captions on if it has words (a style saved before the on/off field counts as on)
+    const savedStyle = initialCaptionStyles[0]
+    const showCaptions = savedStyle ? savedStyle.enabled !== false : initialWords.length > 0
+    hydrateCaptions(initialWords, savedStyle ?? { color: '#FFE700' }, showCaptions)
 
     hydrateMedia({
       overlays: initialOverlays,
@@ -148,6 +156,9 @@ export function EditorShell({
       audioTracks: initialAudioTracks,
       transitions: initialTransitions,
     })
+
+    // The clip as loaded: the auto-save stays quiet until the state differs from this
+    loadedStateRef.current = editableSnapshot()
 
     // Undo/redo records from here on: the loaded clip is the starting point
     const stopHistory = startHistory()
@@ -192,7 +203,8 @@ export function EditorShell({
   const [outputUrl, setOutputUrl] = useState<string | null>(clip.output_url)
   const [exporting, setExporting] = useState(false)
   const [exportError, setExportError] = useState<string | null>(null)
-  const renderQuality = '2160p' as const
+  // What exports have always been rendered at (the worker ignored the 2160p asked for here)
+  const renderQuality = '1080p' as const
   const [renderStuckSince, setRenderStuckSince] = useState<number | null>(clip.status === 'rendering' ? Date.now() : null)
   const [renderElapsed, setRenderElapsed] = useState(0)
   const [saveState, setSaveState] = useState<SaveState>('idle')
@@ -203,7 +215,6 @@ export function EditorShell({
   const retranscribeTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const isInitializedRef = useRef(false)
   const unsavedRef = useRef(false)
   // Saves run one at a time: an edit made during a save queues exactly one more save after it
   const saveInFlightRef = useRef<Promise<void> | null>(null)
@@ -343,7 +354,11 @@ export function EditorShell({
   // ── Auto-save: trigger 2.5 s after any meaningful edit ───────────────────────
 
   useEffect(() => {
-    if (!isInitializedRef.current) { isInitializedRef.current = true; return }
+    if (!editedSinceLoadRef.current) {
+      const loaded = loadedStateRef.current
+      if (!loaded || sameEditable(editableSnapshot(), loaded)) return
+      editedSinceLoadRef.current = true
+    }
     if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current)
     unsavedRef.current = true
     editVersionRef.current++

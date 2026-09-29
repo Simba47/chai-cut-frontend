@@ -6,6 +6,9 @@ import sql from '@/lib/db'
 export async function listVideos(userId: string) {
   return sql`
     SELECT id, title, status, download_progress, duration_ms, created_at, storage_path, source_url, source_type,
+      -- Why processing failed (e.g. a link that isn't shared publicly). Read through to_jsonb so
+      -- this works before the worker has added the column.
+      to_jsonb(videos)->>'error' AS error,
       (SELECT COUNT(*)::int FROM clips c WHERE c.video_id = videos.id) AS clip_count
     FROM videos WHERE user_id = ${userId} ORDER BY created_at DESC
   `
@@ -34,37 +37,61 @@ export async function getVideo(userId: string, videoId: string) {
   return { video }
 }
 
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+/** Most items one bulk delete may remove */
+export const MAX_BULK_DELETE = 100
+
+/** Distinct, well-formed ids from a request body (a malformed id would make Postgres error) */
+export function cleanIds(ids: unknown): string[] {
+  if (!Array.isArray(ids)) return []
+  return [...new Set(ids.filter((id): id is string => typeof id === 'string' && UUID.test(id)))]
+}
+
+/** Remove files from R2, 1,000 keys per request (the S3 limit). Best effort: rows are what matter. */
+export async function deleteR2Keys(keys: string[]) {
+  for (let i = 0; i < keys.length; i += 1000) {
+    await r2.send(new DeleteObjectsCommand({
+      Bucket: R2_BUCKET,
+      Delete: { Objects: keys.slice(i, i + 1000).map(Key => ({ Key })), Quiet: true },
+    })).catch(() => {})
+  }
+}
+
 export async function deleteVideo(userId: string, videoId: string) {
-  const [video] = await sql`
-    SELECT id, user_id, storage_path FROM videos WHERE id = ${videoId}
-  `
-  if (!video) throw Object.assign(new Error('Not found'), { status: 404 })
-  if (video.user_id !== userId) throw Object.assign(new Error('Forbidden'), { status: 403 })
+  return deleteVideos(userId, [videoId])
+}
 
-  // Collect all R2 keys to delete
+/**
+ * Delete several of the user's videos at once, with their clips and every stored file (the
+ * upload, its cached audio and each clip's export). All or nothing: if any id isn't one of the
+ * user's videos, nothing is deleted.
+ */
+export async function deleteVideos(userId: string, videoIds: string[]) {
+  const ids = cleanIds(videoIds)
+  if (ids.length === 0) throw Object.assign(new Error('No videos selected'), { status: 400 })
+  if (ids.length > MAX_BULK_DELETE) throw Object.assign(new Error(`You can delete up to ${MAX_BULK_DELETE} videos at a time`), { status: 400 })
+
+  const videos = await sql`SELECT id, storage_path FROM videos WHERE id = ANY(${ids}) AND user_id = ${userId}`
+  if (videos.length !== ids.length) throw Object.assign(new Error('Not found'), { status: 404 })
+
   const keysToDelete: string[] = []
-
-  if (video.storage_path) {
+  for (const video of videos) {
+    if (!video.storage_path) continue
     keysToDelete.push(video.storage_path)
     // FLAC audio cache created during transcription
     keysToDelete.push(video.storage_path.replace(/\.[^.]+$/, '_audio.flac'))
   }
-
-  // Rendered output for every clip of this video
+  // Rendered output for every clip of these videos
   const clipOutputs = await sql`
     SELECT output_storage_path FROM clips
-    WHERE video_id = ${videoId} AND output_storage_path IS NOT NULL
+    WHERE video_id = ANY(${ids}) AND output_storage_path IS NOT NULL
   `
   for (const row of clipOutputs) keysToDelete.push(row.output_storage_path as string)
 
-  if (keysToDelete.length > 0) {
-    await r2.send(new DeleteObjectsCommand({
-      Bucket: R2_BUCKET,
-      Delete: { Objects: keysToDelete.map(Key => ({ Key })), Quiet: true },
-    })).catch(() => {})
-  }
-
-  await sql`DELETE FROM videos WHERE id = ${videoId}`
+  await deleteR2Keys(keysToDelete)
+  // Clips, formats, captions, overlays… go with their video (foreign keys cascade)
+  await sql`DELETE FROM videos WHERE id = ANY(${ids}) AND user_id = ${userId}`
+  return { deleted: ids.length }
 }
 
 interface ClipSuggestion { id: string; title: string; start_ms: number; end_ms: number; summary: string }

@@ -178,6 +178,8 @@ export interface CaptionStyle {
   language: string | null
   translated_from_language: string | null
   timing_offset_ms: number | null
+  /** Captions switched on for this clip (false = the user turned them off) */
+  enabled?: boolean
 }
 
 export interface TextOverlay {

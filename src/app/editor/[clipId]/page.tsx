@@ -133,6 +133,9 @@ export default async function EditorPage({
 
   // Frame photos (lane items, and slots saved before lanes existed): sign them so the preview can draw them
   const sign = (key: string) => getSignedUrl(r2, new GetObjectCommand({ Bucket: R2_BUCKET, Key: key }), { expiresIn: 43200 }).catch(() => undefined)
+  // Download link of the last export: a fresh one on every load. The link stored with the clip
+  // expires after 7 days; the file path doesn't.
+  const outputUrl = clip.status === 'done' && clip.output_storage_path ? (await sign(clip.output_storage_path)) ?? null : null
   await Promise.all(segments.flatMap(seg => [
     ...(seg.crop_boxes ?? []).map(async (box: { image_path?: string | null; image_url?: string }) => {
       if (box.image_path) box.image_url = await sign(box.image_path)
@@ -154,7 +157,7 @@ export default async function EditorPage({
   }))
 
   const shellProps = {
-    clip: { ...clip, captions_pending: !!pendingJob } as unknown as Parameters<typeof EditorShell>[0]['clip'],
+    clip: { ...clip, output_url: outputUrl, captions_pending: !!pendingJob } as unknown as Parameters<typeof EditorShell>[0]['clip'],
     videoUrl: signedUrl,
     words,
     initialSegments: segments ?? [],

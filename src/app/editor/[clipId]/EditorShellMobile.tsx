@@ -14,11 +14,12 @@ import { FilterPanel } from '@/components/editor/FilterPanel'
 import { TranscriptPanel } from '@/components/editor/TranscriptPanel'
 import { useConfirm } from '@/components/editor/ConfirmDialog'
 import { useEditorStore, type KeyframeMap } from '@/modules/editor/store'
+import { editableSnapshot, sameEditable, type EditableSnapshot } from '@/modules/editor/history'
 import { usePlayerStore } from '@/modules/player/store'
 import { useVideoSync } from '@/modules/player/useSync'
 import { useCaptionStore } from '@/modules/captions/store'
 import { useMediaStore } from '@/modules/media/store'
-import { rowsToLocal, normalizeCoverage, defaultCropForSlot, msToLabel } from '@/modules/editor/utils'
+import { rowsToLocal, normalizeCoverage, defaultCropForSlot, msToLabel, uncoveredRanges } from '@/modules/editor/utils'
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -79,7 +80,7 @@ export function EditorShellMobile({
   const {
     segments, keyframes, activeSegmentId, activeBoxId,
     hydrate: hydrateEditor, updateSegment, removeSegment,
-    splitAtMs, upsertKeyframe, getPositionAt,
+    splitAtMs, upsertKeyframe, getPositionAt, addFormat,
     setActiveSegmentId, setActiveBoxId,
   } = useEditorStore()
 
@@ -98,6 +99,11 @@ export function EditorShellMobile({
     updateTextOverlay, deleteTextOverlay,
   } = useMediaStore()
 
+  // Loading the clip changes the stores but isn't an edit: remember the loaded state, and only
+  // start auto-saving once the state differs from it (opening a clip must not write anything)
+  const loadedStateRef = useRef<EditableSnapshot | null>(null)
+  const editedSinceLoadRef = useRef(false)
+
   // ── Hydrate stores from server props ─────────────────────────────────────────
   useEffect(() => {
     const localSegments = normalizeCoverage(rowsToLocal(initialSegments), clip.end_ms - clip.start_ms)
@@ -108,27 +114,40 @@ export function EditorShellMobile({
       }
     }
     hydrateEditor(localSegments, initialKeyframeMap)
-    const hasCaptions = initialCaptionStyles.length > 0 || initialWords.length > 0
-    hydrateCaptions(initialWords, initialCaptionStyles[0] ?? { color: '#FFE700' }, hasCaptions)
+    // Captions on/off: the saved choice when the clip has a caption style; a clip without one yet
+    // starts with captions on if it has words (a style saved before the on/off field counts as on)
+    const savedStyle = initialCaptionStyles[0]
+    const hasCaptions = savedStyle ? savedStyle.enabled !== false : initialWords.length > 0
+    hydrateCaptions(initialWords, savedStyle ?? { color: '#FFE700' }, hasCaptions)
     hydrateMedia({
       overlays: initialOverlays,
       textOverlays: initialTextOverlays,
       audioTracks: initialAudioTracks,
       transitions: initialTransitions,
     })
+    // The clip as loaded: the auto-save stays quiet until the state differs from this
+    loadedStateRef.current = editableSnapshot()
     return () => useEditorStore.getState().reset()
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Local UI state ────────────────────────────────────────────────────────────
   const [activeTab, setActiveTab] = useState<MobileTab>('timeline')
   const [activeTextOverlayId, setActiveTextOverlayId] = useState<string | null>(null)
-  const [transcribing, setTranscribing] = useState(initialWords.length === 0)
+  // Captions are on their way while a caption job for this video is waiting/running and this
+  // clip doesn't have its words yet (same rule as the desktop editor)
+  const videoStatus = (clip as unknown as { video_status?: string }).video_status
+  const captionsPending = !!(clip as unknown as { captions_pending?: boolean }).captions_pending
+  const clipHasWords = (list: { start_ms: number }[]) => list.some(w => w.start_ms >= clip.start_ms && w.start_ms < clip.end_ms)
+  const [transcribing, setTranscribing] = useState(
+    !clipHasWords(initialWords) && (captionsPending || (videoStatus !== 'ready' && videoStatus !== 'failed'))
+  )
   const [isFreePlan, setIsFreePlan] = useState(false)
   const [clipStatus, setClipStatus] = useState<string>(clip.status)
   const [outputUrl, setOutputUrl] = useState<string | null>(clip.output_url)
   const [exporting, setExporting] = useState(false)
   const [exportError, setExportError] = useState<string | null>(null)
-  const renderQuality = '2160p' as const
+  // What exports have always been rendered at (the worker ignored the 2160p asked for here)
+  const renderQuality = '1080p' as const
   const [renderStuckSince, setRenderStuckSince] = useState<number | null>(clip.status === 'rendering' ? Date.now() : null)
   const [renderElapsed, setRenderElapsed] = useState(0)
   const [saveState, setSaveState] = useState<SaveState>('idle')
@@ -136,8 +155,7 @@ export function EditorShellMobile({
 
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const isInitializedRef = useRef(false)
-  const latestHandleSaveRef = useRef<() => Promise<void>>(() => Promise.resolve())
+  const latestHandleSaveRef = useRef<() => Promise<boolean>>(() => Promise.resolve(true))
   const retranscribeTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const skipCanvasTransitionRef = useRef(false)
   const previewInnerRef = useRef<HTMLDivElement>(null)
@@ -205,9 +223,14 @@ export function EditorShellMobile({
     const interval = setInterval(async () => {
       const res = await fetch(`/api/transcribe/words?video_id=${videoId}`)
       if (!res.ok) return
-      const { words: newWords } = await res.json()
-      if (newWords && newWords.length > 0) {
+      const { words: newWords, video_status: vs, pending } = await res.json()
+      if (newWords && clipHasWords(newWords)) {
         setWords(newWords); setShowCaptions(true); setTranscribing(false); clearInterval(interval)
+      } else if (!pending && (vs === 'ready' || vs === 'failed')) {
+        // Nothing left running: show whatever exists (e.g. a clip with no speech)
+        if (newWords?.length) setWords(newWords)
+        setTranscribing(false)
+        clearInterval(interval)
       }
     }, 3000)
     return () => clearInterval(interval)
@@ -240,7 +263,11 @@ export function EditorShellMobile({
 
   // ── Auto-save ─────────────────────────────────────────────────────────────────
   useEffect(() => {
-    if (!isInitializedRef.current) { isInitializedRef.current = true; return }
+    if (!editedSinceLoadRef.current) {
+      const loaded = loadedStateRef.current
+      if (!loaded || sameEditable(editableSnapshot(), loaded)) return
+      editedSinceLoadRef.current = true
+    }
     if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current)
     autoSaveTimerRef.current = setTimeout(() => latestHandleSaveRef.current(), 2500)
     return () => { if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current) }
@@ -260,7 +287,16 @@ export function EditorShellMobile({
   }, [segments]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Save / export ─────────────────────────────────────────────────────────────
-  async function handleSave() {
+  // Saves run one at a time, in order, so the latest state is always written last.
+  // Resolves true when that save succeeded.
+  const saveChainRef = useRef<Promise<boolean>>(Promise.resolve(true))
+  function handleSave(): Promise<boolean> {
+    const run = saveChainRef.current.then(saveOnce, saveOnce)
+    saveChainRef.current = run
+    return run
+  }
+
+  async function saveOnce(): Promise<boolean> {
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
     setSaveState('saving')
     const { segments, keyframes } = useEditorStore.getState()
@@ -281,10 +317,12 @@ export function EditorShellMobile({
       if (!res.ok) throw new Error((await res.json()).error ?? 'Save failed')
       setSaveState('saved')
       saveTimerRef.current = setTimeout(() => setSaveState('idle'), 2500)
+      return true
     } catch (err) {
       console.error('[save]', err)
       setSaveState('error')
       saveTimerRef.current = setTimeout(() => setSaveState('idle'), 3000)
+      return false
     }
   }
   latestHandleSaveRef.current = handleSave
@@ -293,6 +331,10 @@ export function EditorShellMobile({
   async function handleExport(retranscribe = false) {
     setExporting(true); setExportError(null)
     try {
+      // Save the latest edits first (a pending auto-save would otherwise miss the export),
+      // and don't render a version without them if that save fails
+      if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current)
+      if (!(await handleSave())) throw new Error("Couldn't save your latest edits, so nothing was exported. Check your connection and try again.")
       const res = await fetch('/api/export', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ clip_id: clip.id, quality: renderQuality, retranscribe }),
@@ -375,8 +417,22 @@ export function EditorShellMobile({
   }
 
   function handleLayoutChange(layout: LayoutType) {
-    const seg = playingSegment ?? activeSegment
-    if (!seg) return
+    const t = currentTimeMs
+    // Only the format actually under the playhead: in time no format covers, playingSegment
+    // falls back to the first format, and changing that one would edit the wrong part of the clip
+    const seg = segments.find(s => t >= s.start_ms && t < s.end_ms)
+    if (!seg) {
+      // Default framing here: give the stretch from the playhead (or the gap's start) its own format
+      const gap = uncoveredRanges(segments, clip.end_ms - clip.start_ms).find(g => t >= g.start_ms && t <= g.end_ms)
+      if (!gap) return
+      const start = t - gap.start_ms <= 300 ? gap.start_ms : t
+      if (gap.end_ms - start < 300) return
+      pause()
+      const v = videoRef.current
+      const id = addFormat(start, gap.end_ms, layout, v?.videoWidth && v.videoHeight ? v.videoWidth / v.videoHeight : undefined)
+      setActiveSegmentId(id)
+      return
+    }
     pause()
     const sameLayout = layout === seg.layout
     const atSegStart = currentTimeMs <= seg.start_ms + 100

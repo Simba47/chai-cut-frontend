@@ -116,6 +116,57 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: P
   const [aiSuggestions, setAiSuggestions] = useState<Suggestion[] | null>(null)
   const [loadingAi, setLoadingAi] = useState(false)
   const [aiError, setAiError] = useState<string | null>(null)
+  // The clip list (kept locally so deleted clips disappear at once; a refresh brings the server's copy)
+  const [clips, setClips] = useState(savedClips)
+  useEffect(() => { setClips(savedClips) }, [savedClips])
+  // Select mode: tick several clips, then delete them together
+  const [selecting, setSelecting] = useState(false)
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [confirmDelete, setConfirmDelete] = useState(false)
+  const [deleting, setDeleting] = useState(false)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
+
+  function toggleSelected(id: string) {
+    setSelected(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id); else next.add(id)
+      return next
+    })
+  }
+  function stopSelecting() {
+    setSelecting(false); setSelected(new Set()); setConfirmDelete(false); setDeleteError(null)
+  }
+  useEffect(() => {
+    if (!selecting) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' || deleting) return
+      if (confirmDelete) setConfirmDelete(false); else stopSelecting()
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [selecting, confirmDelete, deleting])
+
+  async function deleteSelected() {
+    const ids = [...selected]
+    if (!ids.length) return
+    setDeleting(true); setDeleteError(null)
+    try {
+      const res = await fetch('/api/clips', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids }),
+      })
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? 'Delete failed')
+      const gone = new Set(ids)
+      setClips(prev => prev.filter(c => !gone.has(c.id)))
+      stopSelecting()
+      router.refresh()
+    } catch (e) {
+      setDeleteError(e instanceof Error ? e.message : 'Delete failed')
+    } finally {
+      setDeleting(false)
+    }
+  }
 
   const isReady = video.status === 'ready'
   const isProcessing = video.status === 'uploaded' || video.status === 'transcribing'
@@ -465,10 +516,21 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: P
         <aside className="shrink-0 flex flex-col min-h-0" style={{ width: 340, background: PANEL_BG, borderLeft: PANEL_LINE }}>
           <div className="px-4 pt-4 pb-3 flex items-center gap-2 shrink-0">
             <h2 className="text-sm font-semibold text-white">Your clips</h2>
-            {savedClips.length > 0 && (
+            {clips.length > 0 && (
               <span className="text-[11px] font-bold px-2 py-0.5 rounded-full" style={{ color: 'rgba(255,255,255,0.6)', background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)' }}>
-                {savedClips.length}
+                {clips.length}
               </span>
+            )}
+            <div className="flex-1" />
+            {clips.length > 0 && (
+              <button type="button" aria-pressed={selecting}
+                onClick={() => (selecting ? stopSelecting() : setSelecting(true))}
+                className="px-3 py-1 rounded-full text-xs font-semibold transition-colors hover:bg-white/10"
+                style={selecting
+                  ? { color: ACCENT, border: `1px solid ${ACCENT}` }
+                  : { color: 'rgba(255,255,255,0.75)', border: '1px solid rgba(255,255,255,0.15)' }}>
+                {selecting ? 'Done' : 'Select'}
+              </button>
             )}
           </div>
           {clipError && (
@@ -478,14 +540,14 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: P
             </div>
           )}
           <div className="flex-1 min-h-0 overflow-y-auto px-4 pb-4 flex flex-col gap-2">
-            {savedClips.length === 0 && (
+            {clips.length === 0 && (
               <p className="text-xs leading-relaxed" style={{ color: 'rgba(255,255,255,0.45)' }}>
                 {isReady
                   ? 'Pause the video on a moment you like, then press New clip under it. Or let AI find moments for you.'
                   : 'You can start clipping once the video has finished processing.'}
               </p>
             )}
-            {savedClips.map((clip, idx) => (
+            {clips.map((clip, idx) => (
               <ClipCard
                 key={clip.id}
                 number={idx + 1}
@@ -498,11 +560,68 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: P
                 onSeek={() => seek(clip.start_ms)}
                 onEdit={() => router.push(`/editor/${clip.id}`)}
                 disabled={!!busy}
+                selecting={selecting}
+                selected={selected.has(clip.id)}
+                onToggle={() => toggleSelected(clip.id)}
               />
             ))}
           </div>
+
+          {/* Select mode: what's ticked, and what to do with it */}
+          {selecting && (() => {
+            const allOn = clips.length > 0 && clips.every(c => selected.has(c.id))
+            return (
+              <div className="shrink-0 px-4 py-3 flex flex-col gap-2" style={{ borderTop: PANEL_LINE, background: PANEL_BG }} role="toolbar" aria-label="Selected clips">
+                {deleteError && !confirmDelete && <p role="alert" className="text-xs" style={{ color: '#f87171' }}>{deleteError}</p>}
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-semibold text-white flex-1" aria-live="polite">
+                    {selected.size === 0 ? 'Tap clips to select them' : `${selected.size} selected`}
+                  </span>
+                  <button type="button" onClick={() => setSelected(allOn ? new Set() : new Set(clips.map(c => c.id)))}
+                    className="px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors hover:bg-white/10" style={{ color: 'rgba(255,255,255,0.75)' }}>
+                    {allOn ? 'Clear' : 'Select all'}
+                  </button>
+                  <button type="button" disabled={selected.size === 0} onClick={() => { setDeleteError(null); setConfirmDelete(true) }}
+                    className="px-3 py-1.5 rounded-lg text-xs font-bold disabled:opacity-40 transition-opacity hover:opacity-90"
+                    style={{ background: '#ef4444', color: '#fff' }}>
+                    Delete{selected.size > 0 ? ` ${selected.size}` : ''}
+                  </button>
+                </div>
+              </div>
+            )
+          })()}
         </aside>
       </div>
+
+      {confirmDelete && (() => {
+        const n = selected.size
+        const exported = clips.filter(c => selected.has(c.id) && c.status === 'done').length
+        return (
+          <div className="fixed inset-0 z-[80] flex items-center justify-center p-4" style={{ background: 'rgba(0,0,0,0.65)', backdropFilter: 'blur(4px)' }}
+            onClick={() => { if (!deleting) setConfirmDelete(false) }}>
+            <div role="alertdialog" aria-modal="true" aria-labelledby="clip-delete-title" onClick={e => e.stopPropagation()}
+              className="w-full max-w-[400px] rounded-2xl p-6" style={{ background: '#161616', border: '1px solid rgba(255,255,255,0.12)', boxShadow: '0 40px 100px -30px rgba(0,0,0,0.8)' }}>
+              <h2 id="clip-delete-title" className="text-lg font-black text-white">Delete {n === 1 ? 'this clip' : `${n} clips`}?</h2>
+              <p className="text-sm mt-2 leading-relaxed" style={{ color: 'rgba(255,255,255,0.6)' }}>
+                {n === 1 ? 'The clip and its edits are' : `The clips and their edits are`} removed permanently
+                {exported > 0 ? `, including ${exported === 1 ? 'an exported video' : `${exported} exported videos`}` : ''}.
+                The original video stays. This can&apos;t be undone.
+              </p>
+              {deleteError && <p role="alert" className="text-xs mt-3" style={{ color: '#f87171' }}>{deleteError}</p>}
+              <div className="flex justify-end gap-2 mt-5">
+                <button type="button" autoFocus disabled={deleting} onClick={() => setConfirmDelete(false)}
+                  className="px-4 py-2 rounded-lg text-sm font-medium transition-colors hover:bg-white/10 disabled:opacity-50" style={{ color: 'rgba(255,255,255,0.8)' }}>
+                  Cancel
+                </button>
+                <button type="button" disabled={deleting} onClick={deleteSelected}
+                  className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-bold disabled:opacity-60 transition-opacity hover:opacity-90" style={{ background: '#ef4444', color: '#fff' }}>
+                  {deleting ? <><Spinner /> Deleting</> : n === 1 ? 'Delete' : `Delete ${n} clips`}
+                </button>
+              </div>
+            </div>
+          </div>
+        )
+      })()}
     </div>
   )
 }
@@ -556,7 +675,7 @@ function SuggestionCard({ suggestion, busy, onSeek, onUse }: {
   )
 }
 
-function ClipCard({ number, title, startMs, endMs, status, outputUrl, playing, onSeek, onEdit, disabled }: {
+function ClipCard({ number, title, startMs, endMs, status, outputUrl, playing, onSeek, onEdit, disabled, selecting, selected, onToggle }: {
   number: number
   title: string
   startMs: number
@@ -567,6 +686,10 @@ function ClipCard({ number, title, startMs, endMs, status, outputUrl, playing, o
   onSeek: () => void
   onEdit: () => void
   disabled?: boolean
+  /** Select mode: the whole card toggles its tick; Edit and Download step aside */
+  selecting?: boolean
+  selected?: boolean
+  onToggle?: () => void
 }) {
   const chip =
     status === 'rendering' ? { label: 'Rendering', color: ACCENT } :
@@ -574,12 +697,33 @@ function ClipCard({ number, title, startMs, endMs, status, outputUrl, playing, o
     status === 'failed' ? { label: 'Render failed', color: '#f87171' } :
     { label: 'Draft', color: 'rgba(255,255,255,0.45)' }
 
+  const border = selected ? ACCENT : playing ? 'rgba(255,255,255,0.3)' : 'rgba(255,255,255,0.07)'
   return (
-    <div className="rounded-xl p-3" style={{ background: 'rgba(255,255,255,0.03)', border: `1px solid ${playing ? 'rgba(255,255,255,0.3)' : 'rgba(255,255,255,0.07)'}` }}>
+    <div className={`rounded-xl p-3 transition-colors ${selecting ? 'cursor-pointer select-none hover:bg-white/[0.06] focus-visible:outline focus-visible:outline-2' : ''}`}
+      style={{ background: selected ? 'rgba(200,255,0,0.06)' : 'rgba(255,255,255,0.03)', border: `1px solid ${border}`, outlineColor: ACCENT }}
+      {...(selecting ? {
+        role: 'checkbox',
+        'aria-checked': !!selected,
+        'aria-label': `Select ${title}`,
+        tabIndex: 0,
+        onClick: onToggle,
+        onKeyDown: (e: React.KeyboardEvent) => { if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); onToggle?.() } },
+      } : {})}>
       <div className="flex items-start gap-2.5">
-        <span className="shrink-0 w-6 h-6 rounded-md flex items-center justify-center text-[11px] font-bold" style={{ background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.12)', color: '#fff' }}>
-          {number}
-        </span>
+        {selecting ? (
+          <span aria-hidden="true" className="shrink-0 w-6 h-6 rounded-full flex items-center justify-center transition-colors"
+            style={selected
+              ? { background: ACCENT, border: `2px solid ${ACCENT}`, color: '#000' }
+              : { background: 'transparent', border: '2px solid rgba(255,255,255,0.45)' }}>
+            {selected && (
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none"><path d="M5 12.5l4.5 4.5L19 7.5" stroke="currentColor" strokeWidth="3.2" strokeLinecap="round" strokeLinejoin="round" /></svg>
+            )}
+          </span>
+        ) : (
+          <span className="shrink-0 w-6 h-6 rounded-md flex items-center justify-center text-[11px] font-bold" style={{ background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.12)', color: '#fff' }}>
+            {number}
+          </span>
+        )}
         <div className="flex-1 min-w-0">
           <div className="flex items-start justify-between gap-2">
             <p className="text-sm font-medium text-white leading-snug truncate" title={title}>{title}</p>
@@ -588,11 +732,17 @@ function ClipCard({ number, title, startMs, endMs, status, outputUrl, playing, o
               {chip.label}
             </span>
           </div>
-          <button onClick={onSeek} title="Play this clip"
-            className="mt-1 text-xs font-mono tabular-nums px-2 py-0.5 -ml-2 rounded-md transition-colors hover:bg-white/10" style={{ color: 'rgba(255,255,255,0.55)' }}>
-            ▶ {msToDisplay(startMs)} – {msToDisplay(endMs)} · {durLabel(startMs, endMs)}
-          </button>
-          <div className="flex items-center gap-2 mt-2">
+          {selecting ? (
+            <p className="mt-1 text-xs font-mono tabular-nums" style={{ color: 'rgba(255,255,255,0.55)' }}>
+              {msToDisplay(startMs)} – {msToDisplay(endMs)} · {durLabel(startMs, endMs)}
+            </p>
+          ) : (
+            <button onClick={onSeek} title="Play this clip"
+              className="mt-1 text-xs font-mono tabular-nums px-2 py-0.5 -ml-2 rounded-md transition-colors hover:bg-white/10" style={{ color: 'rgba(255,255,255,0.55)' }}>
+              ▶ {msToDisplay(startMs)} – {msToDisplay(endMs)} · {durLabel(startMs, endMs)}
+            </button>
+          )}
+          {!selecting && <div className="flex items-center gap-2 mt-2">
             <button onClick={onEdit} disabled={disabled}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold disabled:opacity-40 transition-colors hover:bg-white/15"
               style={{ color: '#fff', background: 'rgba(255,255,255,0.08)' }}>
@@ -611,7 +761,7 @@ function ClipCard({ number, title, startMs, endMs, status, outputUrl, playing, o
                 Download
               </a>
             )}
-          </div>
+          </div>}
         </div>
       </div>
     </div>
