@@ -688,17 +688,25 @@ function drawCaptions(
   const color     = style.color    ?? '#FFFFFF'
   const animation = style.animation ?? 'karaoke'
 
-  const fontSize   = Math.round(Math.min(((style.size ?? 48) / 1080) * W, W / 18))
+  // As the export draws these (render.py _write_ass, Default style): the bundled font (Roboto for
+  // Roman letters or any other font), sized the way libass sizes it, regular weight, a 3 px black
+  // outline and a 2 px half-black shadow (px at 1080 wide)
+  const k          = W / 1080
+  const font       = exportFont(style.language === 'roman' ? 'roboto' : style.font)
+  const fontSize   = Math.round((style.size ?? 52) * k * font.em)
   const lineHeight = Math.round(fontSize * 1.4)
   const PAD_X      = Math.round(W * 0.05)
   const maxLineW   = W - PAD_X * 2
-  const fontFamily = style.font ?? 'sans-serif'
+  const fontFamily = `"${font.family}", sans-serif`
 
   ctx.save()
-  ctx.font         = `700 ${fontSize}px ${fontFamily}`
+  ctx.font         = `400 ${fontSize}px ${fontFamily}`
   ctx.textBaseline = 'middle'
-  ctx.shadowColor  = 'rgba(0,0,0,0.92)'
-  ctx.shadowBlur   = 9
+  ctx.lineJoin     = 'round'
+  ctx.lineWidth    = 2 * 3 * k
+  ctx.strokeStyle  = '#000000'
+  ctx.shadowColor  = 'rgba(0,0,0,0.5)'
+  ctx.shadowOffsetX = ctx.shadowOffsetY = 2 * k
 
   // Words are already single-token after buildCaptionChunks explodes phrases.
   const wordTexts = chunk.map(w => applyCase(w.word, textCase))
@@ -720,7 +728,8 @@ function drawCaptions(
   const totalH = lines.length * lineHeight
   const yBase  = band
     ? (band.y + band.h / 2) * H - totalH / 2 + lineHeight / 2
-    : (style.position_y ?? 0.84) * H - totalH + lineHeight / 2
+    // centred on position_y, as libass centres the line there (\pos with alignment 5)
+    : (style.position_y ?? 0.84) * H - totalH / 2 + lineHeight / 2
 
   // Only do per-word karaoke when timestamps are real (not evenly distributed from a phrase split).
   // Estimated words (_est=true) have proportional-but-approximate timestamps that look wrong when highlighted.
@@ -741,6 +750,7 @@ function drawCaptions(
     if (!activeInLine) {
       ctx.fillStyle = color
       ctx.textAlign = 'center'
+      ctx.strokeText(ln.join(' '), W / 2, y)
       ctx.fillText(ln.join(' '), W / 2, y)
     } else {
       const spW    = ctx.measureText(' ').width
@@ -750,6 +760,7 @@ function drawCaptions(
       ln.forEach((word, i) => {
         ctx.textAlign = 'left'
         ctx.fillStyle = color
+        ctx.strokeText(word, x, y)
         ctx.fillText(word, x, y)
         x += widths[i] + (i < ln.length - 1 ? spW : 0)
       })
@@ -772,13 +783,16 @@ function drawTextOverlays(
     if (o.x == null) { drawCenteredText(ctx, o); continue }
     const x = (o.x ?? 0.1) * W
     const y = (o.y ?? 0.4) * H
-    const fontSize = Math.max(14, Math.round(((o.size ?? 72) / 1080) * H))
-    const fontFamily = o.font ?? 'sans-serif'
+    // Same size and shadow as the export's drawtext: px at 1080 wide, a 2 px black@0.7 shadow
+    const fontSize = Math.max(8, Math.round(((o.size ?? 72) / 1080) * W))
+    // A bundled font id (e.g. 'roboto') draws with the export's own file, as drawtext does
+    const bundled = EXPORT_FONTS[o.font ?? ''] ? exportFont(o.font) : null
+    const fontFamily = bundled ? `"${bundled.family}", sans-serif` : (o.font ?? 'sans-serif')
     ctx.save()
-    ctx.font = `700 ${fontSize}px ${fontFamily}`
+    ctx.font = `${bundled ? 400 : 700} ${fontSize}px ${fontFamily}`
     ctx.textBaseline = 'top'
-    ctx.shadowColor = 'rgba(0,0,0,0.85)'
-    ctx.shadowBlur = 8
+    ctx.shadowColor = 'rgba(0,0,0,0.7)'
+    ctx.shadowOffsetX = ctx.shadowOffsetY = 2 * W / 1080
     ctx.fillStyle = o.color ?? '#ffffff'
     ctx.fillText(o.text, x, y)
     ctx.restore()
@@ -1318,7 +1332,7 @@ function TextOverlayBox({ overlay, isActive, onChange, onSelect, onDelete }: Tex
       }}
     >
       {/* Invisible text — sized to match canvas text (canvas 540×960; size/6.075 cqw = size/1080*960/540 of container width) */}
-      <span style={{ color: 'transparent', fontSize: centred ? `${(overlay.size ?? 72) / 10.8}cqw` : `${(overlay.size ?? 72) / 6.075}cqw`, fontWeight: 700, fontFamily: 'sans-serif', whiteSpace: 'nowrap', display: 'block', pointerEvents: 'none', lineHeight: 1, userSelect: 'none', margin: 0, padding: 0 }}>
+      <span style={{ color: 'transparent', fontSize: `${(overlay.size ?? 72) / 10.8}cqw`, fontWeight: 700, fontFamily: 'sans-serif', whiteSpace: 'nowrap', display: 'block', pointerEvents: 'none', lineHeight: 1, userSelect: 'none', margin: 0, padding: 0 }}>
         {overlay.text || '…'}
       </span>
       {isActive && (
