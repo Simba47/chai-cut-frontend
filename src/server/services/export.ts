@@ -3,7 +3,7 @@ import type { RenderQuality } from '@chai-cut/shared'
 
 // retranscribe: regenerate this clip's captions first (Gemini), then render —
 // the worker queues the render once the new transcript is saved.
-export async function queueRender(userId: string, clipId: string, quality: RenderQuality = '1080p', retranscribe = false) {
+export async function queueRender(userId: string, clipId: string, quality: RenderQuality = '1080p', retranscribe = false, removeFillers?: boolean) {
   const [row] = await sql`
     SELECT c.id, c.status, v.storage_path, v.user_id
     FROM clips c JOIN videos v ON v.id = c.video_id
@@ -15,6 +15,11 @@ export async function queueRender(userId: string, clipId: string, quality: Rende
   if (!row.storage_path) throw Object.assign(new Error('Video not ready (no storage path)'), { status: 400 })
 
   await sql`UPDATE clips SET status = 'rendering' WHERE id = ${clipId}`
+  // "Remove pauses and filler words", as the editor shows it when exporting
+  if (typeof removeFillers === 'boolean') {
+    const { clipsHasRemoveFillers } = await import('./clips')
+    if (await clipsHasRemoveFillers()) await sql`UPDATE clips SET remove_fillers = ${removeFillers} WHERE id = ${clipId}`
+  }
 
   const { getUserPlanConfig } = await import('./quota')
   const plan = await getUserPlanConfig(userId)

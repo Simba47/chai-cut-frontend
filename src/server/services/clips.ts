@@ -53,6 +53,8 @@ interface SaveClipInput {
   transitions: Transition[]
   filters: { brightness: number; contrast: number; saturation: number }
   overlays: Omit<Overlay, 'created_at'>[]
+  /** Remove pauses and filler words when exporting */
+  removeFillers?: boolean
 }
 
 export async function saveClip(userId: string, clipId: string, body: SaveClipInput) {
@@ -119,6 +121,7 @@ export async function saveClip(userId: string, clipId: string, body: SaveClipInp
 
   const hasEnabledField = await captionEnabledField()
   const hasPresetFields = await captionPresetFields()
+  const hasRemoveFillers = typeof body.removeFillers === 'boolean' && await clipsHasRemoveFillers()
 
   // Every statement is built up front and pipelined in one transaction: the database is far
   // from the server (~300–500 ms per round trip), and awaiting each statement made saves take
@@ -175,6 +178,8 @@ export async function saveClip(userId: string, clipId: string, body: SaveClipInp
         q.push(tx`INSERT INTO caption_styles ${tx({ clip_id: clipId, ...fields, ...onOff })}`)
       }
     }
+
+    if (hasRemoveFillers) q.push(tx`UPDATE clips SET remove_fillers = ${body.removeFillers!} WHERE id = ${clipId}`)
 
     q.push(tx`DELETE FROM text_overlays WHERE clip_id = ${clipId}`)
     if (textOverlays.length > 0) {
@@ -262,6 +267,15 @@ async function captionEnabledField(): Promise<boolean> {
   const rows = await sql`SELECT 1 FROM information_schema.columns WHERE table_name = 'caption_styles' AND column_name = 'enabled'`.catch(() => [])
   enabledFieldKnown = rows.length > 0
   return enabledFieldKnown
+}
+
+// clips.remove_fillers (added by the backend with "Remove pauses and filler words"): same rule
+let removeFillersKnown = false
+export async function clipsHasRemoveFillers(): Promise<boolean> {
+  if (removeFillersKnown) return true
+  const rows = await sql`SELECT 1 FROM information_schema.columns WHERE table_name = 'clips' AND column_name = 'remove_fillers'`.catch(() => [])
+  removeFillersKnown = rows.length > 0
+  return removeFillersKnown
 }
 
 // Caption preset fields (added by the backend with the presets): same remember-a-yes rule

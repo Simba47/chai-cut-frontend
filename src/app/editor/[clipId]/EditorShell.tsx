@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef, useMemo, Fragment } from 'react'
 import type { Clip, Segment, CropBox, BoxKeyframe, CaptionStyle, TextOverlay, AudioTrack, Transition, TranscriptWord, LayoutType, Overlay } from '@chai-cut/shared'
 import { VideoPreview, OutputCanvas } from '@/components/editor/VideoPreview'
+import { computeCutRanges, removedMs } from '@/lib/cuts'
 import { SegmentTimeline, LAYOUT_COLORS } from '@/components/editor/SegmentTimeline'
 import { TranscriptPanel } from '@/components/editor/TranscriptPanel'
 import { CaptionStyler } from '@/components/editor/CaptionStyler'
@@ -202,6 +203,9 @@ export function EditorShell({
   const [clipStatus, setClipStatus] = useState<string>(clip.status)
   const [outputUrl, setOutputUrl] = useState<string | null>(clip.output_url)
   const [exporting, setExporting] = useState(false)
+  // Remove pauses and filler words (the cut is made by the export; see src/lib/cuts.ts)
+  const [removeFillers, setRemoveFillersState] = useState(!!(clip as Clip & { remove_fillers?: boolean }).remove_fillers)
+  const removeFillersRef = useRef(removeFillers)
   const [exportError, setExportError] = useState<string | null>(null)
   // What exports have always been rendered at (the worker ignored the 2160p asked for here)
   const renderQuality = '1080p' as const
@@ -419,6 +423,7 @@ export function EditorShell({
             crop_boxes: s.crop_boxes.map(b => ({ ...b, keyframes: keyframes[b.id] ?? b.keyframes })),
           })),
           captionStyle, textOverlays, audioTracks, transitions, filters, overlays,
+          removeFillers: removeFillersRef.current,
         }),
       })
       if (!res.ok) throw new Error((await res.json()).error ?? 'Save failed')
@@ -461,7 +466,7 @@ export function EditorShell({
       if (!lastSaveOkRef.current) throw new Error("Couldn't save your latest edits, so nothing was exported. Check your connection and try again.")
       const res = await fetch('/api/export', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ clip_id: clip.id, quality: renderQuality, retranscribe }),
+        body: JSON.stringify({ clip_id: clip.id, quality: renderQuality, retranscribe, remove_fillers: removeFillersRef.current }),
       })
       if (!res.ok) throw new Error((await res.json()).error ?? 'Export failed')
       refreshWordsOnDoneRef.current = retranscribe
@@ -992,6 +997,18 @@ export function EditorShell({
 
   const rendering = clipStatus === 'rendering' || exporting
   const hasOutput = !!outputUrl && clipStatus === 'done'
+  // What "Remove pauses and filler words" takes out of this clip, from the transcript
+  const fillerCutMs = useMemo(
+    () => removedMs(computeCutRanges(words, clip.start_ms, clip.end_ms)),
+    [words, clip.start_ms, clip.end_ms],
+  )
+  function setRemoveFillers(on: boolean) {
+    setRemoveFillersState(on)
+    removeFillersRef.current = on
+    unsavedRef.current = true
+    editVersionRef.current++
+    latestHandleSaveRef.current()
+  }
   const activeTool = TOOLS.find(t => t.id === tool)!
 
   return (
@@ -1499,6 +1516,22 @@ export function EditorShell({
               )}
             </div>
           </div>
+
+          {/* Remove pauses and filler words (applied by the export) */}
+          {words.length > 0 && (
+            <label className="shrink-0 mx-4 mt-3 flex items-start gap-2.5 px-3 py-2.5 rounded-xl cursor-pointer"
+              style={{ background: 'rgb(var(--ed-fg) / 0.04)', border: '1px solid rgb(var(--ed-fg) / 0.07)' }}>
+              <input type="checkbox" checked={removeFillers} onChange={e => setRemoveFillers(e.target.checked)}
+                className="mt-0.5" style={{ accentColor: '#c8ff00' }} />
+              <span className="flex flex-col gap-0.5">
+                <span className="text-xs font-semibold text-[var(--ed-text)]">Remove pauses &amp; filler words</span>
+                <span className="text-[11px]" style={{ color: 'rgb(var(--ed-fg) / 0.5)' }}>
+                  {fillerCutMs >= 500 ? `Removes about ${Math.round(fillerCutMs / 1000)} s. ` : 'Nothing much to remove in this clip. '}
+                  Applied when you export; the preview plays the full clip.
+                </span>
+              </span>
+            </label>
+          )}
 
           {/* How the reel looks inside each app */}
           <div className="shrink-0 px-4 pt-3">
