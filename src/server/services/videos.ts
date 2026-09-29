@@ -12,7 +12,8 @@ export async function listVideos(userId: string) {
       -- this works before the worker has added the column.
       to_jsonb(videos)->>'error' AS error,
       (SELECT COUNT(*)::int FROM clips c WHERE c.video_id = videos.id) AS clip_count
-    FROM videos WHERE user_id = ${userId} ORDER BY created_at DESC
+    -- Stock clips saved for auto B-roll are the user's assets, not videos they uploaded
+    FROM videos WHERE user_id = ${userId} AND role <> 'asset' ORDER BY created_at DESC
   `
 }
 
@@ -250,7 +251,7 @@ function makeTimeChunks(durationMs: number): ClipSuggestion[] {
 
 export const AUTO_CLIP_COUNTS = [3, 5, 10] as const
 
-export async function createAutoClips(userId: string, videoId: string, clipCount = 5) {
+export async function createAutoClips(userId: string, videoId: string, clipCount = 5, addBroll = false) {
   const count = Math.round(Number(clipCount))
   if (!Number.isFinite(count) || count < 1 || count > 10) {
     throw Object.assign(new Error('Choose between 1 and 10 clips'), { status: 400 })
@@ -287,7 +288,7 @@ export async function createAutoClips(userId: string, videoId: string, clipCount
   const [aiJob] = await sql`
     INSERT INTO ai_edit_jobs (video_id, clip_count, status) VALUES (${videoId}, ${count}, 'queued') RETURNING id
   `
-  const payload = { ai_edit_job_id: aiJob.id, video_id: videoId, clip_count: count }
+  const payload = { ai_edit_job_id: aiJob.id, video_id: videoId, clip_count: count, add_broll: addBroll }
   await sql`INSERT INTO jobs (type, payload, status) VALUES ('ai_edit', ${sql.json(payload)}, 'queued')`
   return { ai_edit_job_id: aiJob.id as string }
 }

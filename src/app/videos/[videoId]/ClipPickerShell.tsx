@@ -130,6 +130,7 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: P
   const [aiError, setAiError] = useState<string | null>(null)
   // "Make my clips": the AI Edit job for this video and the clips it made
   const [autoCount, setAutoCount] = useState<number>(5)
+  const [autoBroll, setAutoBroll] = useState(false)
   const [autoJob, setAutoJob] = useState<AutoJob | null>(null)
   const [autoClips, setAutoClips] = useState<AutoClip[]>([])
   const [autoStarting, setAutoStarting] = useState(false)
@@ -302,7 +303,7 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: P
       const res = await fetch(`/api/videos/${video.id}/auto-clips`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ clip_count: autoCount }),
+        body: JSON.stringify({ clip_count: autoCount, add_broll: autoBroll }),
       })
       if (!res.ok) throw new Error((await res.json()).error ?? 'Could not start making clips')
       await loadAutoClips()
@@ -473,6 +474,11 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: P
             {autoStarting || autoRunning ? <Spinner /> : '✦'} {autoRunning ? 'Making clips…' : 'Make my clips'}
           </button>
         </div>
+        <label className="flex items-center gap-2 text-xs cursor-pointer" style={{ color: 'rgba(255,255,255,0.6)' }}>
+          <input type="checkbox" checked={autoBroll} onChange={e => setAutoBroll(e.target.checked)} disabled={autoRunning}
+            style={{ accentColor: ACCENT }} />
+          Add B-roll <span style={{ color: 'rgba(255,255,255,0.35)' }}>(stock shots, videos from Pexels)</span>
+        </label>
         {autoError && <p className="text-xs" style={{ color: '#f87171' }}>{autoError}</p>}
         {autoRunning && autoJob && (
           <div className="flex flex-col gap-1">

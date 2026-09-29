@@ -13,7 +13,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ vid
   const body = await req.json().catch(() => null)
   const clipCount = body?.clip_count === undefined ? 5 : Number(body.clip_count)
   try {
-    return NextResponse.json(await createAutoClips(user.id, videoId, clipCount))
+    return NextResponse.json(await createAutoClips(user.id, videoId, clipCount, body?.add_broll === true))
   } catch (err: unknown) {
     const e = err as { message?: string; status?: number }
     return NextResponse.json({ error: e.message ?? 'Failed' }, { status: e.status ?? 500 })
