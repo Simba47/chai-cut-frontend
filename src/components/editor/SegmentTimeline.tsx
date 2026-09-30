@@ -473,8 +473,9 @@ export function SegmentTimeline({
   // the strip, its ◆ keys and joins are about the formats that frame the main video
   const brolls = byTime.filter(sg => isBroll(sg) && !isFrameLayout(sg.layout))
   const mains = byTime.filter(sg => !brolls.includes(sg))
-  const RULER_H = 26, LANE_H = 20, STRIP_H = 48, BROLL_H = brolls.length ? 24 : 0
-  const STRIP_TOP = RULER_H + LANE_H + BROLL_H
+  // One lane over the strip holds the joins between touching formats and the B-roll shots
+  const RULER_H = 26, LANE_H = 24, STRIP_H = 48
+  const STRIP_TOP = RULER_H + LANE_H
 
   // Places where one format ends exactly where the next begins
   const junctions: { left: SegmentLocal; right: SegmentLocal }[] = []
@@ -564,13 +565,35 @@ export function SegmentTimeline({
             </div>
 
 
-            {/* ── Junction lane: one handle wherever two formats touch ── */}
+            {/* ── Overlay lane: B-roll shots, and a handle wherever two formats touch ── */}
             <div className="relative" style={{ height: LANE_H, background: 'rgb(var(--ed-fg) / 0.025)', borderTop: '1px solid rgb(var(--ed-fg) / 0.05)' }}>
-              {junctions.length === 0 && (
+              {junctions.length === 0 && brolls.length === 0 && (
                 <span className="absolute left-2 top-1/2 -translate-y-1/2 text-[10px] pointer-events-none" style={{ color: 'rgb(var(--ed-fg) / 0.25)' }}>
-                  Joins between touching formats appear here
+                  B-roll and joins between formats appear here
                 </span>
               )}
+                {brolls.map(seg => {
+                  const active = seg.id === activeSegmentId
+                  const at = brollGhost?.id === seg.id ? { start_ms: brollGhost.start, end_ms: brollGhost.end } : seg
+                  const name = (videoTitles[seg.crop_boxes[0]?.source_video_id ?? ''] ?? 'B-roll').replace(/^(Pixabay|Pexels): /, '')
+                  return (
+                    <div key={seg.id} onPointerDown={e => handleBrollDown(e, seg, 'body')}
+                      title={`B-roll · ${name} · ${msToLabel(seg.start_ms)}–${msToLabel(seg.end_ms)} · drag to move, drag the ends to trim`}
+                      className="absolute flex items-center overflow-hidden rounded-md"
+                      style={{
+                        left: `${pct(at.start_ms)}%`, width: `${pct(at.end_ms - at.start_ms)}%`, top: 3, bottom: 3,
+                        background: active ? '#f97316' : '#f97316cc', color: '#1a0d00',
+                        boxShadow: active ? '0 0 0 2px #fff' : '0 1px 3px rgba(0,0,0,0.5)',
+                        cursor: 'grab', touchAction: 'none', zIndex: 33,
+                      }}>
+                      <span onPointerDown={e => handleBrollDown(e, seg, 'start')} aria-label="Trim start"
+                        className="absolute left-0 inset-y-0 w-2" style={{ cursor: 'ew-resize', background: 'rgba(0,0,0,0.18)' }} />
+                      <span className="px-2.5 text-[10px] font-semibold truncate pointer-events-none">▶ {name}</span>
+                      <span onPointerDown={e => handleBrollDown(e, seg, 'end')} aria-label="Trim end"
+                        className="absolute right-0 inset-y-0 w-2" style={{ cursor: 'ew-resize', background: 'rgba(0,0,0,0.18)' }} />
+                    </div>
+                  )
+                })}
               {junctions.map(({ left, right }) => {
                 const key = `join-${left.id}`
                 const active = dragging === key
@@ -603,34 +626,6 @@ export function SegmentTimeline({
                 )
               })}
             </div>
-
-            {/* ── B-roll lane: stock shots over the video ── */}
-            {brolls.length > 0 && (
-              <div className="relative" style={{ height: BROLL_H, borderTop: '1px solid rgb(var(--ed-fg) / 0.05)' }}>
-                {brolls.map(seg => {
-                  const active = seg.id === activeSegmentId
-                  const at = brollGhost?.id === seg.id ? { start_ms: brollGhost.start, end_ms: brollGhost.end } : seg
-                  const name = (videoTitles[seg.crop_boxes[0]?.source_video_id ?? ''] ?? 'B-roll').replace(/^(Pixabay|Pexels): /, '')
-                  return (
-                    <div key={seg.id} onPointerDown={e => handleBrollDown(e, seg, 'body')}
-                      title={`B-roll · ${name} · ${msToLabel(seg.start_ms)}–${msToLabel(seg.end_ms)} · drag to move, drag the ends to trim`}
-                      className="absolute flex items-center overflow-hidden rounded-md"
-                      style={{
-                        left: `${pct(at.start_ms)}%`, width: `${pct(at.end_ms - at.start_ms)}%`, top: 3, bottom: 3,
-                        background: active ? '#f97316' : '#f97316cc', color: '#1a0d00',
-                        boxShadow: active ? '0 0 0 2px #fff' : '0 1px 3px rgba(0,0,0,0.5)',
-                        cursor: 'grab', touchAction: 'none', zIndex: 33,
-                      }}>
-                      <span onPointerDown={e => handleBrollDown(e, seg, 'start')} aria-label="Trim start"
-                        className="absolute left-0 inset-y-0 w-2" style={{ cursor: 'ew-resize', background: 'rgba(0,0,0,0.18)' }} />
-                      <span className="px-2.5 text-[10px] font-semibold truncate pointer-events-none">▶ {name}</span>
-                      <span onPointerDown={e => handleBrollDown(e, seg, 'end')} aria-label="Trim end"
-                        className="absolute right-0 inset-y-0 w-2" style={{ cursor: 'ew-resize', background: 'rgba(0,0,0,0.18)' }} />
-                    </div>
-                  )
-                })}
-              </div>
-            )}
 
             {/* ── Film strip: tinted per format, hatched where no format is set ── */}
             <div className="relative overflow-hidden" style={{ height: STRIP_H }}>
