@@ -82,7 +82,7 @@ export interface FrameSettings {
 }
 export type AnimationType = 'karaoke' | 'fade' | 'none'
   // Animated presets (render.py _preset_events, VideoPreview drawPresetCaptions)
-  | 'pop' | 'highlight' | 'bounce' | 'word'
+  | 'pop' | 'highlight' | 'bounce' | 'word' | 'hormozi' | 'box' | 'glow'
 export type TransitionType = 'cut' | 'fade' | 'wipe'
 
 export interface Video {

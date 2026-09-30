@@ -164,6 +164,9 @@ const PRESET_COLORS = [
 // the real thing is drawn by VideoPreview drawPresetCaptions and render.py _preset_events.
 const PRESETS: Array<{ id: AnimationType; label: string }> = [
   { id: 'karaoke', label: 'Karaoke' },
+  { id: 'hormozi', label: 'Hormozi' },
+  { id: 'box', label: 'Box' },
+  { id: 'glow', label: 'Glow' },
   { id: 'pop', label: 'Pop' },
   { id: 'highlight', label: 'Highlight' },
   { id: 'bounce', label: 'Bounce' },
@@ -171,11 +174,14 @@ const PRESETS: Array<{ id: AnimationType; label: string }> = [
   { id: 'fade', label: 'Fade' },
   { id: 'none', label: 'None' },
 ]
-const ANIMATED = ['pop', 'highlight', 'bounce', 'word']
+const ANIMATED = ['karaoke', 'hormozi', 'box', 'glow', 'pop', 'highlight', 'bounce', 'word']
 const HIGHLIGHT_COLORS = ['#FFE700', '#c8ff00', '#22d3ee', '#ec4899', '#f97316', '#8b5cf6']
 
 const PRESET_CSS = `
 @keyframes cc-pop { 0%,12% { transform: scale(.8); opacity: 0 } 16% { transform: scale(1.1); opacity: 1 } 22%,100% { transform: scale(1); opacity: 1 } }
+@keyframes cc-kar { 0%,33% { color: var(--cc-hl) } 34%,100% { color: inherit } }
+@keyframes cc-hz { 0%,33% { color: var(--cc-hl); transform: scale(1.15) } 34%,100% { color: inherit; transform: none } }
+@keyframes cc-glow { 0%,33% { opacity: 1 } 34%,100% { opacity: .6 } }
 @keyframes cc-hl { 0%,33% { background: var(--cc-hl); color: #000 } 34%,100% { background: transparent; color: inherit } }
 @keyframes cc-bounce { 0% { transform: translateY(5px); opacity: 0 } 15%,100% { transform: none; opacity: 1 } }
 @keyframes cc-word1 { 0%,32% { opacity: 1 } 33%,100% { opacity: 0 } }
@@ -196,14 +202,25 @@ function PresetDemo({ id, hl }: { id: AnimationType; hl: string }) {
     )
   }
   return (
-    <span className="cc-demo whitespace-nowrap" style={{ ['--cc-hl' as string]: hl, animation: id === 'bounce' ? `cc-bounce ${d} infinite` : id === 'fade' ? `cc-fade ${d} infinite` : undefined, display: 'inline-block' }}>
-      {words.map((w, i) => (
-        <span key={w} style={{
-          animation: id === 'pop' ? `cc-pop ${d} ${i * 0.8}s infinite both`
-            : id === 'highlight' ? `cc-hl ${d} ${i * 0.8}s infinite both` : undefined,
-          color: id === 'karaoke' && i === 1 ? hl : undefined,
-        }}>{w}</span>
-      ))}
+    <span className="cc-demo whitespace-nowrap" style={{
+      ['--cc-hl' as string]: hl, display: 'inline-block',
+      animation: id === 'bounce' ? `cc-bounce ${d} infinite` : id === 'fade' ? `cc-fade ${d} infinite` : undefined,
+      ...(id === 'box' ? { background: 'rgba(0,0,0,0.62)', color: '#fff', padding: '0 3px' } : {}),
+      ...(id === 'hormozi' ? { textTransform: 'uppercase', fontSize: 10, WebkitTextStroke: '0.4px #000' } : {}),
+    }}>
+      {(id === 'hormozi' ? words.slice(0, 2) : words).map((w, i) => {
+        const step = `${d} ${i * 0.8}s infinite both`
+        return (
+          <span key={w} style={{
+            animation: id === 'pop' ? `cc-pop ${step}`
+              : id === 'highlight' ? `cc-hl ${step}`
+              : id === 'karaoke' || id === 'box' || id === 'bounce' ? `cc-kar ${step}`
+              : id === 'hormozi' ? `cc-hz ${step}`
+              : id === 'glow' ? `cc-glow ${step}` : undefined,
+            textShadow: id === 'glow' ? `0 0 4px ${hl}, 0 0 8px ${hl}` : undefined,
+          }}>{w}</span>
+        )
+      })}
     </span>
   )
 }

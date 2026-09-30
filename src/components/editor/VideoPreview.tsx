@@ -534,15 +534,29 @@ function findCaptionChunk(chunks: FlatWord[][], tMs: number) {
 //   highlight — 3 words a line; a highlight_color box behind the spoken word
 //   bounce    — the line slides up into place and fades in; the spoken word in highlight_color
 //   word      — one big word at a time, centre screen
+//   hormozi   — 3 capitalised words a line, thick outline; the spoken word in highlight_color, 115%
+//   box       — the line on a dark box, no outline; the spoken word in highlight_color
+//   glow      — words glow in highlight_color; the spoken word bright, the others dimmed
 // Emphasised words (style.emphasis, keyed by the word's start_ms) are highlight_color and 15% larger.
 
-export const PRESET_ANIMATIONS = ['pop', 'highlight', 'bounce', 'word'] as const
+export const PRESET_ANIMATIONS = ['pop', 'highlight', 'bounce', 'word', 'hormozi', 'box', 'glow'] as const
 const isPreset = (a?: string | null) => (PRESET_ANIMATIONS as readonly string[]).includes(a ?? '')
 const POP_MS = 150
 const BOUNCE_MS = 180
 const BOX_PAD = 14
 const WORD_SCALE = 1.5
 const EMPHASIS_SCALE = 1.15
+const HORMOZI_SCALE = 1.15      // the spoken word
+const HORMOZI_STROKE = 2        // added to the outline
+const LINE_BOX = 'rgba(0,0,0,0.62)'   // box preset (render.py &H60000000)
+const GLOW_BLUR = 6             // px at 1080 wide
+const GLOW_DIM = 0.65           // the words not being spoken
+
+/** The karaoke colour of the spoken word: the highlight colour, unless it is the text's own */
+export function karaokeLive(color: string, hl: string) {
+  if (hl.toLowerCase() !== color.toLowerCase()) return hl
+  return color.toLowerCase() === '#ffffff' ? '#FFE700' : '#FFFFFF'
+}
 
 // The export draws captions with these bundled fonts (render.py _FONT_FILES; anything else falls
 // back to Roboto) through libass, which sizes a font so its full height (OS/2 winAscent +
@@ -571,7 +585,7 @@ function exportFont(id?: string | null) {
 export function captionWordsPerLine(style: Partial<CaptionStyle>) {
   if (style.animation === 'word') return 1
   if (style.words_per_line) return Math.max(1, Math.min(8, style.words_per_line))
-  return style.animation === 'highlight' ? 3 : CAPTION_MAX_WORDS
+  return style.animation === 'highlight' || style.animation === 'hormozi' ? 3 : CAPTION_MAX_WORDS
 }
 
 /** Black or white, whichever reads on a box of this colour (render.py _text_on) */
@@ -594,7 +608,8 @@ function drawPresetCaptions(
   const anim = style.animation!
   const color = style.color ?? '#FFFFFF'
   const hl = style.highlight_color ?? '#FFE700'
-  const stroke = (style.stroke_width ?? 4) * k
+  const stroke = ((style.stroke_width ?? 4) + (anim === 'hormozi' ? HORMOZI_STROKE : 0)) * k * (anim === 'box' ? 0 : 1)
+  const upper = style.uppercase || anim === 'hormozi'
   const emphasis = style.emphasis ?? {}
   const baseScale = anim === 'word' ? WORD_SCALE : 1
   // The Noto Indic fonts have no Latin letters: Roman-letter captions use Roboto (as render.py)
@@ -615,7 +630,7 @@ function drawPresetCaptions(
 
   // Per word: text, scale, colour, visibility, spoken
   const items = chunk.map((w, j) => {
-    const text = style.uppercase ? w.word.toUpperCase() : w.word
+    const text = upper ? w.word.toUpperCase() : w.word
     const on = w.start_ms, off = chunk[j + 1]?.start_ms ?? lineEnd
     const emph = !!emphasis[String(w.start_ms)]
     let scale = baseScale * (emph ? EMPHASIS_SCALE : 1)
@@ -627,8 +642,9 @@ function drawPresetCaptions(
       else if (dt < POP_MS) scale *= 1.1 - 0.1 * ((dt - POP_MS / 2) / (POP_MS / 2))
     }
     const spoken = tMs >= on && tMs < off
+    if (anim === 'hormozi' && spoken) scale *= HORMOZI_SCALE
     const rest = emph ? hl : color
-    const fill = anim === 'word' ? rest : spoken ? (anim === 'highlight' ? textOn(hl) : hl) : rest
+    const fill = anim === 'word' || anim === 'glow' ? rest : spoken ? (anim === 'highlight' ? textOn(hl) : hl) : rest
     return { text, scale, visible, spoken, fill }
   })
 
@@ -645,10 +661,32 @@ function drawPresetCaptions(
   const widths = items.map(widthOf)
   const total = widths.reduce((a, b) => a + b, 0) + space * (items.length - 1)
   let x = (W - total) / 2
+  if (anim === 'box') {
+    // One box round the whole line (libass BorderStyle 3: the text's full height plus the padding)
+    const pad = BOX_PAD * k, hPx = fontPx / font.em
+    ctx.fillStyle = LINE_BOX
+    ctx.fillRect(x - pad, y - hPx / 2 - pad, total + pad * 2, hPx + pad * 2)
+  }
   items.forEach((it, j) => {
     const w = widths[j]
     ctx.font = `700 ${fontPx * it.scale}px ${fontFamily}`
-    if (it.visible) {
+    if (it.visible && anim === 'glow') {
+      // libass blurs the 3 px outline: a soft halo, not a solid ring
+      const a = alpha * (it.spoken ? 1 : GLOW_DIM)
+      ctx.globalAlpha = a * 0.45
+      ctx.shadowColor = hl
+      ctx.shadowBlur = GLOW_BLUR * 2 * k
+      ctx.lineWidth = 3 * 2 * k
+      ctx.strokeStyle = hl
+      ctx.textAlign = 'left'
+      ctx.strokeText(it.text, x, y)
+      ctx.shadowBlur = 0
+      ctx.shadowColor = 'transparent'
+      ctx.globalAlpha = a
+      ctx.fillStyle = it.fill
+      ctx.fillText(it.text, x, y)
+      ctx.globalAlpha = alpha
+    } else if (it.visible) {
       if (anim === 'highlight' && it.spoken) {
         // libass boxes the font's full height (the caption size) plus the padding
         const pad = BOX_PAD * k, hPx = (fontPx / font.em) * it.scale
@@ -734,9 +772,11 @@ function drawCaptions(
   // Only do per-word karaoke when timestamps are real (not evenly distributed from a phrase split).
   // Estimated words (_est=true) have proportional-but-approximate timestamps that look wrong when highlighted.
   const hasEstimated = chunk.some(w => w._est)
+  // A word stays lit until the next one starts (render.py _write_ass does the same)
   const activeWIdx = (animation === 'karaoke' && !hasEstimated)
-    ? chunk.findIndex(w => tMs >= w.start_ms && tMs <= w.end_ms)
+    ? chunk.findIndex((w, j) => tMs >= w.start_ms && tMs < (chunk[j + 1]?.start_ms ?? w.end_ms + 1))
     : -1
+  const live = karaokeLive(color, style.highlight_color ?? '#FFE700')
 
   // Track cumulative word index so each token maps to its chunk position.
   let wordOffset = 0
@@ -759,7 +799,7 @@ function drawCaptions(
       let x        = (W - rowW) / 2
       ln.forEach((word, i) => {
         ctx.textAlign = 'left'
-        ctx.fillStyle = color
+        ctx.fillStyle = lineStart + i === activeWIdx ? live : color
         ctx.strokeText(word, x, y)
         ctx.fillText(word, x, y)
         x += widths[i] + (i < ln.length - 1 ? spW : 0)
