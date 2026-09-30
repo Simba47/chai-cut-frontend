@@ -33,7 +33,7 @@ import { useMediaStore } from '@/modules/media/store'
 import { rowsToLocal, normalizeCoverage, uncoveredRanges, defaultCropForSlot, msToLabel } from '@/modules/editor/utils'
 import type { SegmentLocal, FrameLayout, FrameLane, FrameItem } from '@chai-cut/shared'
 
-type Tool = 'format' | 'frames' | 'captions' | 'text' | 'broll'
+type Tool = 'format' | 'frames' | 'captions' | 'text' | 'broll' | 'cleanup' | 'post'
 type SaveState = 'idle' | 'saving' | 'saved' | 'error'
 
 interface SegmentRow extends Omit<Segment, never> {
@@ -94,6 +94,16 @@ const TOOLS: { id: Tool; label: string; title: string; hint: string; icon: React
     id: 'broll', label: 'B-roll', title: 'B-roll',
     hint: 'Short stock shots over the clip while the speaker keeps talking. Pick one, then add it at the playhead.',
     icon: <><rect x="2.5" y="5" width="19" height="14" rx="2.5" stroke="currentColor" strokeWidth="1.8" fill="none" /><path d="M10 9.5v5l4.5-2.5z" fill="currentColor" /></>,
+  },
+  {
+    id: 'cleanup', label: 'Cleanup', title: 'Remove pauses & filler words',
+    hint: 'Cuts long pauses and filler words (um, uh, matlab, ante…) out of the export. The preview plays the full clip.',
+    icon: <><circle cx="6" cy="6" r="2.6" stroke="currentColor" strokeWidth="1.8" fill="none" /><circle cx="6" cy="18" r="2.6" stroke="currentColor" strokeWidth="1.8" fill="none" /><path d="M8.2 7.6L20 17M8.2 16.4L20 7" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" fill="none" /></>,
+  },
+  {
+    id: 'post', label: 'Post', title: 'Post text',
+    hint: 'A title, caption and hashtags to post the clip with. Copy them, or have AI write them again.',
+    icon: <path d="M9 4L7 20M17 4l-2 16M4.5 9h16M3.5 15h16" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" fill="none" />,
   },
 ]
 
@@ -1062,10 +1072,14 @@ export function EditorShell({
   const rendering = clipStatus === 'rendering' || exporting
   const hasOutput = !!outputUrl && clipStatus === 'done'
   // What "Remove pauses and filler words" takes out of this clip, from the transcript
-  const fillerCutMs = useMemo(
-    () => removedMs(computeCutRanges(words, clip.start_ms, clip.end_ms)),
-    [words, clip.start_ms, clip.end_ms],
-  )
+  const fillerCuts = useMemo(() => computeCutRanges(words, clip.start_ms, clip.end_ms), [words, clip.start_ms, clip.end_ms])
+  const fillerCutMs = useMemo(() => removedMs(fillerCuts), [fillerCuts])
+  /** Each cut, clip-relative, with the words it takes out (none = a pause) */
+  const fillerCutList = useMemo(() => fillerCuts.map(([a, b]) => ({
+    at: a - clip.start_ms,
+    ms: b - a,
+    words: words.filter(w => (w.start_ms + w.end_ms) / 2 >= a && (w.start_ms + w.end_ms) / 2 < b).map(w => w.word),
+  })), [fillerCuts, words, clip.start_ms])
   /** "Remove pauses & filler words": in the preview column and in the Captions panel, one setting */
   const fillersToggle = (place: string) => words.length > 0 && (
     <label className={`shrink-0 ${place} flex items-start gap-2.5 px-3 py-2.5 rounded-xl cursor-pointer`}
@@ -1333,7 +1347,6 @@ export function EditorShell({
               />
             )}
 
-            {tool === 'captions' && fillersToggle('mx-4 mt-4')}
             {tool === 'captions' && (
               isFreePlan ? (
                 <div className="m-4 flex flex-col items-center gap-3 py-8 px-4 rounded-xl text-center"
@@ -1409,6 +1422,39 @@ export function EditorShell({
                   )}
                 </div>
               )
+            )}
+
+            {tool === 'cleanup' && (
+              <div className="flex flex-col gap-3 p-4 min-h-0">
+                {fillersToggle('')}
+                {words.length === 0 && <p className="text-xs" style={{ color: 'rgb(var(--ed-fg) / 0.5)' }}>This needs the clip's captions (transcript) first.</p>}
+                {fillerCutList.length > 0 && (
+                  <div className="flex flex-col gap-1 min-h-0">
+                    <span className="text-xs font-medium" style={{ color: 'rgb(var(--ed-fg) / 0.5)' }}>
+                      {fillerCutList.length} cut{fillerCutList.length === 1 ? '' : 's'}{removeFillers ? '' : ' (when switched on)'}
+                    </span>
+                    <div className="flex flex-col gap-1 overflow-y-auto -mr-2 pr-2" style={{ maxHeight: 420 }}>
+                      {fillerCutList.map(c => (
+                        <button key={c.at} onClick={() => seekToMs(Math.max(0, c.at - 1000))} title="Play from just before this cut"
+                          className="flex items-center gap-2 px-2 py-1.5 rounded-lg text-left transition-colors hover:bg-[rgb(var(--ed-fg)/0.08)]"
+                          style={{ background: 'rgb(var(--ed-fg) / 0.04)' }}>
+                          <span className="text-[11px] tabular-nums shrink-0" style={{ color: 'rgb(var(--ed-fg) / 0.5)' }}>{msToLabel(c.at)}</span>
+                          <span className="flex-1 text-xs truncate" style={{ color: 'var(--ed-text)' }}>
+                            {c.words.length ? `“${c.words.join(' ')}”` : 'Pause'}
+                          </span>
+                          <span className="text-[11px] tabular-nums shrink-0" style={{ color: 'rgb(var(--ed-fg) / 0.45)' }}>−{(c.ms / 1000).toFixed(1)}s</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {tool === 'post' && (
+              <div className="p-4">
+                <PostText clipId={clip.id} value={postText} onChange={v => setPostText({ title: v.title, post_caption: v.post_caption, hashtags: v.hashtags })} />
+              </div>
             )}
 
             {tool === 'broll' && (
