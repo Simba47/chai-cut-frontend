@@ -1658,20 +1658,6 @@ export function EditorShell({
             </div>
           </div>
 
-          {/* Remove pauses and filler words (applied by the export) */}
-          {fillersToggle('mx-4 mt-3')}
-
-          {/* Post text: title, caption and hashtags to copy */}
-          {words.length > 0 && (
-            <details className="shrink-0 mx-4 mt-3 px-3 py-2.5 rounded-xl" open={!!postText.post_caption}
-              style={{ background: 'rgb(var(--ed-fg) / 0.04)', border: '1px solid rgb(var(--ed-fg) / 0.07)' }}>
-              <summary className="text-xs font-semibold text-[var(--ed-text)] cursor-pointer select-none">Post text</summary>
-              <div className="mt-2">
-                <PostText clipId={clip.id} value={postText} onChange={v => setPostText({ title: v.title, post_caption: v.post_caption, hashtags: v.hashtags })} />
-              </div>
-            </details>
-          )}
-
           {/* How the reel looks inside each app */}
           <div className="shrink-0 px-4 pt-3">
             <div role="radiogroup" aria-label="Show preview as" className="grid grid-cols-3 gap-1 p-1 rounded-xl"
