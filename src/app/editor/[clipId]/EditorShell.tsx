@@ -218,6 +218,7 @@ export function EditorShell({
   }
   useEffect(() => { loadVideoLibrary() }, [])
   const videoTitles = useMemo(() => Object.fromEntries(Object.entries(videoLibrary).map(([id, v]) => [id, v.title])), [videoLibrary])
+  const videoUrls = useMemo(() => Object.fromEntries(Object.entries(videoLibrary).map(([id, v]) => [id, v.url])), [videoLibrary])
   // B-roll shots are drawn from their own videos in the preview (muted; the speaker carries on)
   const brollSource = useBrollSources(videoRef, clip.start_ms, id => videoLibraryRef.current[id]?.url)
   const [pendingBrollMs, setPendingBrollMs] = useState<number | null>(null)
@@ -1592,6 +1593,7 @@ export function EditorShell({
               videoUrl={videoUrl} safeDurationMs={clipDurationMs} onSeek={seekToMs}
               onSelectSegment={id => setActiveSegmentId(id)}
               onBrollChange={retimeBroll}
+              videoUrls={videoUrls}
               onUpdateSegment={(id, updates) => updateSegment(id, updates)}
               onSetEdge={(id, edge, t) => setSegmentEdge(id, edge, t, clipLengthMs)}
               onMoveJunction={moveJunction}
