@@ -326,7 +326,7 @@ export async function getAutoClips(userId: string, videoId: string) {
   if (!job) return { job: null, clips: [] as AutoClip[] }
 
   const rows = await sql`
-    SELECT id, title, start_ms, end_ms, status, output_storage_path,
+    SELECT c.id, c.title, c.start_ms, c.end_ms, c.status, c.output_storage_path,
       (to_jsonb(c)->>'ai_score')::int AS ai_score, to_jsonb(c)->>'ai_reason' AS ai_reason,
       to_jsonb(c)->>'post_caption' AS post_caption, to_jsonb(c)->'hashtags' AS hashtags
     FROM clips c JOIN ai_edit_jobs j ON j.id = c.ai_edit_job_id
