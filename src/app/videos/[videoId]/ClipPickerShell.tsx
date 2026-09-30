@@ -496,7 +496,7 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: P
         <label className="flex items-center gap-2 text-xs cursor-pointer" style={{ color: 'rgba(255,255,255,0.6)' }}>
           <input type="checkbox" checked={autoBroll} onChange={e => setAutoBroll(e.target.checked)} disabled={autoRunning}
             style={{ accentColor: ACCENT }} />
-          Add B-roll <span style={{ color: 'rgba(255,255,255,0.35)' }}>(stock shots, videos from Pexels)</span>
+          Add B-roll <span style={{ color: 'rgba(255,255,255,0.35)' }}>(free stock shots from Pexels or Pixabay)</span>
         </label>
         {autoError && <p className="text-xs" style={{ color: '#f87171' }}>{autoError}</p>}
         {autoRunning && autoJob && (
