@@ -29,11 +29,23 @@ interface SavedClip {
 
 interface Suggestion {
   id: string
+  subscores?: Record<string, number>
   title: string
   start_ms: number
   end_ms: number
   summary: string
+  /** Viral score 0–99, missing on the plain fallback chunks */
+  score?: number
+  reason?: string
 }
+
+interface AutoJob { id: string; status: 'queued' | 'running' | 'done' | 'failed'; progress: number; error: string | null; clip_count: number }
+interface AutoClip {
+  id: string; title: string | null; start_ms: number; end_ms: number; status: string
+  output_url: string | null; ai_score: number | null; ai_reason: string | null
+  post_caption: string | null; hashtags: string[] | null
+}
+const AUTO_COUNTS = [3, 5, 10] as const
 
 interface Props {
   video: VideoData
@@ -116,6 +128,13 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: P
   const [aiSuggestions, setAiSuggestions] = useState<Suggestion[] | null>(null)
   const [loadingAi, setLoadingAi] = useState(false)
   const [aiError, setAiError] = useState<string | null>(null)
+  // "Make my clips": the AI Edit job for this video and the clips it made
+  const [autoCount, setAutoCount] = useState<number>(5)
+  const [autoBroll, setAutoBroll] = useState(false)
+  const [autoJob, setAutoJob] = useState<AutoJob | null>(null)
+  const [autoClips, setAutoClips] = useState<AutoClip[]>([])
+  const [autoStarting, setAutoStarting] = useState(false)
+  const [autoError, setAutoError] = useState<string | null>(null)
   // The clip list (kept locally so deleted clips disappear at once; a refresh brings the server's copy)
   const [clips, setClips] = useState(savedClips)
   useEffect(() => { setClips(savedClips) }, [savedClips])
@@ -219,7 +238,19 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: P
     createClip(formStartMs, formEndMs, 'form', formTitle.trim() || undefined)
   }
 
-  async function createClip(startMs: number, endMs: number, key: string, title?: string) {
+  // What the user does with an AI suggestion (logged for improving clip picking; fire and forget)
+  function logSuggestion(event: 'previewed' | 'used', s: Suggestion, source: 'best_moments' | 'clip_search', clipId?: string) {
+    fetch(`/api/videos/${video.id}/suggestion-events`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
+      body: JSON.stringify({
+        event, source, clip_id: clipId,
+        suggestion: { start_ms: s.start_ms, end_ms: s.end_ms, title: s.title, score: s.score, subscores: s.subscores, reason: s.reason,
+          model: source === 'best_moments' ? 'claude-haiku-4-5-20251001' : 'gemini-3.1-pro-preview' },
+      }),
+    }).catch(() => {})
+  }
+
+  async function createClip(startMs: number, endMs: number, key: string, title?: string, from?: { s: Suggestion; source: 'best_moments' | 'clip_search' }) {
     setBusy(key)
     setClipError(null)
     try {
@@ -230,6 +261,7 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: P
       })
       if (!res.ok) throw new Error((await res.json()).error ?? 'Failed to create clip')
       const { clip_id } = await res.json()
+      if (from && typeof from.s.score === 'number') logSuggestion('used', from.s, from.source, clip_id)
       // Every clip starts as one Vertical format over the whole clip (like "Edit full video")
       router.push(`/editor/${clip_id}`)
     } catch (e) {
@@ -255,6 +287,50 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: P
       console.error(e)
       setBusy(null)
       setClipError(e instanceof Error ? e.message : 'Failed to open video. Please try again.')
+    }
+  }
+
+  async function loadAutoClips() {
+    const res = await fetch(`/api/videos/${video.id}/auto-clips`)
+    if (!res.ok) return
+    const data = await res.json() as { job: AutoJob | null; clips: AutoClip[] }
+    setAutoJob(data.job)
+    setAutoClips(data.clips ?? [])
+  }
+  const autoRunning = autoJob?.status === 'queued' || autoJob?.status === 'running'
+  // A run that finishes while this page is open goes straight to its clips
+  const wasRunningRef = useRef(false)
+  useEffect(() => {
+    if (autoRunning) wasRunningRef.current = true
+    else if (wasRunningRef.current && autoJob?.status === 'done') router.push(`/videos/${video.id}/clips`)
+  }, [autoRunning, autoJob?.status, router, video.id])
+  const autoRendering = autoClips.some(c => c.status === 'rendering')
+  // Show an earlier run on load, then poll every 3 s while the job runs or its clips export
+  useEffect(() => { if (video.status === 'ready') loadAutoClips().catch(() => {}) }, [video.id, video.status]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (!autoRunning && !autoRendering) return
+    const t = setInterval(() => { loadAutoClips().catch(() => {}) }, 3000)
+    return () => clearInterval(t)
+  }, [autoRunning, autoRendering]) // eslint-disable-line react-hooks/exhaustive-deps
+  // New clips also belong in the clip list on the right
+  const autoDoneCount = autoClips.filter(c => c.status !== 'rendering').length
+  useEffect(() => { if (autoDoneCount > 0) router.refresh() }, [autoDoneCount, router])
+
+  async function makeClips() {
+    setAutoStarting(true)
+    setAutoError(null)
+    try {
+      const res = await fetch(`/api/videos/${video.id}/auto-clips`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ clip_count: autoCount, add_broll: autoBroll }),
+      })
+      if (!res.ok) throw new Error((await res.json()).error ?? 'Could not start making clips')
+      await loadAutoClips()
+    } catch (e) {
+      setAutoError(e instanceof Error ? e.message : 'Could not start making clips')
+    } finally {
+      setAutoStarting(false)
     }
   }
 
@@ -397,6 +473,57 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: P
   // ── AI tools: Ask AI + Best moments (left column on wide screens, under the video otherwise) ──
   const aiTools = (
     <>
+      <section className="shrink-0 max-h-[50%] p-4 flex flex-col gap-2 rounded-2xl" style={CARD}>
+        <h2 className="text-sm font-semibold text-white">Make my clips</h2>
+        <p className="text-xs leading-relaxed" style={{ color: 'rgba(255,255,255,0.45)' }}>
+          AI picks the best moments, frames them vertically and adds captions. Each new batch finds new moments.
+        </p>
+        <div className="flex gap-2">
+          <div className="flex rounded-lg overflow-hidden" role="radiogroup" aria-label="How many clips" style={{ border: '1px solid rgba(255,255,255,0.12)' }}>
+            {AUTO_COUNTS.map(n => (
+              <button key={n} role="radio" aria-checked={autoCount === n} onClick={() => setAutoCount(n)} disabled={autoRunning}
+                className="px-3 py-2 text-xs font-semibold tabular-nums transition-colors disabled:opacity-40"
+                style={autoCount === n ? { background: 'rgba(255,255,255,0.14)', color: '#fff' } : { color: 'rgba(255,255,255,0.55)' }}>
+                {n}
+              </button>
+            ))}
+          </div>
+          <button onClick={makeClips} disabled={autoRunning || autoStarting}
+            className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-xs font-bold disabled:opacity-40"
+            style={{ background: ACCENT, color: '#000' }}>
+            {autoStarting || autoRunning ? <Spinner /> : '✦'} {autoRunning ? 'Making clips…' : 'Make my clips'}
+          </button>
+        </div>
+        <label className="flex items-center gap-2 text-xs cursor-pointer" style={{ color: 'rgba(255,255,255,0.6)' }}>
+          <input type="checkbox" checked={autoBroll} onChange={e => setAutoBroll(e.target.checked)} disabled={autoRunning}
+            style={{ accentColor: ACCENT }} />
+          Add B-roll <span style={{ color: 'rgba(255,255,255,0.35)' }}>(free stock shots from Pexels or Pixabay)</span>
+        </label>
+        {autoError && <p className="text-xs" style={{ color: '#f87171' }}>{autoError}</p>}
+        {autoRunning && autoJob && (
+          <div className="flex flex-col gap-1">
+            <div className="h-1.5 rounded-full overflow-hidden" style={{ background: 'rgba(255,255,255,0.08)' }}>
+              <div className="h-full rounded-full transition-all" style={{ width: `${Math.max(3, autoJob.progress)}%`, background: ACCENT }} />
+            </div>
+            <p className="text-xs" style={{ color: 'rgba(255,255,255,0.45)' }}>
+              {autoJob.status === 'queued' ? 'Waiting to start…' : autoJob.progress < 20 ? 'Reading the video…' : autoJob.progress < 35 ? 'Finding the best moments…' : 'Framing clips…'} {autoJob.progress}%
+            </p>
+          </div>
+        )}
+        {autoJob?.status === 'failed' && (
+          <p className="text-xs" style={{ color: '#f87171' }}>
+            Making clips failed{autoJob.error ? `: ${autoJob.error}` : ''}. Try again, or make clips by hand below.
+          </p>
+        )}
+        {autoClips.length > 0 && !autoRunning && (
+          <button onClick={() => router.push(`/videos/${video.id}/clips`)}
+            className="flex items-center justify-center gap-2 py-2 rounded-lg text-xs font-semibold transition-colors hover:bg-white/10"
+            style={{ color: '#fff', border: '1px solid rgba(255,255,255,0.14)' }}>
+            ▶ AI edits ({autoClips.length} clip{autoClips.length === 1 ? '' : 's'})
+          </button>
+        )}
+      </section>
+
       <section className="flex-1 min-h-0 p-4 flex flex-col gap-2 rounded-2xl" style={CARD}>
         <h2 className="text-sm font-semibold text-white">Ask AI</h2>
         <p className="text-xs leading-relaxed" style={{ color: 'rgba(255,255,255,0.45)' }}>
@@ -429,7 +556,8 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: P
         )}
         {!loadingAi && aiSuggestions?.map(s => (
           <SuggestionCard key={s.id} suggestion={s} busy={busy}
-            onSeek={() => seek(s.start_ms)} onUse={() => createClip(s.start_ms, s.end_ms, s.id, s.title)} />
+            onSeek={() => { seek(s.start_ms); if (typeof s.score === 'number') logSuggestion('previewed', s, 'clip_search') }}
+            onUse={() => createClip(s.start_ms, s.end_ms, s.id, s.title, { s, source: 'clip_search' })} />
         ))}
         </div>
       </section>
@@ -464,7 +592,8 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: P
         )}
         {suggestions && !loadingSuggestions && suggestions.map(s => (
           <SuggestionCard key={s.id} suggestion={s} busy={busy}
-            onSeek={() => seek(s.start_ms)} onUse={() => createClip(s.start_ms, s.end_ms, s.id, s.title)} />
+            onSeek={() => { seek(s.start_ms); if (typeof s.score === 'number') logSuggestion('previewed', s, 'best_moments') }}
+            onUse={() => createClip(s.start_ms, s.end_ms, s.id, s.title, { s, source: 'best_moments' })} />
         ))}
         </div>
       </section>
@@ -657,8 +786,18 @@ function SuggestionCard({ suggestion, busy, onSeek, onUse }: {
 }) {
   return (
     <div className="shrink-0 rounded-xl p-3" style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)' }}>
-      <p className="text-sm font-medium text-white leading-snug">{suggestion.title}</p>
+      <div className="flex items-start gap-2">
+        <p className="flex-1 text-sm font-medium text-white leading-snug">{suggestion.title}</p>
+        {typeof suggestion.score === 'number' && (
+          <span title="Viral score (0–99)"
+            className="shrink-0 text-[11px] font-bold tabular-nums px-1.5 py-0.5 rounded-md"
+            style={{ color: ACCENT, background: 'rgba(200,255,0,0.1)', border: '1px solid rgba(200,255,0,0.25)' }}>
+            {suggestion.score}
+          </span>
+        )}
+      </div>
       {suggestion.summary && <p className="text-xs mt-1 leading-relaxed" style={{ color: 'rgba(255,255,255,0.5)' }}>{suggestion.summary}</p>}
+      {suggestion.reason && <p className="text-[11px] mt-1 leading-relaxed italic" style={{ color: 'rgba(255,255,255,0.4)' }}>{suggestion.reason}</p>}
       <div className="flex items-center gap-2 mt-2.5">
         <button onClick={onSeek} title="Play this moment"
           className="text-xs font-mono tabular-nums px-2 py-1 rounded-md transition-colors hover:bg-white/10" style={{ color: 'rgba(255,255,255,0.6)', background: 'rgba(255,255,255,0.05)' }}>

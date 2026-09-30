@@ -82,6 +82,10 @@ interface EditorActions {
   addFormat: (startMs: number, endMs: number, layout: LayoutType, videoAR?: number, pos?: BoxPosition | (BoxPosition | undefined)[]) => string
   updateBoxSource: (segId: string, boxId: string, source_video_id: string | null, source_offset_ms: number) => void
   insertBrollAtMs: (videoId: string, atMs: number, durationMs: number, getPos: (boxId: string, t: number) => BoxPosition) => string | null
+  /** A muted B-roll shot (cutaway) over [startMs, endMs), across any formats it covers */
+  placeBroll: (videoId: string, startMs: number, endMs: number, getPos: (boxId: string, t: number) => BoxPosition) => string
+  /** Take a B-roll shot out: the format before it (or after it) takes its time back */
+  removeBroll: (id: string) => void
   // Keyframes
   upsertKeyframe: (boxId: string, kf: Omit<BoxKeyframe, 'id' | 'box_id'>) => void
   /** Replace all of a box's keyframes (e.g. one static framing for the whole position). */
@@ -484,7 +488,9 @@ export const useEditorStore = create<EditorState & EditorActions>()((set, get) =
         if (brollSeg.end_ms <= brollSeg.start_ms) return s
         return {
           segments: [
-            ...s.segments.map(s => s.id === seg!.id ? { ...s, start_ms: brollSeg.end_ms } : s),
+            // withStart: the main video carries on from where the B-roll ends (a cutaway), as it
+            // does for a B-roll placed mid-format
+            ...s.segments.map(s => s.id === seg!.id ? withStart(s, brollSeg.end_ms) : s),
             brollSeg,
           ].sort((a, b) => a.sort_order - b.sort_order),
           keyframes: withBoxes(s.keyframes, [brollBox]),
@@ -507,7 +513,11 @@ export const useEditorStore = create<EditorState & EditorActions>()((set, get) =
           id: crypto.randomUUID(), slot_index: box.slot_index,
           source_video_id: box.source_video_id,
           source_offset_ms: box.source_offset_ms + (brollEnd - seg!.start_ms),
-          keyframes: [{ t_ms: brollEnd, ...getPos(box.id, brollEnd) }],
+          // The framing carries on after the B-roll: its position there, then its later keyframes
+          keyframes: [
+            { t_ms: brollEnd, ...getPos(box.id, brollEnd) },
+            ...(s.keyframes[box.id] ?? box.keyframes ?? []).filter(k => k.t_ms > brollEnd).map(k => ({ t_ms: k.t_ms, x: k.x, y: k.y, w: k.w, h: k.h })),
+          ],
         }))
         result.push({ id: crypto.randomUUID(), start_ms: brollEnd, end_ms: seg.end_ms, layout: seg.layout, sort_order: seg.sort_order + 1, crop_boxes: contBoxes })
       }
@@ -519,6 +529,58 @@ export const useEditorStore = create<EditorState & EditorActions>()((set, get) =
 
     return brollId
   },
+
+  placeBroll: (videoId, startMs, endMs, getPos) => {
+    const id = crypto.randomUUID()
+    set(s => {
+      const brollBox: CropBoxLocal = {
+        id: crypto.randomUUID(), slot_index: 0, source_video_id: videoId, source_offset_ms: 0,
+        image_path: null, image_motion: null, volume: 1, muted: true,
+        keyframes: [{ t_ms: startMs, x: 0, y: 0, w: 1, h: 1 }],
+      } as CropBoxLocal
+      const added: CropBoxLocal[] = [brollBox]
+      const out: SegmentLocal[] = []
+      for (const seg of s.segments) {
+        if (seg.end_ms <= startMs || seg.start_ms >= endMs) { out.push(seg); continue }
+        // The part before the shot keeps its framing as it was
+        if (seg.start_ms < startMs) out.push({ ...seg, end_ms: startMs })
+        // The part after carries on: its video from where the shot ends, its later keyframes
+        if (seg.end_ms > endMs) {
+          const boxes = seg.crop_boxes.map(box => ({
+            ...box,
+            id: crypto.randomUUID(),
+            source_offset_ms: box.source_offset_ms + (endMs - seg.start_ms),
+            keyframes: [
+              { t_ms: endMs, ...getPos(box.id, endMs) },
+              ...(s.keyframes[box.id] ?? box.keyframes ?? []).filter(k => k.t_ms > endMs).map(k => ({ t_ms: k.t_ms, x: k.x, y: k.y, w: k.w, h: k.h })),
+            ],
+          }))
+          added.push(...boxes)
+          out.push({ ...seg, id: crypto.randomUUID(), start_ms: endMs, crop_boxes: boxes })
+        }
+      }
+      out.push({ id, start_ms: startMs, end_ms: endMs, layout: 'vertical', sort_order: 0, crop_boxes: [brollBox] })
+      const segments = out.sort((a, b) => a.start_ms - b.start_ms).map((seg, i) => ({ ...seg, sort_order: i }))
+      return { segments, keyframes: withBoxes(s.keyframes, added) }
+    })
+    return id
+  },
+
+  removeBroll: (id) => set(s => {
+    const seg = s.segments.find(x => x.id === id)
+    if (!seg) return s
+    const rest = s.segments.filter(x => x.id !== id)
+    const prev = rest.find(x => x.end_ms === seg.start_ms)
+    const next = rest.find(x => x.start_ms === seg.end_ms)
+    return {
+      segments: rest.map(x =>
+        prev && x.id === prev.id ? { ...x, end_ms: seg.end_ms }
+          : !prev && next && x.id === next.id ? withStart(x, seg.start_ms)
+            : x),
+      activeSegmentId: s.activeSegmentId === id ? null : s.activeSegmentId,
+      activeBoxId: s.activeSegmentId === id ? null : s.activeBoxId,
+    }
+  }),
 
   upsertKeyframe: (boxId, kf) => set(s => {
     const existing = s.keyframes[boxId] ?? []

@@ -16,7 +16,8 @@ export async function GET() {
   ])
 
   const [videoRow, clipRow] = await Promise.all([
-    sql<{ count: string }[]>`SELECT COUNT(*) as count FROM videos WHERE user_id = ${user.id}`,
+    // Only the user's own videos: B-roll and overlay files (role 'asset') don't count, as in checkVideoQuota
+    sql<{ count: string }[]>`SELECT COUNT(*) as count FROM videos WHERE user_id = ${user.id} AND role IS DISTINCT FROM 'asset'`,
     sql<{ count: string }[]>`
       SELECT COUNT(*) as count FROM clips c
       JOIN videos v ON v.id = c.video_id

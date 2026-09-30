@@ -1,19 +1,19 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { requireUser } from '@/server/auth'
-import { queueRender } from '@/server/services/export'
+import { importStock } from '@/server/services/stock'
 import { apiError } from '@/lib/api-error'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 
+// Add a stock video to the user's assets (once per video) so a clip can use it as B-roll
 export async function POST(req: NextRequest) {
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   const body = await req.json().catch(() => null)
-  if (!body?.clip_id) return NextResponse.json({ error: 'clip_id required' }, { status: 400 })
+  if (typeof body?.ref !== 'string' || typeof body?.url !== 'string') return NextResponse.json({ error: 'ref and url required' }, { status: 400 })
   try {
-    return NextResponse.json(await queueRender(user.id, body.clip_id, body.quality ?? '1080p', body.retranscribe === true,
-      typeof body.remove_fillers === 'boolean' ? body.remove_fillers : undefined))
+    return NextResponse.json(await importStock(user.id, { ref: body.ref, url: body.url, title: typeof body.title === 'string' ? body.title : undefined }))
   } catch (err) {
     return apiError(err)
   }

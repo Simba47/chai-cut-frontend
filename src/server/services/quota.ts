@@ -14,7 +14,8 @@ export async function getUserPlanConfig(userId: string) {
 
 export async function checkVideoQuota(userId: string): Promise<void> {
   const plan = await getUserPlanConfig(userId)
-  const [row] = await sql<{ count: string }[]>`SELECT COUNT(*) as count FROM videos WHERE user_id = ${userId}`
+  // Stock clips saved for auto B-roll don't count
+  const [row] = await sql<{ count: string }[]>`SELECT COUNT(*) as count FROM videos WHERE user_id = ${userId} AND role <> 'asset'`
   const count = parseInt(row?.count ?? '0', 10)
   if (count >= plan.maxVideos) {
     throw Object.assign(

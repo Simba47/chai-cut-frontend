@@ -53,6 +53,8 @@ interface SaveClipInput {
   transitions: Transition[]
   filters: { brightness: number; contrast: number; saturation: number }
   overlays: Omit<Overlay, 'created_at'>[]
+  /** Remove pauses and filler words when exporting */
+  removeFillers?: boolean
 }
 
 export async function saveClip(userId: string, clipId: string, body: SaveClipInput) {
@@ -118,6 +120,8 @@ export async function saveClip(userId: string, clipId: string, body: SaveClipInp
   }
 
   const hasEnabledField = await captionEnabledField()
+  const hasPresetFields = await captionPresetFields()
+  const hasRemoveFillers = typeof body.removeFillers === 'boolean' && await clipsHasRemoveFillers()
 
   // Every statement is built up front and pipelined in one transaction: the database is far
   // from the server (~300–500 ms per round trip), and awaiting each statement made saves take
@@ -157,17 +161,25 @@ export async function saveClip(userId: string, clipId: string, body: SaveClipInp
     if (!captionEnabled && !hasEnabledField) {
       q.push(tx`DELETE FROM caption_styles WHERE clip_id = ${clipId}`)
     } else if (Object.keys(captionStyle).length > 0) {
-      const styleFields = ['font', 'size', 'color', 'position', 'position_y', 'animation', 'language', 'translated_from_language', 'timing_offset_ms']
+      const styleFields = ['font', 'size', 'color', 'position', 'position_y', 'animation', 'language', 'translated_from_language', 'timing_offset_ms',
+        // Animated presets. Not emphasis: the export fills that in, and the editor's copy may be stale.
+        ...(hasPresetFields ? PRESET_STYLE_FIELDS : [])]
       const onOff = hasEnabledField ? { enabled: captionEnabled } : {}
+      const entries = Object.entries(captionStyle).filter(([k, v]) => styleFields.includes(k) && v !== undefined)
+      const fields: Record<string, unknown> = Object.fromEntries(entries)
+      // A database the backend hasn't updated yet only accepts the original animations
+      if (!hasPresetFields && typeof fields.animation === 'string' && !['karaoke', 'fade', 'none'].includes(fields.animation)) {
+        fields.animation = 'karaoke'
+      }
       if (existingStyle?.id) {
-        const entries = Object.entries(captionStyle).filter(([k, v]) => styleFields.includes(k) && v !== undefined)
-        const set = { ...Object.fromEntries(entries), ...onOff }
+        const set = { ...fields, ...onOff }
         if (Object.keys(set).length > 0) q.push(tx`UPDATE caption_styles SET ${tx(set)} WHERE id = ${existingStyle.id}`)
       } else {
-        const { id: _id, clip_id: _clip_id, enabled: _en, ...rest } = captionStyle as CaptionStyle & { enabled?: boolean }
-        q.push(tx`INSERT INTO caption_styles ${tx({ clip_id: clipId, ...rest, ...onOff })}`)
+        q.push(tx`INSERT INTO caption_styles ${tx({ clip_id: clipId, ...fields, ...onOff })}`)
       }
     }
+
+    if (hasRemoveFillers) q.push(tx`UPDATE clips SET remove_fillers = ${body.removeFillers!} WHERE id = ${clipId}`)
 
     q.push(tx`DELETE FROM text_overlays WHERE clip_id = ${clipId}`)
     if (textOverlays.length > 0) {
@@ -230,6 +242,9 @@ export async function deleteClips(userId: string, clipIds: unknown) {
 
   await deleteR2Keys(clips.map(c => c.output_storage_path as string | null).filter((k): k is string => !!k))
   // Formats, captions, overlays… go with their clip (foreign keys cascade)
+  // Before the rows go (it reads them); it never throws
+  const { logClipEvents } = await import('./suggestionEvents')
+  await logClipEvents(userId, ids, 'deleted')
   await sql`DELETE FROM clips WHERE id = ANY(${ids})`
   return { deleted: ids.length }
 }
@@ -255,6 +270,25 @@ async function captionEnabledField(): Promise<boolean> {
   const rows = await sql`SELECT 1 FROM information_schema.columns WHERE table_name = 'caption_styles' AND column_name = 'enabled'`.catch(() => [])
   enabledFieldKnown = rows.length > 0
   return enabledFieldKnown
+}
+
+// clips.remove_fillers (added by the backend with "Remove pauses and filler words"): same rule
+let removeFillersKnown = false
+export async function clipsHasRemoveFillers(): Promise<boolean> {
+  if (removeFillersKnown) return true
+  const rows = await sql`SELECT 1 FROM information_schema.columns WHERE table_name = 'clips' AND column_name = 'remove_fillers'`.catch(() => [])
+  removeFillersKnown = rows.length > 0
+  return removeFillersKnown
+}
+
+// Caption preset fields (added by the backend with the presets): same remember-a-yes rule
+const PRESET_STYLE_FIELDS = ['highlight_color', 'words_per_line', 'uppercase', 'stroke_width']
+let presetFieldsKnown = false
+async function captionPresetFields(): Promise<boolean> {
+  if (presetFieldsKnown) return true
+  const rows = await sql`SELECT 1 FROM information_schema.columns WHERE table_name = 'caption_styles' AND column_name = 'highlight_color'`.catch(() => [])
+  presetFieldsKnown = rows.length > 0
+  return presetFieldsKnown
 }
 
 const OLD_CORNERS: Record<string, number> = { s: 35, m: 60, l: 100 }
@@ -309,4 +343,44 @@ function cleanFrame(frame: FrameSettings): FrameSettings {
       : undefined,
     items,
   }
+}
+
+/**
+ * Writes the clip's hook, title, post caption and hashtags again (Gemini, src/lib/clipText.ts)
+ * and saves them. The hook text overlay already on the clip is left as the user has it.
+ */
+export async function regenerateClipText(userId: string, clipId: string) {
+  const [clip] = await sql`
+    SELECT c.id, c.start_ms, c.end_ms, c.video_id, v.user_id, v.title AS video_title
+    FROM clips c JOIN videos v ON v.id = c.video_id WHERE c.id = ${clipId}
+  `
+  if (!clip) throw Object.assign(new Error('Clip not found'), { status: 404 })
+  if (clip.user_id !== userId) throw Object.assign(new Error('Forbidden'), { status: 403 })
+  const apiKey = process.env.GEMINI_API_KEY
+  if (!apiKey) throw Object.assign(new Error('AI text is not configured'), { status: 500 })
+
+  const [transcript] = await sql`SELECT id FROM transcripts WHERE video_id = ${clip.video_id} ORDER BY created_at DESC LIMIT 1`
+  const words = transcript
+    ? await sql<{ word: string; start_ms: number; end_ms: number }[]>`
+        SELECT word, start_ms, end_ms FROM transcript_words
+        WHERE transcript_id = ${transcript.id} AND start_ms >= ${clip.start_ms} AND start_ms < ${clip.end_ms}
+        ORDER BY start_ms`
+    : []
+  if (!words.length) throw Object.assign(new Error('This clip has no captions yet, so there is nothing to write from'), { status: 400 })
+
+  const { generateClipText } = await import('@/lib/clipText')
+  let text
+  try {
+    text = await generateClipText(words, clip.video_title ?? null, apiKey)
+  } catch (e) {
+    console.error('[ai-text] Gemini error:', e)
+    throw Object.assign(new Error('AI could not write the text right now. Try again in a moment.'), { status: 502 })
+  }
+  const [hasColumns] = await sql`SELECT 1 FROM information_schema.columns WHERE table_name = 'clips' AND column_name = 'post_caption'`
+  if (!hasColumns) throw Object.assign(new Error('AI text needs the latest backend. Try again after it restarts.'), { status: 503 })
+  await sql`
+    UPDATE clips SET title = ${text.title}, hook_text = ${text.hook}, post_caption = ${text.post_caption}, hashtags = ${text.hashtags}
+    WHERE id = ${clipId}
+  `
+  return text
 }
