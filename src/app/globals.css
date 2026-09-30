@@ -219,3 +219,31 @@ body {
 @media (prefers-reduced-motion: reduce) {
   .brand-loader svg, .brand-loader-top, .brand-loader-bottom { animation: none; }
 }
+
+/* ── Editor tool rail buttons (Format · Frames · Captions · Text · Reset) ──
+   Brighter at rest, a soft tile on hover, and a clear tile + short lime marker when selected */
+.ed-tool {
+  position: relative;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px;
+  border-radius: 12px; border: 0; cursor: pointer;
+  background: transparent; color: rgba(244,244,245,0.72);
+  transition: background-color .2s, color .2s, box-shadow .2s;
+}
+.ed-tool svg { transition: scale .25s cubic-bezier(.34,1.56,.64,1); }
+.ed-tool span { font-size: 11px; font-weight: 600; }
+.ed-tool:hover { background: rgba(255,255,255,0.07); color: #fff; }
+.ed-tool:hover svg { scale: 1.1; }
+.ed-tool:active { scale: .96; }
+.ed-tool:focus-visible { outline: 2px solid #C8FF00; outline-offset: 2px; }
+.ed-tool[data-active] {
+  background: rgba(255,255,255,0.1); color: #fff;
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.14);
+}
+.ed-tool[data-active]::before {                      /* "you are here" marker on the rail edge */
+  content: ''; position: absolute; left: -6px; top: 50%; translate: 0 -50%;
+  width: 3px; height: 26px; border-radius: 0 3px 3px 0; background: #C8FF00;
+}
+.ed-tool-danger:hover { color: #fca5a5; }
+.ed-tool-danger[data-active] { color: #f87171; background: rgba(239,68,68,0.12); box-shadow: inset 0 0 0 1px rgba(239,68,68,0.3); }
+.ed-tool-danger[data-active]::before { display: none; }
+@media (prefers-reduced-motion: reduce) { .ed-tool svg { transition: none; } }

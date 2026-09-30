@@ -1037,8 +1037,8 @@ export function EditorShell({
                 }}
                 aria-pressed={active}
                 title={active ? `Hide ${t.label.toLowerCase()} options` : t.title}
-                className="flex flex-col items-center justify-center gap-1 rounded-xl transition-colors hover:bg-[rgb(var(--ed-fg)/0.05)]"
-                style={{ width: 60, height: 58, background: active ? 'rgba(200,255,0,0.1)' : undefined, color: active ? 'var(--ed-accent-text)' : 'rgb(var(--ed-fg) / 0.5)' }}>
+                className="ed-tool" data-active={active || undefined}
+                style={{ width: 60, height: 58 }}>
                 <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true">{t.icon}</svg>
                 <span className="text-[11px] font-medium">{t.label}</span>
               </button>
@@ -1048,8 +1048,8 @@ export function EditorShell({
           <div className="relative">
             <button onClick={() => setConfirmResetAll(v => !v)} aria-expanded={confirmResetAll}
               title="Reset all edits"
-              className="flex flex-col items-center justify-center gap-1 rounded-xl transition-colors hover:bg-[rgb(var(--ed-fg)/0.05)]"
-              style={{ width: 60, height: 52, color: confirmResetAll ? '#f87171' : 'rgb(var(--ed-fg) / 0.5)' }}>
+              className="ed-tool ed-tool-danger" data-active={confirmResetAll || undefined}
+              style={{ width: 60, height: 52 }}>
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                 <path d="M3 12a9 9 0 109-9 9.75 9.75 0 00-6.74 2.74L3 8" /><path d="M3 3v5h5" />
               </svg>
