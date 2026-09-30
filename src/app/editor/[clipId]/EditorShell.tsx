@@ -114,7 +114,8 @@ export function EditorShell({
   const {
     segments, keyframes, activeSegmentId, activeBoxId,
     hydrate: hydrateEditor, updateSegment, removeSegment,
-    splitAtMs, updateBoxSource, insertBrollAtMs, applyLayout, setSegmentEdge, addFormat, moveJunction, updateSlot,
+    splitAtMs, updateBoxSource, insertBrollAtMs, applyLayout, setSegmentEdge, addFormat, moveJunction,
+    placeBroll, removeBroll: removeBrollShot,
     upsertKeyframe, setBoxKeyframes, getPositionAt, updateFrameBand,
     updateFrame, addFrameItem, updateFrameItem, removeFrameItem,
     setActiveSegmentId, setActiveBoxId,
@@ -943,10 +944,7 @@ export function EditorShell({
     videoLibraryRef.current = { ...videoLibraryRef.current, [data.video_id]: { url: data.url, title: data.title } }
     setVideoLibrary(videoLibraryRef.current)
     const at = Math.min(currentTimeMs, Math.max(0, clipLengthMs - 500))
-    const segId = insertBrollAtMs(data.video_id, at, lengthMs, getPositionAt)
-    if (!segId) throw new Error('There is no room for B-roll here. Move the playhead and try again.')
-    const box = useEditorStore.getState().segments.find(sg => sg.id === segId)?.crop_boxes[0]
-    if (box) updateSlot(segId, box.id, { muted: true })
+    const segId = placeBroll(data.video_id, at, Math.min(clipLengthMs, at + lengthMs), getPositionAt)
     setActiveSegmentId(segId)
     seekToMs(at)
   }
@@ -957,31 +955,24 @@ export function EditorShell({
     const seg = byTime[i], prev = byTime[i - 1], next = byTime[i + 1]
     return { seg, prev: prev && prev.end_ms === seg?.start_ms ? prev : undefined, next: next && next.start_ms === seg?.end_ms ? next : undefined }
   }
-  function moveBrollEdge(id: string, edge: 'start' | 'end', t: number) {
-    const { seg, prev, next } = neighbours(id)
-    if (!seg) return
-    if (edge === 'end') { if (next) moveJunction(seg.id, next.id, t); else setSegmentEdge(seg.id, 'end', t, clipLengthMs) }
-    else { if (prev) moveJunction(prev.id, seg.id, t); else setSegmentEdge(seg.id, 'start', t, clipLengthMs) }
-  }
-  function resizeBroll(id: string, delta: number) {
+  /**
+   * Give a shot a new time: it is taken out (the framing around it takes the time back) and put
+   * back in at the new place, as a new shot is. Same video, muted.
+   */
+  function retimeBroll(id: string, startMs: number, endMs: number) {
     const { seg } = neighbours(id)
-    if (seg) moveBrollEdge(id, 'end', seg.end_ms + delta)
+    const videoId = seg?.crop_boxes[0]?.source_video_id
+    if (!seg || !videoId) return
+    const start = Math.max(0, Math.min(clipLengthMs - 500, startMs))
+    const end = Math.min(clipLengthMs, Math.max(start + 500, endMs))
+    removeBrollShot(id)
+    setActiveSegmentId(placeBroll(videoId, start, end, getPositionAt))
   }
-  function moveBroll(id: string, delta: number) {
-    const { seg } = neighbours(id)
-    if (!seg) return
-    // The edge in the direction of travel goes first, so the shot keeps its length
-    if (delta > 0) { moveBrollEdge(id, 'end', seg.end_ms + delta); moveBrollEdge(id, 'start', seg.start_ms + delta) }
-    else { moveBrollEdge(id, 'start', seg.start_ms + delta); moveBrollEdge(id, 'end', seg.end_ms + delta) }
-  }
+  const moveBroll = (id: string, delta: number) => { const { seg } = neighbours(id); if (seg) retimeBroll(id, seg.start_ms + delta, seg.end_ms + delta) }
+  const resizeBroll = (id: string, delta: number) => { const { seg } = neighbours(id); if (seg) retimeBroll(id, seg.start_ms, seg.end_ms + delta) }
+
   /** Remove a shot: the framing before it (or after it, at the start) takes its time back */
-  function removeBroll(id: string) {
-    const { seg, prev, next } = neighbours(id)
-    if (!seg) return
-    removeSegment(id)
-    if (prev) setSegmentEdge(prev.id, 'end', seg.end_ms, clipLengthMs)
-    else if (next) setSegmentEdge(next.id, 'start', seg.start_ms, clipLengthMs)
-  }
+  const removeBroll = (id: string) => removeBrollShot(id)
 
   function handleInsertBrollAfterSeg(afterSegId: string) {
     const seg = segments.find(s => s.id === afterSegId)
@@ -1075,6 +1066,22 @@ export function EditorShell({
     () => removedMs(computeCutRanges(words, clip.start_ms, clip.end_ms)),
     [words, clip.start_ms, clip.end_ms],
   )
+  /** "Remove pauses & filler words": in the preview column and in the Captions panel, one setting */
+  const fillersToggle = (place: string) => words.length > 0 && (
+    <label className={`shrink-0 ${place} flex items-start gap-2.5 px-3 py-2.5 rounded-xl cursor-pointer`}
+      style={{ background: 'rgb(var(--ed-fg) / 0.04)', border: '1px solid rgb(var(--ed-fg) / 0.07)' }}>
+      <input type="checkbox" checked={removeFillers} onChange={e => setRemoveFillers(e.target.checked)}
+        className="mt-0.5" style={{ accentColor: '#c8ff00' }} />
+      <span className="flex flex-col gap-0.5">
+        <span className="text-xs font-semibold text-[var(--ed-text)]">Remove pauses &amp; filler words</span>
+        <span className="text-[11px]" style={{ color: 'rgb(var(--ed-fg) / 0.5)' }}>
+          {fillerCutMs >= 500 ? `Removes about ${Math.round(fillerCutMs / 1000)} s. ` : 'Nothing much to remove in this clip. '}
+          Applied when you export; the preview plays the full clip.
+        </span>
+      </span>
+    </label>
+  )
+
   function setRemoveFillers(on: boolean) {
     setRemoveFillersState(on)
     removeFillersRef.current = on
@@ -1326,6 +1333,7 @@ export function EditorShell({
               />
             )}
 
+            {tool === 'captions' && fillersToggle('mx-4 mt-4')}
             {tool === 'captions' && (
               isFreePlan ? (
                 <div className="m-4 flex flex-col items-center gap-3 py-8 px-4 rounded-xl text-center"
@@ -1537,6 +1545,7 @@ export function EditorShell({
               currentTimeMs={currentTimeMs} activeSegmentId={activeSegment?.id ?? null}
               videoUrl={videoUrl} safeDurationMs={clipDurationMs} onSeek={seekToMs}
               onSelectSegment={id => setActiveSegmentId(id)}
+              onBrollChange={retimeBroll}
               onUpdateSegment={(id, updates) => updateSegment(id, updates)}
               onSetEdge={(id, edge, t) => setSegmentEdge(id, edge, t, clipLengthMs)}
               onMoveJunction={moveJunction}
@@ -1604,20 +1613,7 @@ export function EditorShell({
           </div>
 
           {/* Remove pauses and filler words (applied by the export) */}
-          {words.length > 0 && (
-            <label className="shrink-0 mx-4 mt-3 flex items-start gap-2.5 px-3 py-2.5 rounded-xl cursor-pointer"
-              style={{ background: 'rgb(var(--ed-fg) / 0.04)', border: '1px solid rgb(var(--ed-fg) / 0.07)' }}>
-              <input type="checkbox" checked={removeFillers} onChange={e => setRemoveFillers(e.target.checked)}
-                className="mt-0.5" style={{ accentColor: '#c8ff00' }} />
-              <span className="flex flex-col gap-0.5">
-                <span className="text-xs font-semibold text-[var(--ed-text)]">Remove pauses &amp; filler words</span>
-                <span className="text-[11px]" style={{ color: 'rgb(var(--ed-fg) / 0.5)' }}>
-                  {fillerCutMs >= 500 ? `Removes about ${Math.round(fillerCutMs / 1000)} s. ` : 'Nothing much to remove in this clip. '}
-                  Applied when you export; the preview plays the full clip.
-                </span>
-              </span>
-            </label>
-          )}
+          {fillersToggle('mx-4 mt-3')}
 
           {/* Post text: title, caption and hashtags to copy */}
           {words.length > 0 && (
