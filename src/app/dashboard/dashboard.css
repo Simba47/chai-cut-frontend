@@ -1,0 +1,436 @@
+/* ── Dashboard ─────────────────────────────────────────────────────────────────
+   Uses the shared brand theme (globals.css) and the same pieces as the landing
+   page: the breadcrumb header (Breadcrumbs), the lime fill button (.fill-btn, landing.css), gradient headings. */
+
+.dash { min-height: 100vh; background: var(--bg); color: var(--text); }
+
+/* Nav */
+.dash-nav {
+  position: sticky; top: 0; z-index: 50;
+  display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  height: 64px; padding: 0 28px;
+  background: color-mix(in srgb, var(--bg) 88%, transparent);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--border);
+}
+.dash-nav-right { display: flex; align-items: center; gap: 14px; }
+
+.dash-usage { display: flex; flex-direction: column; gap: 5px; min-width: 110px; }
+.dash-usage-label { font-size: 12px; color: var(--text-muted); white-space: nowrap; }
+.dash-usage-label strong { color: var(--text); font-weight: 700; }
+.dash-usage-bar { height: 4px; border-radius: 999px; background: var(--border-strong); overflow: hidden; }
+.dash-usage-bar > div { height: 100%; border-radius: 999px; background: var(--accent); transition: width 0.3s; }
+.dash-usage.is-warn .dash-usage-bar > div { background: var(--warning); }
+.dash-usage.is-full .dash-usage-bar > div { background: var(--danger); }
+
+/* Buttons */
+.dash-btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  font: inherit; font-size: 13px; font-weight: 700; line-height: 1;
+  padding: 11px 18px; border-radius: 999px; cursor: pointer; white-space: nowrap;
+  border: 1px solid var(--border-strong); background: transparent; color: var(--text);
+  text-decoration: none; transition: background 0.15s, border-color 0.15s, opacity 0.15s, scale 0.15s;
+}
+.dash-btn:hover:not(:disabled) { background: var(--hover); }
+.dash-btn:active:not(:disabled) { scale: .96; }
+.dash-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.dash-btn-primary { background: var(--btn-bg); border-color: var(--btn-bg); color: var(--btn-text); }
+.dash-btn-primary:hover:not(:disabled) { background: var(--btn-bg); opacity: .88; }
+.dash-btn-danger { background: var(--danger); border-color: var(--danger); color: #fff; }
+.dash-btn-danger:hover:not(:disabled) { background: var(--danger); filter: brightness(1.1); }
+.dash-btn-sm { font-size: 12px; padding: 7px 12px; }
+
+/* Lime fill button (same as "Log in" on the landing page); .fill-btn does the animation */
+.dash-btn-fill {
+  gap: 8px;
+  padding: 12px 34px;
+  font: inherit; font-size: 14px; font-weight: 700; white-space: nowrap;
+  border: 1px solid var(--border-strong); background: transparent; color: var(--text);
+}
+.dash-btn-fill.fill-btn-sm { font-size: 13px; }
+.dash-btn-fill:disabled { opacity: .6; pointer-events: none; }
+
+/* Upload button: white pill with a round icon; on hover the arrow flies out to the
+   top-right while a copy slides in from the bottom-left */
+.dash-upload-btn {
+  display: inline-flex; align-items: center; gap: 12px; flex-shrink: 0;
+  padding: 7px 22px 7px 7px; border-radius: 999px; border: 0; cursor: pointer;
+  font: inherit; font-size: 14px; font-weight: 700; line-height: 1; white-space: nowrap;
+  color: #0A0A0A; background: #F4F4F5;
+  transition: scale .15s;
+}
+.dash-upload-btn:active { scale: .96; }
+.dash-upload-btn:disabled { opacity: .7; pointer-events: none; }
+.dash-upload-icon {
+  position: relative; overflow: hidden; flex-shrink: 0;
+  width: 30px; height: 30px; border-radius: 50%;
+  display: grid; place-items: center;
+  background: #0A0A0A; color: var(--accent);
+  transition: color .3s;
+}
+.dash-upload-arrow--copy { position: absolute; transform: translate(-150%, 150%); }
+.dash-upload-btn:hover .dash-upload-arrow:first-child { transition: transform .3s ease-in-out; transform: translate(150%, -150%); }
+.dash-upload-btn:hover .dash-upload-arrow--copy { transition: transform .3s ease-in-out .1s; transform: translate(0); }
+.dash-upload-icon .dash-spinner { color: var(--accent); }
+
+.dash :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* Account menu (profile button + popover) lives in globals.css — shared with the clip board */
+
+/* Main */
+.dash-main { max-width: 1200px; margin: 0 auto; padding: 44px 28px 72px; }
+
+.dash-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 24px; }
+.dash-head h1 { margin: 0; display: flex; align-items: center; gap: 12px; }
+/* Heavy heading with the landing page's white → grey fade */
+.dash-title {
+  font-size: clamp(30px, 3.4vw, 40px); font-weight: 900; letter-spacing: -0.03em; line-height: 1.05;
+  padding-bottom: 0.08em;
+  background: linear-gradient(180deg, var(--title-top) 0%, var(--title-bottom) 100%);
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+.dash-count {
+  font-size: 13px; font-weight: 700; color: var(--text-muted);
+  padding: 4px 10px; border-radius: 999px;
+  border: 1px solid var(--border-strong); background: var(--surface);
+}
+.dash-tools { display: flex; align-items: center; gap: 10px; }
+
+.dash-search { position: relative; }
+.dash-search svg {
+  position: absolute; left: 14px; top: 50%; transform: translateY(-50%); color: var(--text-muted); pointer-events: none;
+  transition: color .25s, scale .3s cubic-bezier(.34,1.56,.64,1);
+}
+/* Search icon pops and turns white while typing */
+.dash-search:focus-within svg { color: var(--text); scale: 1.15; }
+.dash-input {
+  font: inherit; font-size: 13px; color: var(--text);
+  height: 40px; padding: 0 16px; border-radius: 999px;
+  background: var(--surface); border: 1px solid var(--border-strong);
+  outline: none;
+  transition: border-color .2s, width .35s cubic-bezier(.2,.8,.2,1), background-color .2s;
+}
+.dash-input:hover { border-color: rgba(255,255,255,0.22); }
+/* Active state: no coloured ring, just a slightly brighter neutral outline */
+.dash-input:focus, .dash-input:focus-visible {
+  border-color: rgba(255,255,255,0.3);
+  outline: none;
+}
+.dash-input { width: 240px; padding-left: 38px; }
+/* Widens smoothly while typing (and stays wide while there's a search) */
+.dash-input:focus, .dash-input:not(:placeholder-shown) { width: 300px; background: var(--surface-2); }
+.dash-input::placeholder { color: var(--text-muted); }
+/* Sort dropdown (SortMenu) — pill button + rounded menu instead of the native select */
+.dash-sort { position: relative; }
+.dash-sort-btn {
+  display: inline-flex; align-items: center; gap: 10px;
+  height: 40px; padding: 0 16px 0 18px; border-radius: 999px; cursor: pointer;
+  font: inherit; font-size: 13px; font-weight: 600; color: var(--text);
+  background: var(--surface); border: 1px solid var(--border-strong);
+  outline: none;
+  position: relative; overflow: hidden;
+  transition: border-color .2s, translate .2s, scale .15s;
+}
+/* A soft light sweeps across on hover */
+.dash-sort-btn::after {
+  content: ''; position: absolute; inset: 0; pointer-events: none;
+  background: linear-gradient(110deg, transparent 30%, rgba(255,255,255,0.12) 50%, transparent 70%);
+  translate: -110% 0;
+}
+.dash-sort-btn:hover::after { translate: 110% 0; transition: translate .7s ease; }
+.dash-sort-btn:hover { translate: 0 -1px; }
+.dash-sort-btn:active { scale: .96; }
+.dash-sort-btn svg { color: var(--text-muted); transition: rotate 0.2s, color .2s; }
+.dash-sort-btn:hover svg { color: var(--text); }
+/* the ▾ gives a little bounce on hover (only while closed) */
+.dash-sort-btn[aria-expanded="false"]:hover svg { animation: dash-chevron-bob .6s ease; }
+@keyframes dash-chevron-bob { 0%, 100% { transform: translateY(0); } 40% { transform: translateY(3px); } 70% { transform: translateY(-1px); } }
+.dash-sort-btn[aria-expanded="true"] svg { rotate: 180deg; }
+.dash-sort-btn:hover { border-color: color-mix(in srgb, var(--text) 30%, transparent); }
+.dash-sort-btn[aria-expanded="true"], .dash-sort-btn:focus-visible {
+  border-color: rgba(255,255,255,0.3);
+  outline: none;
+}
+.dash-sort-list {
+  min-width: 160px; margin: 0; list-style: none;
+  animation: dash-pop .16s cubic-bezier(.2,.8,.2,1);
+}
+.dash-sort-list .dash-menu-item { justify-content: space-between; font-weight: 500; }
+.dash-sort-list .dash-menu-item.is-active { background: var(--hover); }
+.dash-sort-list .dash-menu-item[aria-selected="true"] { font-weight: 700; }
+.dash-sort-check { color: var(--accent); }
+@keyframes dash-pop { from { opacity: 0; transform: translateY(-4px) scale(.98); } to { opacity: 1; transform: none; } }
+
+/* Upload strip */
+.dash-drop {
+  position: relative;
+  display: flex; align-items: center; gap: 18px;
+  padding: 18px 22px; margin-bottom: 32px; border-radius: 22px;
+  border: 1.5px dashed var(--border-strong); background: var(--surface);
+  transition: border-color 0.2s, background 0.2s;
+}
+.dash-drop.is-over {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 6%, var(--surface));
+}
+.dash-drop-icon {
+  width: 44px; height: 44px; border-radius: 14px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--accent);
+}
+.dash-drop-text { flex: 1; min-width: 0; }
+.dash-drop-text p { margin: 0; font-size: 13px; color: var(--text-muted); }
+.dash-drop-text p:first-child { font-size: 15px; font-weight: 700; color: var(--text); margin-bottom: 3px; }
+.dash-drop-text a { color: var(--accent); }
+.dash-progress { height: 6px; border-radius: 999px; background: var(--border-strong); overflow: hidden; margin-top: 10px; max-width: 360px; }
+.dash-progress > div { height: 100%; border-radius: 999px; background: var(--accent); transition: width 0.3s; }
+
+/* First-run: no videos yet — give the drop zone the stage, with a soft lime glow */
+.dash-drop.is-empty {
+  flex-direction: column; text-align: center; padding: 80px 24px; gap: 16px; margin-top: 12px;
+  background:
+    radial-gradient(ellipse 60% 70% at 50% 0%, color-mix(in srgb, var(--accent) 9%, transparent), transparent 70%),
+    var(--surface);
+}
+.dash-drop.is-empty .dash-drop-icon { width: 64px; height: 64px; border-radius: 20px; }
+.dash-drop.is-empty .dash-drop-text p:first-child {
+  font-size: clamp(24px, 3vw, 32px); font-weight: 900; letter-spacing: -0.03em; margin-bottom: 8px;
+}
+.dash-drop.is-empty .dash-progress { margin: 10px auto 0; }
+
+/* Upload interrupted: the reason, and Cancel / Retry */
+.dash-drop-text p.dash-drop-error { color: var(--danger); }
+.dash-drop-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.dash-upload-btn--plain { padding: 0 22px; height: 44px; }
+/* Quiet pill button (Cancel, Import) */
+.dash-link-btn {
+  flex-shrink: 0; height: 40px; padding: 0 18px; border-radius: 999px; cursor: pointer;
+  font: inherit; font-size: 13px; font-weight: 600; color: var(--text);
+  background: var(--surface); border: 1px solid var(--border-strong);
+  transition: border-color .2s, scale .15s;
+}
+.dash-link-btn:hover { border-color: rgba(255,255,255,0.3); }
+.dash-link-btn:active { scale: .96; }
+.dash-link-btn:disabled { opacity: .5; pointer-events: none; }
+
+/* Import from a Google Drive / Dropbox link, under the upload strip */
+.dash-import {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin: -18px 0 32px; padding: 0 4px;
+}
+.dash-import label { font-size: 13px; font-weight: 600; color: var(--text-muted); white-space: nowrap; }
+.dash-import-input {
+  flex: 1; min-width: 220px;
+  font: inherit; font-size: 13px; color: var(--text);
+  height: 40px; padding: 0 16px; border-radius: 999px;
+  background: var(--surface); border: 1px solid var(--border-strong); outline: none;
+  transition: border-color .2s, background-color .2s;
+}
+.dash-import-input:hover { border-color: rgba(255,255,255,0.22); }
+.dash-import-input:focus { border-color: rgba(255,255,255,0.3); background: var(--surface-2); }
+.dash-import-input::placeholder { color: var(--text-muted); }
+.dash-import-hint { flex-basis: 100%; font-size: 12px; color: var(--text-muted); }
+@media (max-width: 560px) { .dash-import label { flex-basis: 100%; } }
+
+.dash-error { margin: -18px 0 26px; font-size: 13px; color: var(--danger); }
+.dash-note { padding: 48px 0; text-align: center; font-size: 14px; color: var(--text-muted); }
+
+/* Grid */
+.dash-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 24px; }
+@media (max-width: 900px) { .dash-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px 16px; } }
+@media (max-width: 560px) { .dash-grid { grid-template-columns: 1fr; } }
+
+/* Each video is its own card: thumbnail inset at the top, title + "Make clips" below,
+   all inside one rounded panel so the button clearly belongs to its video */
+.vcard {
+  --card-pad: 8px;
+  position: relative;
+  display: flex; flex-direction: column;
+  padding: var(--card-pad);
+  border-radius: 22px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  transition: border-color 0.25s, transform 0.25s cubic-bezier(.2,.8,.2,1), box-shadow 0.25s;
+}
+.vcard.is-ready:hover {
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  transform: translateY(-4px);
+  box-shadow: 0 22px 50px -22px color-mix(in srgb, var(--accent) 35%, transparent);
+}
+.vcard-thumb {
+  position: relative; aspect-ratio: 16 / 9; overflow: hidden; border-radius: 15px;
+  background: var(--media-bg);
+}
+.vcard-thumb video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; pointer-events: none; transition: opacity 0.3s; }
+.vcard-placeholder { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--text-dim); }
+
+/* Small frosted pills on the thumbnail (date, clips, duration) */
+.vcard-chip {
+  position: absolute; z-index: 1;
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 11px; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1;
+  padding: 5px 9px; border-radius: 999px;
+  background: rgba(10,10,10,0.62); color: #F4F4F5;
+  border: 1px solid rgba(255,255,255,0.1);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  pointer-events: none;
+}
+.vcard-date     { left: 10px; top: 10px; }
+.vcard-clips    { left: 10px; bottom: 10px; }
+.vcard-clips svg { color: var(--accent); }
+.vcard-duration { right: 10px; bottom: 10px; }
+.vcard-overlay {
+  position: absolute; inset: 0; padding: 0 24px;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px;
+  background: rgba(0,0,0,0.6); color: #fff; font-size: 12px; font-weight: 700; text-align: center;
+}
+.vcard-overlay .dash-progress { width: 100%; margin: 0; background: rgba(255,255,255,0.15); }
+.vcard-overlay.is-failed { color: #fca5a5; }
+
+/* Rename / Delete: frosted-glass pill that pops out of the top-right corner on hover
+   (springy overshoot), then the two icons pop in one after the other.
+   Always shown on touch screens. */
+.vcard-actions {
+  position: absolute; top: calc(var(--card-pad) + 10px); right: calc(var(--card-pad) + 10px); z-index: 2;
+  display: flex; gap: 2px; padding: 3px;
+  border-radius: 999px;
+  background: rgba(10,10,10,0.55);
+  border: 1px solid rgba(255,255,255,0.14);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  transform-origin: top right;
+  opacity: 0; scale: .5;
+  transition: opacity .15s ease, scale .18s ease, translate .25s cubic-bezier(.2,.8,.2,1);   /* quick exit */
+}
+.vcard:hover .vcard-actions, .vcard-actions:focus-within {
+  opacity: 1; scale: 1;
+  transition: opacity .2s ease, scale .45s cubic-bezier(.34,1.56,.64,1), translate .25s cubic-bezier(.2,.8,.2,1);
+}
+.vcard-action {
+  width: 32px; height: 32px; border-radius: 50%; cursor: pointer;
+  display: grid; place-items: center;
+  border: 0; background: transparent; color: #F4F4F5;
+  opacity: 0; scale: .3;
+  transition: background 0.15s, color 0.15s, opacity .12s ease, scale .15s ease;
+}
+.vcard:hover .vcard-action, .vcard-actions:focus-within .vcard-action {
+  opacity: 1; scale: 1;
+  transition: background 0.15s, color 0.15s, opacity .2s ease .08s, scale .4s cubic-bezier(.34,1.8,.64,1) .08s;
+}
+.vcard:hover .vcard-action + .vcard-action,
+.vcard-actions:focus-within .vcard-action + .vcard-action { transition-delay: 0s, 0s, .15s, .15s; }
+.vcard-action:hover { background: var(--accent); color: #0A0A0A; }
+.vcard-action.is-danger:hover { background: var(--danger); color: #fff; }
+.vcard-action:active { scale: .88 !important; }
+.vcard-action:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+@media (hover: none) {
+  .vcard-actions, .vcard-action { opacity: 1; scale: 1; }
+}
+
+/* Select mode: the card is one big checkbox with a round tick in the top-left corner */
+.vcard.is-selecting { cursor: pointer; user-select: none; }
+.vcard.is-selecting:hover { border-color: color-mix(in srgb, var(--accent) 40%, transparent); }
+.vcard.is-selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent), 0 18px 44px -24px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+.vcard.is-selecting:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.vcard-check {
+  position: absolute; z-index: 3;
+  top: calc(var(--card-pad) + 10px); left: calc(var(--card-pad) + 10px);
+  width: 26px; height: 26px; border-radius: 50%;
+  display: grid; place-items: center;
+  border: 2px solid rgba(255,255,255,0.85); background: rgba(10,10,10,0.45); color: #0A0A0A;
+  backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+  transition: background .15s, border-color .15s, scale .2s cubic-bezier(.34,1.56,.64,1);
+}
+.vcard.is-selected .vcard-check { background: var(--accent); border-color: var(--accent); scale: 1.08; }
+
+/* Floating bar while selecting: count · select all · cancel · delete */
+.dash-main.has-selectbar { padding-bottom: 120px; }
+.dash-selectbar {
+  position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); z-index: 60;
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: center;
+  max-width: calc(100vw - 32px);
+  padding: 8px 8px 8px 20px; border-radius: 999px;
+  background: var(--surface-2); border: 1px solid var(--border-strong);
+  box-shadow: 0 24px 60px -20px rgba(0,0,0,0.75);
+  animation: dash-pop .18s cubic-bezier(.2,.8,.2,1);
+}
+.dash-selectbar-count { font-size: 13px; font-weight: 700; color: var(--text); margin-right: 6px; white-space: nowrap; }
+.dash-selectbar .dash-btn { border-radius: 999px; height: 40px; padding: 0 18px; }
+.dash-select-toggle.is-on { border-color: var(--accent); color: var(--accent); }
+
+.vcard-info { display: flex; align-items: center; gap: 12px; padding: 12px 6px 4px 8px; min-height: 56px; }
+.vcard-text { flex: 1; min-width: 0; }
+/* "Make clips" — the lime fill button (.fill-btn) is the way into the clip picker */
+.vcard-open {
+  flex-shrink: 0;
+  font-size: 12px; font-weight: 700; white-space: nowrap;
+  border: 1px solid var(--border-strong); background: transparent; color: var(--text);
+}
+:root .vcard-open.fill-btn-sm { padding: 8px 24px; }
+.vcard-title {
+  margin: 0 0 4px; font-size: 15px; font-weight: 700; color: var(--text); letter-spacing: -0.01em;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.vcard-rename {
+  width: 100%; font: inherit; font-size: 15px; font-weight: 700; color: var(--text);
+  padding: 3px 8px; margin: -4px 0 0 -9px; border-radius: 8px;
+  background: var(--bg); border: 1px solid var(--accent); outline: none;
+}
+
+/* Page-wide drop overlay */
+.dash-drop-overlay {
+  position: fixed; inset: 0; z-index: 70; pointer-events: none;
+  display: flex; align-items: center; justify-content: center;
+  background: color-mix(in srgb, var(--bg) 70%, transparent);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  border: 3px dashed var(--accent); border-radius: 24px; margin: 12px;
+  font-size: 22px; font-weight: 900; letter-spacing: -0.02em; color: var(--text);
+}
+
+/* Confirm dialog */
+.dash-modal-backdrop {
+  position: fixed; inset: 0; z-index: 80; padding: 16px;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(0,0,0,0.65);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+}
+.dash-modal {
+  width: 100%; max-width: 420px; padding: 24px; border-radius: 22px;
+  background: var(--surface); border: 1px solid var(--border-strong);
+  box-shadow: 0 40px 100px -30px rgba(0,0,0,0.8);
+}
+.dash-modal h2 { margin: 0 0 10px; font-size: 20px; font-weight: 900; letter-spacing: -0.02em; color: var(--text); }
+.dash-modal p { margin: 0 0 22px; font-size: 14px; line-height: 1.55; color: var(--text-muted); }
+.dash-modal-actions { display: flex; justify-content: flex-end; gap: 10px; }
+
+.dash-spinner {
+  width: 12px; height: 12px; border-radius: 50%;
+  border: 2px solid currentColor; border-top-color: transparent;
+  animation: dash-spin 0.7s linear infinite;
+}
+@keyframes dash-spin { to { transform: rotate(360deg); } }
+
+@media (max-width: 720px) {
+  .dash-nav { padding: 0 16px; }
+  .dash-usage { display: none; }
+  .dash-main { padding: 28px 16px 48px; }
+  .dash-tools { width: 100%; }
+  .dash-search { flex: 1; }
+  .dash-input, .dash-input:focus, .dash-input:not(:placeholder-shown) { width: 100%; }
+  .dash-drop:not(.is-empty) { flex-wrap: wrap; }
+  .dash-drop:not(.is-empty) .dash-upload-btn { width: 100%; justify-content: center; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dash-input, .dash-search svg, .dash-sort-btn { transition: none; }
+  .dash-sort-btn[aria-expanded="false"]:hover svg { animation: none; }
+  .vcard, .vcard-actions, .vcard-action { transition-duration: .01ms !important; transition-delay: 0s !important; }
+  .vcard.is-ready:hover { transform: none; }
+}

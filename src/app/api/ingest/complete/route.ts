@@ -9,8 +9,9 @@ export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => null)
   if (!body?.storage_path) return NextResponse.json({ error: 'storage_path required' }, { status: 400 })
   const durationMs = typeof body.duration_ms === 'number' ? Math.round(body.duration_ms) : undefined
+  const title = typeof body.title === 'string' ? body.title : undefined
   try {
-    return NextResponse.json(await completeUpload(user.id, body.storage_path, durationMs))
+    return NextResponse.json(await completeUpload(user.id, body.storage_path, durationMs, title))
   } catch (err) {
     return apiError(err)
   }

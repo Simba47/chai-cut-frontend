@@ -2,6 +2,9 @@ import type { NextConfig } from 'next'
 
 const nextConfig: NextConfig = {
   devIndicators: false,
+  // Let phones/laptops on the same Wi-Fi open the dev server (http://192.168.x.x:3000).
+  // Next blocks dev scripts for non-localhost origins otherwise, so nothing is interactive.
+  allowedDevOrigins: ['192.168.*.*', '10.*.*.*'],
 experimental: {
     serverActions: {
       bodySizeLimit: '2gb',

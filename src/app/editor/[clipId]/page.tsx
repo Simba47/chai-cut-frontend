@@ -29,7 +29,7 @@ export default async function EditorPage({
   if (!user) redirect('/login')
 
   const [clip] = await sql`
-    SELECT c.*, v.storage_path, v.status AS video_status, v.user_id
+    SELECT c.*, v.storage_path, v.status AS video_status, v.user_id, v.title AS video_title
     FROM clips c JOIN videos v ON v.id = c.video_id
     WHERE c.id = ${clipId}
   `
@@ -66,6 +66,8 @@ export default async function EditorPage({
           jsonb_build_object(
             'id', cb.id, 'segment_id', cb.segment_id, 'slot_index', cb.slot_index,
             'source_video_id', cb.source_video_id, 'source_offset_ms', cb.source_offset_ms,
+            'image_path', cb.image_path, 'image_motion', cb.image_motion,
+            'volume', cb.volume, 'muted', cb.muted,
             'box_keyframes', COALESCE(
               (SELECT json_agg(bk.* ORDER BY bk.t_ms) FROM box_keyframes bk WHERE bk.box_id = cb.id),
               '[]'
@@ -88,6 +90,9 @@ export default async function EditorPage({
   ])
 
   const words: TranscriptWord[] = wordsRaw as unknown as TranscriptWord[]
+  const [pendingJob] = await sql`
+    SELECT 1 FROM jobs WHERE type = 'transcribe' AND payload->>'video_id' = ${clip.video_id}
+      AND status IN ('queued', 'processing') LIMIT 1`
   const captionStyles = captionStylesRaw as unknown as CaptionStyle[]
   const textOverlays = textOverlaysRaw as unknown as TextOverlay[]
   const audioTracks = audioTracksRaw as unknown as AudioTrack[]
@@ -126,6 +131,20 @@ export default async function EditorPage({
     }
   }
 
+  // Frame photos (lane items, and slots saved before lanes existed): sign them so the preview can draw them
+  const sign = (key: string) => getSignedUrl(r2, new GetObjectCommand({ Bucket: R2_BUCKET, Key: key }), { expiresIn: 43200 }).catch(() => undefined)
+  // Download link of the last export: a fresh one on every load. The link stored with the clip
+  // expires after 7 days; the file path doesn't.
+  const outputUrl = clip.status === 'done' && clip.output_storage_path ? (await sign(clip.output_storage_path)) ?? null : null
+  await Promise.all(segments.flatMap(seg => [
+    ...(seg.crop_boxes ?? []).map(async (box: { image_path?: string | null; image_url?: string }) => {
+      if (box.image_path) box.image_url = await sign(box.image_path)
+    }),
+    ...((seg.frame as { items?: { image_path?: string | null; image_url?: string | null }[] } | null)?.items ?? []).map(async it => {
+      if (it.image_path) it.image_url = (await sign(it.image_path)) ?? null
+    }),
+  ]))
+
   // Sign overlay image URLs (fast local operation, run in parallel)
   const overlays: Overlay[] = await Promise.all((overlaysRaw as unknown as Overlay[]).map(async ov => {
     if (ov.type === 'image' && ov.storage_path) {
@@ -138,7 +157,7 @@ export default async function EditorPage({
   }))
 
   const shellProps = {
-    clip: clip as Parameters<typeof EditorShell>[0]['clip'],
+    clip: { ...clip, output_url: outputUrl, captions_pending: !!pendingJob } as unknown as Parameters<typeof EditorShell>[0]['clip'],
     videoUrl: signedUrl,
     words,
     initialSegments: segments ?? [],

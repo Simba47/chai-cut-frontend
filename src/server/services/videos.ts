@@ -1,12 +1,29 @@
 import { DeleteObjectCommand, DeleteObjectsCommand } from '@aws-sdk/client-s3'
+import { GoogleGenerativeAI } from '@google/generative-ai'
 import { r2, R2_BUCKET } from '@/lib/r2'
 import sql from '@/lib/db'
 
 export async function listVideos(userId: string) {
   return sql`
-    SELECT id, status, download_progress, duration_ms, created_at, storage_path, source_url, source_type
+    SELECT id, title, status, download_progress, duration_ms, created_at, storage_path, source_url, source_type,
+      -- Why processing failed (e.g. a link that isn't shared publicly). Read through to_jsonb so
+      -- this works before the worker has added the column.
+      to_jsonb(videos)->>'error' AS error,
+      (SELECT COUNT(*)::int FROM clips c WHERE c.video_id = videos.id) AS clip_count
     FROM videos WHERE user_id = ${userId} ORDER BY created_at DESC
   `
+}
+
+export async function renameVideo(userId: string, videoId: string, title: string) {
+  const trimmed = title.trim().slice(0, 120)
+  if (!trimmed) throw Object.assign(new Error('Title cannot be empty'), { status: 400 })
+  const [video] = await sql`
+    UPDATE videos SET title = ${trimmed}
+    WHERE id = ${videoId} AND user_id = ${userId}
+    RETURNING id, title
+  `
+  if (!video) throw Object.assign(new Error('Not found'), { status: 404 })
+  return { video }
 }
 
 export async function getVideo(userId: string, videoId: string) {
@@ -20,37 +37,61 @@ export async function getVideo(userId: string, videoId: string) {
   return { video }
 }
 
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+/** Most items one bulk delete may remove */
+export const MAX_BULK_DELETE = 100
+
+/** Distinct, well-formed ids from a request body (a malformed id would make Postgres error) */
+export function cleanIds(ids: unknown): string[] {
+  if (!Array.isArray(ids)) return []
+  return [...new Set(ids.filter((id): id is string => typeof id === 'string' && UUID.test(id)))]
+}
+
+/** Remove files from R2, 1,000 keys per request (the S3 limit). Best effort: rows are what matter. */
+export async function deleteR2Keys(keys: string[]) {
+  for (let i = 0; i < keys.length; i += 1000) {
+    await r2.send(new DeleteObjectsCommand({
+      Bucket: R2_BUCKET,
+      Delete: { Objects: keys.slice(i, i + 1000).map(Key => ({ Key })), Quiet: true },
+    })).catch(() => {})
+  }
+}
+
 export async function deleteVideo(userId: string, videoId: string) {
-  const [video] = await sql`
-    SELECT id, user_id, storage_path FROM videos WHERE id = ${videoId}
-  `
-  if (!video) throw Object.assign(new Error('Not found'), { status: 404 })
-  if (video.user_id !== userId) throw Object.assign(new Error('Forbidden'), { status: 403 })
+  return deleteVideos(userId, [videoId])
+}
 
-  // Collect all R2 keys to delete
+/**
+ * Delete several of the user's videos at once, with their clips and every stored file (the
+ * upload, its cached audio and each clip's export). All or nothing: if any id isn't one of the
+ * user's videos, nothing is deleted.
+ */
+export async function deleteVideos(userId: string, videoIds: string[]) {
+  const ids = cleanIds(videoIds)
+  if (ids.length === 0) throw Object.assign(new Error('No videos selected'), { status: 400 })
+  if (ids.length > MAX_BULK_DELETE) throw Object.assign(new Error(`You can delete up to ${MAX_BULK_DELETE} videos at a time`), { status: 400 })
+
+  const videos = await sql`SELECT id, storage_path FROM videos WHERE id = ANY(${ids}) AND user_id = ${userId}`
+  if (videos.length !== ids.length) throw Object.assign(new Error('Not found'), { status: 404 })
+
   const keysToDelete: string[] = []
-
-  if (video.storage_path) {
+  for (const video of videos) {
+    if (!video.storage_path) continue
     keysToDelete.push(video.storage_path)
     // FLAC audio cache created during transcription
     keysToDelete.push(video.storage_path.replace(/\.[^.]+$/, '_audio.flac'))
   }
-
-  // Rendered output for every clip of this video
+  // Rendered output for every clip of these videos
   const clipOutputs = await sql`
     SELECT output_storage_path FROM clips
-    WHERE video_id = ${videoId} AND output_storage_path IS NOT NULL
+    WHERE video_id = ANY(${ids}) AND output_storage_path IS NOT NULL
   `
   for (const row of clipOutputs) keysToDelete.push(row.output_storage_path as string)
 
-  if (keysToDelete.length > 0) {
-    await r2.send(new DeleteObjectsCommand({
-      Bucket: R2_BUCKET,
-      Delete: { Objects: keysToDelete.map(Key => ({ Key })), Quiet: true },
-    })).catch(() => {})
-  }
-
-  await sql`DELETE FROM videos WHERE id = ${videoId}`
+  await deleteR2Keys(keysToDelete)
+  // Clips, formats, captions, overlays… go with their video (foreign keys cascade)
+  await sql`DELETE FROM videos WHERE id = ANY(${ids}) AND user_id = ${userId}`
+  return { deleted: ids.length }
 }
 
 interface ClipSuggestion { id: string; title: string; start_ms: number; end_ms: number; summary: string }
@@ -86,6 +127,43 @@ export async function getVideoSuggestions(userId: string, videoId: string): Prom
   }
 }
 
+// Criteria-steered clip detection ("find me the funniest moments", "controversial takes", etc.) —
+// same transcript source as getVideoSuggestions, but the caller picks what to look for.
+export async function getVideoSuggestionsByCriteria(
+  userId: string, videoId: string, criteria: string,
+): Promise<{ suggestions: ClipSuggestion[] }> {
+  const trimmedCriteria = criteria.trim().slice(0, 200)
+  if (!trimmedCriteria) throw Object.assign(new Error('Tell the AI what to look for'), { status: 400 })
+
+  const [video] = await sql`
+    SELECT id, user_id, duration_ms, status FROM videos WHERE id = ${videoId}
+  `
+  if (!video || video.user_id !== userId) {
+    throw Object.assign(new Error('Not found'), { status: 404 })
+  }
+
+  const [transcriptRow] = await sql`
+    SELECT id FROM transcripts WHERE video_id = ${videoId} ORDER BY created_at DESC LIMIT 1
+  `
+  const words: Word[] = transcriptRow
+    ? await sql`SELECT word, start_ms, end_ms FROM transcript_words WHERE transcript_id = ${transcriptRow.id} ORDER BY start_ms`
+    : []
+
+  const durationMs = video.duration_ms ?? 0
+  if (words.length === 0) {
+    throw Object.assign(new Error('This video has no transcript yet'), { status: 400 })
+  }
+
+  const geminiKey = process.env.GEMINI_API_KEY
+  if (!geminiKey) throw Object.assign(new Error('AI clip detection is not configured'), { status: 500 })
+
+  return {
+    suggestions: await detectClipsByCriteria(
+      buildTranscriptText(words), durationMs, trimmedCriteria, geminiKey,
+    ),
+  }
+}
+
 function msToTimestamp(ms: number) {
   const s = Math.floor(ms / 1000)
   return `${Math.floor(s / 60)}:${(s % 60).toString().padStart(2, '0')}`
@@ -93,16 +171,17 @@ function msToTimestamp(ms: number) {
 
 function buildTranscriptText(words: Word[]) {
   const lines: string[] = []
-  let lineStart = 0, line: string[] = []
+  let lineStart = 0, lineEnd = 0, line: string[] = []
   for (const w of words) {
-    if (line.length > 0 && w.start_ms - lineStart > 2000) {
-      lines.push(`[${msToTimestamp(lineStart)}] ${line.join(' ')}`)
+    if (line.length > 0 && w.start_ms - lineEnd > 2000) {
+      lines.push(`[${msToTimestamp(lineStart)}–${msToTimestamp(lineEnd)}] ${line.join(' ')}`)
       line = []
     }
     if (line.length === 0) lineStart = w.start_ms
     line.push(w.word)
+    lineEnd = w.end_ms
   }
-  if (line.length > 0) lines.push(`[${msToTimestamp(lineStart)}] ${line.join(' ')}`)
+  if (line.length > 0) lines.push(`[${msToTimestamp(lineStart)}–${msToTimestamp(lineEnd)}] ${line.join(' ')}`)
   return lines.join('\n')
 }
 
@@ -129,6 +208,49 @@ async function detectClipsWithClaude(transcript: string, durationMs: number, api
     end_ms: Math.min(durationMs, Math.round(s.end_ms)),
     summary: s.summary ?? '',
   }))
+}
+
+async function detectClipsByCriteria(
+  transcript: string, durationMs: number, criteria: string, apiKey: string,
+): Promise<ClipSuggestion[]> {
+  const genAI = new GoogleGenerativeAI(apiKey)
+  const model = genAI.getGenerativeModel({ model: 'gemini-3.1-pro-preview' })
+  const prompt = `You are a strict, skeptical video clip finder. Given a video transcript with timestamps and a request describing what to look for, find moments (30–90 seconds each) that genuinely match.
+
+Be conservative. Most videos do NOT contain what any given request is looking for — that is the normal case, not an edge case. Only include a moment if a viewer watching just that clip, with no explanation from you, would immediately agree it matches. Do not stretch, do not include a moment just because it is loosely related or you can construct a justification for it — if you find yourself explaining why something "counts", it doesn't.
+
+If nothing in the transcript is a genuine, confident match, you MUST return an empty JSON array: []. Returning [] is the correct and expected answer for most (request, video) combinations — never force a result to avoid returning nothing.
+
+What to look for: ${criteria}
+
+Video duration: ${msToTimestamp(durationMs)}
+
+Transcript (each line is tagged [start–end] with when that line of speech actually begins and ends):
+${transcript.slice(0, 8000)}
+
+Choosing end_ms is the part you must get generously right, not minimally right. Do not stop at the line that merely contains the key moment — deliberately continue past it and include the NEXT 2-3 full lines of transcript after it as trailing context (the reaction, the response, the rest of the thought), then set end_ms to the end of that later line. A clip that runs a few seconds longer than strictly necessary is fine; a clip that cuts off before the payoff, reaction, or the speaker finishing their sentence is a failure. When genuinely unsure exactly where something ends, always round end_ms UP to a later line, never down to an earlier one.
+
+Return ONLY a JSON array, no other text. Each element: {"title":"catchy 3-7 word title","start_ms":number,"end_ms":number,"summary":"one sentence on why this moment matches the request"}`
+
+  const result = await model.generateContent(prompt)
+  const text = result.response.text()
+  const match = text.match(/\[[\s\S]*\]/)
+  if (!match) throw new Error(`Gemini did not return a JSON array: ${text.slice(0, 300)}`)
+  const parsed = JSON.parse(match[0]) as Array<{ title: string; start_ms: number; end_ms: number; summary: string }>
+  const MIN_CLIP_MS = 20_000
+  return parsed
+    .map((s, i) => {
+      const start_ms = Math.max(0, Math.round(s.start_ms))
+      // Trailing buffer — Gemini persistently ends right at the punchline/reaction
+      // instead of past it, even when told to include trailing context. A cut-off
+      // ending is a much worse failure than a clip running a bit long, so pad hard.
+      let end_ms = Math.min(durationMs, Math.round(s.end_ms) + 5000)
+      // Gemini sometimes ignores the requested 30–90s length — pad short moments
+      // out instead of discarding them outright (same fix ai_edit.ts needed).
+      if (end_ms - start_ms < MIN_CLIP_MS) end_ms = Math.min(durationMs, start_ms + MIN_CLIP_MS)
+      return { id: `ai-criteria-${i}`, title: s.title, start_ms, end_ms, summary: s.summary ?? '' }
+    })
+    .filter(s => s.end_ms - s.start_ms >= 10_000) // still too short (e.g. right at the end of the video) — drop it
 }
 
 function makeWordChunks(words: Word[], durationMs: number): ClipSuggestion[] {

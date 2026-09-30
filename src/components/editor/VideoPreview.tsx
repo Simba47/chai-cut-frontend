@@ -1,13 +1,20 @@
 'use client'
 
-import { useRef, useEffect, useCallback, useState, useMemo } from 'react'
+import { useRef, useEffect, useCallback, useState, useMemo, useId } from 'react'
 import type { RefObject } from 'react'
-import type { SegmentLocal, Overlay, TextOverlay as TextOverlayType, CaptionStyle, TranscriptWord } from '@chai-cut/shared'
+import type { SegmentLocal, Overlay, TextOverlay as TextOverlayType, CaptionStyle, TranscriptWord, FrameItem, FrameLane, CornerStyle } from '@chai-cut/shared'
 import type { BoxPosition } from '@/lib/interpolation'
 import type { TextCase } from './CaptionStyler'
 import { applyCase } from './CaptionStyler'
+import { normalizedSlotAspect, fitToAspect } from '@/modules/editor/utils'
+import { isFrameLayout, frameSlotLabels, frameLanesFor, frameBandShown, frameOf, itemAt, captionBandAt, cornerGeometry } from '@/modules/editor/frames'
+import type { FrameMediaPool } from '@/modules/editor/frameMedia'
 
-const BOX_COLORS = ['#22c55e', '#3b82f6', '#f59e0b', '#a855f7']
+const BOX_COLORS = ['#22c55e', '#3b82f6', '#f59e0b']
+// What each slot becomes in the 9:16 output, top to bottom
+const SLOT_LABELS: Record<string, string[]> = {
+  vertical: ['9:16'], split: ['Top', 'Bottom'], trio: ['Top', 'Middle', 'Bottom'], horizontal: ['Full frame'],
+}
 
 const HANDLES: { cursor: string; pos: React.CSSProperties; dir: string }[] = [
   { cursor: 'nw-resize', pos: { top: -5, left: -5 },                                       dir: 'nw' },
@@ -38,6 +45,7 @@ export function VideoPreview({
   getPositionAt, activeBoxId, onSelectBox, onBoxChange,
 }: VideoPreviewProps) {
   const [videoAR, setVideoAR] = useState<number | null>(null)
+  const maskId = `crop-mask-${useId().replace(/:/g, '')}`
 
   const isHorizontal = activeSegment?.layout === 'horizontal'
 
@@ -68,29 +76,46 @@ export function VideoPreview({
           }}
         />
 
-        {/* Crop box overlay */}
-        {activeSegment && (
-          <div className="absolute inset-0" style={{ pointerEvents: 'none', zIndex: 10 }}>
-            {activeSegment.crop_boxes.slice(0,
-              activeSegment.layout === 'trio' ? 3 :
-              activeSegment.layout === 'split' ? 2 : 1
-            ).map((box, slotIdx) => {
-              const pos = getPositionAt(box.id, currentTimeMs)
-              return (
+        {/* Crop boxes — each is locked to the shape of its slot in the output, so what's
+            inside the box is exactly what gets exported */}
+        {activeSegment && (() => {
+          const layout = activeSegment.layout
+          const aspect = normalizedSlotAspect(layout, videoAR ?? undefined, frameBandShown(activeSegment))
+          const frame = isFrameLayout(layout)
+          const count = frame ? activeSegment.crop_boxes.length : layout === 'trio' ? 3 : layout === 'split' ? 2 : 1
+          const labels = frame ? frameSlotLabels(layout) : SLOT_LABELS[layout]
+          const mainSlots = frame ? frameOf(activeSegment).main_slots ?? [0] : null
+          const boxes = activeSegment.crop_boxes.slice(0, count)
+            // In a frame only the slots showing the main video are framed on it
+            .filter(box => !mainSlots || mainSlots.includes(box.slot_index))
+            .map(box => ({ box, label: labels?.[box.slot_index] ?? String(box.slot_index + 1), pos: fitToAspect(getPositionAt(box.id, currentTimeMs), aspect) }))
+          return (
+            <div className="absolute inset-0" style={{ pointerEvents: 'none', zIndex: 10 }}>
+              {/* One shared dim layer with a hole per box, so boxes never darken each other */}
+              <svg className="absolute inset-0" width="100%" height="100%" viewBox="0 0 1 1" preserveAspectRatio="none" aria-hidden="true">
+                <defs>
+                  <mask id={maskId}>
+                    <rect x="0" y="0" width="1" height="1" fill="white" />
+                    {boxes.map(({ box, pos }) => <rect key={box.id} x={pos.x} y={pos.y} width={pos.w} height={pos.h} fill="black" />)}
+                  </mask>
+                </defs>
+                <rect x="0" y="0" width="1" height="1" fill="rgba(0,0,0,0.55)" mask={`url(#${maskId})`} />
+              </svg>
+              {boxes.map(({ box, pos, label }, slotIdx) => (
                 <DraggableBox
                   key={box.id}
                   pos={pos}
+                  aspect={aspect}
                   color={BOX_COLORS[slotIdx % BOX_COLORS.length]}
-                  isActive={box.id === activeBoxId}
-                  layout={activeSegment.layout}
-                  label={activeSegment.crop_boxes.length > 1 ? String(slotIdx + 1) : undefined}
+                  isActive={box.id === activeBoxId || boxes.length === 1}
+                  label={label}
                   onSelect={() => onSelectBox(activeSegment.id, box.id)}
                   onChange={newPos => onBoxChange(box.id, newPos)}
                 />
-              )
-            })}
-          </div>
-        )}
+              ))}
+            </div>
+          )
+        })()}
       </div>
     </div>
   )
@@ -125,13 +150,243 @@ function easeInOut(t: number) {
   return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2
 }
 
+/** Cover-fit any image/video source into a rect, with an optional zoom and horizontal pan */
+function coverSource(
+  ctx: CanvasRenderingContext2D,
+  src: CanvasImageSource, sw: number, sh: number,
+  dx: number, dy: number, dw: number, dh: number,
+  zoom = 1, panX = 0,
+) {
+  if (!sw || !sh) return
+  const scale = Math.max(dw / sw, dh / sh) * zoom
+  const w = dw / scale, h = dh / scale
+  const spareX = sw - w
+  const sx = Math.max(0, Math.min(spareX, spareX / 2 + panX * spareX / 2))
+  const sy = (sh - h) / 2
+  ctx.drawImage(src, sx, sy, w, h, dx, dy, dw, dh)
+}
+
+/** Zoom and pan of a photo slot at progress p (0–1) through its format */
+function photoMotion(motion: string | null | undefined, p: number): { zoom: number; panX: number } {
+  const e = Math.max(0, Math.min(1, p))
+  switch (motion) {
+    case 'zoom_in': return { zoom: 1 + 0.15 * e, panX: 0 }
+    case 'zoom_out': return { zoom: 1.15 - 0.15 * e, panX: 0 }
+    case 'pan_left': return { zoom: 1.15, panX: 1 - 2 * e }
+    case 'pan_right': return { zoom: 1.15, panX: -1 + 2 * e }
+    default: return { zoom: 1, panX: 0 }
+  }
+}
+
+/**
+ * Line breaks for frame text. Counts characters rather than measuring, exactly like render.py's
+ * wrap_band_text, so the preview breaks lines in the same places as the export.
+ */
+function wrapFrameText(text: string, widthPx: number, sizePx: number): string[] {
+  const maxChars = Math.max(8, Math.floor((widthPx * 0.88) / Math.max(1, sizePx * 0.56)))
+  const lines: string[] = []
+  for (const para of (text || '').split('\n')) {
+    let line = ''
+    for (const word of para.split(/\s+/).filter(Boolean)) {
+      const probe = line ? `${line} ${word}` : word
+      if (line && probe.length > maxChars) { lines.push(line); line = word } else line = probe
+    }
+    lines.push(line)
+  }
+  while (lines.length && !lines[lines.length - 1]) lines.pop()
+  return lines
+}
+
+// Frame text is drawn in Montserrat Bold on export; make sure the preview has it too
+let frameFontRequested = false
+function ensureFrameFont() {
+  if (frameFontRequested || typeof document === 'undefined') return
+  frameFontRequested = true
+  const href = 'https://fonts.googleapis.com/css2?family=Montserrat:wght@700&display=swap'
+  if (document.querySelector(`link[href="${href}"]`)) return
+  const link = document.createElement('link')
+  link.rel = 'stylesheet'
+  link.href = href
+  document.head.appendChild(link)
+}
+
+/** A text item: its background filling the row, its text centred */
+function paintFrameText(ctx: CanvasRenderingContext2D, it: FrameItem, fallbackBg: string, y: number, h: number) {
+  const W = ctx.canvas.width
+  ctx.fillStyle = it.bg || fallbackBg
+  ctx.fillRect(0, y, W, h)
+  const text = it.text?.trim()
+  if (!text) return
+  ensureFrameFont()
+  const size1080 = it.size ?? 64
+  const size = Math.round((size1080 / 1080) * W)
+  // Wrap at export scale (1080 wide) so the breaks don't depend on the preview's size
+  const lines = wrapFrameText(text, 1080, size1080)
+  const lh = size * 1.2
+  ctx.save()
+  ctx.beginPath(); ctx.rect(0, y, W, h); ctx.clip()
+  ctx.font = `700 ${size}px Montserrat, ${it.font || 'sans-serif'}`
+  ctx.fillStyle = it.color || '#ffffff'
+  ctx.textAlign = 'center'
+  ctx.textBaseline = 'middle'
+  const cx = (it.x ?? 0.5) * W, cy = y + (it.y ?? 0.5) * h
+  lines.forEach((ln, i) => ctx.fillText(ln, cx, cy + (i - (lines.length - 1) / 2) * lh))
+  ctx.restore()
+}
+
+// Size of a text block as shares of the 1080×1920 frame, measured with the same font as the preview
+let measureCtx: CanvasRenderingContext2D | null = null
+function frameTextBlock(text: string, size1080: number): { lines: string[]; w: number; h: number } {
+  const lines = text.trim() ? wrapFrameText(text, 1080, size1080) : ['Your text']
+  if (!measureCtx && typeof document !== 'undefined') measureCtx = document.createElement('canvas').getContext('2d')
+  let widest = 0
+  if (measureCtx) {
+    measureCtx.font = `700 ${size1080}px Montserrat, sans-serif`
+    for (const ln of lines) widest = Math.max(widest, measureCtx.measureText(ln).width)
+  } else widest = Math.max(...lines.map(l => l.length)) * size1080 * 0.56
+  const pad = size1080 * 0.4
+  return { lines, w: Math.min(1, (widest + pad) / 1080), h: (lines.length * size1080 * 1.2 + pad) / 1920 }
+}
+
+/**
+ * A frame's text in the preview: drag it to move it around its band (or slot), drag the corner to
+ * make it bigger or smaller. Position and size are saved on the text, and the export uses them.
+ */
+function FrameTextBox({ row, item, selected, onSelect, onChange }: {
+  row: { y: number; h: number }
+  item: FrameItem
+  selected: boolean
+  onSelect: () => void
+  onChange: (patch: Partial<Pick<FrameItem, 'x' | 'y' | 'size'>>) => void
+}) {
+  const ref = useRef<HTMLDivElement>(null)
+  const size = item.size ?? 64
+  const empty = !item.text?.trim()
+  const block = frameTextBlock(item.text ?? '', size)
+  const x = item.x ?? 0.5, y = item.y ?? 0.5
+  // Keep the whole block inside its row
+  const clampX = (v: number) => block.w >= 1 ? 0.5 : Math.max(block.w / 2, Math.min(1 - block.w / 2, v))
+  const halfH = block.h / 2 / row.h
+  const clampY = (v: number) => halfH >= 0.5 ? 0.5 : Math.max(halfH, Math.min(1 - halfH, v))
+  const cx = clampX(x), cy = row.y + row.h * clampY(y)
+
+  function start(e: React.PointerEvent, mode: 'move' | 'resize') {
+    e.stopPropagation(); e.preventDefault()
+    onSelect()
+    const rect = ref.current?.parentElement?.getBoundingClientRect()
+    if (!rect) return
+    const sx = e.clientX, sy = e.clientY, x0 = cx, y0 = clampY(y), size0 = size, w0 = block.w * rect.width
+    const move = (ev: PointerEvent) => {
+      const dx = (ev.clientX - sx) / rect.width, dy = (ev.clientY - sy) / rect.height
+      if (mode === 'move') onChange({ x: clampX(x0 + dx), y: clampY(y0 + dy / row.h) })
+      else onChange({ size: Math.round(Math.max(24, Math.min(200, size0 * (w0 + 2 * (ev.clientX - sx)) / w0))) })
+    }
+    const up = () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up) }
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', up)
+  }
+
+  return (
+    <div ref={ref} role="button" tabIndex={-1} aria-label="Text in the frame: drag to move, drag the corner to resize"
+      onPointerDown={e => start(e, 'move')} onClick={e => e.stopPropagation()}
+      className="group absolute flex items-center justify-center"
+      style={{
+        left: `${(cx - block.w / 2) * 100}%`, top: `${(cy - block.h / 2) * 100}%`, width: `${block.w * 100}%`, height: `${block.h * 100}%`,
+        cursor: 'move', touchAction: 'none', borderRadius: 4,
+        outline: selected ? '1.5px dashed #c8ff00' : undefined,
+      }}>
+      <span className="absolute inset-0 rounded pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity"
+        style={{ boxShadow: selected ? undefined : 'inset 0 0 0 1px rgba(255,255,255,0.45)' }} />
+      {empty && (
+        <span className="pointer-events-none font-bold" style={{ fontSize: `${(size / 1080) * 100}cqw`, color: 'rgba(255,255,255,0.35)' }}>Your text</span>
+      )}
+      {selected && (
+        <span onPointerDown={e => start(e, 'resize')} aria-label="Drag to resize the text"
+          className="absolute rounded-full" style={{ right: -6, bottom: -6, width: 12, height: 12, background: '#c8ff00', border: '1.5px solid #000', cursor: 'nwse-resize', touchAction: 'none' }} />
+      )}
+    </div>
+  )
+}
+
+/**
+ * Draw media into a slot row. With rounded corners the row is black and the media sits inset in a
+ * rounded box (the same look render.py builds with its corner mask); without, it fills the row.
+ */
+function inSlot(ctx: CanvasRenderingContext2D, corners: CornerStyle | undefined, y: number, h: number,
+  draw: (dx: number, dy: number, dw: number, dh: number) => void) {
+  const W = ctx.canvas.width
+  const g = cornerGeometry(corners)
+  if (!g) { draw(0, y, W, h); return }
+  const k = W / 1080, m = g.inset * k, r = g.radius * k
+  ctx.fillStyle = '#000'
+  ctx.fillRect(0, y, W, h)
+  ctx.save()
+  ctx.beginPath()
+  ctx.roundRect(m, y + m, W - 2 * m, h - 2 * m, r)
+  ctx.clip()
+  draw(m, y + m, W - 2 * m, h - 2 * m)
+  ctx.restore()
+}
+
+function paintFrame(
+  ctx: CanvasRenderingContext2D,
+  video: HTMLVideoElement,
+  seg: SegmentLocal,
+  tMs: number,
+  getPositionAt: (id: string, t: number) => BoxPosition,
+  pool: FrameMediaPool | null | undefined,
+) {
+  const W = ctx.canvas.width, H = ctx.canvas.height
+  const vW = video.videoWidth, vH = video.videoHeight
+  const frame = frameOf(seg)
+  const main = new Set(frame.main_slots ?? [0])
+  const bandBg = frame.band?.bg || '#000000'
+  for (const row of frameLanesFor(seg)) {
+    const y = Math.round(row.y * H), h = Math.round((row.y + row.h) * H) - Math.round(row.y * H)
+    const it = itemAt(frame, row.lane, tMs, seg)
+    if (row.lane === 'band') {
+      ctx.fillStyle = bandBg
+      ctx.fillRect(0, y, W, h)
+      // Captions on the band are drawn with the other captions, positioned here
+      if (it?.kind === 'text' && !it.captions) paintFrameText(ctx, it, bandBg, y, h)
+      continue
+    }
+    // Underneath: the main video if this slot shows it, otherwise an empty (dark) slot
+    ctx.fillStyle = '#111'
+    ctx.fillRect(0, y, W, h)
+    if (main.has(row.lane) && vW && vH) {
+      const box = seg.crop_boxes.find(b => b.slot_index === row.lane)
+      if (box) {
+        const p = getPositionAt(box.id, tMs)
+        inSlot(ctx, frame.main_corners?.[String(row.lane)], y, h,
+          (dx, dy, dw, dh) => coverCrop(ctx, video, p.x * vW, p.y * vH, p.w * vW, p.h * vH, dx, dy, dw, dh))
+      }
+    }
+    if (!it) continue
+    if (it.kind === 'text') { paintFrameText(ctx, it, '#000000', y, h); continue }
+    if (it.kind === 'photo') {
+      const img = it.image_url ? pool?.image(it.image_url) : null
+      if (img && img.complete && img.naturalWidth) {
+        const from = Math.max(it.start_ms, seg.start_ms), to = Math.min(it.end_ms, seg.end_ms)
+        const m = photoMotion(it.motion, (tMs - from) / Math.max(1, to - from))
+        inSlot(ctx, it.corners, y, h, (dx, dy, dw, dh) => coverSource(ctx, img, img.naturalWidth, img.naturalHeight, dx, dy, dw, dh, m.zoom, m.panX))
+      }
+      continue
+    }
+    const v = pool?.video(it)
+    if (v && v.readyState >= 2) inSlot(ctx, it.corners, y, h, (dx, dy, dw, dh) => coverSource(ctx, v, v.videoWidth, v.videoHeight, dx, dy, dw, dh))
+  }
+}
+
 function paintSegment(
   ctx: CanvasRenderingContext2D,
   video: HTMLVideoElement,
   seg: SegmentLocal | null,
   tMs: number,
   getPositionAt: (id: string, t: number) => BoxPosition,
+  pool?: FrameMediaPool | null,
 ) {
+  if (seg && isFrameLayout(seg.layout)) { paintFrame(ctx, video, seg, tMs, getPositionAt, pool); return }
   const W = ctx.canvas.width, H = ctx.canvas.height
   ctx.fillStyle = '#000'
   ctx.fillRect(0, 0, W, H)
@@ -279,6 +534,8 @@ function drawCaptions(
   tMs: number,
   style: Partial<CaptionStyle>,
   textCase: TextCase,
+  /** A frame's text band showing the captions: centre them in it instead of at position_y */
+  band?: { y: number; h: number } | null,
 ) {
   const W = ctx.canvas.width, H = ctx.canvas.height
   const chunk = findCaptionChunk(chunks, tMs)
@@ -317,7 +574,9 @@ function drawCaptions(
   if (cur.length > 0) lines.push(cur)
 
   const totalH = lines.length * lineHeight
-  const yBase  = (style.position_y ?? 0.84) * H - totalH + lineHeight / 2
+  const yBase  = band
+    ? (band.y + band.h / 2) * H - totalH / 2 + lineHeight / 2
+    : (style.position_y ?? 0.84) * H - totalH + lineHeight / 2
 
   // Only do per-word karaoke when timestamps are real (not evenly distributed from a phrase split).
   // Estimated words (_est=true) have proportional-but-approximate timestamps that look wrong when highlighted.
@@ -410,6 +669,15 @@ interface OutputCanvasProps {
   onSelectTextOverlay?: (id: string | null) => void
   onDeleteTextOverlay?: (id: string) => void
   onCaptionPositionChange?: (y: number) => void
+  /** Other videos and photos shown in frame slots */
+  frameMedia?: FrameMediaPool | null
+  /** "+" on an empty frame slot or band: takes the user to that lane on the timeline */
+  onFrameLaneClick?: (lane: FrameLane) => void
+  /** Clicking a photo, video or text in a frame selects it */
+  onFrameItemClick?: (id: string) => void
+  activeFrameItemId?: string | null
+  /** A frame text dragged or resized in the preview */
+  onFrameItemChange?: (id: string, patch: Partial<Pick<FrameItem, 'x' | 'y' | 'size'>>) => void
 }
 
 export function OutputCanvas({
@@ -418,9 +686,11 @@ export function OutputCanvas({
   className, style, skipTransitionRef,
   words, captionStyle, captionTextCase = 'title', showCaptions = false,
   textOverlays = [], activeTextOverlayId, onTextOverlayChange, onSelectTextOverlay, onDeleteTextOverlay,
-  onCaptionPositionChange,
+  onCaptionPositionChange, frameMedia, onFrameLaneClick, onFrameItemClick, activeFrameItemId, onFrameItemChange,
 }: OutputCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
+  const frameMediaRef = useRef(frameMedia)
+  frameMediaRef.current = frameMedia
 
   // Updated synchronously during render so the RAF loop always reads fresh values
   // without needing to be recreated or scheduled via useEffect.
@@ -495,8 +765,9 @@ export function OutputCanvas({
           // Caption words use absolute timestamps matching liveMs directly.
           const clipRelativeMs = Math.max(0, liveMs - clipStartMsRef.current)
 
-          // Draw the incoming segment's live frame
-          paintSegment(ctx, video, seg, clipRelativeMs, getPositionAtRef.current)
+          // Keep frame slots' own videos in step with the main player, then draw
+          frameMediaRef.current?.sync(seg, clipRelativeMs, !video.paused, video)
+          paintSegment(ctx, video, seg, clipRelativeMs, getPositionAtRef.current, frameMediaRef.current)
 
           // Composite the outgoing snapshot on top with decreasing alpha
           if (transitionStart.current !== null && snapshotRef.current) {
@@ -515,7 +786,7 @@ export function OutputCanvas({
           // Draw captions on top of the video frame
           if (showCaptionsRef.current && captionChunksRef.current.length > 0) {
             const captionLookupMs = liveMs - (captionStyleRef.current?.timing_offset_ms ?? 0)
-            drawCaptions(ctx, captionChunksRef.current, captionLookupMs, captionStyleRef.current ?? {}, captionCaseRef.current)
+            drawCaptions(ctx, captionChunksRef.current, captionLookupMs, captionStyleRef.current ?? {}, captionCaseRef.current, captionBandAt(seg, clipRelativeMs))
           }
 
           // Draw text overlays (clip-relative time)
@@ -536,6 +807,26 @@ export function OutputCanvas({
   const activeOverlays = overlays.filter(o => o.start_ms <= currentTimeMs && currentTimeMs < o.end_ms)
   const activeTextOverlays = textOverlays.filter(o => currentTimeMs >= o.start_ms && currentTimeMs < o.end_ms)
 
+  // Frame rows with nothing in them right now get a "+" that leads to their timeline lane
+  const emptyLanes = useMemo(() => {
+    if (!onFrameLaneClick || !activeSegment || !isFrameLayout(activeSegment.layout)) return []
+    const frame = frameOf(activeSegment)
+    const main = frame.main_slots ?? [0]
+    return frameLanesFor(activeSegment).filter(r =>
+      !itemAt(frame, r.lane, currentTimeMs, activeSegment) && (r.lane === 'band' || !main.includes(r.lane)))
+  }, [activeSegment, currentTimeMs, onFrameLaneClick])
+
+  // Frame rows showing an item right now: click to select it (text opens in the Text tool).
+  // No z-index on these or the "+" tiles: overlay boxes come later in the DOM and stay clickable above them.
+  const itemRows = useMemo(() => {
+    if (!onFrameItemClick || !activeSegment || !isFrameLayout(activeSegment.layout)) return []
+    const frame = frameOf(activeSegment)
+    return frameLanesFor(activeSegment).flatMap(r => {
+      const it = itemAt(frame, r.lane, currentTimeMs, activeSegment)
+      return it ? [{ ...r, item: it }] : []
+    })
+  }, [activeSegment, currentTimeMs, onFrameItemClick])
+
   return (
     <div className={className} style={{ ...style, position: 'relative', containerType: 'inline-size' }} onClick={() => onSelectTextOverlay?.(null)}>
       <canvas
@@ -544,6 +835,35 @@ export function OutputCanvas({
         height={960}
         style={{ width: '100%', height: 'auto', display: 'block' }}
       />
+      {itemRows.map(r => {
+        const on = r.item.id === activeFrameItemId
+        return (
+          <button key={r.item.id}
+            onClick={e => { e.stopPropagation(); onFrameItemClick?.(r.item.id) }}
+            aria-label={`Select the ${r.item.kind === 'text' ? 'text' : r.item.kind} in the ${r.label.toLowerCase()} ${r.lane === 'band' ? 'band' : 'slot'}`}
+            className="absolute left-0 right-0 transition-shadow hover:shadow-[inset_0_0_0_1px_rgba(255,255,255,0.35)]"
+            style={{ top: `${r.y * 100}%`, height: `${r.h * 100}%`, boxShadow: on && r.item.kind !== 'text' ? 'inset 0 0 0 2px #c8ff00' : undefined }} />
+        )
+      })}
+      {itemRows.filter(r => r.item.kind === 'text' && !r.item.captions && onFrameItemChange).map(r => (
+        <FrameTextBox key={`box-${r.item.id}`} row={r} item={r.item} selected={r.item.id === activeFrameItemId}
+          onSelect={() => onFrameItemClick?.(r.item.id)}
+          onChange={patch => onFrameItemChange?.(r.item.id, patch)} />
+      ))}
+      {emptyLanes.map(r => (
+        <button key={String(r.lane)}
+          onClick={e => { e.stopPropagation(); onFrameLaneClick?.(r.lane) }}
+          aria-label={`Add to the ${r.label.toLowerCase()} ${r.lane === 'band' ? 'band' : 'slot'} on the timeline`}
+          title="Add a photo, video or text on the timeline"
+          className="group absolute left-0 right-0 flex items-center justify-center"
+          style={{ top: `${r.y * 100}%`, height: `${r.h * 100}%` }}>
+          <span className="flex items-center gap-1.5 rounded-full transition-transform group-hover:scale-105"
+            style={{ padding: '5px 11px 5px 7px', background: 'rgba(255,255,255,0.1)', border: '1px dashed rgba(255,255,255,0.35)', color: 'rgba(255,255,255,0.85)', fontSize: 'max(10px, 3.2cqw)', fontWeight: 600 }}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+            {r.lane === 'band' ? 'Add text' : 'Add'}
+          </span>
+        </button>
+      ))}
       {/* Image overlay boxes */}
       {activeOverlays.map(ov => (
         <OverlayBox
@@ -789,7 +1109,7 @@ function TextOverlayBox({ overlay, isActive, onChange, onSelect, onDelete }: Tex
   const x = overlay.x ?? 0.1
   const y = overlay.y ?? 0.4
   const color = overlay.color ?? '#ffffff'
-  const accent = '#8b5cf6'
+  const accent = '#c8ff00'
 
   return (
     <div
@@ -805,7 +1125,7 @@ function TextOverlayBox({ overlay, isActive, onChange, onSelect, onDelete }: Tex
         border: `1.5px solid ${isActive ? accent : 'transparent'}`,
         borderRadius: 3,
         padding: 0,
-        background: isActive ? 'rgba(139,92,246,0.15)' : 'transparent',
+        background: isActive ? 'rgba(200,255,0,0.12)' : 'transparent',
         backdropFilter: 'none',
         boxShadow: isActive ? `0 0 0 1px ${accent}44` : 'none',
         maxWidth: '90%',
@@ -842,7 +1162,7 @@ function TextOverlayBox({ overlay, isActive, onChange, onSelect, onDelete }: Tex
           }}
         >
           <svg width="6" height="6" viewBox="0 0 8 8" fill="none">
-            <path d="M1 4h6M5 2l2 2-2 2" stroke="white" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
+            <path d="M1 4h6M5 2l2 2-2 2" stroke="black" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
           </svg>
         </div>
       )}
@@ -854,15 +1174,18 @@ function TextOverlayBox({ overlay, isActive, onChange, onSelect, onDelete }: Tex
 
 interface DraggableBoxProps {
   pos: BoxPosition
+  /** Locked w/h in normalised units; null = free resize (Horizontal) */
+  aspect: number | null
   color: string
   isActive: boolean
-  layout?: string
-  label?: string
+  label: string
   onSelect: () => void
   onChange: (newPos: BoxPosition) => void
 }
 
-function DraggableBox({ pos, color, isActive, layout, label, onSelect, onChange }: DraggableBoxProps) {
+const MIN_BOX = 0.05
+
+function DraggableBox({ pos, aspect, color, isActive, label, onSelect, onChange }: DraggableBoxProps) {
   const ref = useRef<HTMLDivElement>(null)
 
   function cRect() {
@@ -873,6 +1196,7 @@ function DraggableBox({ pos, color, isActive, layout, label, onSelect, onChange 
   function startDrag(e: React.MouseEvent) {
     if ((e.target as HTMLElement).dataset.handle) return
     e.stopPropagation()
+    e.preventDefault()
     onSelect()
     const sx = e.clientX, sy = e.clientY, start = { ...pos }
     function move(ev: MouseEvent) {
@@ -890,22 +1214,38 @@ function DraggableBox({ pos, color, isActive, layout, label, onSelect, onChange 
 
   function startResize(e: React.MouseEvent, dir: string) {
     e.stopPropagation()
+    e.preventDefault()
+    onSelect()
     const sx = e.clientX, sy = e.clientY, start = { ...pos }
     const re = start.x + start.w, be = start.y + start.h
     function move(ev: MouseEvent) {
       const { w, h } = cRect()
       const dx = (ev.clientX - sx) / w, dy = (ev.clientY - sy) / h
+      if (aspect) {
+        // Locked shape: resize from a corner while the opposite corner stays put
+        const west = dir.includes('w'), north = dir.includes('n')
+        const ax = west ? re : start.x, ay = north ? be : start.y
+        const growW = west ? -dx : dx, growH = (north ? -dy : dy) * aspect
+        const maxW = Math.min(west ? ax : 1 - ax, (north ? ay : 1 - ay) * aspect)
+        const nw = Math.max(Math.min(MIN_BOX, maxW), Math.min(maxW, start.w + (growW + growH) / 2))
+        const nh = nw / aspect
+        onChange({ x: west ? ax - nw : ax, y: north ? ay - nh : ay, w: nw, h: nh })
+        return
+      }
       let { x, y, w: bw, h: bh } = start
-      if (dir.includes('e')) bw = Math.max(0.04, Math.min(1 - x, bw + dx))
-      if (dir.includes('s')) bh = Math.max(0.04, Math.min(1 - y, bh + dy))
-      if (dir.includes('w')) { const nx = Math.max(0, Math.min(re - 0.04, x + dx)); bw = re - nx; x = nx }
-      if (dir.includes('n')) { const ny = Math.max(0, Math.min(be - 0.04, y + dy)); bh = be - ny; y = ny }
-      onChange({ x, y, w: Math.max(0.04, bw), h: Math.max(0.04, bh) })
+      if (dir.includes('e')) bw = Math.max(MIN_BOX, Math.min(1 - x, bw + dx))
+      if (dir.includes('s')) bh = Math.max(MIN_BOX, Math.min(1 - y, bh + dy))
+      if (dir.includes('w')) { const nx = Math.max(0, Math.min(re - MIN_BOX, x + dx)); bw = re - nx; x = nx }
+      if (dir.includes('n')) { const ny = Math.max(0, Math.min(be - MIN_BOX, y + dy)); bh = be - ny; y = ny }
+      onChange({ x, y, w: bw, h: bh })
     }
     function up() { window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up) }
     window.addEventListener('mousemove', move)
     window.addEventListener('mouseup', up)
   }
+
+  // Locked boxes resize from the corners only; edge handles would break the shape
+  const handles = aspect ? HANDLES.filter(h => h.dir.length === 2) : HANDLES
 
   return (
     <div
@@ -917,79 +1257,36 @@ function DraggableBox({ pos, color, isActive, layout, label, onSelect, onChange 
         border: `2px solid ${color}`,
         background: isActive ? `${color}10` : 'transparent',
         boxSizing: 'border-box', cursor: 'move', pointerEvents: 'auto', userSelect: 'none',
-        // Dark shadow fills everything OUTSIDE the crop box — shows user exactly what will be in the 9:16 output
-        boxShadow: `0 0 0 9999px rgba(0,0,0,0.52), 0 0 0 1px ${color}88`,
+        zIndex: isActive ? 2 : 1,
       }}
       onMouseDown={startDrag}
       onClick={e => { e.stopPropagation(); onSelect() }}
     >
-      {/* Corner accent lines (Clipzi-style) */}
-      {['tl', 'tr', 'bl', 'br'].map(c => (
-        <div
-          key={c}
-          style={{
-            position: 'absolute',
-            width: 14, height: 14,
-            top: c.startsWith('t') ? -1 : undefined,
-            bottom: c.startsWith('b') ? -1 : undefined,
-            left: c.endsWith('l') ? -1 : undefined,
-            right: c.endsWith('r') ? -1 : undefined,
-            borderTop: c.startsWith('t') ? `3px solid ${color}` : undefined,
-            borderBottom: c.startsWith('b') ? `3px solid ${color}` : undefined,
-            borderLeft: c.endsWith('l') ? `3px solid ${color}` : undefined,
-            borderRight: c.endsWith('r') ? `3px solid ${color}` : undefined,
-            pointerEvents: 'none',
-          }}
-        />
-      ))}
-
-      {/* Ratio badge — top-left */}
+      {/* Slot label — what this box becomes in the output */}
       <div style={{
         position: 'absolute', top: 6, left: 6,
         fontSize: 10, fontWeight: 700, color: '#fff', lineHeight: 1.4,
-        background: 'rgba(0,0,0,0.65)', backdropFilter: 'blur(4px)',
-        padding: '2px 7px', borderRadius: 4, pointerEvents: 'none',
-      }}>{layout === 'horizontal' ? '16:9' : '9:16'}</div>
+        background: color, padding: '1px 7px', borderRadius: 4, pointerEvents: 'none',
+        textShadow: '0 1px 2px rgba(0,0,0,0.4)',
+      }}>{label}</div>
 
-      {/* Zoom badge — top-right */}
+      {/* Zoom badge — how far this crop is punched in */}
       <div style={{
         position: 'absolute', top: 6, right: 6,
         fontSize: 10, fontWeight: 700, color: '#fff', lineHeight: 1.4,
-        background: 'rgba(0,0,0,0.65)', backdropFilter: 'blur(4px)',
-        padding: '2px 7px', borderRadius: 4, pointerEvents: 'none',
+        background: 'rgba(0,0,0,0.65)', padding: '1px 7px', borderRadius: 4, pointerEvents: 'none',
       }}>
-        {(Math.round(10 / Math.max(0.1, pos.w)) / 10).toFixed(1)}x
+        {(Math.round(10 / Math.max(0.1, pos.h)) / 10).toFixed(1)}x
       </div>
 
-      {/* Slot label (for multi-slot layouts like split/trio) */}
-      {label && (
-        <div style={{
-          position: 'absolute', top: 6, left: '50%', transform: 'translateX(-50%)',
-          fontSize: 11, fontWeight: 700,
-          color: '#fff', textShadow: `0 0 8px ${color}, 0 1px 3px rgba(0,0,0,0.9)`,
-          pointerEvents: 'none',
-        }}>
-          {label}
-        </div>
-      )}
-
-      {/* ⟺ Adjust button — bottom center */}
-      <div style={{
-        position: 'absolute', bottom: 8, left: '50%', transform: 'translateX(-50%)',
-        fontSize: 10, fontWeight: 600, color: '#fff',
-        background: 'rgba(0,0,0,0.65)', backdropFilter: 'blur(4px)',
-        padding: '4px 12px', borderRadius: 6, pointerEvents: 'none', whiteSpace: 'nowrap',
-      }}>⟺ Adjust</div>
-
-      {/* Resize handles */}
-      {(isActive ? HANDLES : HANDLES.filter(h => h.dir === 'se')).map(({ cursor, pos: hPos, dir }) => (
+      {handles.map(({ cursor, pos: hPos, dir }) => (
         <div
           key={dir}
           data-handle="1"
           style={{
-            position: 'absolute', width: 9, height: 9,
+            position: 'absolute', width: 12, height: 12,
             background: '#fff', border: `2px solid ${color}`,
-            borderRadius: 2, cursor, pointerEvents: 'auto', boxSizing: 'border-box',
+            borderRadius: 3, cursor, pointerEvents: 'auto', boxSizing: 'border-box',
             ...hPos,
           }}
           onMouseDown={e => startResize(e, dir)}
