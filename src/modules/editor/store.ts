@@ -364,7 +364,9 @@ export const useEditorStore = create<EditorState & EditorActions>()((set, get) =
         if (brollSeg.end_ms <= brollSeg.start_ms) return s
         return {
           segments: [
-            ...s.segments.map(s => s.id === seg!.id ? { ...s, start_ms: brollSeg.end_ms } : s),
+            // withStart: the main video carries on from where the B-roll ends (a cutaway), as it
+            // does for a B-roll placed mid-format
+            ...s.segments.map(s => s.id === seg!.id ? withStart(s, brollSeg.end_ms) : s),
             brollSeg,
           ].sort((a, b) => a.sort_order - b.sort_order),
           keyframes: withBoxes(s.keyframes, [brollBox]),
@@ -387,7 +389,11 @@ export const useEditorStore = create<EditorState & EditorActions>()((set, get) =
           id: crypto.randomUUID(), slot_index: box.slot_index,
           source_video_id: box.source_video_id,
           source_offset_ms: box.source_offset_ms + (brollEnd - seg!.start_ms),
-          keyframes: [{ t_ms: brollEnd, ...getPos(box.id, brollEnd) }],
+          // The framing carries on after the B-roll: its position there, then its later keyframes
+          keyframes: [
+            { t_ms: brollEnd, ...getPos(box.id, brollEnd) },
+            ...(s.keyframes[box.id] ?? box.keyframes ?? []).filter(k => k.t_ms > brollEnd).map(k => ({ t_ms: k.t_ms, x: k.x, y: k.y, w: k.w, h: k.h })),
+          ],
         }))
         result.push({ id: crypto.randomUUID(), start_ms: brollEnd, end_ms: seg.end_ms, layout: seg.layout, sort_order: seg.sort_order + 1, crop_boxes: contBoxes })
       }

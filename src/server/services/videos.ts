@@ -17,7 +17,7 @@ function logShown(userId: string, videoId: string, source: SuggestionSource, mod
   })))
 }
 
-export async function listVideos(userId: string) {
+export async function listVideos(userId: string, includeAssets = false) {
   return sql`
     SELECT id, title, status, download_progress, duration_ms, created_at, storage_path, source_url, source_type,
       -- Why processing failed (e.g. a link that isn't shared publicly). Read through to_jsonb so
@@ -25,7 +25,7 @@ export async function listVideos(userId: string) {
       to_jsonb(videos)->>'error' AS error,
       (SELECT COUNT(*)::int FROM clips c WHERE c.video_id = videos.id) AS clip_count
     -- Stock clips saved for auto B-roll are the user's assets, not videos they uploaded
-    FROM videos WHERE user_id = ${userId} AND role <> 'asset' ORDER BY created_at DESC
+    FROM videos WHERE user_id = ${userId} AND (${includeAssets} OR role <> 'asset') ORDER BY created_at DESC
   `
 }
 

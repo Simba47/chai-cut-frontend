@@ -5,6 +5,8 @@ import type { Clip, Segment, CropBox, BoxKeyframe, CaptionStyle, TextOverlay, Au
 import { VideoPreview, OutputCanvas } from '@/components/editor/VideoPreview'
 import { computeCutRanges, removedMs } from '@/lib/cuts'
 import { PostText, type PostTextValue } from '@/components/clips/PostText'
+import { BrollPanel, type StockResult } from '@/components/editor/BrollPanel'
+import { useBrollSources } from '@/modules/editor/brollSources'
 import { SegmentTimeline, LAYOUT_COLORS } from '@/components/editor/SegmentTimeline'
 import { TranscriptPanel } from '@/components/editor/TranscriptPanel'
 import { CaptionStyler } from '@/components/editor/CaptionStyler'
@@ -31,7 +33,7 @@ import { useMediaStore } from '@/modules/media/store'
 import { rowsToLocal, normalizeCoverage, uncoveredRanges, defaultCropForSlot, msToLabel } from '@/modules/editor/utils'
 import type { SegmentLocal, FrameLayout, FrameLane, FrameItem } from '@chai-cut/shared'
 
-type Tool = 'format' | 'frames' | 'captions' | 'text'
+type Tool = 'format' | 'frames' | 'captions' | 'text' | 'broll'
 type SaveState = 'idle' | 'saving' | 'saved' | 'error'
 
 interface SegmentRow extends Omit<Segment, never> {
@@ -88,6 +90,11 @@ const TOOLS: { id: Tool; label: string; title: string; hint: string; icon: React
     hint: 'Add titles, hooks or call-outs on top of the video.',
     icon: <path d="M5 6V4h14v2M12 4v16M9 20h6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" fill="none" />,
   },
+  {
+    id: 'broll', label: 'B-roll', title: 'B-roll',
+    hint: 'Short stock shots over the clip while the speaker keeps talking. Pick one, then add it at the playhead.',
+    icon: <><rect x="2.5" y="5" width="19" height="14" rx="2.5" stroke="currentColor" strokeWidth="1.8" fill="none" /><path d="M10 9.5v5l4.5-2.5z" fill="currentColor" /></>,
+  },
 ]
 
 export function EditorShell({
@@ -107,7 +114,7 @@ export function EditorShell({
   const {
     segments, keyframes, activeSegmentId, activeBoxId,
     hydrate: hydrateEditor, updateSegment, removeSegment,
-    splitAtMs, updateBoxSource, insertBrollAtMs, applyLayout, setSegmentEdge, addFormat, moveJunction,
+    splitAtMs, updateBoxSource, insertBrollAtMs, applyLayout, setSegmentEdge, addFormat, moveJunction, updateSlot,
     upsertKeyframe, setBoxKeyframes, getPositionAt, updateFrameBand,
     updateFrame, addFrameItem, updateFrameItem, removeFrameItem,
     setActiveSegmentId, setActiveBoxId,
@@ -193,13 +200,15 @@ export function EditorShell({
   const framePool = useMemo(() => createFrameMediaPool(id => videoLibraryRef.current[id]?.url), [])
   useEffect(() => () => framePool.dispose(), [framePool])
   async function loadVideoLibrary() {
-    const res = await fetch('/api/videos').catch(() => null)
+    const res = await fetch('/api/videos?assets=1').catch(() => null)
     if (!res?.ok) return
     const { videos } = await res.json() as { videos: { id: string; title?: string | null; video_url?: string | null; index?: number }[] }
     setVideoLibrary(Object.fromEntries(videos.filter(v => v.video_url).map(v => [v.id, { url: v.video_url!, title: v.title?.trim() || `Video ${v.index ?? ''}`.trim() }])))
   }
   useEffect(() => { loadVideoLibrary() }, [])
   const videoTitles = useMemo(() => Object.fromEntries(Object.entries(videoLibrary).map(([id, v]) => [id, v.title])), [videoLibrary])
+  // B-roll shots are drawn from their own videos in the preview (muted; the speaker carries on)
+  const brollSource = useBrollSources(videoRef, clip.start_ms, id => videoLibraryRef.current[id]?.url)
   const [pendingBrollMs, setPendingBrollMs] = useState<number | null>(null)
   const [clipStatus, setClipStatus] = useState<string>(clip.status)
   const [outputUrl, setOutputUrl] = useState<string | null>(clip.output_url)
@@ -916,6 +925,64 @@ export function EditorShell({
     if (newId) { setActiveSegmentId(newId); seekToMs(atMs) }
   }
 
+  // ── B-roll panel ──────────────────────────────────────────────────────────────
+  const brollShots = useMemo(() => segments
+    .filter(sg => !isFrameLayout(sg.layout) && sg.crop_boxes[0]?.source_video_id)
+    .sort((a, b) => a.start_ms - b.start_ms)
+    .map(sg => ({ id: sg.id, start_ms: sg.start_ms, end_ms: sg.end_ms, title: (videoTitles[sg.crop_boxes[0].source_video_id!] ?? 'Stock video').replace(/^(Pixabay|Pexels): /, '') })),
+  [segments, videoTitles])
+
+  /** Save the stock video as the user's asset, then put it in at the playhead as a muted cutaway */
+  async function addStockBroll(item: StockResult, lengthMs: number) {
+    const res = await fetch('/api/stock/import', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ref: item.ref, url: item.url, title: item.title }),
+    })
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error ?? 'Could not add that video')
+    videoLibraryRef.current = { ...videoLibraryRef.current, [data.video_id]: { url: data.url, title: data.title } }
+    setVideoLibrary(videoLibraryRef.current)
+    const at = Math.min(currentTimeMs, Math.max(0, clipLengthMs - 500))
+    const segId = insertBrollAtMs(data.video_id, at, lengthMs, getPositionAt)
+    if (!segId) throw new Error('There is no room for B-roll here. Move the playhead and try again.')
+    const box = useEditorStore.getState().segments.find(sg => sg.id === segId)?.crop_boxes[0]
+    if (box) updateSlot(segId, box.id, { muted: true })
+    setActiveSegmentId(segId)
+    seekToMs(at)
+  }
+
+  const neighbours = (id: string) => {
+    const byTime = [...useEditorStore.getState().segments].sort((a, b) => a.start_ms - b.start_ms)
+    const i = byTime.findIndex(sg => sg.id === id)
+    const seg = byTime[i], prev = byTime[i - 1], next = byTime[i + 1]
+    return { seg, prev: prev && prev.end_ms === seg?.start_ms ? prev : undefined, next: next && next.start_ms === seg?.end_ms ? next : undefined }
+  }
+  function moveBrollEdge(id: string, edge: 'start' | 'end', t: number) {
+    const { seg, prev, next } = neighbours(id)
+    if (!seg) return
+    if (edge === 'end') { if (next) moveJunction(seg.id, next.id, t); else setSegmentEdge(seg.id, 'end', t, clipLengthMs) }
+    else { if (prev) moveJunction(prev.id, seg.id, t); else setSegmentEdge(seg.id, 'start', t, clipLengthMs) }
+  }
+  function resizeBroll(id: string, delta: number) {
+    const { seg } = neighbours(id)
+    if (seg) moveBrollEdge(id, 'end', seg.end_ms + delta)
+  }
+  function moveBroll(id: string, delta: number) {
+    const { seg } = neighbours(id)
+    if (!seg) return
+    // The edge in the direction of travel goes first, so the shot keeps its length
+    if (delta > 0) { moveBrollEdge(id, 'end', seg.end_ms + delta); moveBrollEdge(id, 'start', seg.start_ms + delta) }
+    else { moveBrollEdge(id, 'start', seg.start_ms + delta); moveBrollEdge(id, 'end', seg.end_ms + delta) }
+  }
+  /** Remove a shot: the framing before it (or after it, at the start) takes its time back */
+  function removeBroll(id: string) {
+    const { seg, prev, next } = neighbours(id)
+    if (!seg) return
+    removeSegment(id)
+    if (prev) setSegmentEdge(prev.id, 'end', seg.end_ms, clipLengthMs)
+    else if (next) setSegmentEdge(next.id, 'start', seg.start_ms, clipLengthMs)
+  }
+
   function handleInsertBrollAfterSeg(afterSegId: string) {
     const seg = segments.find(s => s.id === afterSegId)
     if (seg) setPickerAtMs(seg.end_ms)
@@ -1336,6 +1403,19 @@ export function EditorShell({
               )
             )}
 
+            {tool === 'broll' && (
+              <BrollPanel
+                clipId={clip.id}
+                currentTimeMs={currentTimeMs}
+                shots={brollShots}
+                onAdd={addStockBroll}
+                onMove={moveBroll}
+                onResize={resizeBroll}
+                onRemove={removeBroll}
+                onSeek={seekToMs}
+              />
+            )}
+
             {tool === 'text' && (
               <>
               <FrameTextPanel
@@ -1597,7 +1677,7 @@ export function EditorShell({
               ) : (
                 <OutputCanvas
                   videoRef={videoRef} currentTimeMs={currentTimeMs} clipStartMs={clip.start_ms}
-                  activeSegment={viewSegment} getPositionAt={viewGetPositionAt}
+                  activeSegment={viewSegment} getPositionAt={viewGetPositionAt} sourceFor={brollSource}
                   skipTransitionRef={skipCanvasTransitionRef} words={displayWords}
                   captionStyle={captionStyle} captionTextCase={captionTextCase} showCaptions={showCaptions}
                   overlays={overlays} activeOverlayId={activeOverlayId}
