@@ -6,6 +6,7 @@ import { LAYOUT_SLOT_COUNT } from '@chai-cut/shared'
 import { getBoxPositionAtLerp, type BoxPosition } from '@/lib/interpolation'
 import { makeBox, defaultCropForSlot } from './utils'
 import { isFrameLayout, DEFAULT_BAND, defaultFrame, frameOf, placeNewItem } from './frames'
+import { setViewAt, recordMotionAt, removeViewChangeAt, moveViewChange, type ViewKeyframe } from './views'
 
 export type KeyframeMap = Record<string, BoxKeyframe[]>  // boxId → sorted keyframes
 
@@ -17,6 +18,12 @@ function withBoxes(map: KeyframeMap, boxes: CropBoxLocal[]): KeyframeMap {
     next[b.id] = b.keyframes.map(k => ({ id: crypto.randomUUID(), box_id: b.id, ...k })).sort((a, c) => a.t_ms - c.t_ms)
   }
   return next
+}
+
+/** Keyframes (as views.ts builds them) with the ids the store keeps */
+function withIds(boxId: string, kfs: ViewKeyframe[]): BoxKeyframe[] {
+  return kfs.map(k => ({ id: crypto.randomUUID(), box_id: boxId, t_ms: k.t_ms, x: k.x, y: k.y, w: k.w, h: k.h }) as BoxKeyframe)
+    .sort((a, b) => a.t_ms - b.t_ms)
 }
 
 interface EditorState {
@@ -34,8 +41,28 @@ interface EditorActions {
   updateSegment: (id: string, updates: Partial<Omit<SegmentLocal, 'id'>>) => void
   removeSegment: (id: string) => void
   splitAtMs: (segId: string, tMs: number, getPos: (boxId: string, t: number) => BoxPosition) => string | null
-  /** Change a crop position's layout; every slot restarts from its default framing. */
-  applyLayout: (segId: string, layout: LayoutType, videoAR?: number) => void
+  /** Change a format's layout. Each slot starts from `framing[slot]` when given, else its default framing. */
+  applyLayout: (segId: string, layout: LayoutType, videoAR?: number, framing?: (BoxPosition | undefined)[]) => void
+  /**
+   * Framing for a format of `layout` over [startMs, endMs]: the crop of the nearest other format
+   * with the same (non-frame) layout — the one touching on the left first, then on the right, then
+   * the closest in time. Undefined slots mean "use the default".
+   */
+  neighbourFraming: (layout: LayoutType, startMs: number, endMs: number, excludeId?: string) => (BoxPosition | undefined)[] | undefined
+  /**
+   * Join the format with its touching neighbours that have the same (non-frame) layout, so
+   * switching Split → Vertical doesn't leave separate pieces. Each part keeps its own views (the
+   * crop cuts where the parts met). Skipped for B-roll, frames, and a join that has a transition.
+   * Returns the id of the joined format.
+   */
+  joinSameLayoutNeighbours: (segId: string, transitionAfter?: Set<string>) => string
+  // View changes (see views.ts)
+  /** Move a box's view at time t (Motion off): edits the change there, or adds a cut at t */
+  setViewAt: (boxId: string, t: number, pos: BoxPosition, formatStart: number) => void
+  /** Record a Motion point at time t (the view glides into it) */
+  recordMotionAt: (boxId: string, t: number, pos: BoxPosition) => void
+  removeViewChange: (boxId: string, t: number) => void
+  moveViewChange: (boxId: string, from: number, to: number, formatStart: number, formatEnd: number) => void
   /** Frame slots: change what a slot shows (source video, photo, motion, volume, mute) */
   updateSlot: (segId: string, boxId: string, patch: Partial<Pick<CropBoxLocal, 'source_video_id' | 'source_offset_ms' | 'image_path' | 'image_url' | 'image_motion' | 'volume' | 'muted'>>) => void
   /** Frame layouts: change the letterbox band's look */
@@ -51,8 +78,8 @@ interface EditorActions {
   setSegmentEdge: (segId: string, edge: 'start' | 'end', tMs: number, durationMs: number) => void
   /** Move the shared edge of two touching formats together (one grows, the other shrinks). */
   moveJunction: (leftId: string, rightId: string, tMs: number) => void
-  /** Create a format over [startMs, endMs] (an uncovered stretch). Returns its id. */
-  addFormat: (startMs: number, endMs: number, layout: LayoutType, videoAR?: number, pos?: BoxPosition) => string
+  /** Create a format over [startMs, endMs] (an uncovered stretch). `pos` frames slot 0, or each slot when a list. Returns its id. */
+  addFormat: (startMs: number, endMs: number, layout: LayoutType, videoAR?: number, pos?: BoxPosition | (BoxPosition | undefined)[]) => string
   updateBoxSource: (segId: string, boxId: string, source_video_id: string | null, source_offset_ms: number) => void
   insertBrollAtMs: (videoId: string, atMs: number, durationMs: number, getPos: (boxId: string, t: number) => BoxPosition) => string | null
   // Keyframes
@@ -173,8 +200,9 @@ export const useEditorStore = create<EditorState & EditorActions>()((set, get) =
   addFormat: (startMs, endMs, layout, videoAR, pos) => {
     const id = crypto.randomUUID()
     const start = Math.round(startMs), end = Math.round(endMs)
+    const slotPos = (i: number) => Array.isArray(pos) ? pos[i] : i === 0 ? pos : undefined
     const crop_boxes: CropBoxLocal[] = Array.from({ length: LAYOUT_SLOT_COUNT[layout] }, (_, i) => ({
-      ...makeBox(i, layout, start, [{ t_ms: start, ...(i === 0 && pos ? pos : defaultCropForSlot(layout, i, videoAR)) }]),
+      ...makeBox(i, layout, start, [{ t_ms: start, ...(slotPos(i) ?? defaultCropForSlot(layout, i, videoAR)) }]),
       source_offset_ms: start, // main video: where in the video this format starts
     }))
     set(s => {
@@ -191,7 +219,7 @@ export const useEditorStore = create<EditorState & EditorActions>()((set, get) =
     return id
   },
 
-  applyLayout: (segId, layout, videoAR) => set(s => {
+  applyLayout: (segId, layout, videoAR, framing) => set(s => {
     const seg = s.segments.find(x => x.id === segId)
     if (!seg) return s
     const first = seg.crop_boxes[0]
@@ -200,7 +228,7 @@ export const useEditorStore = create<EditorState & EditorActions>()((set, get) =
     const centerX = layout === 'vertical' && prev && seg.layout !== 'horizontal' ? prev.x + prev.w / 2 : undefined
     const toFrame = isFrameLayout(layout)
     const crop_boxes: CropBoxLocal[] = Array.from({ length: LAYOUT_SLOT_COUNT[layout] }, (_, i) => {
-      const keyframes = [{ t_ms: seg.start_ms, ...defaultCropForSlot(layout, i, videoAR, i === 0 ? centerX : undefined) }]
+      const keyframes = [{ t_ms: seg.start_ms, ...(framing?.[i] ?? defaultCropForSlot(layout, i, videoAR, i === 0 ? centerX : undefined)) }]
       const old = seg.crop_boxes[i]
       // Frame crop boxes always frame the main video — other media sits on the frame's lanes
       const kept = old && toFrame
@@ -217,6 +245,98 @@ export const useEditorStore = create<EditorState & EditorActions>()((set, get) =
       keyframes: withBoxes(s.keyframes, crop_boxes),
     }
   }),
+
+  neighbourFraming: (layout, startMs, endMs, excludeId) => {
+    if (isFrameLayout(layout)) return undefined
+    const { segments, keyframes } = get()
+    const same = segments.filter(x => x.id !== excludeId && x.layout === layout && !x.crop_boxes.some(b => b.source_video_id))
+    if (!same.length) return undefined
+    // Touching on the left, then on the right, then the closest in time
+    const left = same.find(x => Math.abs(x.end_ms - startMs) <= 1)
+    const right = same.find(x => Math.abs(x.start_ms - endMs) <= 1)
+    const gap = (x: SegmentLocal) => x.end_ms <= startMs ? startMs - x.end_ms : x.start_ms >= endMs ? x.start_ms - endMs : 0
+    const src = left ?? right ?? [...same].sort((a, b) => gap(a) - gap(b))[0]
+    // The view where it meets this format: its end when it's before, its start when it's after
+    const at = src.end_ms <= startMs + 1 ? src.end_ms - 1 : src.start_ms
+    return Array.from({ length: LAYOUT_SLOT_COUNT[layout] }, (_, i) => {
+      const box = src.crop_boxes.find(b => b.slot_index === i)
+      return box ? getBoxPositionAtLerp(at, keyframes[box.id] ?? box.keyframes) : undefined
+    })
+  },
+
+  joinSameLayoutNeighbours: (segId, transitionAfter) => {
+    let id = segId
+    set(s => {
+      const byTime = [...s.segments].sort((a, b) => a.start_ms - b.start_ms)
+      const kf = { ...s.keyframes }
+      const joinable = (a: SegmentLocal, b: SegmentLocal) =>
+        a.layout === b.layout && !isFrameLayout(a.layout)
+        && Math.abs(b.start_ms - a.end_ms) <= 1
+        && !transitionAfter?.has(a.id)
+        && a.crop_boxes.length === b.crop_boxes.length
+        // Main video only, playing on without a jump (B-roll and inserts keep their own sections)
+        && a.crop_boxes.every(box => {
+          const other = b.crop_boxes.find(x => x.slot_index === box.slot_index)
+          return !!other && !box.source_video_id && !other.source_video_id
+            && Math.abs((box.source_offset_ms + (b.start_ms - a.start_ms)) - other.source_offset_ms) <= 2
+        })
+      // Glue b onto a: a's boxes carry both parts' views. a's view is held right up to where b
+      // began (a cut there), so each part keeps the view it had instead of panning across.
+      const glue = (a: SegmentLocal, b: SegmentLocal): SegmentLocal => {
+        for (const box of a.crop_boxes) {
+          const other = b.crop_boxes.find(x => x.slot_index === box.slot_index)!
+          const mine = (kf[box.id] ?? box.keyframes).filter(k => k.t_ms < b.start_ms - 1)
+          const theirs = (kf[other.id] ?? other.keyframes).filter(k => k.t_ms >= b.start_ms)
+          const hold = getBoxPositionAtLerp(b.start_ms - 1, kf[box.id] ?? box.keyframes)
+          const firstTheirs = theirs[0] ? getBoxPositionAtLerp(b.start_ms, theirs) : null
+          const same = firstTheirs && (['x', 'y', 'w', 'h'] as const).every(k => Math.abs(firstTheirs[k] - hold[k]) < 1e-4)
+          const merged = [
+            ...mine,
+            ...(firstTheirs && !same ? [{ id: crypto.randomUUID(), box_id: box.id, t_ms: b.start_ms - 1, ...hold }] : []),
+            ...theirs.map(k => ({ ...k, id: crypto.randomUUID(), box_id: box.id })),
+          ].sort((p, q) => p.t_ms - q.t_ms)
+          kf[box.id] = merged.length ? merged : [{ id: crypto.randomUUID(), box_id: box.id, t_ms: a.start_ms, ...hold }]
+          delete kf[other.id]
+        }
+        return { ...a, end_ms: b.end_ms }
+      }
+      let i = byTime.findIndex(x => x.id === segId)
+      if (i < 0) return s
+      let cur = byTime[i]
+      const removed = new Set<string>()
+      // Join the one before first (the earlier format's id and settings win), then any after
+      if (i > 0 && joinable(byTime[i - 1], cur)) {
+        cur = glue(byTime[i - 1], cur); removed.add(byTime[i].id)
+        byTime.splice(i, 1); i -= 1
+      }
+      while (i + 1 < byTime.length && joinable(cur, byTime[i + 1])) {
+        cur = glue(cur, byTime[i + 1]); removed.add(byTime[i + 1].id)
+        byTime.splice(i + 1, 1)
+      }
+      if (!removed.size) return s
+      id = cur.id
+      return {
+        segments: s.segments.filter(x => !removed.has(x.id)).map(x => x.id === cur.id ? cur : x),
+        keyframes: kf,
+        activeSegmentId: s.activeSegmentId && removed.has(s.activeSegmentId) ? cur.id : s.activeSegmentId,
+        activeBoxId: null,
+      }
+    })
+    return id
+  },
+
+  setViewAt: (boxId, t, pos, formatStart) => set(s => ({
+    keyframes: { ...s.keyframes, [boxId]: withIds(boxId, setViewAt(s.keyframes[boxId] ?? [], t, pos, formatStart)) },
+  })),
+  recordMotionAt: (boxId, t, pos) => set(s => ({
+    keyframes: { ...s.keyframes, [boxId]: withIds(boxId, recordMotionAt(s.keyframes[boxId] ?? [], t, pos)) },
+  })),
+  removeViewChange: (boxId, t) => set(s => ({
+    keyframes: { ...s.keyframes, [boxId]: withIds(boxId, removeViewChangeAt(s.keyframes[boxId] ?? [], t)) },
+  })),
+  moveViewChange: (boxId, from, to, formatStart, formatEnd) => set(s => ({
+    keyframes: { ...s.keyframes, [boxId]: withIds(boxId, moveViewChange(s.keyframes[boxId] ?? [], from, to, formatStart, formatEnd)) },
+  })),
 
   removeSegment: (id) => set(s => {
     // Formats are independent: deleting one leaves its time to the default framing

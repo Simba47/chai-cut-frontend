@@ -1,6 +1,6 @@
 'use client'
 
-import { useRef, useState, useEffect } from 'react'
+import { useRef, useState, useEffect, Fragment } from 'react'
 import type { SegmentLocal, LayoutType, TextOverlay, FrameItem, FrameLane, FrameLayout } from '@chai-cut/shared'
 import { isFrameLayout, FRAME_TEMPLATES, frameLanesFor, frameOf, laneItems, itemBounds, MIN_ITEM_MS } from '@/modules/editor/frames'
 
@@ -161,6 +161,14 @@ interface Props {
   onAddFrameItem?: (lane: FrameLane, anchor: DOMRect) => void
   /** A thin line of another frame clicked: go there and select it */
   onJumpToFrameItem?: (segId: string, itemId: string) => void
+  /** View changes (◆) of the selected crop box in the format under the playhead (see views.ts) */
+  viewMarkers?: { t_ms: number; cut: boolean }[]
+  selectedViewT?: number | null
+  /** Click a ◆: select it and jump there */
+  onSelectView?: (t: number) => void
+  /** Drag a ◆ in time; returns where it landed */
+  onMoveView?: (from: number, to: number) => number | void
+  onRemoveView?: (t: number) => void
 }
 
 export function SegmentTimeline({
@@ -188,6 +196,11 @@ export function SegmentTimeline({
   onUpdateFrameItem,
   onAddFrameItem,
   onJumpToFrameItem,
+  viewMarkers = [],
+  selectedViewT = null,
+  onSelectView,
+  onMoveView,
+  onRemoveView,
 }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const trackRef = useRef<HTMLDivElement>(null)
@@ -452,6 +465,34 @@ export function SegmentTimeline({
     window.addEventListener('pointerup', up)
   }
 
+  // ◆ view change: click selects it and jumps there; drag moves it in time (kept between its
+  // neighbours by the store). The first view starts with the format and doesn't move.
+  function handleViewDown(e: React.PointerEvent, t: number, first: boolean) {
+    if (e.button !== 0) return
+    e.stopPropagation()
+    e.preventDefault()
+    onSelectView?.(t)
+    if (first || !onMoveView) return
+    const sx = e.clientX
+    let cur = t, moved = false
+    setDragging(`view-${t}`)
+    const move = (ev: PointerEvent) => {
+      if (!moved && Math.abs(ev.clientX - sx) < 3) return
+      moved = true
+      const landed = onMoveView(cur, Math.round(msFromClientX(ev.clientX)))
+      if (typeof landed === 'number') { cur = landed; setSnapLine(landed) }
+    }
+    const up = () => {
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointerup', up)
+      setDragging(null)
+      setSnapLine(null)
+      if (moved) onSelectView?.(cur)
+    }
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', up)
+  }
+
   const pct = (ms: number) => (duration > 0 ? (ms / duration) * 100 : 0)
   const playheadPct = pct(currentTimeMs)
   const byTime = [...segments].sort((a, b) => a.start_ms - b.start_ms)
@@ -590,6 +631,55 @@ export function SegmentTimeline({
                       borderTop: `3px solid ${color}${isActive ? '' : 'aa'}`,
                       boxShadow: isActive ? `inset 0 0 0 2px ${color}` : 'none',
                     }} />
+                )
+              })}
+            </div>
+
+            {/* ── Views: one ◆ per view change of the format under the playhead ── */}
+            <div className="relative" style={{ height: 22, borderTop: '1px solid rgb(var(--ed-fg) / 0.05)' }}>
+              {viewMarkers.length > 0 ? (
+                <span className="absolute left-2 top-1/2 -translate-y-1/2 text-[10px] pointer-events-none" style={{ color: 'rgb(var(--ed-fg) / 0.3)' }}>
+                  Views
+                </span>
+              ) : (
+                <span className="absolute left-2 top-1/2 -translate-y-1/2 text-[10px] pointer-events-none" style={{ color: 'rgb(var(--ed-fg) / 0.25)' }}>
+                  Move the view at any moment — each change shows here
+                </span>
+              )}
+              {viewMarkers.map((v, i) => {
+                const on = selectedViewT === v.t_ms
+                const first = i === 0
+                const size = on ? 13 : 10
+                return (
+                  <Fragment key={`view-${v.t_ms}`}>
+                    <button
+                      type="button"
+                      onPointerDown={e => handleViewDown(e, v.t_ms, first)}
+                      onKeyDown={e => {
+                        if ((e.key === 'Delete' || e.key === 'Backspace') && !first) { e.preventDefault(); e.stopPropagation(); onRemoveView?.(v.t_ms) }
+                      }}
+                      aria-label={`${first ? 'First view' : v.cut ? 'View change' : 'Motion point'} at ${msToLabel(v.t_ms)}${first ? '' : '. Drag to move, Delete to remove'}`}
+                      title={`${first ? 'First view' : v.cut ? 'View change (cut)' : 'Motion point (glide)'} · ${msToLabel(v.t_ms)}${first ? '' : ' · drag to move · Delete to remove'}`}
+                      className="absolute top-1/2"
+                      style={{
+                        left: `${pct(v.t_ms)}%`, width: size, height: size,
+                        transform: `translate(${v.t_ms <= 0 ? '0' : '-50%'}, -50%) rotate(45deg)`,
+                        borderRadius: v.cut || first ? 2 : 999,
+                        background: on ? '#c8ff00' : v.cut || first ? 'rgb(var(--ed-fg) / 0.85)' : 'rgb(var(--ed-fg) / 0.45)',
+                        border: '1.5px solid rgba(0,0,0,0.6)',
+                        boxShadow: dragging === `view-${v.t_ms}` ? '0 0 0 4px rgba(200,255,0,0.35)' : '0 1px 3px rgba(0,0,0,0.6)',
+                        cursor: first ? 'pointer' : 'ew-resize', touchAction: 'none', zIndex: on ? 36 : 35,
+                      }} />
+                    {on && !first && onRemoveView && (
+                      <button type="button" onPointerDown={e => e.stopPropagation()}
+                        onClick={e => { e.stopPropagation(); onRemoveView(v.t_ms) }}
+                        aria-label={`Remove the view change at ${msToLabel(v.t_ms)}`} title="Remove this view change (Delete)"
+                        className="absolute top-1/2 flex items-center justify-center rounded-full"
+                        style={{ left: `calc(${pct(v.t_ms)}% + 10px)`, transform: 'translateY(-50%)', width: 16, height: 16, zIndex: 37, background: '#ef4444', color: '#fff', fontSize: 10, lineHeight: 1 }}>
+                        ✕
+                      </button>
+                    )}
+                  </Fragment>
                 )
               })}
             </div>

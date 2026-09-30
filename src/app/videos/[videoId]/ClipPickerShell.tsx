@@ -226,11 +226,12 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: P
       const res = await fetch('/api/clips', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ video_id: video.id, start_ms: startMs, end_ms: endMs, layout: 'horizontal', ...(title ? { title } : {}) }),
+        body: JSON.stringify({ video_id: video.id, start_ms: startMs, end_ms: endMs, layout: 'vertical', ...(title ? { title } : {}) }),
       })
       if (!res.ok) throw new Error((await res.json()).error ?? 'Failed to create clip')
       const { clip_id } = await res.json()
-      router.push(`/editor/${clip_id}?layout=horizontal`)
+      // Every clip starts as one Vertical format over the whole clip (like "Edit full video")
+      router.push(`/editor/${clip_id}`)
     } catch (e) {
       console.error(e)
       setBusy(null)
