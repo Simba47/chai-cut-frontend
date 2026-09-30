@@ -55,6 +55,15 @@ export default async function AutoClipsPage({ params }: { params: Promise<{ vide
     ids.length ? sql`SELECT * FROM text_overlays WHERE clip_id = ANY(${ids})` : Promise.resolve([]),
   ])
 
+  // B-roll videos the clips show (only the owner's own videos, as the export uses)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const brollIds = [...new Set((segRows as any[]).flatMap(s => (s.crop_boxes ?? []).map((b: { source_video_id?: string | null }) => b.source_video_id).filter(Boolean)))] as string[]
+  const brollRows = brollIds.length
+    ? await sql`SELECT id, storage_path FROM videos WHERE id = ANY(${brollIds}) AND user_id = ${user.id} AND storage_path IS NOT NULL`
+    : []
+  const stockUrls: Record<string, string> = Object.fromEntries(await Promise.all(brollRows.map(async r =>
+    [r.id as string, await getSignedUrl(r2, new GetObjectCommand({ Bucket: R2_BUCKET, Key: r.storage_path }), { expiresIn: 43200 })])))
+
   const allWords = words as unknown as TranscriptWord[]
   const clips: GalleryClip[] = await Promise.all(clipRows.map(async c => ({
     id: c.id, title: c.title, start_ms: c.start_ms, end_ms: c.end_ms, status: c.status,
@@ -75,6 +84,7 @@ export default async function AutoClipsPage({ params }: { params: Promise<{ vide
     <ClipsGallery
       video={{ id: video.id, title: video.title ?? null }}
       videoUrl={videoUrl}
+      stockUrls={stockUrls}
       job={job ? { status: job.status, error: job.error ?? null } : null}
       clips={clips}
     />

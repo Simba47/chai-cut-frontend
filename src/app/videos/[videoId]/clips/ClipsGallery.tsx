@@ -24,9 +24,10 @@ const ACCENT = '#c8ff00'
  * AI edits: every clip "Make my clips" made from the video, a section per run (newest first), each
  * playable in 9:16 here; Edit opens the editor, Export renders one
  */
-export function ClipsGallery({ video, videoUrl, job, clips: initial }: {
+export function ClipsGallery({ video, videoUrl, stockUrls, job, clips: initial }: {
   video: { id: string; title: string | null }
   videoUrl: string
+  stockUrls: Record<string, string>
   job: { status: string; error: string | null } | null
   clips: GalleryClip[]
 }) {
@@ -121,7 +122,10 @@ export function ClipsGallery({ video, videoUrl, job, clips: initial }: {
           {b.clips.map(c => (
             <article key={c.id} className="flex flex-col gap-2.5 p-3 rounded-2xl"
               style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)' }}>
-              <ClipPlayer videoUrl={videoUrl} startMs={c.start_ms} endMs={c.end_ms} segments={c.segments}
+              <ClipPlayer videoUrl={videoUrl}
+                stockUrls={Object.fromEntries(c.segments.flatMap(sg => sg.crop_boxes.map(b => b.source_video_id))
+                  .filter((id): id is string => !!id && !!stockUrls[id]).map(id => [id, stockUrls[id]]))}
+                startMs={c.start_ms} endMs={c.end_ms} segments={c.segments}
                 words={c.words} captionStyle={c.captionStyle} textOverlays={c.textOverlays} />
               <div className="flex items-start gap-2">
                 <p className="flex-1 text-sm font-semibold text-white leading-snug">{c.title || 'Untitled clip'}</p>

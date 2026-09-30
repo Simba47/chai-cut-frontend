@@ -833,6 +833,12 @@ function drawCenteredText(ctx: CanvasRenderingContext2D, o: TextOverlayType) {
 
 interface OutputCanvasProps {
   videoRef: RefObject<HTMLVideoElement | null>
+  /** The format at a clip time, read on every frame (instead of activeSegment, which follows React renders) */
+  segmentAt?: (clipMs: number) => SegmentLocal | null
+  /** Cut straight to the next format, as the export does (no crossfade) */
+  hardCuts?: boolean
+  /** The video a format shows, when it isn't the main one (B-roll) */
+  sourceFor?: (seg: SegmentLocal | null) => HTMLVideoElement | null
   currentTimeMs: number
   clipStartMs?: number
   activeSegment: SegmentLocal | null
@@ -870,7 +876,7 @@ interface OutputCanvasProps {
 }
 
 export function OutputCanvas({
-  videoRef, currentTimeMs, clipStartMs = 0, activeSegment, getPositionAt,
+  videoRef, currentTimeMs, clipStartMs = 0, activeSegment, getPositionAt, segmentAt, hardCuts = false, sourceFor,
   overlays = [], activeOverlayId, onOverlayChange, onSelectOverlay, onDeleteOverlay,
   className, style, skipTransitionRef,
   words, captionStyle, captionTextCase = 'title', showCaptions = false,
@@ -888,6 +894,12 @@ export function OutputCanvas({
   const clipStartMsRef   = useRef(clipStartMs)
   const getPositionAtRef = useRef(getPositionAt)
   activeSegmentRef.current = activeSegment
+  const segmentAtRef = useRef(segmentAt)
+  segmentAtRef.current = segmentAt
+  const sourceForRef = useRef(sourceFor)
+  sourceForRef.current = sourceFor
+  const hardCutsRef = useRef(hardCuts)
+  hardCutsRef.current = hardCuts
   currentTimeMsRef.current = currentTimeMs
   clipStartMsRef.current   = clipStartMs
   getPositionAtRef.current = getPositionAt
@@ -929,14 +941,16 @@ export function OutputCanvas({
 
       if (canvas && video && video.readyState >= 2) {
         const ctx    = canvas.getContext('2d')
-        const seg    = activeSegmentRef.current
+        const seg    = segmentAtRef.current
+          ? segmentAtRef.current(Math.max(0, video.currentTime * 1000 - clipStartMsRef.current))
+          : activeSegmentRef.current
         const newId  = seg?.id ?? null
 
         if (ctx) {
           // Detect segment boundary — snapshot MUST be captured before paintSegment
           // overwrites the canvas with new-segment content.
           if (newId !== prevSegIdRef.current && prevSegIdRef.current !== null) {
-            const skip = skipTransitionRef?.current ?? false
+            const skip = hardCutsRef.current || (skipTransitionRef?.current ?? false)
             if (skipTransitionRef) skipTransitionRef.current = false
             if (!skip) {
               if (!snapshotRef.current) snapshotRef.current = document.createElement('canvas')
@@ -960,7 +974,11 @@ export function OutputCanvas({
 
           // Keep frame slots' own videos in step with the main player, then draw
           frameMediaRef.current?.sync(seg, clipRelativeMs, !video.paused, video)
-          paintSegment(ctx, video, seg, clipRelativeMs, getPositionAtRef.current, frameMediaRef.current)
+          // A B-roll shot whose video is still seeking keeps the last frame (never flashes the main video)
+          const other = sourceForRef.current?.(seg)
+          if (!other || other.readyState >= 2) {
+            paintSegment(ctx, other ?? video, seg, clipRelativeMs, getPositionAtRef.current, frameMediaRef.current)
+          }
 
           // Composite the outgoing snapshot on top with decreasing alpha
           if (transitionStart.current !== null && snapshotRef.current) {

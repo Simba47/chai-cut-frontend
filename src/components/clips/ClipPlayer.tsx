@@ -7,10 +7,13 @@ import { getBoxPositionAtLerp } from '@/lib/interpolation'
 
 /**
  * A clip played in 9:16 without exporting it: the source video drawn through the clip's framing,
- * captions and text, exactly as the editor's preview draws it (OutputCanvas).
+ * captions and text, exactly as the editor's preview draws it (OutputCanvas), with hard cuts
+ * between formats and the B-roll shots in place, as in the export.
  */
-export function ClipPlayer({ videoUrl, startMs, endMs, segments, words, captionStyle, textOverlays }: {
+export function ClipPlayer({ videoUrl, stockUrls = {}, startMs, endMs, segments, words, captionStyle, textOverlays }: {
   videoUrl: string
+  /** Signed URLs of the B-roll videos the clip shows, by video id */
+  stockUrls?: Record<string, string>
   startMs: number
   endMs: number
   segments: SegmentLocal[]
@@ -31,7 +34,36 @@ export function ClipPlayer({ videoUrl, startMs, endMs, segments, words, captionS
   }, [segments])
   const getPositionAt = useMemo(() => (boxId: string, t: number) => getBoxPositionAtLerp(t, keyframes[boxId] ?? []), [keyframes])
   const bySegmentTime = useMemo(() => [...segments].sort((a, b) => a.start_ms - b.start_ms), [segments])
-  const activeSegment = bySegmentTime.find(s => tMs >= s.start_ms && tMs < s.end_ms) ?? bySegmentTime[bySegmentTime.length - 1] ?? null
+  const segmentAt = useMemo(() => (t: number) =>
+    bySegmentTime.find(s => t >= s.start_ms && t < s.end_ms) ?? bySegmentTime[bySegmentTime.length - 1] ?? null,
+  [bySegmentTime])
+  const activeSegment = segmentAt(tMs)
+
+  // B-roll: the stock videos, drawn in place of the source during their shots (muted: the
+  // speaker keeps talking, as in the export)
+  const stockRefs = useRef<Record<string, HTMLVideoElement | null>>({})
+  const brollOf = (seg: SegmentLocal | null) => {
+    const box = seg?.crop_boxes[0]
+    return box?.source_video_id && stockUrls[box.source_video_id] ? box : null
+  }
+  const sourceFor = (seg: SegmentLocal | null) => {
+    const box = brollOf(seg)
+    return box ? stockRefs.current[box.source_video_id!] ?? null : null
+  }
+  /** Keep the stock video of the shot under the playhead in step; pause the others */
+  function syncStock(rel: number, play: boolean) {
+    const seg = segmentAt(rel)
+    const box = brollOf(seg)
+    for (const [id, el] of Object.entries(stockRefs.current)) {
+      if (!el) continue
+      if (box && id === box.source_video_id && seg) {
+        const want = ((box.source_offset_ms ?? 0) + rel - seg.start_ms) / 1000
+        if (Math.abs(el.currentTime - want) > 0.25) el.currentTime = want
+        if (play && el.paused) el.play().catch(() => {})
+        if (!play && !el.paused) el.pause()
+      } else if (!el.paused) el.pause()
+    }
+  }
 
   // Captions: Roman letters when the style says so
   const shownWords = useMemo(
@@ -48,19 +80,20 @@ export function ClipPlayer({ videoUrl, startMs, endMs, segments, words, captionS
       const v = videoRef.current
       if (v) {
         const rel = v.currentTime * 1000 - startMs
-        if (rel >= lengthMs) { v.pause(); v.currentTime = startMs / 1000; setPlaying(false); setTMs(0); return }
+        if (rel >= lengthMs) { v.pause(); v.currentTime = startMs / 1000; setPlaying(false); setTMs(0); syncStock(0, false); return }
         setTMs(Math.max(0, rel))
+        syncStock(Math.max(0, rel), true)
       }
       raf = requestAnimationFrame(tick)
     }
     raf = requestAnimationFrame(tick)
     return () => cancelAnimationFrame(raf)
-  }, [playing, startMs, lengthMs])
+  }, [playing, startMs, lengthMs]) // eslint-disable-line react-hooks/exhaustive-deps
 
   function toggle() {
     const v = videoRef.current
     if (!v) return
-    if (playing) { v.pause(); setPlaying(false); return }
+    if (playing) { v.pause(); setPlaying(false); syncStock(tMs, false); return }
     if (v.currentTime * 1000 < startMs || v.currentTime * 1000 >= endMs) v.currentTime = startMs / 1000
     v.play().then(() => setPlaying(true)).catch(() => setPlaying(false))
   }
@@ -70,6 +103,7 @@ export function ClipPlayer({ videoUrl, startMs, endMs, segments, words, captionS
     if (!v) return
     v.currentTime = (startMs + fraction * lengthMs) / 1000
     setTMs(fraction * lengthMs)
+    syncStock(fraction * lengthMs, playing)
   }
 
   const fmt = (ms: number) => { const s = Math.floor(ms / 1000); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}` }
@@ -86,9 +120,14 @@ export function ClipPlayer({ videoUrl, startMs, endMs, segments, words, captionS
         onSeeked={() => setReady(true)}
         style={{ position: 'absolute', width: 1, height: 1, opacity: 0, pointerEvents: 'none' }}
       />
+      {Object.entries(stockUrls).map(([id, url]) => (
+        <video key={id} ref={el => { stockRefs.current[id] = el }} src={url} muted playsInline preload="auto"
+          style={{ position: 'absolute', width: 1, height: 1, opacity: 0, pointerEvents: 'none' }} />
+      ))}
       <OutputCanvas
         videoRef={videoRef} currentTimeMs={tMs} clipStartMs={startMs}
         activeSegment={activeSegment} getPositionAt={getPositionAt}
+        segmentAt={segmentAt} hardCuts sourceFor={sourceFor}
         words={shownWords} captionStyle={captionStyle ?? {}} showCaptions={showCaptions}
         textOverlays={textOverlays}
         style={{ width: '100%', height: '100%', display: 'block' }}
