@@ -19,12 +19,12 @@ import { usePlayerStore } from '@/modules/player/store'
 import { useVideoSync } from '@/modules/player/useSync'
 import { useCaptionStore } from '@/modules/captions/store'
 import { useMediaStore } from '@/modules/media/store'
-import { rowsToLocal, normalizeCoverage, defaultCropForSlot, msToLabel, uncoveredRanges } from '@/modules/editor/utils'
+import { rowsToLocal, normalizeCoverage, msToLabel, uncoveredRanges } from '@/modules/editor/utils'
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
 type MobileTab = 'timeline' | 'crop' | 'captions' | 'text' | 'audio' | 'filters' | 'export'
-type SaveState = 'idle' | 'saving' | 'saved' | 'error'
+type SaveState = 'idle' | 'saving' | 'saved' | 'error' | 'retrying'
 
 interface SegmentRow extends Omit<Segment, never> {
   crop_boxes: (CropBox & { box_keyframes: BoxKeyframe[] })[]
@@ -80,7 +80,7 @@ export function EditorShellMobile({
   const {
     segments, keyframes, activeSegmentId, activeBoxId,
     hydrate: hydrateEditor, updateSegment, removeSegment,
-    splitAtMs, upsertKeyframe, getPositionAt, addFormat,
+    splitAtMs, getPositionAt, addFormat, applyLayout, neighbourFraming, joinSameLayoutNeighbours, setViewAt,
     setActiveSegmentId, setActiveBoxId,
   } = useEditorStore()
 
@@ -151,7 +151,6 @@ export function EditorShellMobile({
   const [renderStuckSince, setRenderStuckSince] = useState<number | null>(clip.status === 'rendering' ? Date.now() : null)
   const [renderElapsed, setRenderElapsed] = useState(0)
   const [saveState, setSaveState] = useState<SaveState>('idle')
-  const [pendingLayout, setPendingLayout] = useState<{ segId: string; layout: LayoutType } | null>(null)
 
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -274,23 +273,15 @@ export function EditorShellMobile({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [segments, keyframes, captionStyle, textOverlays, audioTracks, transitions, filters, overlays])
 
-  // ── Apply default crops after layout split ────────────────────────────────────
-  useEffect(() => {
-    if (!pendingLayout) return
-    const { segId, layout } = pendingLayout
-    const seg = segments.find(s => s.id === segId)
-    if (!seg) return
-    setPendingLayout(null)
-    seg.crop_boxes.forEach((box, i) => {
-      upsertKeyframe(box.id, { t_ms: seg.start_ms, ...defaultCropForSlot(layout, i) })
-    })
-  }, [segments]) // eslint-disable-line react-hooks/exhaustive-deps
-
   // ── Save / export ─────────────────────────────────────────────────────────────
   // Saves run one at a time, in order, so the latest state is always written last.
   // Resolves true when that save succeeded.
   const saveChainRef = useRef<Promise<boolean>>(Promise.resolve(true))
+  // A dropped connection (or a DB hiccup) retries on its own: 2s, 4s, 8s … up to 30s
+  const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const retryDelayRef = useRef(2000)
   function handleSave(): Promise<boolean> {
+    if (retryTimerRef.current) { clearTimeout(retryTimerRef.current); retryTimerRef.current = null }
     const run = saveChainRef.current.then(saveOnce, saveOnce)
     saveChainRef.current = run
     return run
@@ -314,18 +305,41 @@ export function EditorShellMobile({
           captionStyle, textOverlays, audioTracks, transitions, filters, overlays,
         }),
       })
-      if (!res.ok) throw new Error((await res.json()).error ?? 'Save failed')
+      if (!res.ok) {
+        const msg = await res.json().then(j => j.error, () => null)
+        throw Object.assign(new Error(msg ?? 'Save failed'), { status: res.status })
+      }
+      retryDelayRef.current = 2000
       setSaveState('saved')
       saveTimerRef.current = setTimeout(() => setSaveState('idle'), 2500)
       return true
     } catch (err) {
       console.error('[save]', err)
-      setSaveState('error')
-      saveTimerRef.current = setTimeout(() => setSaveState('idle'), 3000)
+      // Offline / server-side failure: keep the edit and try again. A 4xx was refused — say so.
+      const status = (err as { status?: number }).status
+      if (status === undefined || status >= 500 || status === 429) {
+        setSaveState('retrying')
+        const delay = retryDelayRef.current
+        retryDelayRef.current = Math.min(delay * 2, 30000)
+        if (retryTimerRef.current) clearTimeout(retryTimerRef.current)
+        retryTimerRef.current = setTimeout(() => { retryTimerRef.current = null; latestHandleSaveRef.current() }, delay)
+      } else {
+        setSaveState('error')
+      }
       return false
     }
   }
   latestHandleSaveRef.current = handleSave
+
+  // Back online: don't wait out the backoff
+  useEffect(() => {
+    const onOnline = () => { if (retryTimerRef.current) { retryDelayRef.current = 2000; latestHandleSaveRef.current() } }
+    window.addEventListener('online', onOnline)
+    return () => {
+      window.removeEventListener('online', onOnline)
+      if (retryTimerRef.current) clearTimeout(retryTimerRef.current)
+    }
+  }, [])
 
   // retranscribe: Re-render also regenerates captions (Gemini) before rendering
   async function handleExport(retranscribe = false) {
@@ -416,42 +430,29 @@ export function EditorShellMobile({
     confirm({ title: 'Remove this music track?', confirmLabel: 'Remove' }, () => setAudioTracks(prev => prev.filter(t => t.id !== id)))
   }
 
+  // Same rule as the desktop editor: a layout changes the WHOLE format under the playhead (or the
+  // whole uncovered stretch there), starts from the nearest view with that layout, and joins
+  // touching neighbours with the same layout. "Cut" is how a format is split in two.
   function handleLayoutChange(layout: LayoutType) {
     const t = currentTimeMs
+    const v = videoRef.current
+    const ar = v?.videoWidth && v.videoHeight ? v.videoWidth / v.videoHeight : undefined
+    const transitionAfter = new Set(transitions.map(tr => tr.after_segment_id))
     // Only the format actually under the playhead: in time no format covers, playingSegment
     // falls back to the first format, and changing that one would edit the wrong part of the clip
     const seg = segments.find(s => t >= s.start_ms && t < s.end_ms)
     if (!seg) {
-      // Default framing here: give the stretch from the playhead (or the gap's start) its own format
       const gap = uncoveredRanges(segments, clip.end_ms - clip.start_ms).find(g => t >= g.start_ms && t <= g.end_ms)
-      if (!gap) return
-      const start = t - gap.start_ms <= 300 ? gap.start_ms : t
-      if (gap.end_ms - start < 300) return
+      if (!gap || gap.end_ms - gap.start_ms < 300) return
       pause()
-      const v = videoRef.current
-      const id = addFormat(start, gap.end_ms, layout, v?.videoWidth && v.videoHeight ? v.videoWidth / v.videoHeight : undefined)
-      setActiveSegmentId(id)
+      const id = addFormat(gap.start_ms, gap.end_ms, layout, ar, neighbourFraming(layout, gap.start_ms, gap.end_ms))
+      setActiveSegmentId(joinSameLayoutNeighbours(id, transitionAfter))
       return
     }
+    if (seg.layout === layout) return
     pause()
-    const sameLayout = layout === seg.layout
-    const atSegStart = currentTimeMs <= seg.start_ms + 100
-    if (sameLayout || atSegStart) {
-      if (!sameLayout) updateSegment(seg.id, { layout })
-      seg.crop_boxes.forEach((box, i) => upsertKeyframe(box.id, { t_ms: currentTimeMs, ...defaultCropForSlot(layout, i) }))
-      setActiveSegmentId(seg.id)
-    } else {
-      const newId = splitAtMs(seg.id, currentTimeMs, getPositionAt)
-      if (newId) {
-        updateSegment(newId, { layout })
-        setActiveSegmentId(newId)
-        setPendingLayout({ segId: newId, layout })
-      } else {
-        updateSegment(seg.id, { layout })
-        seg.crop_boxes.forEach((box, i) => upsertKeyframe(box.id, { t_ms: currentTimeMs, ...defaultCropForSlot(layout, i) }))
-        setActiveSegmentId(seg.id)
-      }
-    }
+    applyLayout(seg.id, layout, ar, neighbourFraming(layout, seg.start_ms, seg.end_ms, seg.id))
+    setActiveSegmentId(joinSameLayoutNeighbours(seg.id, transitionAfter))
   }
 
   function handleCut() {
@@ -460,9 +461,17 @@ export function EditorShellMobile({
     if (newId) setActiveSegmentId(newId)
   }
 
+  // Moving the view = a view change from the playhead on (same rule as the desktop editor, views.ts)
+  function moveView(boxId: string, pos: { x: number; y: number; w: number; h: number }) {
+    const seg = segments.find(s => s.crop_boxes.some(b => b.id === boxId))
+    if (!seg) return
+    if (playing) pause()
+    setViewAt(boxId, Math.max(seg.start_ms, Math.min(seg.end_ms - 1, currentTimeMs)), pos, seg.start_ms)
+  }
+
   function handleCropChange(field: 'x' | 'y' | 'w' | 'h', value: number) {
     if (!activeBox) return
-    upsertKeyframe(activeBox.id, { t_ms: currentTimeMs, ...cropPos, [field]: value })
+    moveView(activeBox.id, { ...cropPos, [field]: value })
   }
 
   function handleInsertBrollAfterSeg(_afterSegId: string) {}
@@ -514,8 +523,7 @@ export function EditorShellMobile({
     if (!pos) return
     const dx = pos.fx - cropDragRef.current.startFx
     const dy = pos.fy - cropDragRef.current.startFy
-    upsertKeyframe(activeBox.id, {
-      t_ms: currentTimeMs,
+    moveView(activeBox.id, {
       ...cropPos,
       x: Math.max(0, Math.min(1 - cropPos.w, cropDragRef.current.startX + dx)),
       y: Math.max(0, Math.min(1 - cropPos.h, cropDragRef.current.startY + dy)),
@@ -543,8 +551,8 @@ export function EditorShellMobile({
         ))}
       </div>
       <div style={{ flex: 1 }} />
-      <span style={{ fontSize: 11, flexShrink: 0, color: saveState === 'saved' ? '#22c55e' : saveState === 'saving' ? 'rgba(255,255,255,0.4)' : saveState === 'error' ? '#f87171' : 'transparent' }}>
-        {saveState === 'saving' ? '●' : saveState === 'saved' ? '✓ Saved' : saveState === 'error' ? '! Error' : '·'}
+      <span style={{ fontSize: 11, flexShrink: 0, color: saveState === 'saved' ? '#22c55e' : saveState === 'saving' ? 'rgba(255,255,255,0.4)' : saveState === 'error' ? '#f87171' : saveState === 'retrying' ? '#fcd34d' : 'transparent' }}>
+        {saveState === 'saving' ? '●' : saveState === 'saved' ? '✓ Saved' : saveState === 'error' ? '! Not saved' : saveState === 'retrying' ? 'Offline · retrying' : '·'}
       </span>
       {exportError && <span style={{ fontSize: 10, color: '#f87171', maxWidth: 80, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{exportError}</span>}
     </header>
@@ -705,7 +713,7 @@ export function EditorShellMobile({
         activeSegment={activeSegment ?? null} getPositionAt={getPositionAt}
         activeBoxId={activeBoxId ?? null}
         onSelectBox={(segId, boxId) => { setActiveSegmentId(segId); setActiveBoxId(boxId) }}
-        onBoxChange={(boxId, pos) => upsertKeyframe(boxId, { t_ms: currentTimeMs, ...pos })}
+        onBoxChange={moveView}
       />
       {activeSegment?.crop_boxes[0]?.source_video_id && (
         <div style={{ position: 'absolute', top: 8, left: 8, zIndex: 20, background: 'rgba(249,115,22,0.85)', color: '#fff', fontSize: 11, fontWeight: 700, padding: '3px 8px', borderRadius: 6, pointerEvents: 'none' }}>B-roll</div>
@@ -721,7 +729,7 @@ export function EditorShellMobile({
         activeSegment={activeSegment ?? null} getPositionAt={getPositionAt}
         activeBoxId={activeBoxId ?? null}
         onSelectBox={(segId, boxId) => { setActiveSegmentId(segId); setActiveBoxId(boxId) }}
-        onBoxChange={(boxId, pos) => upsertKeyframe(boxId, { t_ms: currentTimeMs, ...pos })}
+        onBoxChange={moveView}
       />
       <div style={{ position: 'absolute', inset: 0, zIndex: 10, touchAction: 'none' }}
         onTouchStart={onCropTouchStart} onTouchMove={onCropTouchMove} onTouchEnd={onCropTouchEnd}

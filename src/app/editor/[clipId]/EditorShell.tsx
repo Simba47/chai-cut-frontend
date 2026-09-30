@@ -27,10 +27,11 @@ import { useVideoSync } from '@/modules/player/useSync'
 import { useCaptionStore } from '@/modules/captions/store'
 import { useMediaStore } from '@/modules/media/store'
 import { rowsToLocal, normalizeCoverage, uncoveredRanges, defaultCropForSlot, msToLabel } from '@/modules/editor/utils'
+import { viewChanges } from '@/modules/editor/views'
 import type { SegmentLocal, FrameLayout, FrameLane, FrameItem } from '@chai-cut/shared'
 
 type Tool = 'format' | 'frames' | 'captions' | 'text'
-type SaveState = 'idle' | 'saving' | 'saved' | 'error'
+type SaveState = 'idle' | 'saving' | 'saved' | 'error' | 'retrying'
 
 interface SegmentRow extends Omit<Segment, never> {
   crop_boxes: (CropBox & { box_keyframes: BoxKeyframe[] })[]
@@ -68,7 +69,7 @@ const ACCENT = '#c8ff00'
 const TOOLS: { id: Tool; label: string; title: string; hint: string; icon: React.ReactNode }[] = [
   {
     id: 'format', label: 'Format', title: 'Formats',
-    hint: 'Each format is a section of the clip with its own layout and framing. Picking a layout mid-format starts a new one at the playhead.',
+    hint: 'Each format is a section of the clip with its own layout. Picking a layout changes the whole format under the playhead (use Split or S to cut one in two). Move the view at any moment to change it from there on — each change is a ◆ on the timeline.',
     icon: <path d="M6 2v14a2 2 0 002 2h14M2 6h14a2 2 0 012 2v14" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" fill="none" />,
   },
   {
@@ -106,6 +107,7 @@ export function EditorShell({
     segments, keyframes, activeSegmentId, activeBoxId,
     hydrate: hydrateEditor, updateSegment, removeSegment,
     splitAtMs, updateBoxSource, insertBrollAtMs, applyLayout, setSegmentEdge, addFormat, moveJunction,
+    neighbourFraming, joinSameLayoutNeighbours, setViewAt, recordMotionAt, removeViewChange, moveViewChange,
     upsertKeyframe, setBoxKeyframes, getPositionAt, updateFrameBand,
     updateFrame, addFrameItem, updateFrameItem, removeFrameItem,
     setActiveSegmentId, setActiveBoxId,
@@ -219,6 +221,9 @@ export function EditorShell({
   // Saves run one at a time: an edit made during a save queues exactly one more save after it
   const saveInFlightRef = useRef<Promise<void> | null>(null)
   const saveAgainRef = useRef(false)
+  // A dropped connection (or a DB hiccup) retries on its own: 2s, 4s, 8s … up to 30s
+  const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const retryDelayRef = useRef(2000)
   const editVersionRef = useRef(0)
   const latestHandleSaveRef = useRef<() => Promise<void>>(() => Promise.resolve())
   const skipCanvasTransitionRef = useRef(false)
@@ -393,6 +398,7 @@ export function EditorShell({
   // Resolves true when the latest save succeeded
   const lastSaveOkRef = useRef(true)
   function handleSave(): Promise<void> {
+    if (retryTimerRef.current) { clearTimeout(retryTimerRef.current); retryTimerRef.current = null }
     if (saveInFlightRef.current) { saveAgainRef.current = true; return saveInFlightRef.current }
     const run = async () => {
       do { saveAgainRef.current = false; lastSaveOkRef.current = await saveOnce() } while (saveAgainRef.current)
@@ -421,19 +427,44 @@ export function EditorShell({
           captionStyle, textOverlays, audioTracks, transitions, filters, overlays,
         }),
       })
-      if (!res.ok) throw new Error((await res.json()).error ?? 'Save failed')
+      if (!res.ok) {
+        const msg = await res.json().then(j => j.error, () => null)
+        throw Object.assign(new Error(msg ?? 'Save failed'), { status: res.status })
+      }
       // Only clear "unsaved" if nothing changed while this save was in flight
       if (editVersionRef.current === version) unsavedRef.current = false
+      retryDelayRef.current = 2000
       setSaveState('saved')
       saveTimerRef.current = setTimeout(() => setSaveState('idle'), 2500)
       return true
     } catch (err) {
       console.error('[save]', err)
-      setSaveState('error')
+      // No response at all (offline, DNS) or a server-side failure: nothing is wrong with the
+      // edit itself, so keep trying quietly. A 4xx means the save was refused — show Retry.
+      const status = (err as { status?: number }).status
+      if (status === undefined || status >= 500 || status === 429) {
+        setSaveState('retrying')
+        const delay = retryDelayRef.current
+        retryDelayRef.current = Math.min(delay * 2, 30000)
+        if (retryTimerRef.current) clearTimeout(retryTimerRef.current)
+        retryTimerRef.current = setTimeout(() => { retryTimerRef.current = null; latestHandleSaveRef.current?.() }, delay)
+      } else {
+        setSaveState('error')
+      }
       return false
     }
   }
   latestHandleSaveRef.current = handleSave
+
+  // Back online: don't wait out the backoff
+  useEffect(() => {
+    const onOnline = () => { if (retryTimerRef.current) { retryDelayRef.current = 2000; latestHandleSaveRef.current?.() } }
+    window.addEventListener('online', onOnline)
+    return () => {
+      window.removeEventListener('online', onOnline)
+      if (retryTimerRef.current) clearTimeout(retryTimerRef.current)
+    }
+  }, [])
 
   // Leaving the editor: flush a pending auto-save first so the last edit isn't lost
   const [leaving, setLeaving] = useState(false)
@@ -523,19 +554,26 @@ export function EditorShell({
 
   // ── Editor actions ────────────────────────────────────────────────────────────
 
-  // A layout applies from the playhead to the end of the current position. What came before the
-  // playhead keeps its layout and framing; at the very start of a position the whole position changes.
+  // Format buttons ('section'): the layout changes the WHOLE format under the playhead (or the whole
+  // uncovered stretch there). It starts from the view of the nearest format with that layout, and
+  // joins touching neighbours with the same layout — so Split → Vertical leaves no pieces behind.
+  // Cutting a format in two is its own action (Split, below).
+  // Frames ('fromPlayhead'): picking a frame mid-format starts a new frame at the playhead; what
+  // came before keeps its layout. At the very start of a format the whole format changes.
   const LAYOUT_SNAP_MS = 300
-  function handleLayoutChange(layout: LayoutType) {
+  const transitionAfter = () => new Set(transitions.map(tr => tr.after_segment_id))
+  function handleLayoutChange(layout: LayoutType, mode: 'section' | 'fromPlayhead' = 'section') {
     const t = currentTimeMs
+    const ar = getVideoAR()
     if (!activeSegment && currentGap) {
-      // No format here yet: create one from the playhead (or the gap's start) to the gap's end
-      const start = t - currentGap.start_ms <= LAYOUT_SNAP_MS ? currentGap.start_ms : t
+      // No format here yet: create one over the uncovered stretch (frames: from the playhead)
+      const start = mode === 'section' || t - currentGap.start_ms <= LAYOUT_SNAP_MS ? currentGap.start_ms : t
       if (currentGap.end_ms - start < 300) return
       pause()
       skipCanvasTransitionRef.current = true
-      addFormat(start, currentGap.end_ms, layout, getVideoAR())
-      if (start !== t) seekToMs(start)
+      const id = addFormat(start, currentGap.end_ms, layout, ar, neighbourFraming(layout, start, currentGap.end_ms))
+      if (mode === 'section') joinSameLayoutNeighbours(id, transitionAfter())
+      else if (start !== t) seekToMs(start)
       return
     }
     const seg = activeSegment
@@ -544,6 +582,12 @@ export function EditorShell({
     pause()
     skipCanvasTransitionRef.current = true
     setActiveBoxId(null)
+
+    if (mode === 'section') {
+      applyLayout(seg.id, layout, ar, neighbourFraming(layout, seg.start_ms, seg.end_ms, seg.id))
+      joinSameLayoutNeighbours(seg.id, transitionAfter())
+      return
+    }
 
     if (t - seg.start_ms <= LAYOUT_SNAP_MS) {
       applyLayout(seg.id, layout, getVideoAR())
@@ -565,8 +609,34 @@ export function EditorShell({
     if (newId) applyLayout(newId, layout, getVideoAR())
   }
 
-  // Crop edits: with Motion off the box frames the whole position (one keyframe at its start).
-  // With Motion on, each drag records a keyframe at the playhead, and the renderer pans between them.
+  // Split: cut the format under the playhead in two. Both halves keep its layout and views, so a
+  // different layout can then be picked for one of them.
+  const canSplitHere = !!activeSegment && currentTimeMs > activeSegment.start_ms + 100 && currentTimeMs < activeSegment.end_ms - 100
+  function splitHere() {
+    const seg = activeSegment
+    if (!seg || !canSplitHere) return
+    pause()
+    skipCanvasTransitionRef.current = true
+    splitAtMs(seg.id, currentTimeMs, getPositionAt)
+  }
+
+  // Moving the view (the crop box):
+  //  • Motion off — a VIEW CHANGE at the playhead: the new view shows from here until the next
+  //    change (a cut); everything before stays as it was. On an existing change (◆ on the timeline)
+  //    it edits that change; at the format's start it edits the first view.
+  //  • Motion on — records points while the video plays; the view glides between them.
+  // The preview and the export both follow these changes (see views.ts).
+  const [selectedView, setSelectedView] = useState<{ boxId: string; t: number } | null>(null)
+  // The ◆ markers on the timeline: view changes of the selected crop box (or the first one) in the
+  // format under the playhead
+  const viewBox = activeSegment ? (activeSegment.crop_boxes.find(b => b.id === activeBoxId) ?? activeSegment.crop_boxes[0]) : undefined
+  const viewMarkers = useMemo(
+    () => viewBox && activeSegment
+      ? viewChanges(keyframes[viewBox.id] ?? []).filter(v => v.t_ms >= activeSegment.start_ms - 1 && v.t_ms < activeSegment.end_ms)
+      : [],
+    [viewBox, activeSegment, keyframes],
+  )
+  useEffect(() => { setSelectedView(null) }, [viewBox?.id])
   function handleBoxChange(boxId: string, pos: { x: number; y: number; w: number; h: number }) {
     if (boxId === DEFAULT_BOX_ID) {
       // First move creates a format over the gap; the rest of the same drag (whose handler still
@@ -581,17 +651,21 @@ export function EditorShell({
     const vid = videoRef.current
     if (motionModeRef.current) {
       const t_ms = vid && !vid.paused ? Math.round(vid.currentTime * 1000) - clip.start_ms : currentTimeMs
-      upsertKeyframe(boxId, { t_ms: Math.max(0, t_ms), ...pos })
+      recordMotionAt(boxId, Math.max(0, t_ms), pos)
       return
     }
     const seg = segments.find(s => s.crop_boxes.some(b => b.id === boxId))
-    setBoxKeyframes(boxId, [{ t_ms: seg?.start_ms ?? 0, ...pos }])
+    if (!seg) return
+    // One drag = one view change at one moment: stop playback so the playhead can't run on
+    if (vid && !vid.paused) pause()
+    const t = Math.max(seg.start_ms, Math.min(seg.end_ms - 1, currentTimeMs))
+    setViewAt(boxId, t, pos, seg.start_ms)
   }
 
   // Frames work like the Format layouts: picking one mid-frame starts a new frame at the playhead
   // (e.g. Single 0:00–0:15, then Dual Video from 0:15), each with its own ◆ keys and lanes
   function handleApplyFrame(layout: FrameLayout) {
-    handleLayoutChange(layout)
+    handleLayoutChange(layout, 'fromPlayhead')
   }
   // What a frame picked now will cover (see handleLayoutChange)
   const frameTarget = (() => {
@@ -924,13 +998,19 @@ export function EditorShell({
     }])
   }
 
-  // ── Keyboard shortcuts: Space play/pause · [ ] trim · Delete · ←/→ 1 s (Shift: 5 s) ──────────
-  const shortcutsRef = useRef({ togglePlay, seekToMs, currentTimeMs, clipDurationMs, trimSelectedTo, deleteSelected: () => {} })
+  // ── Keyboard shortcuts: Space play/pause · S split · [ ] trim · Delete · ←/→ 1 s (Shift: 5 s) ──
+  const shortcutsRef = useRef({ togglePlay, seekToMs, currentTimeMs, clipDurationMs, trimSelectedTo, splitHere, deleteSelected: () => {} })
   shortcutsRef.current = {
-    togglePlay, seekToMs, currentTimeMs, clipDurationMs, trimSelectedTo,
-    // Delete acts on what's selected most specifically: a text overlay, then an image, then the format
-    // (an overlay only counts while it's on screen at the playhead, so a stale selection can't be deleted by surprise)
+    togglePlay, seekToMs, currentTimeMs, clipDurationMs, trimSelectedTo, splitHere,
+    // Delete acts on what's selected most specifically: a view change (◆), a text overlay, then an
+    // image, then the format (an overlay only counts while it's on screen at the playhead, so a
+    // stale selection can't be deleted by surprise)
     deleteSelected: () => {
+      if (selectedView && viewMarkers.some(v => v.t_ms === selectedView.t) && viewMarkers.length > 1) {
+        removeViewChange(selectedView.boxId, selectedView.t)
+        setSelectedView(null)
+        return
+      }
       const onScreen = (o: { start_ms: number; end_ms: number }) => currentTimeMs >= o.start_ms && currentTimeMs < o.end_ms
       const text = textOverlays.find(o => o.id === activeTextOverlayId && onScreen(o))
       if (text) { askDeleteTextOverlay(text.id); return }
@@ -966,6 +1046,8 @@ export function EditorShell({
         e.preventDefault(); s.trimSelectedTo('start')
       } else if (e.key === ']') {
         e.preventDefault(); s.trimSelectedTo('end')
+      } else if (e.key === 's' || e.key === 'S') {
+        e.preventDefault(); s.splitHere()
       } else if (e.key === 'Delete' || e.key === 'Backspace') {
         if (target?.closest('button, a, [role="button"]') && e.key === 'Backspace') return
         e.preventDefault(); s.deleteSelected()
@@ -1367,9 +1449,24 @@ export function EditorShell({
             <div className="w-px h-6 shrink-0" style={{ background: 'rgb(var(--ed-fg) / 0.1)' }} />
 
             <button
+              onClick={splitHere}
+              disabled={!canSplitHere}
+              title={canSplitHere ? 'Split this format at the playhead (S), then pick a layout for either part' : 'Move the playhead inside a format to split it'}
+              className="flex items-center gap-2 h-8 px-3 rounded-lg text-xs font-medium whitespace-nowrap shrink-0 transition-colors hover:bg-[rgb(var(--ed-fg)/0.05)] disabled:opacity-40 disabled:hover:bg-transparent"
+              style={{ background: 'rgb(var(--ed-fg) / 0.04)', color: 'rgb(var(--ed-fg) / 0.62)', boxShadow: 'inset 0 0 0 1px rgb(var(--ed-fg) / 0.07)' }}
+            >
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <circle cx="6" cy="6" r="3" /><circle cx="6" cy="18" r="3" /><path d="M20 4L8.1 15.9M14.5 14.5L20 20M8.1 8.1L12 12" />
+              </svg>
+              Split
+            </button>
+
+            <button
               onClick={() => setMotionMode(m => !m)}
               aria-pressed={motionMode}
-              title={motionMode ? 'Motion is on: drag the crop while the video plays to record movement' : 'Turn on to make the crop follow movement: drag it while the video plays'}
+              title={motionMode
+                ? 'Motion is on: drag the view while the video plays and it follows your hand smoothly'
+                : 'Motion is off: moving the view changes it from the playhead on (a cut). Turn on to record a smooth follow while the video plays'}
               className={`flex items-center gap-2 h-8 px-3 rounded-lg text-xs font-medium whitespace-nowrap shrink-0 transition-colors select-none ${motionMode ? '' : 'hover:bg-[rgb(var(--ed-fg)/0.05)]'}`}
               style={{
                 background: motionMode ? 'rgba(239,68,68,0.15)' : 'rgb(var(--ed-fg) / 0.04)',
@@ -1457,6 +1554,27 @@ export function EditorShell({
                 pause()
                 if (lane === 'band') { addBandText(frameSeg.id, currentTimeMs); return }
                 setAddMenu({ segId: frameSeg.id, lane, t: currentTimeMs, anchor })
+              }}
+              viewMarkers={viewMarkers}
+              selectedViewT={selectedView && viewBox && selectedView.boxId === viewBox.id ? selectedView.t : null}
+              onSelectView={t => {
+                if (!viewBox) return
+                pause()
+                setSelectedView({ boxId: viewBox.id, t })
+                seekToMs(t)
+              }}
+              onMoveView={(from, to) => {
+                if (!viewBox || !activeSegment) return
+                moveViewChange(viewBox.id, from, to, activeSegment.start_ms, activeSegment.end_ms)
+                const moved = viewChanges(useEditorStore.getState().keyframes[viewBox.id] ?? [])
+                  .reduce((best, v) => Math.abs(v.t_ms - to) < Math.abs(best - to) ? v.t_ms : best, from)
+                setSelectedView({ boxId: viewBox.id, t: moved })
+                return moved
+              }}
+              onRemoveView={t => {
+                if (!viewBox || viewMarkers.length <= 1) return
+                removeViewChange(viewBox.id, t)
+                setSelectedView(null)
               }}
             />
           </div>
@@ -1701,6 +1819,14 @@ function SaveIndicator({ state, leaving, onRetry }: { state: SaveState; leaving?
     return (
       <span role="alert" className={chip} style={{ color: '#fca5a5', background: 'rgba(239,68,68,0.12)' }}>
         Couldn&apos;t save · <button onClick={onRetry} className="underline hover:opacity-80">Retry</button>
+      </span>
+    )
+  }
+  if (state === 'retrying') {
+    return (
+      <span className={chip} style={{ color: '#fcd34d', background: 'rgba(245,158,11,0.12)' }} aria-live="polite"
+        title="The connection dropped — your changes are kept here and will save as soon as it's back">
+        Connection lost · retrying… <button onClick={onRetry} className="underline hover:opacity-80">Now</button>
       </span>
     )
   }
