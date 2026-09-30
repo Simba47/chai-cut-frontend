@@ -3,6 +3,10 @@
 import { useState, useEffect, useRef, useMemo, Fragment } from 'react'
 import type { Clip, Segment, CropBox, BoxKeyframe, CaptionStyle, TextOverlay, AudioTrack, Transition, TranscriptWord, LayoutType, Overlay } from '@chai-cut/shared'
 import { VideoPreview, OutputCanvas } from '@/components/editor/VideoPreview'
+import { computeCutRanges, removedMs } from '@/lib/cuts'
+import { PostText, type PostTextValue } from '@/components/clips/PostText'
+import { BrollPanel, type StockResult } from '@/components/editor/BrollPanel'
+import { useBrollSources } from '@/modules/editor/brollSources'
 import { SegmentTimeline, LAYOUT_COLORS } from '@/components/editor/SegmentTimeline'
 import { TranscriptPanel } from '@/components/editor/TranscriptPanel'
 import { CaptionStyler } from '@/components/editor/CaptionStyler'
@@ -16,21 +20,22 @@ import { FrameTextPanel } from '@/components/editor/FrameTextPanel'
 import { useConfirm } from '@/components/editor/ConfirmDialog'
 import { FrameAddMenu, type AddChoice } from '@/components/editor/FrameAddMenu'
 import { createFrameMediaPool } from '@/modules/editor/frameMedia'
-import { FRAME_TEMPLATES, isFrameLayout, frameOf, frameLanes, frameHasBand, frameSlotLabels, emptySlotStretches, DEFAULT_BAND } from '@/modules/editor/frames'
+import { FRAME_TEMPLATES, isFrameLayout, frameOf, frameLanes, frameSlotLabels, emptySlotStretches, slotOffers, DEFAULT_BAND } from '@/modules/editor/frames'
 import { signOut } from 'next-auth/react'
 import { PlatformOverlay, PLATFORM_SAFE, type Platform } from '@/components/editor/PlatformOverlay'
 // ── Domain stores ──────────────────────────────────────────────────────────────
 import { useEditorStore, type KeyframeMap } from '@/modules/editor/store'
-import { startHistory, undo, redo, useHistory } from '@/modules/editor/history'
+import { startHistory, undo, redo, useHistory, editableSnapshot, sameEditable, type EditableSnapshot } from '@/modules/editor/history'
 import { usePlayerStore } from '@/modules/player/store'
 import { useVideoSync } from '@/modules/player/useSync'
 import { useCaptionStore } from '@/modules/captions/store'
 import { useMediaStore } from '@/modules/media/store'
 import { rowsToLocal, normalizeCoverage, uncoveredRanges, defaultCropForSlot, msToLabel } from '@/modules/editor/utils'
+import { viewChanges } from '@/modules/editor/views'
 import type { SegmentLocal, FrameLayout, FrameLane, FrameItem } from '@chai-cut/shared'
 
-type Tool = 'format' | 'frames' | 'captions' | 'text'
-type SaveState = 'idle' | 'saving' | 'saved' | 'error'
+type Tool = 'format' | 'frames' | 'captions' | 'text' | 'broll' | 'cleanup' | 'post'
+type SaveState = 'idle' | 'saving' | 'saved' | 'error' | 'retrying'
 
 interface SegmentRow extends Omit<Segment, never> {
   crop_boxes: (CropBox & { box_keyframes: BoxKeyframe[] })[]
@@ -68,7 +73,7 @@ const ACCENT = '#c8ff00'
 const TOOLS: { id: Tool; label: string; title: string; hint: string; icon: React.ReactNode }[] = [
   {
     id: 'format', label: 'Format', title: 'Formats',
-    hint: 'Each format is a section of the clip with its own layout and framing. Picking a layout mid-format starts a new one at the playhead.',
+    hint: 'Each format is a section of the clip with its own layout. Picking a layout changes the whole format under the playhead (use Split or S to cut one in two). Move the view at any moment to change it from there on — each change is a ◆ on the timeline.',
     icon: <path d="M6 2v14a2 2 0 002 2h14M2 6h14a2 2 0 012 2v14" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" fill="none" />,
   },
   {
@@ -85,6 +90,21 @@ const TOOLS: { id: Tool; label: string; title: string; hint: string; icon: React
     id: 'text', label: 'Text', title: 'Text',
     hint: 'Add titles, hooks or call-outs on top of the video.',
     icon: <path d="M5 6V4h14v2M12 4v16M9 20h6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" fill="none" />,
+  },
+  {
+    id: 'broll', label: 'B-roll', title: 'B-roll',
+    hint: 'Short stock shots over the clip while the speaker keeps talking. Pick one, then add it at the playhead.',
+    icon: <><rect x="2.5" y="5" width="19" height="14" rx="2.5" stroke="currentColor" strokeWidth="1.8" fill="none" /><path d="M10 9.5v5l4.5-2.5z" fill="currentColor" /></>,
+  },
+  {
+    id: 'cleanup', label: 'Cleanup', title: 'Remove pauses & filler words',
+    hint: 'Cuts long pauses and filler words (um, uh, matlab, ante…) out of the export. The preview plays the full clip.',
+    icon: <><circle cx="6" cy="6" r="2.6" stroke="currentColor" strokeWidth="1.8" fill="none" /><circle cx="6" cy="18" r="2.6" stroke="currentColor" strokeWidth="1.8" fill="none" /><path d="M8.2 7.6L20 17M8.2 16.4L20 7" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" fill="none" /></>,
+  },
+  {
+    id: 'post', label: 'Post', title: 'Post text',
+    hint: 'A title, caption and hashtags to post the clip with. Copy them, or have AI write them again.',
+    icon: <path d="M9 4L7 20M17 4l-2 16M4.5 9h16M3.5 15h16" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" fill="none" />,
   },
 ]
 
@@ -106,6 +126,8 @@ export function EditorShell({
     segments, keyframes, activeSegmentId, activeBoxId,
     hydrate: hydrateEditor, updateSegment, removeSegment,
     splitAtMs, updateBoxSource, insertBrollAtMs, applyLayout, setSegmentEdge, addFormat, moveJunction,
+    neighbourFraming, joinSameLayoutNeighbours, setViewAt, recordMotionAt, removeViewChange, moveViewChange,
+    placeBroll, removeBroll: removeBrollShot,
     upsertKeyframe, setBoxKeyframes, getPositionAt, updateFrameBand,
     updateFrame, addFrameItem, updateFrameItem, removeFrameItem,
     setActiveSegmentId, setActiveBoxId,
@@ -126,6 +148,11 @@ export function EditorShell({
     updateTextOverlay, deleteTextOverlay,
   } = useMediaStore()
 
+  // Loading the clip changes the stores but isn't an edit: remember the loaded state, and only
+  // start auto-saving once the state differs from it (opening a clip must not write anything)
+  const loadedStateRef = useRef<EditableSnapshot | null>(null)
+  const editedSinceLoadRef = useRef(false)
+
   // ── Hydrate stores from server props (once on mount) ─────────────────────────
   useEffect(() => {
     const localSegments = normalizeCoverage(rowsToLocal(initialSegments), clip.end_ms - clip.start_ms)
@@ -139,8 +166,11 @@ export function EditorShell({
     }
     hydrateEditor(localSegments, initialKeyframeMap)
 
-    const showCaptions = initialCaptionStyles.length > 0 || initialWords.length > 0
-    hydrateCaptions(initialWords, initialCaptionStyles[0] ?? { color: '#FFE700' }, showCaptions)
+    // Captions on/off: the saved choice when the clip has a caption style; a clip without one yet
+    // starts with captions on if it has words (a style saved before the on/off field counts as on)
+    const savedStyle = initialCaptionStyles[0]
+    const showCaptions = savedStyle ? savedStyle.enabled !== false : initialWords.length > 0
+    hydrateCaptions(initialWords, savedStyle ?? { color: '#FFE700' }, showCaptions)
 
     hydrateMedia({
       overlays: initialOverlays,
@@ -148,6 +178,9 @@ export function EditorShell({
       audioTracks: initialAudioTracks,
       transitions: initialTransitions,
     })
+
+    // The clip as loaded: the auto-save stays quiet until the state differs from this
+    loadedStateRef.current = editableSnapshot()
 
     // Undo/redo records from here on: the loaded clip is the starting point
     const stopHistory = startHistory()
@@ -180,19 +213,31 @@ export function EditorShell({
   const framePool = useMemo(() => createFrameMediaPool(id => videoLibraryRef.current[id]?.url), [])
   useEffect(() => () => framePool.dispose(), [framePool])
   async function loadVideoLibrary() {
-    const res = await fetch('/api/videos').catch(() => null)
+    const res = await fetch('/api/videos?assets=1').catch(() => null)
     if (!res?.ok) return
     const { videos } = await res.json() as { videos: { id: string; title?: string | null; video_url?: string | null; index?: number }[] }
     setVideoLibrary(Object.fromEntries(videos.filter(v => v.video_url).map(v => [v.id, { url: v.video_url!, title: v.title?.trim() || `Video ${v.index ?? ''}`.trim() }])))
   }
   useEffect(() => { loadVideoLibrary() }, [])
   const videoTitles = useMemo(() => Object.fromEntries(Object.entries(videoLibrary).map(([id, v]) => [id, v.title])), [videoLibrary])
+  const videoUrls = useMemo(() => Object.fromEntries(Object.entries(videoLibrary).map(([id, v]) => [id, v.url])), [videoLibrary])
+  // B-roll shots are drawn from their own videos in the preview (muted; the speaker carries on)
+  const brollSource = useBrollSources(videoRef, clip.start_ms, id => videoLibraryRef.current[id]?.url)
   const [pendingBrollMs, setPendingBrollMs] = useState<number | null>(null)
   const [clipStatus, setClipStatus] = useState<string>(clip.status)
   const [outputUrl, setOutputUrl] = useState<string | null>(clip.output_url)
   const [exporting, setExporting] = useState(false)
+  // Remove pauses and filler words (the cut is made by the export; see src/lib/cuts.ts)
+  const [removeFillers, setRemoveFillersState] = useState(!!(clip as Clip & { remove_fillers?: boolean }).remove_fillers)
+  const removeFillersRef = useRef(removeFillers)
+  // Words to post the clip with (AI clips come with them; any clip can have them written)
+  const [postText, setPostText] = useState<PostTextValue>(() => {
+    const c = clip as Clip & { title?: string | null; post_caption?: string | null; hashtags?: string[] | null }
+    return { title: c.title ?? null, post_caption: c.post_caption ?? null, hashtags: c.hashtags ?? null }
+  })
   const [exportError, setExportError] = useState<string | null>(null)
-  const renderQuality = '2160p' as const
+  // What exports have always been rendered at (the worker ignored the 2160p asked for here)
+  const renderQuality = '1080p' as const
   const [renderStuckSince, setRenderStuckSince] = useState<number | null>(clip.status === 'rendering' ? Date.now() : null)
   const [renderElapsed, setRenderElapsed] = useState(0)
   const [saveState, setSaveState] = useState<SaveState>('idle')
@@ -203,11 +248,13 @@ export function EditorShell({
   const retranscribeTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const isInitializedRef = useRef(false)
   const unsavedRef = useRef(false)
   // Saves run one at a time: an edit made during a save queues exactly one more save after it
   const saveInFlightRef = useRef<Promise<void> | null>(null)
   const saveAgainRef = useRef(false)
+  // A dropped connection (or a DB hiccup) retries on its own: 2s, 4s, 8s … up to 30s
+  const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const retryDelayRef = useRef(2000)
   const editVersionRef = useRef(0)
   const latestHandleSaveRef = useRef<() => Promise<void>>(() => Promise.resolve())
   const skipCanvasTransitionRef = useRef(false)
@@ -343,7 +390,11 @@ export function EditorShell({
   // ── Auto-save: trigger 2.5 s after any meaningful edit ───────────────────────
 
   useEffect(() => {
-    if (!isInitializedRef.current) { isInitializedRef.current = true; return }
+    if (!editedSinceLoadRef.current) {
+      const loaded = loadedStateRef.current
+      if (!loaded || sameEditable(editableSnapshot(), loaded)) return
+      editedSinceLoadRef.current = true
+    }
     if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current)
     unsavedRef.current = true
     editVersionRef.current++
@@ -378,6 +429,7 @@ export function EditorShell({
   // Resolves true when the latest save succeeded
   const lastSaveOkRef = useRef(true)
   function handleSave(): Promise<void> {
+    if (retryTimerRef.current) { clearTimeout(retryTimerRef.current); retryTimerRef.current = null }
     if (saveInFlightRef.current) { saveAgainRef.current = true; return saveInFlightRef.current }
     const run = async () => {
       do { saveAgainRef.current = false; lastSaveOkRef.current = await saveOnce() } while (saveAgainRef.current)
@@ -404,21 +456,47 @@ export function EditorShell({
             crop_boxes: s.crop_boxes.map(b => ({ ...b, keyframes: keyframes[b.id] ?? b.keyframes })),
           })),
           captionStyle, textOverlays, audioTracks, transitions, filters, overlays,
+          removeFillers: removeFillersRef.current,
         }),
       })
-      if (!res.ok) throw new Error((await res.json()).error ?? 'Save failed')
+      if (!res.ok) {
+        const msg = await res.json().then(j => j.error, () => null)
+        throw Object.assign(new Error(msg ?? 'Save failed'), { status: res.status })
+      }
       // Only clear "unsaved" if nothing changed while this save was in flight
       if (editVersionRef.current === version) unsavedRef.current = false
+      retryDelayRef.current = 2000
       setSaveState('saved')
       saveTimerRef.current = setTimeout(() => setSaveState('idle'), 2500)
       return true
     } catch (err) {
       console.error('[save]', err)
-      setSaveState('error')
+      // No response at all (offline, DNS) or a server-side failure: nothing is wrong with the
+      // edit itself, so keep trying quietly. A 4xx means the save was refused — show Retry.
+      const status = (err as { status?: number }).status
+      if (status === undefined || status >= 500 || status === 429) {
+        setSaveState('retrying')
+        const delay = retryDelayRef.current
+        retryDelayRef.current = Math.min(delay * 2, 30000)
+        if (retryTimerRef.current) clearTimeout(retryTimerRef.current)
+        retryTimerRef.current = setTimeout(() => { retryTimerRef.current = null; latestHandleSaveRef.current?.() }, delay)
+      } else {
+        setSaveState('error')
+      }
       return false
     }
   }
   latestHandleSaveRef.current = handleSave
+
+  // Back online: don't wait out the backoff
+  useEffect(() => {
+    const onOnline = () => { if (retryTimerRef.current) { retryDelayRef.current = 2000; latestHandleSaveRef.current?.() } }
+    window.addEventListener('online', onOnline)
+    return () => {
+      window.removeEventListener('online', onOnline)
+      if (retryTimerRef.current) clearTimeout(retryTimerRef.current)
+    }
+  }, [])
 
   // Leaving the editor: flush a pending auto-save first so the last edit isn't lost
   const [leaving, setLeaving] = useState(false)
@@ -446,7 +524,7 @@ export function EditorShell({
       if (!lastSaveOkRef.current) throw new Error("Couldn't save your latest edits, so nothing was exported. Check your connection and try again.")
       const res = await fetch('/api/export', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ clip_id: clip.id, quality: renderQuality, retranscribe }),
+        body: JSON.stringify({ clip_id: clip.id, quality: renderQuality, retranscribe, remove_fillers: removeFillersRef.current }),
       })
       if (!res.ok) throw new Error((await res.json()).error ?? 'Export failed')
       refreshWordsOnDoneRef.current = retranscribe
@@ -508,19 +586,26 @@ export function EditorShell({
 
   // ── Editor actions ────────────────────────────────────────────────────────────
 
-  // A layout applies from the playhead to the end of the current position. What came before the
-  // playhead keeps its layout and framing; at the very start of a position the whole position changes.
+  // Format buttons ('section'): the layout changes the WHOLE format under the playhead (or the whole
+  // uncovered stretch there). It starts from the view of the nearest format with that layout, and
+  // joins touching neighbours with the same layout — so Split → Vertical leaves no pieces behind.
+  // Cutting a format in two is its own action (Split, below).
+  // Frames ('fromPlayhead'): picking a frame mid-format starts a new frame at the playhead; what
+  // came before keeps its layout. At the very start of a format the whole format changes.
   const LAYOUT_SNAP_MS = 300
-  function handleLayoutChange(layout: LayoutType) {
+  const transitionAfter = () => new Set(transitions.map(tr => tr.after_segment_id))
+  function handleLayoutChange(layout: LayoutType, mode: 'section' | 'fromPlayhead' = 'section') {
     const t = currentTimeMs
+    const ar = getVideoAR()
     if (!activeSegment && currentGap) {
-      // No format here yet: create one from the playhead (or the gap's start) to the gap's end
-      const start = t - currentGap.start_ms <= LAYOUT_SNAP_MS ? currentGap.start_ms : t
+      // No format here yet: create one over the uncovered stretch (frames: from the playhead)
+      const start = mode === 'section' || t - currentGap.start_ms <= LAYOUT_SNAP_MS ? currentGap.start_ms : t
       if (currentGap.end_ms - start < 300) return
       pause()
       skipCanvasTransitionRef.current = true
-      addFormat(start, currentGap.end_ms, layout, getVideoAR())
-      if (start !== t) seekToMs(start)
+      const id = addFormat(start, currentGap.end_ms, layout, ar, neighbourFraming(layout, start, currentGap.end_ms))
+      if (mode === 'section') joinSameLayoutNeighbours(id, transitionAfter())
+      else if (start !== t) seekToMs(start)
       return
     }
     const seg = activeSegment
@@ -529,6 +614,12 @@ export function EditorShell({
     pause()
     skipCanvasTransitionRef.current = true
     setActiveBoxId(null)
+
+    if (mode === 'section') {
+      applyLayout(seg.id, layout, ar, neighbourFraming(layout, seg.start_ms, seg.end_ms, seg.id))
+      joinSameLayoutNeighbours(seg.id, transitionAfter())
+      return
+    }
 
     if (t - seg.start_ms <= LAYOUT_SNAP_MS) {
       applyLayout(seg.id, layout, getVideoAR())
@@ -550,8 +641,34 @@ export function EditorShell({
     if (newId) applyLayout(newId, layout, getVideoAR())
   }
 
-  // Crop edits: with Motion off the box frames the whole position (one keyframe at its start).
-  // With Motion on, each drag records a keyframe at the playhead, and the renderer pans between them.
+  // Split: cut the format under the playhead in two. Both halves keep its layout and views, so a
+  // different layout can then be picked for one of them.
+  const canSplitHere = !!activeSegment && currentTimeMs > activeSegment.start_ms + 100 && currentTimeMs < activeSegment.end_ms - 100
+  function splitHere() {
+    const seg = activeSegment
+    if (!seg || !canSplitHere) return
+    pause()
+    skipCanvasTransitionRef.current = true
+    splitAtMs(seg.id, currentTimeMs, getPositionAt)
+  }
+
+  // Moving the view (the crop box):
+  //  • Motion off — a VIEW CHANGE at the playhead: the new view shows from here until the next
+  //    change (a cut); everything before stays as it was. On an existing change (◆ on the timeline)
+  //    it edits that change; at the format's start it edits the first view.
+  //  • Motion on — records points while the video plays; the view glides between them.
+  // The preview and the export both follow these changes (see views.ts).
+  const [selectedView, setSelectedView] = useState<{ boxId: string; t: number } | null>(null)
+  // The ◆ markers on the timeline: view changes of the selected crop box (or the first one) in the
+  // format under the playhead
+  const viewBox = activeSegment ? (activeSegment.crop_boxes.find(b => b.id === activeBoxId) ?? activeSegment.crop_boxes[0]) : undefined
+  const viewMarkers = useMemo(
+    () => viewBox && activeSegment
+      ? viewChanges(keyframes[viewBox.id] ?? []).filter(v => v.t_ms >= activeSegment.start_ms - 1 && v.t_ms < activeSegment.end_ms)
+      : [],
+    [viewBox, activeSegment, keyframes],
+  )
+  useEffect(() => { setSelectedView(null) }, [viewBox?.id])
   function handleBoxChange(boxId: string, pos: { x: number; y: number; w: number; h: number }) {
     if (boxId === DEFAULT_BOX_ID) {
       // First move creates a format over the gap; the rest of the same drag (whose handler still
@@ -566,17 +683,21 @@ export function EditorShell({
     const vid = videoRef.current
     if (motionModeRef.current) {
       const t_ms = vid && !vid.paused ? Math.round(vid.currentTime * 1000) - clip.start_ms : currentTimeMs
-      upsertKeyframe(boxId, { t_ms: Math.max(0, t_ms), ...pos })
+      recordMotionAt(boxId, Math.max(0, t_ms), pos)
       return
     }
     const seg = segments.find(s => s.crop_boxes.some(b => b.id === boxId))
-    setBoxKeyframes(boxId, [{ t_ms: seg?.start_ms ?? 0, ...pos }])
+    if (!seg) return
+    // One drag = one view change at one moment: stop playback so the playhead can't run on
+    if (vid && !vid.paused) pause()
+    const t = Math.max(seg.start_ms, Math.min(seg.end_ms - 1, currentTimeMs))
+    setViewAt(boxId, t, pos, seg.start_ms)
   }
 
   // Frames work like the Format layouts: picking one mid-frame starts a new frame at the playhead
   // (e.g. Single 0:00–0:15, then Dual Video from 0:15), each with its own ◆ keys and lanes
   function handleApplyFrame(layout: FrameLayout) {
-    handleLayoutChange(layout)
+    handleLayoutChange(layout, 'fromPlayhead')
   }
   // What a frame picked now will cover (see handleLayoutChange)
   const frameTarget = (() => {
@@ -641,8 +762,17 @@ export function EditorShell({
     // Text on the band — the band appears with its first text
     if (choice === 'bandtext') { addBandText(segId, t); return }
     if (choice === 'main') {
-      const main = frameOf(seg).main_slots ?? [0]
-      if (typeof lane === 'number' && !main.includes(lane)) updateFrame(segId, { main_slots: [...main, lane].sort() })
+      const f = frameOf(seg)
+      const main = f.main_slots ?? [0]
+      // "Same video" is the same sound as the slot already showing it, so this slot starts muted
+      // (its own sound setting; unmute it to hear both)
+      if (typeof lane === 'number' && !main.includes(lane)) {
+        updateFrame(segId, {
+          main_slots: [...main, lane].sort(),
+          main_mutes: { ...f.main_mutes, [String(lane)]: main.length > 0 },
+          main_volumes: { ...f.main_volumes, [String(lane)]: 1 },
+        })
+      }
       selectFrameItem(`main:${lane}`)
     }
   }
@@ -881,6 +1011,54 @@ export function EditorShell({
     if (newId) { setActiveSegmentId(newId); seekToMs(atMs) }
   }
 
+  // ── B-roll panel ──────────────────────────────────────────────────────────────
+  const brollShots = useMemo(() => segments
+    .filter(sg => !isFrameLayout(sg.layout) && sg.crop_boxes[0]?.source_video_id)
+    .sort((a, b) => a.start_ms - b.start_ms)
+    .map(sg => ({ id: sg.id, start_ms: sg.start_ms, end_ms: sg.end_ms, title: (videoTitles[sg.crop_boxes[0].source_video_id!] ?? 'Stock video').replace(/^(Pixabay|Pexels): /, '') })),
+  [segments, videoTitles])
+
+  /** Save the stock video as the user's asset, then put it in at the playhead as a muted cutaway */
+  async function addStockBroll(item: StockResult, lengthMs: number) {
+    const res = await fetch('/api/stock/import', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ref: item.ref, url: item.url, title: item.title }),
+    })
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error ?? 'Could not add that video')
+    videoLibraryRef.current = { ...videoLibraryRef.current, [data.video_id]: { url: data.url, title: data.title } }
+    setVideoLibrary(videoLibraryRef.current)
+    const at = Math.min(currentTimeMs, Math.max(0, clipLengthMs - 500))
+    const segId = placeBroll(data.video_id, at, Math.min(clipLengthMs, at + lengthMs), getPositionAt)
+    setActiveSegmentId(segId)
+    seekToMs(at)
+  }
+
+  const neighbours = (id: string) => {
+    const byTime = [...useEditorStore.getState().segments].sort((a, b) => a.start_ms - b.start_ms)
+    const i = byTime.findIndex(sg => sg.id === id)
+    const seg = byTime[i], prev = byTime[i - 1], next = byTime[i + 1]
+    return { seg, prev: prev && prev.end_ms === seg?.start_ms ? prev : undefined, next: next && next.start_ms === seg?.end_ms ? next : undefined }
+  }
+  /**
+   * Give a shot a new time: it is taken out (the framing around it takes the time back) and put
+   * back in at the new place, as a new shot is. Same video, muted.
+   */
+  function retimeBroll(id: string, startMs: number, endMs: number) {
+    const { seg } = neighbours(id)
+    const videoId = seg?.crop_boxes[0]?.source_video_id
+    if (!seg || !videoId) return
+    const start = Math.max(0, Math.min(clipLengthMs - 500, startMs))
+    const end = Math.min(clipLengthMs, Math.max(start + 500, endMs))
+    removeBrollShot(id)
+    setActiveSegmentId(placeBroll(videoId, start, end, getPositionAt))
+  }
+  const moveBroll = (id: string, delta: number) => { const { seg } = neighbours(id); if (seg) retimeBroll(id, seg.start_ms + delta, seg.end_ms + delta) }
+  const resizeBroll = (id: string, delta: number) => { const { seg } = neighbours(id); if (seg) retimeBroll(id, seg.start_ms, seg.end_ms + delta) }
+
+  /** Remove a shot: the framing before it (or after it, at the start) takes its time back */
+  const removeBroll = (id: string) => removeBrollShot(id)
+
   function handleInsertBrollAfterSeg(afterSegId: string) {
     const seg = segments.find(s => s.id === afterSegId)
     if (seg) setPickerAtMs(seg.end_ms)
@@ -900,13 +1078,19 @@ export function EditorShell({
     }])
   }
 
-  // ── Keyboard shortcuts: Space play/pause · [ ] trim · Delete · ←/→ 1 s (Shift: 5 s) ──────────
-  const shortcutsRef = useRef({ togglePlay, seekToMs, currentTimeMs, clipDurationMs, trimSelectedTo, deleteSelected: () => {} })
+  // ── Keyboard shortcuts: Space play/pause · S split · [ ] trim · Delete · ←/→ 1 s (Shift: 5 s) ──
+  const shortcutsRef = useRef({ togglePlay, seekToMs, currentTimeMs, clipDurationMs, trimSelectedTo, splitHere, deleteSelected: () => {} })
   shortcutsRef.current = {
-    togglePlay, seekToMs, currentTimeMs, clipDurationMs, trimSelectedTo,
-    // Delete acts on what's selected most specifically: a text overlay, then an image, then the format
-    // (an overlay only counts while it's on screen at the playhead, so a stale selection can't be deleted by surprise)
+    togglePlay, seekToMs, currentTimeMs, clipDurationMs, trimSelectedTo, splitHere,
+    // Delete acts on what's selected most specifically: a view change (◆), a text overlay, then an
+    // image, then the format (an overlay only counts while it's on screen at the playhead, so a
+    // stale selection can't be deleted by surprise)
     deleteSelected: () => {
+      if (selectedView && viewMarkers.some(v => v.t_ms === selectedView.t) && viewMarkers.length > 1) {
+        removeViewChange(selectedView.boxId, selectedView.t)
+        setSelectedView(null)
+        return
+      }
       const onScreen = (o: { start_ms: number; end_ms: number }) => currentTimeMs >= o.start_ms && currentTimeMs < o.end_ms
       const text = textOverlays.find(o => o.id === activeTextOverlayId && onScreen(o))
       if (text) { askDeleteTextOverlay(text.id); return }
@@ -942,6 +1126,8 @@ export function EditorShell({
         e.preventDefault(); s.trimSelectedTo('start')
       } else if (e.key === ']') {
         e.preventDefault(); s.trimSelectedTo('end')
+      } else if (e.key === 's' || e.key === 'S') {
+        e.preventDefault(); s.splitHere()
       } else if (e.key === 'Delete' || e.key === 'Backspace') {
         if (target?.closest('button, a, [role="button"]') && e.key === 'Backspace') return
         e.preventDefault(); s.deleteSelected()
@@ -968,6 +1154,38 @@ export function EditorShell({
 
   const rendering = clipStatus === 'rendering' || exporting
   const hasOutput = !!outputUrl && clipStatus === 'done'
+  // What "Remove pauses and filler words" takes out of this clip, from the transcript
+  const fillerCuts = useMemo(() => computeCutRanges(words, clip.start_ms, clip.end_ms), [words, clip.start_ms, clip.end_ms])
+  const fillerCutMs = useMemo(() => removedMs(fillerCuts), [fillerCuts])
+  /** Each cut, clip-relative, with the words it takes out (none = a pause) */
+  const fillerCutList = useMemo(() => fillerCuts.map(([a, b]) => ({
+    at: a - clip.start_ms,
+    ms: b - a,
+    words: words.filter(w => (w.start_ms + w.end_ms) / 2 >= a && (w.start_ms + w.end_ms) / 2 < b).map(w => w.word),
+  })), [fillerCuts, words, clip.start_ms])
+  /** "Remove pauses & filler words": in the preview column and in the Captions panel, one setting */
+  const fillersToggle = (place: string) => words.length > 0 && (
+    <label className={`shrink-0 ${place} flex items-start gap-2.5 px-3 py-2.5 rounded-xl cursor-pointer`}
+      style={{ background: 'rgb(var(--ed-fg) / 0.04)', border: '1px solid rgb(var(--ed-fg) / 0.07)' }}>
+      <input type="checkbox" checked={removeFillers} onChange={e => setRemoveFillers(e.target.checked)}
+        className="mt-0.5" style={{ accentColor: '#c8ff00' }} />
+      <span className="flex flex-col gap-0.5">
+        <span className="text-xs font-semibold text-[var(--ed-text)]">Remove pauses &amp; filler words</span>
+        <span className="text-[11px]" style={{ color: 'rgb(var(--ed-fg) / 0.5)' }}>
+          {fillerCutMs >= 500 ? `Removes about ${Math.round(fillerCutMs / 1000)} s. ` : 'Nothing much to remove in this clip. '}
+          Applied when you export; the preview plays the full clip.
+        </span>
+      </span>
+    </label>
+  )
+
+  function setRemoveFillers(on: boolean) {
+    setRemoveFillersState(on)
+    removeFillersRef.current = on
+    unsavedRef.current = true
+    editVersionRef.current++
+    latestHandleSaveRef.current()
+  }
   const activeTool = TOOLS.find(t => t.id === tool)!
 
   return (
@@ -1289,6 +1507,52 @@ export function EditorShell({
               )
             )}
 
+            {tool === 'cleanup' && (
+              <div className="flex flex-col gap-3 p-4 min-h-0">
+                {fillersToggle('')}
+                {words.length === 0 && <p className="text-xs" style={{ color: 'rgb(var(--ed-fg) / 0.5)' }}>This needs the clip's captions (transcript) first.</p>}
+                {fillerCutList.length > 0 && (
+                  <div className="flex flex-col gap-1 min-h-0">
+                    <span className="text-xs font-medium" style={{ color: 'rgb(var(--ed-fg) / 0.5)' }}>
+                      {fillerCutList.length} cut{fillerCutList.length === 1 ? '' : 's'}{removeFillers ? '' : ' (when switched on)'}
+                    </span>
+                    <div className="flex flex-col gap-1 overflow-y-auto -mr-2 pr-2" style={{ maxHeight: 420 }}>
+                      {fillerCutList.map(c => (
+                        <button key={c.at} onClick={() => seekToMs(Math.max(0, c.at - 1000))} title="Play from just before this cut"
+                          className="flex items-center gap-2 px-2 py-1.5 rounded-lg text-left transition-colors hover:bg-[rgb(var(--ed-fg)/0.08)]"
+                          style={{ background: 'rgb(var(--ed-fg) / 0.04)' }}>
+                          <span className="text-[11px] tabular-nums shrink-0" style={{ color: 'rgb(var(--ed-fg) / 0.5)' }}>{msToLabel(c.at)}</span>
+                          <span className="flex-1 text-xs truncate" style={{ color: 'var(--ed-text)' }}>
+                            {c.words.length ? `“${c.words.join(' ')}”` : 'Pause'}
+                          </span>
+                          <span className="text-[11px] tabular-nums shrink-0" style={{ color: 'rgb(var(--ed-fg) / 0.45)' }}>−{(c.ms / 1000).toFixed(1)}s</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {tool === 'post' && (
+              <div className="p-4">
+                <PostText clipId={clip.id} value={postText} onChange={v => setPostText({ title: v.title, post_caption: v.post_caption, hashtags: v.hashtags })} />
+              </div>
+            )}
+
+            {tool === 'broll' && (
+              <BrollPanel
+                clipId={clip.id}
+                currentTimeMs={currentTimeMs}
+                shots={brollShots}
+                onAdd={addStockBroll}
+                onMove={moveBroll}
+                onResize={resizeBroll}
+                onRemove={removeBroll}
+                onSeek={seekToMs}
+              />
+            )}
+
             {tool === 'text' && (
               <>
               <FrameTextPanel
@@ -1343,9 +1607,24 @@ export function EditorShell({
             <div className="w-px h-6 shrink-0" style={{ background: 'rgb(var(--ed-fg) / 0.1)' }} />
 
             <button
+              onClick={splitHere}
+              disabled={!canSplitHere}
+              title={canSplitHere ? 'Split this format at the playhead (S), then pick a layout for either part' : 'Move the playhead inside a format to split it'}
+              className="flex items-center gap-2 h-8 px-3 rounded-lg text-xs font-medium whitespace-nowrap shrink-0 transition-colors hover:bg-[rgb(var(--ed-fg)/0.05)] disabled:opacity-40 disabled:hover:bg-transparent"
+              style={{ background: 'rgb(var(--ed-fg) / 0.04)', color: 'rgb(var(--ed-fg) / 0.62)', boxShadow: 'inset 0 0 0 1px rgb(var(--ed-fg) / 0.07)' }}
+            >
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <circle cx="6" cy="6" r="3" /><circle cx="6" cy="18" r="3" /><path d="M20 4L8.1 15.9M14.5 14.5L20 20M8.1 8.1L12 12" />
+              </svg>
+              Split
+            </button>
+
+            <button
               onClick={() => setMotionMode(m => !m)}
               aria-pressed={motionMode}
-              title={motionMode ? 'Motion is on: drag the crop while the video plays to record movement' : 'Turn on to make the crop follow movement: drag it while the video plays'}
+              title={motionMode
+                ? 'Motion is on: drag the view while the video plays and it follows your hand smoothly'
+                : 'Motion is off: moving the view changes it from the playhead on (a cut). Turn on to record a smooth follow while the video plays'}
               className={`flex items-center gap-2 h-8 px-3 rounded-lg text-xs font-medium whitespace-nowrap shrink-0 transition-colors select-none ${motionMode ? '' : 'hover:bg-[rgb(var(--ed-fg)/0.05)]'}`}
               style={{
                 background: motionMode ? 'rgba(239,68,68,0.15)' : 'rgb(var(--ed-fg) / 0.04)',
@@ -1410,6 +1689,8 @@ export function EditorShell({
               currentTimeMs={currentTimeMs} activeSegmentId={activeSegment?.id ?? null}
               videoUrl={videoUrl} safeDurationMs={clipDurationMs} onSeek={seekToMs}
               onSelectSegment={id => setActiveSegmentId(id)}
+              onBrollChange={retimeBroll}
+              videoUrls={videoUrls}
               onUpdateSegment={(id, updates) => updateSegment(id, updates)}
               onSetEdge={(id, edge, t) => setSegmentEdge(id, edge, t, clipLengthMs)}
               onMoveJunction={moveJunction}
@@ -1433,6 +1714,27 @@ export function EditorShell({
                 pause()
                 if (lane === 'band') { addBandText(frameSeg.id, currentTimeMs); return }
                 setAddMenu({ segId: frameSeg.id, lane, t: currentTimeMs, anchor })
+              }}
+              viewMarkers={viewMarkers}
+              selectedViewT={selectedView && viewBox && selectedView.boxId === viewBox.id ? selectedView.t : null}
+              onSelectView={t => {
+                if (!viewBox) return
+                pause()
+                setSelectedView({ boxId: viewBox.id, t })
+                seekToMs(t)
+              }}
+              onMoveView={(from, to) => {
+                if (!viewBox || !activeSegment) return
+                moveViewChange(viewBox.id, from, to, activeSegment.start_ms, activeSegment.end_ms)
+                const moved = viewChanges(useEditorStore.getState().keyframes[viewBox.id] ?? [])
+                  .reduce((best, v) => Math.abs(v.t_ms - to) < Math.abs(best - to) ? v.t_ms : best, from)
+                setSelectedView({ boxId: viewBox.id, t: moved })
+                return moved
+              }}
+              onRemoveView={t => {
+                if (!viewBox || viewMarkers.length <= 1) return
+                removeViewChange(viewBox.id, t)
+                setSelectedView(null)
               }}
             />
           </div>
@@ -1523,7 +1825,7 @@ export function EditorShell({
               ) : (
                 <OutputCanvas
                   videoRef={videoRef} currentTimeMs={currentTimeMs} clipStartMs={clip.start_ms}
-                  activeSegment={viewSegment} getPositionAt={viewGetPositionAt}
+                  activeSegment={viewSegment} getPositionAt={viewGetPositionAt} sourceFor={brollSource}
                   skipTransitionRef={skipCanvasTransitionRef} words={displayWords}
                   captionStyle={captionStyle} captionTextCase={captionTextCase} showCaptions={showCaptions}
                   overlays={overlays} activeOverlayId={activeOverlayId}
@@ -1535,6 +1837,7 @@ export function EditorShell({
                   onFrameLaneClick={focusLane}
                   activeFrameItemId={activeFrameItemId}
                   onFrameItemClick={selectFrameItem}
+                  onFrameItemChange={(id, patch) => { if (frameSeg) updateFrameItem(frameSeg.id, id, patch) }}
                   style={{ width: '100%', height: 'auto', display: 'block', borderRadius: 10, border: '1px solid rgb(var(--ed-fg) / 0.1)', boxShadow: '0 4px 24px rgba(0,0,0,0.6)' }}
                 />
               )}
@@ -1555,9 +1858,8 @@ export function EditorShell({
         const main = frameOf(seg).main_slots ?? [0]
         return (
           <FrameAddMenu lane={addMenu.lane} laneLabel={lane?.label ?? ''} anchor={addMenu.anchor}
-            slotKind={typeof addMenu.lane === 'number' ? FRAME_TEMPLATES[seg.layout].defaults[addMenu.lane] ?? 'video' : 'video'}
+            offers={slotOffers(seg.layout, typeof addMenu.lane === 'number' ? addMenu.lane : 0)}
             canAddMain={typeof addMenu.lane === 'number' && !main.includes(addMenu.lane)}
-            bandText={frameHasBand(seg.layout)}
             onChoose={handleAddChoice}
             onClose={() => setAddMenu(null)} />
         )
@@ -1565,6 +1867,7 @@ export function EditorShell({
 
       {framePicker && (
         <MediaPickerModal clipId={clip.id} atMs={currentTimeMs} initialTab={framePicker.kind === 'photo' ? 'image' : framePicker.replaceId ? 'videos' : 'upload'}
+          only={framePicker.kind === 'photo' ? 'photo' : 'video'}
           onInsertVideo={handlePickedVideo} onInsertImage={handlePickedPhoto}
           onClose={() => setFramePicker(null)} />
       )}
@@ -1676,6 +1979,14 @@ function SaveIndicator({ state, leaving, onRetry }: { state: SaveState; leaving?
     return (
       <span role="alert" className={chip} style={{ color: '#fca5a5', background: 'rgba(239,68,68,0.12)' }}>
         Couldn&apos;t save · <button onClick={onRetry} className="underline hover:opacity-80">Retry</button>
+      </span>
+    )
+  }
+  if (state === 'retrying') {
+    return (
+      <span className={chip} style={{ color: '#fcd34d', background: 'rgba(245,158,11,0.12)' }} aria-live="polite"
+        title="The connection dropped — your changes are kept here and will save as soon as it's back">
+        Connection lost · retrying… <button onClick={onRetry} className="underline hover:opacity-80">Now</button>
       </span>
     )
   }

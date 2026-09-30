@@ -199,6 +199,40 @@
 }
 .dash-drop.is-empty .dash-progress { margin: 10px auto 0; }
 
+/* Upload interrupted: the reason, and Cancel / Retry */
+.dash-drop-text p.dash-drop-error { color: var(--danger); }
+.dash-drop-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.dash-upload-btn--plain { padding: 0 22px; height: 44px; }
+/* Quiet pill button (Cancel, Import) */
+.dash-link-btn {
+  flex-shrink: 0; height: 40px; padding: 0 18px; border-radius: 999px; cursor: pointer;
+  font: inherit; font-size: 13px; font-weight: 600; color: var(--text);
+  background: var(--surface); border: 1px solid var(--border-strong);
+  transition: border-color .2s, scale .15s;
+}
+.dash-link-btn:hover { border-color: rgba(255,255,255,0.3); }
+.dash-link-btn:active { scale: .96; }
+.dash-link-btn:disabled { opacity: .5; pointer-events: none; }
+
+/* Import from a Google Drive / Dropbox link, under the upload strip */
+.dash-import {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin: -18px 0 32px; padding: 0 4px;
+}
+.dash-import label { font-size: 13px; font-weight: 600; color: var(--text-muted); white-space: nowrap; }
+.dash-import-input {
+  flex: 1; min-width: 220px;
+  font: inherit; font-size: 13px; color: var(--text);
+  height: 40px; padding: 0 16px; border-radius: 999px;
+  background: var(--surface); border: 1px solid var(--border-strong); outline: none;
+  transition: border-color .2s, background-color .2s;
+}
+.dash-import-input:hover { border-color: rgba(255,255,255,0.22); }
+.dash-import-input:focus { border-color: rgba(255,255,255,0.3); background: var(--surface-2); }
+.dash-import-input::placeholder { color: var(--text-muted); }
+.dash-import-hint { flex-basis: 100%; font-size: 12px; color: var(--text-muted); }
+@media (max-width: 560px) { .dash-import label { flex-basis: 100%; } }
+
 .dash-error { margin: -18px 0 26px; font-size: 13px; color: var(--danger); }
 .dash-note { padding: 48px 0; text-align: center; font-size: 14px; color: var(--text-muted); }
 
@@ -294,6 +328,40 @@
 @media (hover: none) {
   .vcard-actions, .vcard-action { opacity: 1; scale: 1; }
 }
+
+/* Select mode: the card is one big checkbox with a round tick in the top-left corner */
+.vcard.is-selecting { cursor: pointer; user-select: none; }
+.vcard.is-selecting:hover { border-color: color-mix(in srgb, var(--accent) 40%, transparent); }
+.vcard.is-selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent), 0 18px 44px -24px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+.vcard.is-selecting:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.vcard-check {
+  position: absolute; z-index: 3;
+  top: calc(var(--card-pad) + 10px); left: calc(var(--card-pad) + 10px);
+  width: 26px; height: 26px; border-radius: 50%;
+  display: grid; place-items: center;
+  border: 2px solid rgba(255,255,255,0.85); background: rgba(10,10,10,0.45); color: #0A0A0A;
+  backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+  transition: background .15s, border-color .15s, scale .2s cubic-bezier(.34,1.56,.64,1);
+}
+.vcard.is-selected .vcard-check { background: var(--accent); border-color: var(--accent); scale: 1.08; }
+
+/* Floating bar while selecting: count · select all · cancel · delete */
+.dash-main.has-selectbar { padding-bottom: 120px; }
+.dash-selectbar {
+  position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); z-index: 60;
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: center;
+  max-width: calc(100vw - 32px);
+  padding: 8px 8px 8px 20px; border-radius: 999px;
+  background: var(--surface-2); border: 1px solid var(--border-strong);
+  box-shadow: 0 24px 60px -20px rgba(0,0,0,0.75);
+  animation: dash-pop .18s cubic-bezier(.2,.8,.2,1);
+}
+.dash-selectbar-count { font-size: 13px; font-weight: 700; color: var(--text); margin-right: 6px; white-space: nowrap; }
+.dash-selectbar .dash-btn { border-radius: 999px; height: 40px; padding: 0 18px; }
+.dash-select-toggle.is-on { border-color: var(--accent); color: var(--accent); }
 
 .vcard-info { display: flex; align-items: center; gap: 12px; padding: 12px 6px 4px 8px; min-height: 56px; }
 .vcard-text { flex: 1; min-width: 0; }

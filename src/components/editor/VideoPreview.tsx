@@ -2,12 +2,12 @@
 
 import { useRef, useEffect, useCallback, useState, useMemo, useId } from 'react'
 import type { RefObject } from 'react'
-import type { SegmentLocal, Overlay, TextOverlay as TextOverlayType, CaptionStyle, TranscriptWord, FrameItem, FrameLane } from '@chai-cut/shared'
+import type { SegmentLocal, Overlay, TextOverlay as TextOverlayType, CaptionStyle, TranscriptWord, FrameItem, FrameLane, CornerStyle } from '@chai-cut/shared'
 import type { BoxPosition } from '@/lib/interpolation'
 import type { TextCase } from './CaptionStyler'
 import { applyCase } from './CaptionStyler'
 import { normalizedSlotAspect, fitToAspect } from '@/modules/editor/utils'
-import { isFrameLayout, frameSlotLabels, frameLanesFor, frameBandShown, frameOf, itemAt, captionBandAt } from '@/modules/editor/frames'
+import { isFrameLayout, frameSlotLabels, frameLanesFor, frameBandShown, frameOf, itemAt, captionBandAt, cornerGeometry } from '@/modules/editor/frames'
 import type { FrameMediaPool } from '@/modules/editor/frameMedia'
 
 const BOX_COLORS = ['#22c55e', '#3b82f6', '#f59e0b']
@@ -229,7 +229,102 @@ function paintFrameText(ctx: CanvasRenderingContext2D, it: FrameItem, fallbackBg
   ctx.fillStyle = it.color || '#ffffff'
   ctx.textAlign = 'center'
   ctx.textBaseline = 'middle'
-  lines.forEach((ln, i) => ctx.fillText(ln, W / 2, y + h / 2 + (i - (lines.length - 1) / 2) * lh))
+  const cx = (it.x ?? 0.5) * W, cy = y + (it.y ?? 0.5) * h
+  lines.forEach((ln, i) => ctx.fillText(ln, cx, cy + (i - (lines.length - 1) / 2) * lh))
+  ctx.restore()
+}
+
+// Size of a text block as shares of the 1080×1920 frame, measured with the same font as the preview
+let measureCtx: CanvasRenderingContext2D | null = null
+function frameTextBlock(text: string, size1080: number): { lines: string[]; w: number; h: number } {
+  const lines = text.trim() ? wrapFrameText(text, 1080, size1080) : ['Your text']
+  if (!measureCtx && typeof document !== 'undefined') measureCtx = document.createElement('canvas').getContext('2d')
+  let widest = 0
+  if (measureCtx) {
+    measureCtx.font = `700 ${size1080}px Montserrat, sans-serif`
+    for (const ln of lines) widest = Math.max(widest, measureCtx.measureText(ln).width)
+  } else widest = Math.max(...lines.map(l => l.length)) * size1080 * 0.56
+  const pad = size1080 * 0.4
+  return { lines, w: Math.min(1, (widest + pad) / 1080), h: (lines.length * size1080 * 1.2 + pad) / 1920 }
+}
+
+/**
+ * A frame's text in the preview: drag it to move it around its band (or slot), drag the corner to
+ * make it bigger or smaller. Position and size are saved on the text, and the export uses them.
+ */
+function FrameTextBox({ row, item, selected, onSelect, onChange }: {
+  row: { y: number; h: number }
+  item: FrameItem
+  selected: boolean
+  onSelect: () => void
+  onChange: (patch: Partial<Pick<FrameItem, 'x' | 'y' | 'size'>>) => void
+}) {
+  const ref = useRef<HTMLDivElement>(null)
+  const size = item.size ?? 64
+  const empty = !item.text?.trim()
+  const block = frameTextBlock(item.text ?? '', size)
+  const x = item.x ?? 0.5, y = item.y ?? 0.5
+  // Keep the whole block inside its row
+  const clampX = (v: number) => block.w >= 1 ? 0.5 : Math.max(block.w / 2, Math.min(1 - block.w / 2, v))
+  const halfH = block.h / 2 / row.h
+  const clampY = (v: number) => halfH >= 0.5 ? 0.5 : Math.max(halfH, Math.min(1 - halfH, v))
+  const cx = clampX(x), cy = row.y + row.h * clampY(y)
+
+  function start(e: React.PointerEvent, mode: 'move' | 'resize') {
+    e.stopPropagation(); e.preventDefault()
+    onSelect()
+    const rect = ref.current?.parentElement?.getBoundingClientRect()
+    if (!rect) return
+    const sx = e.clientX, sy = e.clientY, x0 = cx, y0 = clampY(y), size0 = size, w0 = block.w * rect.width
+    const move = (ev: PointerEvent) => {
+      const dx = (ev.clientX - sx) / rect.width, dy = (ev.clientY - sy) / rect.height
+      if (mode === 'move') onChange({ x: clampX(x0 + dx), y: clampY(y0 + dy / row.h) })
+      else onChange({ size: Math.round(Math.max(24, Math.min(200, size0 * (w0 + 2 * (ev.clientX - sx)) / w0))) })
+    }
+    const up = () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up) }
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', up)
+  }
+
+  return (
+    <div ref={ref} role="button" tabIndex={-1} aria-label="Text in the frame: drag to move, drag the corner to resize"
+      onPointerDown={e => start(e, 'move')} onClick={e => e.stopPropagation()}
+      className="group absolute flex items-center justify-center"
+      style={{
+        left: `${(cx - block.w / 2) * 100}%`, top: `${(cy - block.h / 2) * 100}%`, width: `${block.w * 100}%`, height: `${block.h * 100}%`,
+        cursor: 'move', touchAction: 'none', borderRadius: 4,
+        outline: selected ? '1.5px dashed #c8ff00' : undefined,
+      }}>
+      <span className="absolute inset-0 rounded pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity"
+        style={{ boxShadow: selected ? undefined : 'inset 0 0 0 1px rgba(255,255,255,0.45)' }} />
+      {empty && (
+        <span className="pointer-events-none font-bold" style={{ fontSize: `${(size / 1080) * 100}cqw`, color: 'rgba(255,255,255,0.35)' }}>Your text</span>
+      )}
+      {selected && (
+        <span onPointerDown={e => start(e, 'resize')} aria-label="Drag to resize the text"
+          className="absolute rounded-full" style={{ right: -6, bottom: -6, width: 12, height: 12, background: '#c8ff00', border: '1.5px solid #000', cursor: 'nwse-resize', touchAction: 'none' }} />
+      )}
+    </div>
+  )
+}
+
+/**
+ * Draw media into a slot row. With rounded corners the row is black and the media sits inset in a
+ * rounded box (the same look render.py builds with its corner mask); without, it fills the row.
+ */
+function inSlot(ctx: CanvasRenderingContext2D, corners: CornerStyle | undefined, y: number, h: number,
+  draw: (dx: number, dy: number, dw: number, dh: number) => void) {
+  const W = ctx.canvas.width
+  const g = cornerGeometry(corners)
+  if (!g) { draw(0, y, W, h); return }
+  const k = W / 1080, m = g.inset * k, r = g.radius * k
+  ctx.fillStyle = '#000'
+  ctx.fillRect(0, y, W, h)
+  ctx.save()
+  ctx.beginPath()
+  ctx.roundRect(m, y + m, W - 2 * m, h - 2 * m, r)
+  ctx.clip()
+  draw(m, y + m, W - 2 * m, h - 2 * m)
   ctx.restore()
 }
 
@@ -263,7 +358,8 @@ function paintFrame(
       const box = seg.crop_boxes.find(b => b.slot_index === row.lane)
       if (box) {
         const p = getPositionAt(box.id, tMs)
-        coverCrop(ctx, video, p.x * vW, p.y * vH, p.w * vW, p.h * vH, 0, y, W, h)
+        inSlot(ctx, frame.main_corners?.[String(row.lane)], y, h,
+          (dx, dy, dw, dh) => coverCrop(ctx, video, p.x * vW, p.y * vH, p.w * vW, p.h * vH, dx, dy, dw, dh))
       }
     }
     if (!it) continue
@@ -273,12 +369,12 @@ function paintFrame(
       if (img && img.complete && img.naturalWidth) {
         const from = Math.max(it.start_ms, seg.start_ms), to = Math.min(it.end_ms, seg.end_ms)
         const m = photoMotion(it.motion, (tMs - from) / Math.max(1, to - from))
-        coverSource(ctx, img, img.naturalWidth, img.naturalHeight, 0, y, W, h, m.zoom, m.panX)
+        inSlot(ctx, it.corners, y, h, (dx, dy, dw, dh) => coverSource(ctx, img, img.naturalWidth, img.naturalHeight, dx, dy, dw, dh, m.zoom, m.panX))
       }
       continue
     }
     const v = pool?.video(it)
-    if (v && v.readyState >= 2) coverSource(ctx, v, v.videoWidth, v.videoHeight, 0, y, W, h)
+    if (v && v.readyState >= 2) inSlot(ctx, it.corners, y, h, (dx, dy, dw, dh) => coverSource(ctx, v, v.videoWidth, v.videoHeight, dx, dy, dw, dh))
   }
 }
 
@@ -347,7 +443,7 @@ const CAPTION_GAP_MS = 300
 // Tag words whose timestamps were estimated from a phrase-level Sarvam token.
 type FlatWord = TranscriptWord & { _est?: true }
 
-function buildCaptionChunks(words: TranscriptWord[]): FlatWord[][] {
+function buildCaptionChunks(words: TranscriptWord[], maxWords = CAPTION_MAX_WORDS): FlatWord[][] {
   if (words.length === 0) return []
   const sorted = [...words].sort((a, b) => a.start_ms - b.start_ms)
   const chunks: FlatWord[][] = []
@@ -369,7 +465,7 @@ function buildCaptionChunks(words: TranscriptWord[]): FlatWord[][] {
       const gap = prev ? w.start_ms - prev.end_ms : 0
       // A different speaker always starts a new line (never mix two people's words)
       const speakerChange = !!prev && prev.speaker_id != null && w.speaker_id != null && prev.speaker_id !== w.speaker_id
-      if (wordChunk.length >= CAPTION_MAX_WORDS || (prev && gap > CAPTION_GAP_MS) || speakerChange) {
+      if (wordChunk.length >= maxWords || (prev && gap > CAPTION_GAP_MS) || speakerChange) {
         flushWordChunk()
       }
       wordChunk.push(w)
@@ -383,12 +479,12 @@ function buildCaptionChunks(words: TranscriptWord[]): FlatWord[][] {
       // phrase start/end instead of drifting with character-count estimates.
       flushWordChunk()
 
-      const numDisplayChunks = Math.ceil(parts.length / CAPTION_MAX_WORDS)
+      const numDisplayChunks = Math.ceil(parts.length / maxWords)
       const phraseDurMs = w.end_ms - w.start_ms
       const chunkDurMs = phraseDurMs / numDisplayChunks
 
       for (let ci = 0; ci < numDisplayChunks; ci++) {
-        const chunkWords = parts.slice(ci * CAPTION_MAX_WORDS, (ci + 1) * CAPTION_MAX_WORDS)
+        const chunkWords = parts.slice(ci * maxWords, (ci + 1) * maxWords)
         const chunkStartMs = Math.round(w.start_ms + ci * chunkDurMs)
         const chunkEndMs = ci === numDisplayChunks - 1
           ? w.end_ms
@@ -432,6 +528,187 @@ function findCaptionChunk(chunks: FlatWord[][], tMs: number) {
   return chunks.find(c => tMs >= c[0].start_ms && tMs <= c[c.length - 1].end_ms) ?? null
 }
 
+// ── Animated caption presets ──────────────────────────────────────────────────
+// Mirrors render.py _preset_events: same lines, timing and colours as the export.
+//   pop       — each word appears when spoken, scaling 80% → 110% → 100% in 150 ms
+//   highlight — 3 words a line; a highlight_color box behind the spoken word
+//   bounce    — the line slides up into place and fades in; the spoken word in highlight_color
+//   word      — one big word at a time, centre screen
+//   hormozi   — 3 capitalised words a line, thick outline; the spoken word in highlight_color, 115%
+//   box       — the line on a dark box, no outline; the spoken word in highlight_color
+//   glow      — words glow in highlight_color; the spoken word bright, the others dimmed
+// Emphasised words (style.emphasis, keyed by the word's start_ms) are highlight_color and 15% larger.
+
+export const PRESET_ANIMATIONS = ['pop', 'highlight', 'bounce', 'word', 'hormozi', 'box', 'glow'] as const
+const isPreset = (a?: string | null) => (PRESET_ANIMATIONS as readonly string[]).includes(a ?? '')
+const POP_MS = 150
+const BOUNCE_MS = 180
+const BOX_PAD = 14
+const WORD_SCALE = 1.5
+const EMPHASIS_SCALE = 1.15
+const HORMOZI_SCALE = 1.15      // the spoken word
+const HORMOZI_STROKE = 2        // added to the outline
+const LINE_BOX = 'rgba(0,0,0,0.62)'   // box preset (render.py &H60000000)
+const GLOW_BLUR = 6             // px at 1080 wide
+const GLOW_DIM = 0.65           // the words not being spoken
+
+/** The karaoke colour of the spoken word: the highlight colour, unless it is the text's own */
+export function karaokeLive(color: string, hl: string) {
+  if (hl.toLowerCase() !== color.toLowerCase()) return hl
+  return color.toLowerCase() === '#ffffff' ? '#FFE700' : '#FFFFFF'
+}
+
+// The export draws captions with these bundled fonts (render.py _FONT_FILES; anything else falls
+// back to Roboto) through libass, which sizes a font so its full height (OS/2 winAscent +
+// winDescent) equals the caption size. The preview loads the same files (public/caption-fonts)
+// and applies the same factor (unitsPerEm / (winAscent + winDescent)), so preset captions come
+// out the size they will be in the download.
+const EXPORT_FONTS: Record<string, { family: string; file: string; em: number }> = {
+  'noto-sans-telugu':     { family: 'CC Noto Sans Telugu', file: 'NotoSansTelugu-Regular.ttf', em: 0.677 },
+  'noto-sans-devanagari': { family: 'CC Noto Sans Devanagari', file: 'NotoSansDevanagari-Regular.ttf', em: 0.525 },
+  'roboto':               { family: 'CC Roboto', file: 'Roboto-Regular.ttf', em: 0.758 },
+  'montserrat-bold':      { family: 'CC Montserrat Bold', file: 'Montserrat-Bold.ttf', em: 0.640 },
+}
+const loadedExportFonts = new Set<string>()
+function exportFont(id?: string | null) {
+  const f = EXPORT_FONTS[id ?? ''] ?? EXPORT_FONTS.roboto
+  if (!loadedExportFonts.has(f.family) && typeof FontFace !== 'undefined') {
+    loadedExportFonts.add(f.family)
+    new FontFace(f.family, `url(/caption-fonts/${f.file})`).load()
+      .then(face => document.fonts.add(face))
+      .catch(() => loadedExportFonts.delete(f.family))
+  }
+  return f
+}
+
+/** Words per caption line for a style (render.py _preset_events uses the same rule) */
+export function captionWordsPerLine(style: Partial<CaptionStyle>) {
+  if (style.animation === 'word') return 1
+  if (style.words_per_line) return Math.max(1, Math.min(8, style.words_per_line))
+  return style.animation === 'highlight' || style.animation === 'hormozi' ? 3 : CAPTION_MAX_WORDS
+}
+
+/** Black or white, whichever reads on a box of this colour (render.py _text_on) */
+function textOn(hex: string) {
+  let h = hex.replace('#', '')
+  if (h.length === 3) h = h.split('').map(c => c + c).join('')
+  const r = parseInt(h.slice(0, 2), 16), g = parseInt(h.slice(2, 4), 16), b = parseInt(h.slice(4, 6), 16)
+  return 0.299 * r + 0.587 * g + 0.114 * b > 150 ? '#000000' : '#FFFFFF'
+}
+
+function drawPresetCaptions(
+  ctx: CanvasRenderingContext2D,
+  chunk: FlatWord[],
+  tMs: number,
+  style: Partial<CaptionStyle>,
+  band?: { y: number; h: number } | null,
+) {
+  const W = ctx.canvas.width, H = ctx.canvas.height
+  const k = W / 1080                                   // export is laid out at 1080 wide
+  const anim = style.animation!
+  const color = style.color ?? '#FFFFFF'
+  const hl = style.highlight_color ?? '#FFE700'
+  const stroke = ((style.stroke_width ?? 4) + (anim === 'hormozi' ? HORMOZI_STROKE : 0)) * k * (anim === 'box' ? 0 : 1)
+  const upper = style.uppercase || anim === 'hormozi'
+  const emphasis = style.emphasis ?? {}
+  const baseScale = anim === 'word' ? WORD_SCALE : 1
+  // The Noto Indic fonts have no Latin letters: Roman-letter captions use Roboto (as render.py)
+  const font = exportFont(style.language === 'roman' ? 'roboto' : style.font)
+  const fontPx = (style.size ?? 52) * k * font.em
+  const fontFamily = `"${font.family}", sans-serif`
+  const lineStart = chunk[0].start_ms
+  const lineEnd = chunk[chunk.length - 1].end_ms
+
+  const posY = style.position_y ?? (anim === 'word' ? 0.5 : 0.84)
+  let y = band ? (band.y + band.h / 2) * H : posY * H
+  let alpha = 1
+  if (anim === 'bounce') {
+    const p = Math.min(1, Math.max(0, (tMs - lineStart) / BOUNCE_MS))
+    y += (1 - p) * H * 0.02
+    alpha = Math.min(1, Math.max(0, (tMs - lineStart) / 80))
+  }
+
+  // Per word: text, scale, colour, visibility, spoken
+  const items = chunk.map((w, j) => {
+    const text = upper ? w.word.toUpperCase() : w.word
+    const on = w.start_ms, off = chunk[j + 1]?.start_ms ?? lineEnd
+    const emph = !!emphasis[String(w.start_ms)]
+    let scale = baseScale * (emph ? EMPHASIS_SCALE : 1)
+    let visible = true
+    if (anim === 'pop' || anim === 'word') {
+      const dt = tMs - on
+      if (dt < 0) { visible = false; scale *= 0.8 }
+      else if (dt < POP_MS / 2) scale *= 0.8 + 0.3 * (dt / (POP_MS / 2))
+      else if (dt < POP_MS) scale *= 1.1 - 0.1 * ((dt - POP_MS / 2) / (POP_MS / 2))
+    }
+    const spoken = tMs >= on && tMs < off
+    if (anim === 'hormozi' && spoken) scale *= HORMOZI_SCALE
+    const rest = emph ? hl : color
+    const fill = anim === 'word' || anim === 'glow' ? rest : spoken ? (anim === 'highlight' ? textOn(hl) : hl) : rest
+    return { text, scale, visible, spoken, fill }
+  })
+
+  ctx.save()
+  ctx.globalAlpha = alpha
+  ctx.textBaseline = 'middle'
+  ctx.lineJoin = 'round'
+  const widthOf = (it: typeof items[number]) => {
+    ctx.font = `700 ${fontPx * it.scale}px ${fontFamily}`
+    return ctx.measureText(it.text).width
+  }
+  ctx.font = `700 ${fontPx}px ${fontFamily}`
+  const space = ctx.measureText(' ').width
+  const widths = items.map(widthOf)
+  const total = widths.reduce((a, b) => a + b, 0) + space * (items.length - 1)
+  let x = (W - total) / 2
+  if (anim === 'box') {
+    // One box round the whole line (libass BorderStyle 3: the text's full height plus the padding)
+    const pad = BOX_PAD * k, hPx = fontPx / font.em
+    ctx.fillStyle = LINE_BOX
+    ctx.fillRect(x - pad, y - hPx / 2 - pad, total + pad * 2, hPx + pad * 2)
+  }
+  items.forEach((it, j) => {
+    const w = widths[j]
+    ctx.font = `700 ${fontPx * it.scale}px ${fontFamily}`
+    if (it.visible && anim === 'glow') {
+      // libass blurs the 3 px outline: a soft halo, not a solid ring
+      const a = alpha * (it.spoken ? 1 : GLOW_DIM)
+      ctx.globalAlpha = a * 0.45
+      ctx.shadowColor = hl
+      ctx.shadowBlur = GLOW_BLUR * 2 * k
+      ctx.lineWidth = 3 * 2 * k
+      ctx.strokeStyle = hl
+      ctx.textAlign = 'left'
+      ctx.strokeText(it.text, x, y)
+      ctx.shadowBlur = 0
+      ctx.shadowColor = 'transparent'
+      ctx.globalAlpha = a
+      ctx.fillStyle = it.fill
+      ctx.fillText(it.text, x, y)
+      ctx.globalAlpha = alpha
+    } else if (it.visible) {
+      if (anim === 'highlight' && it.spoken) {
+        // libass boxes the font's full height (the caption size) plus the padding
+        const pad = BOX_PAD * k, hPx = (fontPx / font.em) * it.scale
+        ctx.fillStyle = hl
+        ctx.fillRect(x - pad, y - hPx / 2 - pad, w + pad * 2, hPx + pad * 2)
+      } else {
+        ctx.shadowColor = 'rgba(0,0,0,0.5)'
+        ctx.shadowOffsetX = ctx.shadowOffsetY = 2 * k
+        ctx.lineWidth = stroke * 2
+        ctx.strokeStyle = '#000000'
+        if (stroke > 0) ctx.strokeText(it.text, x, y)
+        ctx.shadowColor = 'transparent'
+      }
+      ctx.fillStyle = it.fill
+      ctx.textAlign = 'left'
+      ctx.fillText(it.text, x, y)
+    }
+    x += w + space
+  })
+  ctx.restore()
+}
+
 function drawCaptions(
   ctx: CanvasRenderingContext2D,
   chunks: FlatWord[][],
@@ -444,21 +721,30 @@ function drawCaptions(
   const W = ctx.canvas.width, H = ctx.canvas.height
   const chunk = findCaptionChunk(chunks, tMs)
   if (!chunk) return
+  if (isPreset(style.animation)) { drawPresetCaptions(ctx, chunk, tMs, style, band); return }
 
   const color     = style.color    ?? '#FFFFFF'
   const animation = style.animation ?? 'karaoke'
 
-  const fontSize   = Math.round(Math.min(((style.size ?? 48) / 1080) * W, W / 18))
+  // As the export draws these (render.py _write_ass, Default style): the bundled font (Roboto for
+  // Roman letters or any other font), sized the way libass sizes it, regular weight, a 3 px black
+  // outline and a 2 px half-black shadow (px at 1080 wide)
+  const k          = W / 1080
+  const font       = exportFont(style.language === 'roman' ? 'roboto' : style.font)
+  const fontSize   = Math.round((style.size ?? 52) * k * font.em)
   const lineHeight = Math.round(fontSize * 1.4)
   const PAD_X      = Math.round(W * 0.05)
   const maxLineW   = W - PAD_X * 2
-  const fontFamily = style.font ?? 'sans-serif'
+  const fontFamily = `"${font.family}", sans-serif`
 
   ctx.save()
-  ctx.font         = `700 ${fontSize}px ${fontFamily}`
+  ctx.font         = `400 ${fontSize}px ${fontFamily}`
   ctx.textBaseline = 'middle'
-  ctx.shadowColor  = 'rgba(0,0,0,0.92)'
-  ctx.shadowBlur   = 9
+  ctx.lineJoin     = 'round'
+  ctx.lineWidth    = 2 * 3 * k
+  ctx.strokeStyle  = '#000000'
+  ctx.shadowColor  = 'rgba(0,0,0,0.5)'
+  ctx.shadowOffsetX = ctx.shadowOffsetY = 2 * k
 
   // Words are already single-token after buildCaptionChunks explodes phrases.
   const wordTexts = chunk.map(w => applyCase(w.word, textCase))
@@ -480,14 +766,17 @@ function drawCaptions(
   const totalH = lines.length * lineHeight
   const yBase  = band
     ? (band.y + band.h / 2) * H - totalH / 2 + lineHeight / 2
-    : (style.position_y ?? 0.84) * H - totalH + lineHeight / 2
+    // centred on position_y, as libass centres the line there (\pos with alignment 5)
+    : (style.position_y ?? 0.84) * H - totalH / 2 + lineHeight / 2
 
   // Only do per-word karaoke when timestamps are real (not evenly distributed from a phrase split).
   // Estimated words (_est=true) have proportional-but-approximate timestamps that look wrong when highlighted.
   const hasEstimated = chunk.some(w => w._est)
+  // A word stays lit until the next one starts (render.py _write_ass does the same)
   const activeWIdx = (animation === 'karaoke' && !hasEstimated)
-    ? chunk.findIndex(w => tMs >= w.start_ms && tMs <= w.end_ms)
+    ? chunk.findIndex((w, j) => tMs >= w.start_ms && tMs < (chunk[j + 1]?.start_ms ?? w.end_ms + 1))
     : -1
+  const live = karaokeLive(color, style.highlight_color ?? '#FFE700')
 
   // Track cumulative word index so each token maps to its chunk position.
   let wordOffset = 0
@@ -501,6 +790,7 @@ function drawCaptions(
     if (!activeInLine) {
       ctx.fillStyle = color
       ctx.textAlign = 'center'
+      ctx.strokeText(ln.join(' '), W / 2, y)
       ctx.fillText(ln.join(' '), W / 2, y)
     } else {
       const spW    = ctx.measureText(' ').width
@@ -509,7 +799,8 @@ function drawCaptions(
       let x        = (W - rowW) / 2
       ln.forEach((word, i) => {
         ctx.textAlign = 'left'
-        ctx.fillStyle = color
+        ctx.fillStyle = lineStart + i === activeWIdx ? live : color
+        ctx.strokeText(word, x, y)
         ctx.fillText(word, x, y)
         x += widths[i] + (i < ln.length - 1 ? spW : 0)
       })
@@ -529,25 +820,65 @@ function drawTextOverlays(
   const W = ctx.canvas.width, H = ctx.canvas.height
   for (const o of overlays) {
     if (tMs < o.start_ms || tMs >= o.end_ms) continue
+    if (o.x == null) { drawCenteredText(ctx, o); continue }
     const x = (o.x ?? 0.1) * W
     const y = (o.y ?? 0.4) * H
-    const fontSize = Math.max(14, Math.round(((o.size ?? 72) / 1080) * H))
-    const fontFamily = o.font ?? 'sans-serif'
+    // Same size and shadow as the export's drawtext: px at 1080 wide, a 2 px black@0.7 shadow
+    const fontSize = Math.max(8, Math.round(((o.size ?? 72) / 1080) * W))
+    // A bundled font id (e.g. 'roboto') draws with the export's own file, as drawtext does
+    const bundled = EXPORT_FONTS[o.font ?? ''] ? exportFont(o.font) : null
+    const fontFamily = bundled ? `"${bundled.family}", sans-serif` : (o.font ?? 'sans-serif')
     ctx.save()
-    ctx.font = `700 ${fontSize}px ${fontFamily}`
+    ctx.font = `${bundled ? 400 : 700} ${fontSize}px ${fontFamily}`
     ctx.textBaseline = 'top'
-    ctx.shadowColor = 'rgba(0,0,0,0.85)'
-    ctx.shadowBlur = 8
+    ctx.shadowColor = 'rgba(0,0,0,0.7)'
+    ctx.shadowOffsetX = ctx.shadowOffsetY = 2 * W / 1080
     ctx.fillStyle = o.color ?? '#ffffff'
     ctx.fillText(o.text, x, y)
     ctx.restore()
   }
 }
 
+/**
+ * A text overlay with no x (the AI hook): centred, in the export's font and size, shrunk to fit
+ * 90% of the width — as render.py draws it (drawtext x=(w-text_w)/2, _fit_font_size).
+ */
+function drawCenteredText(ctx: CanvasRenderingContext2D, o: TextOverlayType) {
+  const W = ctx.canvas.width, H = ctx.canvas.height
+  const font = EXPORT_FONTS[o.font ?? ''] ? exportFont(o.font) : null
+  const family = font ? `"${font.family}", sans-serif` : (o.font ?? 'sans-serif')
+  const weight = font ? 400 : 700                      // drawtext uses the font file as it is
+  let px = (o.size ?? 48) * W / 1080
+  ctx.save()
+  ctx.font = `${weight} ${px}px ${family}`
+  const width = ctx.measureText(o.text).width
+  if (width > W * 0.9) px = Math.max(28 * W / 1080, px * (W * 0.9) / width)
+  ctx.font = `${weight} ${px}px ${family}`
+  ctx.textAlign = 'center'
+  ctx.textBaseline = 'top'
+  ctx.shadowColor = 'rgba(0,0,0,0.7)'
+  ctx.shadowOffsetX = ctx.shadowOffsetY = 2 * W / 1080
+  // Black outline, as drawtext borderw=4 (px at 1080 wide)
+  ctx.lineJoin = 'round'
+  ctx.lineWidth = 2 * Math.max(2, 4 * W / 1080)
+  ctx.strokeStyle = '#000000'
+  ctx.strokeText(o.text, W / 2, (o.y ?? 0.15) * H)
+  ctx.shadowColor = 'transparent'
+  ctx.fillStyle = o.color ?? '#ffffff'
+  ctx.fillText(o.text, W / 2, (o.y ?? 0.15) * H)
+  ctx.restore()
+}
+
 // ── 9:16 output canvas ────────────────────────────────────────────────────────
 
 interface OutputCanvasProps {
   videoRef: RefObject<HTMLVideoElement | null>
+  /** The format at a clip time, read on every frame (instead of activeSegment, which follows React renders) */
+  segmentAt?: (clipMs: number) => SegmentLocal | null
+  /** Cut straight to the next format, as the export does (no crossfade) */
+  hardCuts?: boolean
+  /** The video a format shows, when it isn't the main one (B-roll) */
+  sourceFor?: (seg: SegmentLocal | null) => HTMLVideoElement | null
   currentTimeMs: number
   clipStartMs?: number
   activeSegment: SegmentLocal | null
@@ -580,15 +911,17 @@ interface OutputCanvasProps {
   /** Clicking a photo, video or text in a frame selects it */
   onFrameItemClick?: (id: string) => void
   activeFrameItemId?: string | null
+  /** A frame text dragged or resized in the preview */
+  onFrameItemChange?: (id: string, patch: Partial<Pick<FrameItem, 'x' | 'y' | 'size'>>) => void
 }
 
 export function OutputCanvas({
-  videoRef, currentTimeMs, clipStartMs = 0, activeSegment, getPositionAt,
+  videoRef, currentTimeMs, clipStartMs = 0, activeSegment, getPositionAt, segmentAt, hardCuts = false, sourceFor,
   overlays = [], activeOverlayId, onOverlayChange, onSelectOverlay, onDeleteOverlay,
   className, style, skipTransitionRef,
   words, captionStyle, captionTextCase = 'title', showCaptions = false,
   textOverlays = [], activeTextOverlayId, onTextOverlayChange, onSelectTextOverlay, onDeleteTextOverlay,
-  onCaptionPositionChange, frameMedia, onFrameLaneClick, onFrameItemClick, activeFrameItemId,
+  onCaptionPositionChange, frameMedia, onFrameLaneClick, onFrameItemClick, activeFrameItemId, onFrameItemChange,
 }: OutputCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const frameMediaRef = useRef(frameMedia)
@@ -601,6 +934,12 @@ export function OutputCanvas({
   const clipStartMsRef   = useRef(clipStartMs)
   const getPositionAtRef = useRef(getPositionAt)
   activeSegmentRef.current = activeSegment
+  const segmentAtRef = useRef(segmentAt)
+  segmentAtRef.current = segmentAt
+  const sourceForRef = useRef(sourceFor)
+  sourceForRef.current = sourceFor
+  const hardCutsRef = useRef(hardCuts)
+  hardCutsRef.current = hardCuts
   currentTimeMsRef.current = currentTimeMs
   clipStartMsRef.current   = clipStartMs
   getPositionAtRef.current = getPositionAt
@@ -624,9 +963,13 @@ export function OutputCanvas({
   // Rebuild only when the words array identity changes.
   const captionChunksRef  = useRef<FlatWord[][]>([])
   const prevWordsRef      = useRef<typeof words>(undefined)
-  if (words !== prevWordsRef.current) {
+  // Presets change how many words a line holds
+  const wordsPerLine = captionWordsPerLine(captionStyle ?? {})
+  const prevPerLineRef    = useRef(wordsPerLine)
+  if (words !== prevWordsRef.current || wordsPerLine !== prevPerLineRef.current) {
     prevWordsRef.current   = words
-    captionChunksRef.current = buildCaptionChunks(words ?? [])
+    prevPerLineRef.current = wordsPerLine
+    captionChunksRef.current = buildCaptionChunks(words ?? [], wordsPerLine)
   }
 
   useEffect(() => {
@@ -638,14 +981,16 @@ export function OutputCanvas({
 
       if (canvas && video && video.readyState >= 2) {
         const ctx    = canvas.getContext('2d')
-        const seg    = activeSegmentRef.current
+        const seg    = segmentAtRef.current
+          ? segmentAtRef.current(Math.max(0, video.currentTime * 1000 - clipStartMsRef.current))
+          : activeSegmentRef.current
         const newId  = seg?.id ?? null
 
         if (ctx) {
           // Detect segment boundary — snapshot MUST be captured before paintSegment
           // overwrites the canvas with new-segment content.
           if (newId !== prevSegIdRef.current && prevSegIdRef.current !== null) {
-            const skip = skipTransitionRef?.current ?? false
+            const skip = hardCutsRef.current || (skipTransitionRef?.current ?? false)
             if (skipTransitionRef) skipTransitionRef.current = false
             if (!skip) {
               if (!snapshotRef.current) snapshotRef.current = document.createElement('canvas')
@@ -669,7 +1014,11 @@ export function OutputCanvas({
 
           // Keep frame slots' own videos in step with the main player, then draw
           frameMediaRef.current?.sync(seg, clipRelativeMs, !video.paused, video)
-          paintSegment(ctx, video, seg, clipRelativeMs, getPositionAtRef.current, frameMediaRef.current)
+          // A B-roll shot whose video is still seeking keeps the last frame (never flashes the main video)
+          const other = sourceForRef.current?.(seg)
+          if (!other || other.readyState >= 2) {
+            paintSegment(ctx, other ?? video, seg, clipRelativeMs, getPositionAtRef.current, frameMediaRef.current)
+          }
 
           // Composite the outgoing snapshot on top with decreasing alpha
           if (transitionStart.current !== null && snapshotRef.current) {
@@ -744,9 +1093,14 @@ export function OutputCanvas({
             onClick={e => { e.stopPropagation(); onFrameItemClick?.(r.item.id) }}
             aria-label={`Select the ${r.item.kind === 'text' ? 'text' : r.item.kind} in the ${r.label.toLowerCase()} ${r.lane === 'band' ? 'band' : 'slot'}`}
             className="absolute left-0 right-0 transition-shadow hover:shadow-[inset_0_0_0_1px_rgba(255,255,255,0.35)]"
-            style={{ top: `${r.y * 100}%`, height: `${r.h * 100}%`, boxShadow: on ? 'inset 0 0 0 2px #c8ff00' : undefined }} />
+            style={{ top: `${r.y * 100}%`, height: `${r.h * 100}%`, boxShadow: on && r.item.kind !== 'text' ? 'inset 0 0 0 2px #c8ff00' : undefined }} />
         )
       })}
+      {itemRows.filter(r => r.item.kind === 'text' && !r.item.captions && onFrameItemChange).map(r => (
+        <FrameTextBox key={`box-${r.item.id}`} row={r} item={r.item} selected={r.item.id === activeFrameItemId}
+          onSelect={() => onFrameItemClick?.(r.item.id)}
+          onChange={patch => onFrameItemChange?.(r.item.id, patch)} />
+      ))}
       {emptyLanes.map(r => (
         <button key={String(r.lane)}
           onClick={e => { e.stopPropagation(); onFrameLaneClick?.(r.lane) }}
@@ -757,7 +1111,7 @@ export function OutputCanvas({
           <span className="flex items-center gap-1.5 rounded-full transition-transform group-hover:scale-105"
             style={{ padding: '5px 11px 5px 7px', background: 'rgba(255,255,255,0.1)', border: '1px dashed rgba(255,255,255,0.35)', color: 'rgba(255,255,255,0.85)', fontSize: 'max(10px, 3.2cqw)', fontWeight: 600 }}>
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
-            {r.lane === 'band' ? 'Text' : 'Add'}
+            {r.lane === 'band' ? 'Add text' : 'Add'}
           </span>
         </button>
       ))}
@@ -976,7 +1330,12 @@ function TextOverlayBox({ overlay, isActive, onChange, onSelect, onDelete }: Tex
     e.stopPropagation()
     onSelect(overlay.id)
     const sx = e.clientX, sy = e.clientY
-    const ox = overlay.x ?? 0.1, oy = overlay.y ?? 0.4
+    // A centred overlay (no x) starts its drag from where it is drawn
+    const centredX = () => {
+      const el = ref.current, parent = el?.parentElement
+      return el && parent ? el.getBoundingClientRect().left / 1 - parent.getBoundingClientRect().left : 0
+    }
+    const ox = overlay.x ?? (centredX() / cRect().w), oy = overlay.y ?? 0.4
     function move(ev: MouseEvent) {
       const { w, h } = cRect()
       onChange({
@@ -1003,7 +1362,8 @@ function TextOverlayBox({ overlay, isActive, onChange, onSelect, onDelete }: Tex
     window.addEventListener('mouseup', up)
   }
 
-  const x = overlay.x ?? 0.1
+  const centred = overlay.x == null
+  const x = overlay.x ?? 0.5
   const y = overlay.y ?? 0.4
   const color = overlay.color ?? '#ffffff'
   const accent = '#c8ff00'
@@ -1017,6 +1377,7 @@ function TextOverlayBox({ overlay, isActive, onChange, onSelect, onDelete }: Tex
         position: 'absolute',
         left: `${x * 100}%`,
         top: `${y * 100}%`,
+        transform: centred ? 'translateX(-50%)' : undefined,
         cursor: 'move',
         userSelect: 'none',
         border: `1.5px solid ${isActive ? accent : 'transparent'}`,
@@ -1029,7 +1390,7 @@ function TextOverlayBox({ overlay, isActive, onChange, onSelect, onDelete }: Tex
       }}
     >
       {/* Invisible text — sized to match canvas text (canvas 540×960; size/6.075 cqw = size/1080*960/540 of container width) */}
-      <span style={{ color: 'transparent', fontSize: `${(overlay.size ?? 72) / 6.075}cqw`, fontWeight: 700, fontFamily: 'sans-serif', whiteSpace: 'nowrap', display: 'block', pointerEvents: 'none', lineHeight: 1, userSelect: 'none', margin: 0, padding: 0 }}>
+      <span style={{ color: 'transparent', fontSize: `${(overlay.size ?? 72) / 10.8}cqw`, fontWeight: 700, fontFamily: 'sans-serif', whiteSpace: 'nowrap', display: 'block', pointerEvents: 'none', lineHeight: 1, userSelect: 'none', margin: 0, padding: 0 }}>
         {overlay.text || '…'}
       </span>
       {isActive && (

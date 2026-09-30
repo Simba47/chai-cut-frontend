@@ -10,12 +10,10 @@ interface Props {
   lane: FrameLane
   laneLabel: string
   anchor: DOMRect
-  /** What the template puts in this slot: a video slot offers videos, a photo slot photos */
-  slotKind: 'video' | 'photo'
+  /** What this slot's "+" offers (see slotOffers) */
+  offers: { video: boolean; photo: boolean; text: boolean }
   /** The slot doesn't show the main video yet ("Same video") */
   canAddMain: boolean
-  /** The frame has a text band: offer text for it (the band appears with its first text) */
-  bandText: boolean
   onChoose: (choice: AddChoice) => void
   onClose: () => void
 }
@@ -30,7 +28,7 @@ const ICONS: Record<AddChoice, React.ReactNode> = {
 }
 
 /** What "+" on a frame slot offers: the same (main) video or an uploaded video — or a photo in a photo slot — plus text for the band */
-export function FrameAddMenu({ laneLabel, anchor, slotKind, canAddMain, bandText, onChoose, onClose }: Props) {
+export function FrameAddMenu({ laneLabel, anchor, offers, canAddMain, onChoose, onClose }: Props) {
   const ref = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -43,13 +41,10 @@ export function FrameAddMenu({ laneLabel, anchor, slotKind, canAddMain, bandText
   }, [onClose])
 
   const choices: { id: AddChoice; label: string; color: string }[] = [
-    ...(slotKind === 'video'
-      ? [
-          ...(canAddMain ? [{ id: 'main' as const, label: 'Same video', color: FRAME_ITEM_COLORS.main }] : []),
-          { id: 'video' as const, label: 'Upload video', color: FRAME_ITEM_COLORS.video },
-        ]
-      : [{ id: 'photo' as const, label: 'Upload photo', color: FRAME_ITEM_COLORS.photo }]),
-    ...(bandText ? [{ id: 'bandtext' as const, label: 'Text', color: FRAME_ITEM_COLORS.text }] : []),
+    ...(offers.video && canAddMain ? [{ id: 'main' as const, label: 'Same video', color: FRAME_ITEM_COLORS.main }] : []),
+    ...(offers.video ? [{ id: 'video' as const, label: 'Different video', color: FRAME_ITEM_COLORS.video }] : []),
+    ...(offers.photo ? [{ id: 'photo' as const, label: offers.video ? 'Photo' : 'Upload photo', color: FRAME_ITEM_COLORS.photo }] : []),
+    ...(offers.text ? [{ id: 'bandtext' as const, label: 'Text', color: FRAME_ITEM_COLORS.text }] : []),
   ]
 
   // Opens above the "+" (the timeline sits at the bottom of the screen), kept on screen

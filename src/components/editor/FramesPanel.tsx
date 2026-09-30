@@ -1,14 +1,14 @@
 'use client'
 
 import { Fragment, useEffect, useState } from 'react'
-import type { SegmentLocal, FrameLayout, FrameItem, FrameSettings, SlotMotion } from '@chai-cut/shared'
-import { FRAME_TEMPLATES, FRAME_LAYOUTS, isFrameLayout, frameLanes, frameOf } from '@/modules/editor/frames'
+import type { SegmentLocal, FrameLayout, FrameItem, FrameSettings, SlotMotion, CornerStyle } from '@chai-cut/shared'
+import { FRAME_TEMPLATES, FRAME_LAYOUTS, isFrameLayout, frameLanes, frameOf, cornerGeometry, CORNER_MAX, mainSlotSound } from '@/modules/editor/frames'
 import { frameItemColor, FRAME_ITEM_COLORS } from './SegmentTimeline'
 import { ItemTimeRange } from './ItemTimeRange'
 
 const ACCENT = '#c8ff00'
 
-type FramePatch = Partial<Pick<FrameSettings, 'main_slots' | 'main_volume' | 'main_muted'>>
+type FramePatch = Partial<Pick<FrameSettings, 'main_slots' | 'main_volume' | 'main_muted' | 'main_volumes' | 'main_mutes' | 'main_corners'>>
 
 interface Props {
   /** Every format that uses a frame, in time order */
@@ -252,12 +252,16 @@ function FrameContents({ seg, currentTimeMs, videoTitles, selected, onSelectItem
                     {r.item.kind === 'photo' && (
                       <>
                         <div className="flex items-center gap-2">
-                          {r.item.image_url && <img src={r.item.image_url} alt="" className="w-9 h-9 rounded object-cover shrink-0" />}
+                          {/* crossOrigin must match FrameMediaPool's <img> for the same URL (frameMedia.ts) —
+                              browsers cache a URL per CORS mode, so a mismatched second request for the same
+                              URL fails as a CORS error instead of a fresh fetch. */}
+                          {r.item.image_url && <img src={r.item.image_url} alt="" crossOrigin="anonymous" className="w-9 h-9 rounded object-cover shrink-0" />}
                           <button onClick={() => onReplaceMedia(r.id, 'photo')} className="text-[11px] font-medium hover:underline" style={{ color: 'var(--ed-accent-text)' }}>Change photo</button>
                         </div>
                         <Chips title="Motion" options={MOTIONS} value={r.item.motion ?? 'none'} onChange={motion => onUpdateItem(r.id, { motion })} />
                       </>
                     )}
+                    <CornerPicker value={r.item.corners} onChange={corners => onUpdateItem(r.id, { corners })} />
                     <ItemTimeRange item={r.item} segment={seg} currentTimeMs={currentTimeMs} onChange={patch => onUpdateItem(r.id, patch)} />
                     <button onClick={() => onRemoveItem(r.id)}
                       className="self-end text-[11px] font-medium hover:underline" style={{ color: '#f87171' }}>Remove</button>
@@ -266,9 +270,19 @@ function FrameContents({ seg, currentTimeMs, videoTitles, selected, onSelectItem
                   <>
                     <div className="flex flex-col gap-1.5">
                       <span className="text-[11px] font-medium" style={{ color: 'rgb(var(--ed-fg) / 0.5)' }}>Sound</span>
-                      <Volume volume={frame.main_volume ?? 1} muted={!!frame.main_muted}
-                        onVolume={main_volume => onUpdateFrame({ main_volume })} onMuted={main_muted => onUpdateFrame({ main_muted })} />
+                      {(() => {
+                        // This slot's own sound — other slots showing the main video aren't affected
+                        const key = String(r.lane)
+                        const snd = mainSlotSound(frame, r.lane as number)
+                        return (
+                          <Volume volume={snd.volume} muted={snd.muted}
+                            onVolume={v => onUpdateFrame({ main_volumes: { ...frame.main_volumes, [key]: v }, main_mutes: { ...frame.main_mutes, [key]: snd.muted } })}
+                            onMuted={m => onUpdateFrame({ main_mutes: { ...frame.main_mutes, [key]: m }, main_volumes: { ...frame.main_volumes, [key]: snd.volume } })} />
+                        )
+                      })()}
                     </div>
+                    <CornerPicker value={frame.main_corners?.[String(r.lane)]}
+                      onChange={corners => onUpdateFrame({ main_corners: { ...frame.main_corners, [String(r.lane)]: corners } })} />
                     <p className="text-[11px] leading-relaxed" style={{ color: 'rgb(var(--ed-fg) / 0.45)' }}>
                       Frame it by dragging its box on the source video. It plays for the whole frame.
                     </p>
@@ -281,6 +295,26 @@ function FrameContents({ seg, currentTimeMs, videoTitles, selected, onSelectItem
           </div>
         )
       })}
+    </div>
+  )
+}
+
+/** Corners slider (0–100): rounder corners and a wider black border as it goes up; a tiny preview shows the look */
+function CornerPicker({ value, onChange }: { value: CornerStyle | string | undefined; onChange: (v: CornerStyle) => void }) {
+  const g = cornerGeometry(value)
+  const v = g ? Math.round((g.radius / CORNER_MAX.radius) * 100) : 0
+  return (
+    <div className="flex flex-col gap-1.5">
+      <span className="text-[11px] font-medium" style={{ color: 'rgb(var(--ed-fg) / 0.5)' }}>Corners</span>
+      <div className="flex items-center gap-2">
+        <span className="block shrink-0" aria-hidden="true" style={{ width: 28, height: 20, background: '#000', padding: (v / 100) * 4, borderRadius: 2 }}>
+          <span className="block w-full h-full" style={{ background: 'linear-gradient(135deg, #60a5fa, #2dd4bf)', borderRadius: (v / 100) * 8 }} />
+        </span>
+        <input type="range" min={0} max={100} step={1} value={v} aria-label="Rounded corners"
+          onChange={e => onChange(Number(e.target.value))}
+          className="flex-1" style={{ accentColor: ACCENT }} />
+        <span className="w-8 text-right text-[11px] tabular-nums" style={{ color: 'rgb(var(--ed-fg) / 0.55)' }}>{v ? `${v}%` : 'Off'}</span>
+      </div>
     </div>
   )
 }

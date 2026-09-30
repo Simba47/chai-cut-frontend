@@ -12,7 +12,8 @@ export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => null)
   if (!body?.clip_id) return NextResponse.json({ error: 'clip_id required' }, { status: 400 })
   try {
-    return NextResponse.json(await queueRender(user.id, body.clip_id, body.quality ?? '1080p', body.retranscribe === true))
+    return NextResponse.json(await queueRender(user.id, body.clip_id, body.quality ?? '1080p', body.retranscribe === true,
+      typeof body.remove_fillers === 'boolean' ? body.remove_fillers : undefined))
   } catch (err) {
     return apiError(err)
   }

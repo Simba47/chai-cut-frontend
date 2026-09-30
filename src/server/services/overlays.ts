@@ -13,10 +13,13 @@ export async function uploadOverlay(userId: string, file: File) {
     ContentType: file.type || 'image/png',
   }))
 
+  // Only used for immediate display right after upload — storage_path is the
+  // durable reference, re-signed fresh elsewhere whenever actually needed later.
+  // SigV4 presigned URLs cap at 7 days; a 1-year expiresIn here just throws.
   const preview_url = await getSignedUrl(
     r2,
     new GetObjectCommand({ Bucket: R2_BUCKET, Key: storagePath }),
-    { expiresIn: 60 * 60 * 24 * 365 },
+    { expiresIn: 60 * 60 },
   )
 
   return { storage_path: storagePath, preview_url }
