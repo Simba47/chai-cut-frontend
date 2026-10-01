@@ -3,6 +3,10 @@
 import { useState, useEffect, useRef, useMemo, Fragment } from 'react'
 import type { Clip, Segment, CropBox, BoxKeyframe, CaptionStyle, TextOverlay, AudioTrack, Transition, TranscriptWord, LayoutType, Overlay } from '@chai-cut/shared'
 import { VideoPreview, OutputCanvas } from '@/components/editor/VideoPreview'
+import { computeCutRanges, removedMs } from '@/lib/cuts'
+import { PostText, type PostTextValue } from '@/components/clips/PostText'
+import { BrollPanel, type StockResult } from '@/components/editor/BrollPanel'
+import { useBrollSources } from '@/modules/editor/brollSources'
 import { SegmentTimeline, LAYOUT_COLORS } from '@/components/editor/SegmentTimeline'
 import { TranscriptPanel } from '@/components/editor/TranscriptPanel'
 import { CaptionStyler } from '@/components/editor/CaptionStyler'
@@ -30,7 +34,7 @@ import { rowsToLocal, normalizeCoverage, uncoveredRanges, defaultCropForSlot, ms
 import { viewChanges } from '@/modules/editor/views'
 import type { SegmentLocal, FrameLayout, FrameLane, FrameItem } from '@chai-cut/shared'
 
-type Tool = 'format' | 'frames' | 'captions' | 'text'
+type Tool = 'format' | 'frames' | 'captions' | 'text' | 'broll' | 'cleanup' | 'post'
 type SaveState = 'idle' | 'saving' | 'saved' | 'error' | 'retrying'
 
 interface SegmentRow extends Omit<Segment, never> {
@@ -87,6 +91,21 @@ const TOOLS: { id: Tool; label: string; title: string; hint: string; icon: React
     hint: 'Add titles, hooks or call-outs on top of the video.',
     icon: <path d="M5 6V4h14v2M12 4v16M9 20h6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" fill="none" />,
   },
+  {
+    id: 'broll', label: 'B-roll', title: 'B-roll',
+    hint: 'Short stock shots over the clip while the speaker keeps talking. Pick one, then add it at the playhead.',
+    icon: <><rect x="2.5" y="5" width="19" height="14" rx="2.5" stroke="currentColor" strokeWidth="1.8" fill="none" /><path d="M10 9.5v5l4.5-2.5z" fill="currentColor" /></>,
+  },
+  {
+    id: 'cleanup', label: 'Cleanup', title: 'Remove pauses & filler words',
+    hint: 'Cuts long pauses and filler words (um, uh, matlab, ante…) out of the export. The preview plays the full clip.',
+    icon: <><circle cx="6" cy="6" r="2.6" stroke="currentColor" strokeWidth="1.8" fill="none" /><circle cx="6" cy="18" r="2.6" stroke="currentColor" strokeWidth="1.8" fill="none" /><path d="M8.2 7.6L20 17M8.2 16.4L20 7" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" fill="none" /></>,
+  },
+  {
+    id: 'post', label: 'Post', title: 'Post text',
+    hint: 'A title, caption and hashtags to post the clip with. Copy them, or have AI write them again.',
+    icon: <path d="M9 4L7 20M17 4l-2 16M4.5 9h16M3.5 15h16" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" fill="none" />,
+  },
 ]
 
 export function EditorShell({
@@ -108,6 +127,7 @@ export function EditorShell({
     hydrate: hydrateEditor, updateSegment, removeSegment,
     splitAtMs, updateBoxSource, insertBrollAtMs, applyLayout, setSegmentEdge, addFormat, moveJunction,
     neighbourFraming, joinSameLayoutNeighbours, setViewAt, recordMotionAt, removeViewChange, moveViewChange,
+    placeBroll, removeBroll: removeBrollShot,
     upsertKeyframe, setBoxKeyframes, getPositionAt, updateFrameBand,
     updateFrame, addFrameItem, updateFrameItem, removeFrameItem,
     setActiveSegmentId, setActiveBoxId,
@@ -193,17 +213,28 @@ export function EditorShell({
   const framePool = useMemo(() => createFrameMediaPool(id => videoLibraryRef.current[id]?.url), [])
   useEffect(() => () => framePool.dispose(), [framePool])
   async function loadVideoLibrary() {
-    const res = await fetch('/api/videos').catch(() => null)
+    const res = await fetch('/api/videos?assets=1').catch(() => null)
     if (!res?.ok) return
     const { videos } = await res.json() as { videos: { id: string; title?: string | null; video_url?: string | null; index?: number }[] }
     setVideoLibrary(Object.fromEntries(videos.filter(v => v.video_url).map(v => [v.id, { url: v.video_url!, title: v.title?.trim() || `Video ${v.index ?? ''}`.trim() }])))
   }
   useEffect(() => { loadVideoLibrary() }, [])
   const videoTitles = useMemo(() => Object.fromEntries(Object.entries(videoLibrary).map(([id, v]) => [id, v.title])), [videoLibrary])
+  const videoUrls = useMemo(() => Object.fromEntries(Object.entries(videoLibrary).map(([id, v]) => [id, v.url])), [videoLibrary])
+  // B-roll shots are drawn from their own videos in the preview (muted; the speaker carries on)
+  const brollSource = useBrollSources(videoRef, clip.start_ms, id => videoLibraryRef.current[id]?.url)
   const [pendingBrollMs, setPendingBrollMs] = useState<number | null>(null)
   const [clipStatus, setClipStatus] = useState<string>(clip.status)
   const [outputUrl, setOutputUrl] = useState<string | null>(clip.output_url)
   const [exporting, setExporting] = useState(false)
+  // Remove pauses and filler words (the cut is made by the export; see src/lib/cuts.ts)
+  const [removeFillers, setRemoveFillersState] = useState(!!(clip as Clip & { remove_fillers?: boolean }).remove_fillers)
+  const removeFillersRef = useRef(removeFillers)
+  // Words to post the clip with (AI clips come with them; any clip can have them written)
+  const [postText, setPostText] = useState<PostTextValue>(() => {
+    const c = clip as Clip & { title?: string | null; post_caption?: string | null; hashtags?: string[] | null }
+    return { title: c.title ?? null, post_caption: c.post_caption ?? null, hashtags: c.hashtags ?? null }
+  })
   const [exportError, setExportError] = useState<string | null>(null)
   // What exports have always been rendered at (the worker ignored the 2160p asked for here)
   const renderQuality = '1080p' as const
@@ -425,6 +456,7 @@ export function EditorShell({
             crop_boxes: s.crop_boxes.map(b => ({ ...b, keyframes: keyframes[b.id] ?? b.keyframes })),
           })),
           captionStyle, textOverlays, audioTracks, transitions, filters, overlays,
+          removeFillers: removeFillersRef.current,
         }),
       })
       if (!res.ok) {
@@ -492,7 +524,7 @@ export function EditorShell({
       if (!lastSaveOkRef.current) throw new Error("Couldn't save your latest edits, so nothing was exported. Check your connection and try again.")
       const res = await fetch('/api/export', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ clip_id: clip.id, quality: renderQuality, retranscribe }),
+        body: JSON.stringify({ clip_id: clip.id, quality: renderQuality, retranscribe, remove_fillers: removeFillersRef.current }),
       })
       if (!res.ok) throw new Error((await res.json()).error ?? 'Export failed')
       refreshWordsOnDoneRef.current = retranscribe
@@ -979,6 +1011,54 @@ export function EditorShell({
     if (newId) { setActiveSegmentId(newId); seekToMs(atMs) }
   }
 
+  // ── B-roll panel ──────────────────────────────────────────────────────────────
+  const brollShots = useMemo(() => segments
+    .filter(sg => !isFrameLayout(sg.layout) && sg.crop_boxes[0]?.source_video_id)
+    .sort((a, b) => a.start_ms - b.start_ms)
+    .map(sg => ({ id: sg.id, start_ms: sg.start_ms, end_ms: sg.end_ms, title: (videoTitles[sg.crop_boxes[0].source_video_id!] ?? 'Stock video').replace(/^(Pixabay|Pexels): /, '') })),
+  [segments, videoTitles])
+
+  /** Save the stock video as the user's asset, then put it in at the playhead as a muted cutaway */
+  async function addStockBroll(item: StockResult, lengthMs: number) {
+    const res = await fetch('/api/stock/import', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ref: item.ref, url: item.url, title: item.title }),
+    })
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error ?? 'Could not add that video')
+    videoLibraryRef.current = { ...videoLibraryRef.current, [data.video_id]: { url: data.url, title: data.title } }
+    setVideoLibrary(videoLibraryRef.current)
+    const at = Math.min(currentTimeMs, Math.max(0, clipLengthMs - 500))
+    const segId = placeBroll(data.video_id, at, Math.min(clipLengthMs, at + lengthMs), getPositionAt)
+    setActiveSegmentId(segId)
+    seekToMs(at)
+  }
+
+  const neighbours = (id: string) => {
+    const byTime = [...useEditorStore.getState().segments].sort((a, b) => a.start_ms - b.start_ms)
+    const i = byTime.findIndex(sg => sg.id === id)
+    const seg = byTime[i], prev = byTime[i - 1], next = byTime[i + 1]
+    return { seg, prev: prev && prev.end_ms === seg?.start_ms ? prev : undefined, next: next && next.start_ms === seg?.end_ms ? next : undefined }
+  }
+  /**
+   * Give a shot a new time: it is taken out (the framing around it takes the time back) and put
+   * back in at the new place, as a new shot is. Same video, muted.
+   */
+  function retimeBroll(id: string, startMs: number, endMs: number) {
+    const { seg } = neighbours(id)
+    const videoId = seg?.crop_boxes[0]?.source_video_id
+    if (!seg || !videoId) return
+    const start = Math.max(0, Math.min(clipLengthMs - 500, startMs))
+    const end = Math.min(clipLengthMs, Math.max(start + 500, endMs))
+    removeBrollShot(id)
+    setActiveSegmentId(placeBroll(videoId, start, end, getPositionAt))
+  }
+  const moveBroll = (id: string, delta: number) => { const { seg } = neighbours(id); if (seg) retimeBroll(id, seg.start_ms + delta, seg.end_ms + delta) }
+  const resizeBroll = (id: string, delta: number) => { const { seg } = neighbours(id); if (seg) retimeBroll(id, seg.start_ms, seg.end_ms + delta) }
+
+  /** Remove a shot: the framing before it (or after it, at the start) takes its time back */
+  const removeBroll = (id: string) => removeBrollShot(id)
+
   function handleInsertBrollAfterSeg(afterSegId: string) {
     const seg = segments.find(s => s.id === afterSegId)
     if (seg) setPickerAtMs(seg.end_ms)
@@ -1074,6 +1154,38 @@ export function EditorShell({
 
   const rendering = clipStatus === 'rendering' || exporting
   const hasOutput = !!outputUrl && clipStatus === 'done'
+  // What "Remove pauses and filler words" takes out of this clip, from the transcript
+  const fillerCuts = useMemo(() => computeCutRanges(words, clip.start_ms, clip.end_ms), [words, clip.start_ms, clip.end_ms])
+  const fillerCutMs = useMemo(() => removedMs(fillerCuts), [fillerCuts])
+  /** Each cut, clip-relative, with the words it takes out (none = a pause) */
+  const fillerCutList = useMemo(() => fillerCuts.map(([a, b]) => ({
+    at: a - clip.start_ms,
+    ms: b - a,
+    words: words.filter(w => (w.start_ms + w.end_ms) / 2 >= a && (w.start_ms + w.end_ms) / 2 < b).map(w => w.word),
+  })), [fillerCuts, words, clip.start_ms])
+  /** "Remove pauses & filler words": in the preview column and in the Captions panel, one setting */
+  const fillersToggle = (place: string) => words.length > 0 && (
+    <label className={`shrink-0 ${place} flex items-start gap-2.5 px-3 py-2.5 rounded-xl cursor-pointer`}
+      style={{ background: 'rgb(var(--ed-fg) / 0.04)', border: '1px solid rgb(var(--ed-fg) / 0.07)' }}>
+      <input type="checkbox" checked={removeFillers} onChange={e => setRemoveFillers(e.target.checked)}
+        className="mt-0.5" style={{ accentColor: '#c8ff00' }} />
+      <span className="flex flex-col gap-0.5">
+        <span className="text-xs font-semibold text-[var(--ed-text)]">Remove pauses &amp; filler words</span>
+        <span className="text-[11px]" style={{ color: 'rgb(var(--ed-fg) / 0.5)' }}>
+          {fillerCutMs >= 500 ? `Removes about ${Math.round(fillerCutMs / 1000)} s. ` : 'Nothing much to remove in this clip. '}
+          Applied when you export; the preview plays the full clip.
+        </span>
+      </span>
+    </label>
+  )
+
+  function setRemoveFillers(on: boolean) {
+    setRemoveFillersState(on)
+    removeFillersRef.current = on
+    unsavedRef.current = true
+    editVersionRef.current++
+    latestHandleSaveRef.current()
+  }
   const activeTool = TOOLS.find(t => t.id === tool)!
 
   return (
@@ -1395,6 +1507,52 @@ export function EditorShell({
               )
             )}
 
+            {tool === 'cleanup' && (
+              <div className="flex flex-col gap-3 p-4 min-h-0">
+                {fillersToggle('')}
+                {words.length === 0 && <p className="text-xs" style={{ color: 'rgb(var(--ed-fg) / 0.5)' }}>This needs the clip's captions (transcript) first.</p>}
+                {fillerCutList.length > 0 && (
+                  <div className="flex flex-col gap-1 min-h-0">
+                    <span className="text-xs font-medium" style={{ color: 'rgb(var(--ed-fg) / 0.5)' }}>
+                      {fillerCutList.length} cut{fillerCutList.length === 1 ? '' : 's'}{removeFillers ? '' : ' (when switched on)'}
+                    </span>
+                    <div className="flex flex-col gap-1 overflow-y-auto -mr-2 pr-2" style={{ maxHeight: 420 }}>
+                      {fillerCutList.map(c => (
+                        <button key={c.at} onClick={() => seekToMs(Math.max(0, c.at - 1000))} title="Play from just before this cut"
+                          className="flex items-center gap-2 px-2 py-1.5 rounded-lg text-left transition-colors hover:bg-[rgb(var(--ed-fg)/0.08)]"
+                          style={{ background: 'rgb(var(--ed-fg) / 0.04)' }}>
+                          <span className="text-[11px] tabular-nums shrink-0" style={{ color: 'rgb(var(--ed-fg) / 0.5)' }}>{msToLabel(c.at)}</span>
+                          <span className="flex-1 text-xs truncate" style={{ color: 'var(--ed-text)' }}>
+                            {c.words.length ? `“${c.words.join(' ')}”` : 'Pause'}
+                          </span>
+                          <span className="text-[11px] tabular-nums shrink-0" style={{ color: 'rgb(var(--ed-fg) / 0.45)' }}>−{(c.ms / 1000).toFixed(1)}s</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {tool === 'post' && (
+              <div className="p-4">
+                <PostText clipId={clip.id} value={postText} onChange={v => setPostText({ title: v.title, post_caption: v.post_caption, hashtags: v.hashtags })} />
+              </div>
+            )}
+
+            {tool === 'broll' && (
+              <BrollPanel
+                clipId={clip.id}
+                currentTimeMs={currentTimeMs}
+                shots={brollShots}
+                onAdd={addStockBroll}
+                onMove={moveBroll}
+                onResize={resizeBroll}
+                onRemove={removeBroll}
+                onSeek={seekToMs}
+              />
+            )}
+
             {tool === 'text' && (
               <>
               <FrameTextPanel
@@ -1531,6 +1689,8 @@ export function EditorShell({
               currentTimeMs={currentTimeMs} activeSegmentId={activeSegment?.id ?? null}
               videoUrl={videoUrl} safeDurationMs={clipDurationMs} onSeek={seekToMs}
               onSelectSegment={id => setActiveSegmentId(id)}
+              onBrollChange={retimeBroll}
+              videoUrls={videoUrls}
               onUpdateSegment={(id, updates) => updateSegment(id, updates)}
               onSetEdge={(id, edge, t) => setSegmentEdge(id, edge, t, clipLengthMs)}
               onMoveJunction={moveJunction}
@@ -1665,7 +1825,7 @@ export function EditorShell({
               ) : (
                 <OutputCanvas
                   videoRef={videoRef} currentTimeMs={currentTimeMs} clipStartMs={clip.start_ms}
-                  activeSegment={viewSegment} getPositionAt={viewGetPositionAt}
+                  activeSegment={viewSegment} getPositionAt={viewGetPositionAt} sourceFor={brollSource}
                   skipTransitionRef={skipCanvasTransitionRef} words={displayWords}
                   captionStyle={captionStyle} captionTextCase={captionTextCase} showCaptions={showCaptions}
                   overlays={overlays} activeOverlayId={activeOverlayId}

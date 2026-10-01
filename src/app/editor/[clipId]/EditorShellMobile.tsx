@@ -6,6 +6,7 @@ import type {
   AudioTrack, Transition, TranscriptWord, LayoutType, TransitionType, Overlay,
 } from '@chai-cut/shared'
 import { VideoPreview, OutputCanvas } from '@/components/editor/VideoPreview'
+import { computeCutRanges, removedMs } from '@/lib/cuts'
 import { SegmentTimeline } from '@/components/editor/SegmentTimeline'
 import { CaptionStyler } from '@/components/editor/CaptionStyler'
 import { TextOverlayPanel } from '@/components/editor/TextOverlayPanel'
@@ -145,6 +146,9 @@ export function EditorShellMobile({
   const [clipStatus, setClipStatus] = useState<string>(clip.status)
   const [outputUrl, setOutputUrl] = useState<string | null>(clip.output_url)
   const [exporting, setExporting] = useState(false)
+  // Remove pauses and filler words (the cut is made by the export; see src/lib/cuts.ts)
+  const [removeFillers, setRemoveFillersState] = useState(!!(clip as typeof clip & { remove_fillers?: boolean }).remove_fillers)
+  const removeFillersRef = useRef(removeFillers)
   const [exportError, setExportError] = useState<string | null>(null)
   // What exports have always been rendered at (the worker ignored the 2160p asked for here)
   const renderQuality = '1080p' as const
@@ -303,6 +307,7 @@ export function EditorShellMobile({
             crop_boxes: s.crop_boxes.map(b => ({ ...b, keyframes: keyframes[b.id] ?? b.keyframes })),
           })),
           captionStyle, textOverlays, audioTracks, transitions, filters, overlays,
+          removeFillers: removeFillersRef.current,
         }),
       })
       if (!res.ok) {
@@ -330,6 +335,10 @@ export function EditorShellMobile({
     }
   }
   latestHandleSaveRef.current = handleSave
+  const fillerCutMs = useMemo(
+    () => removedMs(computeCutRanges(words, clip.start_ms, clip.end_ms)),
+    [words, clip.start_ms, clip.end_ms],
+  )
 
   // Back online: don't wait out the backoff
   useEffect(() => {
@@ -351,7 +360,7 @@ export function EditorShellMobile({
       if (!(await handleSave())) throw new Error("Couldn't save your latest edits, so nothing was exported. Check your connection and try again.")
       const res = await fetch('/api/export', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ clip_id: clip.id, quality: renderQuality, retranscribe }),
+        body: JSON.stringify({ clip_id: clip.id, quality: renderQuality, retranscribe, remove_fillers: removeFillersRef.current }),
       })
       if (!res.ok) throw new Error((await res.json()).error ?? 'Export failed')
       refreshWordsOnDoneRef.current = retranscribe
@@ -618,6 +627,18 @@ export function EditorShellMobile({
           </div>
         </div>
         <div style={{ padding: '8px 10px 12px', display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {words.length > 0 && (
+            <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, padding: '8px 10px', borderRadius: 10, background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)', cursor: 'pointer' }}>
+              <input type="checkbox" checked={removeFillers} style={{ accentColor: '#c8ff00', marginTop: 2 }}
+                onChange={e => { setRemoveFillersState(e.target.checked); removeFillersRef.current = e.target.checked; latestHandleSaveRef.current() }} />
+              <span style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                <span style={{ fontSize: 12, fontWeight: 600, color: '#fff' }}>Remove pauses &amp; filler words</span>
+                <span style={{ fontSize: 10, color: 'rgba(255,255,255,0.5)' }}>
+                  {fillerCutMs >= 500 ? `Removes about ${Math.round(fillerCutMs / 1000)} s. ` : 'Nothing much to remove. '}Applied when you export.
+                </span>
+              </span>
+            </label>
+          )}
           {outputUrl && clipStatus === 'done' ? (
             <>
               <a href={outputUrl} download="export.mp4" target="_blank" rel="noopener noreferrer" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, padding: '10px 0', borderRadius: 10, background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.12)', color: '#fff', fontSize: 12, fontWeight: 700, textDecoration: 'none' }}>

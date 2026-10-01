@@ -53,7 +53,11 @@ const THUMB_COUNT = 24
 
 // Frames sampled across the clip's own range of the source video, so each thumbnail sits under
 // the moment it shows (the video file is the whole source, not just this clip)
-function VideoThumbnails({ videoUrl, startMs, durationMs }: { videoUrl: string; startMs: number; durationMs: number }) {
+function VideoThumbnails({ videoUrl, startMs, durationMs, count = THUMB_COUNT, radius = 8, dim = true }: {
+  videoUrl: string; startMs: number; durationMs: number
+  /** Frames across the width, the corner radius, and the dark veil over them */
+  count?: number; radius?: number; dim?: boolean
+}) {
   const [thumbs, setThumbs] = useState<string[]>([])
 
   useEffect(() => {
@@ -76,9 +80,9 @@ function VideoThumbnails({ videoUrl, startMs, durationMs }: { videoUrl: string; 
       if (!durSec || !isFinite(durSec) || durSec < 1) return
       const fromSec = Math.min(startMs / 1000, durSec)
       const spanSec = Math.max(0.1, Math.min(durationMs / 1000 || durSec, durSec - fromSec))
-      for (let i = 0; i < THUMB_COUNT; i++) {
+      for (let i = 0; i < count; i++) {
         if (cancelled) return
-        const targetSec = fromSec + ((i + 0.5) / THUMB_COUNT) * spanSec
+        const targetSec = fromSec + ((i + 0.5) / count) * spanSec
         vid.currentTime = targetSec
         await new Promise<void>(r => {
           if (Math.abs(vid.currentTime - targetSec) < 0.05 && vid.readyState >= 2) { r(); return }
@@ -98,11 +102,11 @@ function VideoThumbnails({ videoUrl, startMs, durationMs }: { videoUrl: string; 
     if (vid.readyState >= 1) { start() }
     else { vid.addEventListener('loadedmetadata', start, { once: true }) }
     return () => { cancelled = true; vid.src = ''; vid.load() }
-  }, [videoUrl, startMs, durationMs])
+  }, [videoUrl, startMs, durationMs, count])
 
   return (
-    <div className="absolute inset-0 flex overflow-hidden" style={{ borderRadius: 8 }}>
-      {Array.from({ length: THUMB_COUNT }).map((_, i) => (
+    <div className="absolute inset-0 flex overflow-hidden" style={{ borderRadius: radius }}>
+      {Array.from({ length: count }).map((_, i) => (
         <div key={i} style={{ flex: 1, minWidth: 0, overflow: 'hidden', background: 'rgb(var(--ed-fg) / 0.03)' }}>
           {thumbs[i] && (
             <img src={thumbs[i]} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block', opacity: 0, transition: 'opacity 0.3s ease' }}
@@ -110,7 +114,7 @@ function VideoThumbnails({ videoUrl, startMs, durationMs }: { videoUrl: string; 
           )}
         </div>
       ))}
-      <div className="absolute inset-0 pointer-events-none" style={{ background: 'rgba(0,0,0,0.25)', borderRadius: 8 }} />
+      {dim && <div className="absolute inset-0 pointer-events-none" style={{ background: 'rgba(0,0,0,0.25)', borderRadius: radius }} />}
     </div>
   )
 }
@@ -169,6 +173,10 @@ interface Props {
   /** Drag a ◆ in time; returns where it landed */
   onMoveView?: (from: number, to: number) => number | void
   onRemoveView?: (t: number) => void
+  /** Playable URLs of the videos B-roll shots show, by video id (for their thumbnails) */
+  videoUrls?: Record<string, string>
+  /** B-roll shots (shown on their own lane over the film strip): moved or trimmed to a new time */
+  onBrollChange?: (segId: string, startMs: number, endMs: number) => void
 }
 
 export function SegmentTimeline({
@@ -201,6 +209,8 @@ export function SegmentTimeline({
   onSelectView,
   onMoveView,
   onRemoveView,
+  onBrollChange,
+  videoUrls = {},
 }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const trackRef = useRef<HTMLDivElement>(null)
@@ -208,6 +218,8 @@ export function SegmentTimeline({
   const [viewW, setViewW] = useState(0)
   const [dragging, setDragging] = useState<string | null>(null)
   const [snapLine, setSnapLine] = useState<number | null>(null)
+  // A B-roll shot being dragged: where it would land
+  const [brollGhost, setBrollGhost] = useState<{ id: string; start: number; end: number } | null>(null)
   // Lane pointed at from the preview: scroll to it, focus its "+", and pulse it for a moment
   const [pulseLane, setPulseLane] = useState<FrameLane | null>(null)
   const lanesRef = useRef<HTMLDivElement>(null)
@@ -505,13 +517,55 @@ export function SegmentTimeline({
   for (let i = 0; i * minorMs <= duration; i++) ticks.push({ t: i * minorMs, major: i % minorPerMajor === 0 })
 
   const colorOf = (seg: SegmentLocal) => (isBroll(seg) ? '#f97316' : LAYOUT_COLORS[seg.layout])
-  const RULER_H = 26, LANE_H = 20, STRIP_H = 48
+  // B-roll shots sit on their own lane over the film strip (the speaker carries on under them);
+  // the strip, its ◆ keys and joins are about the formats that frame the main video
+  const brolls = byTime.filter(sg => isBroll(sg) && !isFrameLayout(sg.layout))
+  const mains = byTime.filter(sg => !brolls.includes(sg))
+  // One lane over the strip holds the joins between touching formats and the B-roll shots
+  const RULER_H = 26, LANE_H = brolls.length ? 40 : 24, STRIP_H = 48
+  /** The format a B-roll shot sits over (the one before it, else after): the strip keeps its colour there */
+  const underBroll = (seg: SegmentLocal) =>
+    [...mains].reverse().find(m => m.end_ms <= seg.start_ms + 1) ?? mains.find(m => m.start_ms >= seg.end_ms - 1)
   const STRIP_TOP = RULER_H + LANE_H
 
   // Places where one format ends exactly where the next begins
   const junctions: { left: SegmentLocal; right: SegmentLocal }[] = []
-  for (let i = 0; i + 1 < byTime.length; i++) {
-    if (Math.abs(byTime[i + 1].start_ms - byTime[i].end_ms) <= 1) junctions.push({ left: byTime[i], right: byTime[i + 1] })
+  for (let i = 0; i + 1 < mains.length; i++) {
+    if (Math.abs(mains[i + 1].start_ms - mains[i].end_ms) <= 1) junctions.push({ left: mains[i], right: mains[i + 1] })
+  }
+
+  /**
+   * Drag a B-roll shot: its body moves it, its ends trim it. The shot follows the pointer on its
+   * lane and takes its new time when released (the formats around it are re-made once, then).
+   */
+  function handleBrollDown(e: React.PointerEvent, seg: SegmentLocal, part: 'body' | 'start' | 'end') {
+    e.stopPropagation(); e.preventDefault()
+    onSelectSegment(seg.id)
+    const sx = e.clientX
+    const grab = msFromClientX(e.clientX) - seg.start_ms
+    const len = seg.end_ms - seg.start_ms
+    let moved = false
+    let next = { start: seg.start_ms, end: seg.end_ms }
+    setDragging(`broll-${part}-${seg.id}`)
+    const move = (ev: PointerEvent) => {
+      if (!moved && Math.abs(ev.clientX - sx) < 3) return
+      moved = true
+      const t = msFromClientX(ev.clientX)
+      if (part === 'body') { const st = Math.max(0, Math.min(duration - len, t - grab)); next = { start: st, end: st + len } }
+      else if (part === 'start') next = { start: Math.max(0, Math.min(seg.end_ms - 500, t)), end: seg.end_ms }
+      else next = { start: seg.start_ms, end: Math.min(duration, Math.max(seg.start_ms + 500, t)) }
+      setBrollGhost({ id: seg.id, ...next })
+    }
+    const up = () => {
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointerup', up)
+      setDragging(null)
+      setBrollGhost(null)
+      if (!moved) { onSeek(seg.start_ms); return }
+      onBrollChange?.(seg.id, Math.round(next.start), Math.round(next.end))
+    }
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', up)
   }
 
   // Stretches with no format — rendered with the default framing
@@ -562,13 +616,47 @@ export function SegmentTimeline({
             </div>
 
 
-            {/* ── Junction lane: one handle wherever two formats touch ── */}
+            {/* ── Overlay lane: B-roll shots, and a handle wherever two formats touch ── */}
             <div className="relative" style={{ height: LANE_H, background: 'rgb(var(--ed-fg) / 0.025)', borderTop: '1px solid rgb(var(--ed-fg) / 0.05)' }}>
-              {junctions.length === 0 && (
+              {junctions.length === 0 && brolls.length === 0 && (
                 <span className="absolute left-2 top-1/2 -translate-y-1/2 text-[10px] pointer-events-none" style={{ color: 'rgb(var(--ed-fg) / 0.25)' }}>
-                  Joins between touching formats appear here
+                  B-roll and joins between formats appear here
                 </span>
               )}
+                {brolls.map(seg => {
+                  const active = seg.id === activeSegmentId
+                  const at = brollGhost?.id === seg.id ? { start_ms: brollGhost.start, end_ms: brollGhost.end } : seg
+                  const box = seg.crop_boxes[0]
+                  const name = (videoTitles[box?.source_video_id ?? ''] ?? 'B-roll').replace(/^(Pixabay|Pexels): /, '').split(',')[0]
+                  const url = videoUrls[box?.source_video_id ?? '']
+                  return (
+                    <div key={seg.id} onPointerDown={e => handleBrollDown(e, seg, 'body')}
+                      title={`B-roll · ${name} · ${msToLabel(seg.start_ms)}–${msToLabel(seg.end_ms)} · drag to move, drag the ends to trim`}
+                      className="absolute overflow-hidden"
+                      style={{
+                        left: `${pct(at.start_ms)}%`, width: `${pct(at.end_ms - at.start_ms)}%`, top: 4, bottom: 4,
+                        borderRadius: 6, background: '#1a1a1a',
+                        boxShadow: active ? '0 0 0 2px #fff, 0 2px 6px rgba(0,0,0,0.6)' : '0 0 0 1.5px #f97316, 0 2px 6px rgba(0,0,0,0.5)',
+                        cursor: dragging === `broll-body-${seg.id}` ? 'grabbing' : 'grab', touchAction: 'none', zIndex: 33,
+                      }}>
+                      {/* The shot itself: frames of the stock clip */}
+                      {url && <VideoThumbnails videoUrl={url} startMs={box?.source_offset_ms ?? 0} durationMs={seg.end_ms - seg.start_ms} count={4} radius={6} dim={false} />}
+                      <span className="absolute left-1.5 bottom-1 max-w-[calc(100%-12px)] px-1 rounded text-[9px] font-semibold truncate pointer-events-none"
+                        style={{ background: 'rgba(0,0,0,0.65)', color: '#fff' }}>
+                        B-roll · {name}
+                      </span>
+                      {/* Trim grips */}
+                      <span onPointerDown={e => handleBrollDown(e, seg, 'start')} aria-label="Trim start"
+                        className="absolute left-0 inset-y-0 flex items-center justify-center" style={{ width: 7, cursor: 'ew-resize', background: '#f97316' }}>
+                        <span style={{ width: 1.5, height: 12, background: 'rgba(0,0,0,0.5)', borderRadius: 1 }} />
+                      </span>
+                      <span onPointerDown={e => handleBrollDown(e, seg, 'end')} aria-label="Trim end"
+                        className="absolute right-0 inset-y-0 flex items-center justify-center" style={{ width: 7, cursor: 'ew-resize', background: '#f97316' }}>
+                        <span style={{ width: 1.5, height: 12, background: 'rgba(0,0,0,0.5)', borderRadius: 1 }} />
+                      </span>
+                    </div>
+                  )
+                })}
               {junctions.map(({ left, right }) => {
                 const key = `join-${left.id}`
                 const active = dragging === key
@@ -620,7 +708,16 @@ export function SegmentTimeline({
                 </div>
               ))}
 
-              {byTime.map(seg => {
+              {brolls.map(seg => {
+                const under = underBroll(seg)
+                if (!under) return null
+                const color = colorOf(under)
+                return (
+                  <div key={`under-${seg.id}`} className="absolute inset-y-0 pointer-events-none"
+                    style={{ left: `${pct(seg.start_ms)}%`, width: `${pct(seg.end_ms - seg.start_ms)}%`, background: `${color}2a`, borderTop: `3px solid ${color}aa` }} />
+                )
+              })}
+              {mains.map(seg => {
                 const color = colorOf(seg)
                 const isActive = seg.id === activeSegmentId
                 return (
@@ -685,7 +782,7 @@ export function SegmentTimeline({
             </div>
 
             {/* ── Keys: ◆ start (top edge) and ◆ end (bottom edge) of every format ── */}
-            {byTime.flatMap((seg, i) => {
+            {mains.flatMap((seg, i) => {
               const color = colorOf(seg)
               const selected = seg.id === activeSegmentId
               const label = isBroll(seg) ? 'B-roll' : isFrameLayout(seg.layout) ? `Frame · ${FRAME_TEMPLATES[seg.layout].name}` : seg.layout === 'split' ? 'Split screen' : seg.layout.charAt(0).toUpperCase() + seg.layout.slice(1)
