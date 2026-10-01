@@ -17,3 +17,13 @@ export function BrandLoader({ size = 44, label }: { size?: number; label?: strin
     </div>
   )
 }
+
+/** Full-screen loader: page loads, and the moment between clicking and the next page appearing */
+export function BrandLoaderScreen({ label, overlay = false }: { label: string; overlay?: boolean }) {
+  return (
+    <div className={overlay ? 'fixed inset-0 z-[200] flex items-center justify-center' : 'h-dvh flex items-center justify-center'}
+      style={{ background: '#0d0d0d' }}>
+      <BrandLoader size={48} label={label} />
+    </div>
+  )
+}

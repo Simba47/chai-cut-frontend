@@ -385,6 +385,9 @@ function paintSegment(
   tMs: number,
   getPositionAt: (id: string, t: number) => BoxPosition,
   pool?: FrameMediaPool | null,
+  /** A split/trio slot's own picture (a borrowed reaction from another moment): null = draw `video`,
+   *  false = it has its own picture but it isn't ready (stays dark for that moment, never the wrong one) */
+  slotSource?: ((seg: SegmentLocal, box: SegmentLocal['crop_boxes'][number]) => HTMLVideoElement | null | false) | null,
 ) {
   if (seg && isFrameLayout(seg.layout)) { paintFrame(ctx, video, seg, tMs, getPositionAt, pool); return }
   const W = ctx.canvas.width, H = ctx.canvas.height
@@ -414,17 +417,17 @@ function paintSegment(
     } else {
       ctx.drawImage(video, p.x * vW, p.y * vH, srcW, srcH, 0, 0, W, H)
     }
-  } else if (layout === 'split') {
-    const slotH = H / 2
-    crop_boxes.slice(0, 2).forEach((box, i) => {
+  } else if (layout === 'split' || layout === 'trio') {
+    const n = layout === 'split' ? 2 : 3
+    const slotH = H / n
+    crop_boxes.slice(0, n).forEach((box, i) => {
       const p = getPositionAt(box.id, tMs)
-      coverCrop(ctx, video, p.x * vW, p.y * vH, p.w * vW, p.h * vH, 0, i * slotH, W, slotH)
-    })
-  } else if (layout === 'trio') {
-    const slotH = H / 3
-    crop_boxes.slice(0, 3).forEach((box, i) => {
-      const p = getPositionAt(box.id, tMs)
-      coverCrop(ctx, video, p.x * vW, p.y * vH, p.w * vW, p.h * vH, 0, i * slotH, W, slotH)
+      const own = slotSource?.(seg, box)
+      // A borrowed slot still loading stays dark for a moment rather than showing the wrong moment
+      if (own === false || (own && own.readyState < 2)) return
+      const src = own ?? video
+      const sW = own ? own.videoWidth || vW : vW, sH = own ? own.videoHeight || vH : vH
+      coverCrop(ctx, src, p.x * sW, p.y * sH, p.w * sW, p.h * sH, 0, i * slotH, W, slotH)
     })
   } else if (layout === 'horizontal') {
     const box = crop_boxes[0]; if (!box) return
@@ -879,6 +882,8 @@ interface OutputCanvasProps {
   hardCuts?: boolean
   /** The video a format shows, when it isn't the main one (B-roll) */
   sourceFor?: (seg: SegmentLocal | null) => HTMLVideoElement | null
+  /** Split/trio slots that show their own picture (borrowed reactions): see useBorrowedSlots */
+  slotSourceFor?: (seg: SegmentLocal | null, box: SegmentLocal['crop_boxes'][number]) => HTMLVideoElement | null | false
   currentTimeMs: number
   clipStartMs?: number
   activeSegment: SegmentLocal | null
@@ -916,7 +921,7 @@ interface OutputCanvasProps {
 }
 
 export function OutputCanvas({
-  videoRef, currentTimeMs, clipStartMs = 0, activeSegment, getPositionAt, segmentAt, hardCuts = false, sourceFor,
+  videoRef, currentTimeMs, clipStartMs = 0, activeSegment, getPositionAt, segmentAt, hardCuts = false, sourceFor, slotSourceFor,
   overlays = [], activeOverlayId, onOverlayChange, onSelectOverlay, onDeleteOverlay,
   className, style, skipTransitionRef,
   words, captionStyle, captionTextCase = 'title', showCaptions = false,
@@ -938,6 +943,8 @@ export function OutputCanvas({
   segmentAtRef.current = segmentAt
   const sourceForRef = useRef(sourceFor)
   sourceForRef.current = sourceFor
+  const slotSourceForRef = useRef(slotSourceFor)
+  slotSourceForRef.current = slotSourceFor
   const hardCutsRef = useRef(hardCuts)
   hardCutsRef.current = hardCuts
   currentTimeMsRef.current = currentTimeMs
@@ -1017,7 +1024,8 @@ export function OutputCanvas({
           // A B-roll shot whose video is still seeking keeps the last frame (never flashes the main video)
           const other = sourceForRef.current?.(seg)
           if (!other || other.readyState >= 2) {
-            paintSegment(ctx, other ?? video, seg, clipRelativeMs, getPositionAtRef.current, frameMediaRef.current)
+            paintSegment(ctx, other ?? video, seg, clipRelativeMs, getPositionAtRef.current, frameMediaRef.current,
+              slotSourceForRef.current ? (sg, box) => slotSourceForRef.current!(sg, box) : null)
           }
 
           // Composite the outgoing snapshot on top with decreasing alpha
