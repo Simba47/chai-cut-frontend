@@ -2,6 +2,7 @@
 
 import { useEffect } from 'react'
 import { useRouter } from 'next/navigation'
+import { BrandLogo } from '@/components/ui/brand-logo'
 
 export default function EditorError({ error, reset }: { error: Error & { digest?: string }; reset: () => void }) {
   useEffect(() => { console.error(error) }, [error])
@@ -13,7 +14,10 @@ export default function EditorError({ error, reset }: { error: Error & { digest?
         <button onClick={() => router.push('/dashboard')} style={{ width: 32, height: 32, display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: 8, background: 'rgba(255,255,255,0.05)', border: 'none', cursor: 'pointer', color: 'rgba(255,255,255,0.7)' }}>
           <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M9 2.5L4.5 7 9 11.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/></svg>
         </button>
-        <img src="/logo.png" alt="Shortcut" style={{ height: 22, objectFit: 'contain' }} />
+        {/* Same animated logo as every other page; colours pinned because this header is always dark */}
+        <span style={{ display: 'flex', '--text': '#F4F4F5', '--logo': '#C8FF00' } as React.CSSProperties}>
+          <BrandLogo shine size="sm" />
+        </span>
       </header>
 
       {/* Error body */}

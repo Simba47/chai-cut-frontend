@@ -188,9 +188,12 @@ function StockTile({ item, selected, onPick }: { item: StockResult; selected: bo
       title={item.title}
       className="relative rounded-md overflow-hidden bg-black" style={{ aspectRatio: '16 / 10', outline: selected ? '2px solid #c8ff00' : 'none', outlineOffset: -2 }}>
       {hover
-        ? <video src={item.preview} poster={item.thumb} autoPlay muted loop playsInline className="w-full h-full object-cover" />
-        // eslint-disable-next-line @next/next/no-img-element
-        : <img src={item.thumb} alt={item.title} loading="lazy" className="w-full h-full object-cover" />}
+        ? <video src={item.preview} poster={item.thumb || undefined} autoPlay muted loop playsInline className="w-full h-full object-cover" />
+        : item.thumb
+          // eslint-disable-next-line @next/next/no-img-element
+          ? <img src={item.thumb} alt={item.title} loading="lazy" className="w-full h-full object-cover" />
+          // Some stock results come without a still (thumb is ''): show the preview's first frame instead
+          : <video src={item.preview} muted playsInline preload="metadata" aria-label={item.title} className="w-full h-full object-cover" />}
       <span className="absolute right-1 bottom-1 px-1 rounded text-[9px] font-semibold tabular-nums text-white" style={{ background: 'rgba(0,0,0,0.6)' }}>
         {item.duration}s
       </span>
