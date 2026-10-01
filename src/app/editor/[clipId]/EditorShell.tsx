@@ -6,8 +6,6 @@ import { VideoPreview, OutputCanvas } from '@/components/editor/VideoPreview'
 import { computeCutRanges, removedMs } from '@/lib/cuts'
 import { PostText, type PostTextValue } from '@/components/clips/PostText'
 import { BrollPanel, type StockResult } from '@/components/editor/BrollPanel'
-import { useBrollSources } from '@/modules/editor/brollSources'
-import { SegmentTimeline, TimelineZoom, LAYOUT_COLORS } from '@/components/editor/SegmentTimeline'
 import { TranscriptPanel } from '@/components/editor/TranscriptPanel'
 import { CaptionStyler } from '@/components/editor/CaptionStyler'
 import { TextOverlayPanel } from '@/components/editor/TextOverlayPanel'
@@ -231,7 +229,10 @@ export function EditorShell({
   const videoTitles = useMemo(() => Object.fromEntries(Object.entries(videoLibrary).map(([id, v]) => [id, v.title])), [videoLibrary])
   const videoUrls = useMemo(() => Object.fromEntries(Object.entries(videoLibrary).map(([id, v]) => [id, v.url])), [videoLibrary])
   // B-roll shots are drawn from their own videos in the preview (muted; the speaker carries on)
-  const brollSource = useBrollSources(videoRef, clip.start_ms, id => videoLibraryRef.current[id]?.url)
+  const mainVideoId = (clip as unknown as { video_id: string }).video_id
+  const brollSource = useBrollSources(videoRef, clip.start_ms, id => videoLibraryRef.current[id]?.url, mainVideoId)
+  // Borrowed reaction slots (Make my clips): the clip's own video from another moment, per slot
+  const borrowed = useBorrowedSlots(videoRef, clip.start_ms, mainVideoId, videoUrl)
   const [pendingBrollMs, setPendingBrollMs] = useState<number | null>(null)
   const [clipStatus, setClipStatus] = useState<string>(clip.status)
   const [outputUrl, setOutputUrl] = useState<string | null>(clip.output_url)
@@ -1033,9 +1034,13 @@ export function EditorShell({
     if (newId) { setActiveSegmentId(newId); seekToMs(atMs) }
   }
 
+  // Borrowed reaction slots look ahead through the parts to start each one on time
+  const trackBorrowed = borrowed.track
+  useEffect(() => { trackBorrowed(segments) }, [segments, trackBorrowed])
+
   // ── B-roll panel ──────────────────────────────────────────────────────────────
   const brollShots = useMemo(() => segments
-    .filter(sg => !isFrameLayout(sg.layout) && sg.crop_boxes[0]?.source_video_id)
+    .filter(sg => !isFrameLayout(sg.layout) && sg.crop_boxes[0]?.source_video_id && sg.crop_boxes[0].source_video_id !== mainVideoId)
     .sort((a, b) => a.start_ms - b.start_ms)
     .map(sg => ({ id: sg.id, start_ms: sg.start_ms, end_ms: sg.end_ms, title: (videoTitles[sg.crop_boxes[0].source_video_id!] ?? 'Stock video').replace(/^(Pixabay|Pexels): /, '') })),
   [segments, videoTitles])
@@ -1410,7 +1415,7 @@ export function EditorShell({
                     )
                     // A frame is one vertical 9:16 reel, so as a format it's Vertical (its contents live in Frames)
                     const shown = formatLayoutOf(seg.layout)
-                    const broll = seg.crop_boxes.some(b => b.source_video_id)
+                    const broll = seg.crop_boxes.some(b => b.source_video_id && b.source_video_id !== mainVideoId)
                     const col = broll ? BROLL_COLOR : LAYOUT_COLORS[shown]
                     const isActiveSeg = seg.id === activeSegment?.id
                     const only = cropPositions.length === 1
@@ -1910,7 +1915,7 @@ export function EditorShell({
               ) : (
                 <OutputCanvas
                   videoRef={videoRef} currentTimeMs={currentTimeMs} clipStartMs={clip.start_ms}
-                  activeSegment={viewSegment} getPositionAt={viewGetPositionAt} sourceFor={brollSource}
+                  activeSegment={viewSegment} getPositionAt={viewGetPositionAt} sourceFor={brollSource} slotSourceFor={borrowed.slotSourceFor}
                   skipTransitionRef={skipCanvasTransitionRef} words={displayWords}
                   captionStyle={captionStyle} captionTextCase={captionTextCase} showCaptions={showCaptions}
                   overlays={overlays} activeOverlayId={activeOverlayId}
