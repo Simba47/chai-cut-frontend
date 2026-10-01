@@ -57,7 +57,8 @@ export default async function AutoClipsPage({ params }: { params: Promise<{ vide
 
   // B-roll videos the clips show (only the owner's own videos, as the export uses)
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const brollIds = [...new Set((segRows as any[]).flatMap(s => (s.crop_boxes ?? []).map((b: { source_video_id?: string | null }) => b.source_video_id).filter(Boolean)))] as string[]
+  // (the video itself, named by borrowed reaction slots, is played from its own URL)
+  const brollIds = [...new Set((segRows as any[]).flatMap(s => (s.crop_boxes ?? []).map((b: { source_video_id?: string | null }) => b.source_video_id).filter((id: string | null | undefined) => !!id && id !== videoId)))] as string[]
   const brollRows = brollIds.length
     ? await sql`SELECT id, storage_path FROM videos WHERE id = ANY(${brollIds}) AND user_id = ${user.id} AND storage_path IS NOT NULL`
     : []

@@ -84,6 +84,7 @@ body {
   --text-muted: rgba(244,244,245,0.58);
   --text-dim: rgba(244,244,245,0.36);
   --accent: #C8FF00;
+  --logo: #C8FF00;               /* same lime logo as the dark pages, even if the app is in light mode */
   --ed-fg: 244 244 245;
   --ed-text: #F4F4F5;
   --ed-app: #0A0A0A;
@@ -218,4 +219,251 @@ body {
 .brand-loader-label { margin: 0; font-size: 13px; font-weight: 500; color: rgba(244,244,245,0.58); }
 @media (prefers-reduced-motion: reduce) {
   .brand-loader svg, .brand-loader-top, .brand-loader-bottom { animation: none; }
+}
+
+/* ── Editor tool rail buttons (Format · Frames · Captions · Text · Reset) ──
+   Brighter at rest, a soft tile on hover, and a clear tile + short lime marker when selected */
+.ed-tool {
+  position: relative;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px;
+  border-radius: 12px; border: 0; cursor: pointer;
+  background: transparent; color: rgba(244,244,245,0.72);
+  transition: background-color .2s, color .2s, box-shadow .2s;
+}
+.ed-tool svg { transition: scale .25s cubic-bezier(.34,1.56,.64,1); }
+.ed-tool span { font-size: 11px; font-weight: 600; }
+.ed-tool:hover { background: rgba(255,255,255,0.07); color: #fff; }
+.ed-tool:hover svg { scale: 1.1; }
+.ed-tool:active { scale: .96; }
+.ed-tool:focus-visible { outline: 2px solid #C8FF00; outline-offset: 2px; }
+.ed-tool[data-active] {
+  background: rgba(255,255,255,0.1); color: #fff;
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.14);
+}
+.ed-tool[data-active]::before {                      /* "you are here" marker on the rail edge */
+  content: ''; position: absolute; left: -6px; top: 50%; translate: 0 -50%;
+  width: 3px; height: 26px; border-radius: 0 3px 3px 0; background: #C8FF00;
+}
+.ed-tool-danger:hover { color: #fca5a5; }
+.ed-tool-danger[data-active] { color: #f87171; background: rgba(239,68,68,0.12); box-shadow: inset 0 0 0 1px rgba(239,68,68,0.3); }
+.ed-tool-danger[data-active]::before { display: none; }
+@media (prefers-reduced-motion: reduce) { .ed-tool svg { transition: none; } }
+
+/* Editor first-time tour card (components/editor/EditorTour.tsx): rises in on each step */
+.ed-tour-card { animation: ed-tour-in .3s cubic-bezier(.2,.8,.2,1); }
+@keyframes ed-tour-in { from { opacity: 0; transform: translateY(8px) scale(.98); } }
+@media (prefers-reduced-motion: reduce) { .ed-tour-card { animation: none; } }
+
+/* ── Editor canvas toolbar animations (EditorShell: format buttons, Split, Motion) ── */
+/* Every button sinks slightly when pressed */
+.ed-press { transition: transform .12s ease, background-color .15s, color .15s; }
+.ed-press:not(:disabled):active { transform: scale(.94); }
+
+/* Format icons act out their format when picked */
+.ed-glyph rect { transform-box: fill-box; transform-origin: center; }
+.ed-glyph .ed-glyph-frame { animation: ed-glyph-frame .45s cubic-bezier(.34,1.56,.64,1); }
+@keyframes ed-glyph-frame { 0% { transform: scale(.8); } 100% { transform: none; } }
+/* Vertical: the picture fills the phone from the middle out, top to bottom */
+.ed-glyph-vertical .ed-glyph-p1 { animation: ed-fill-y .5s cubic-bezier(.34,1.56,.64,1); }
+@keyframes ed-fill-y { from { transform: scaleY(.15); opacity: .2; } }
+/* Split screen: the two halves slide in from the top and the bottom and meet */
+.ed-glyph-split .ed-glyph-p1 { animation: ed-from-top .45s cubic-bezier(.34,1.56,.64,1); }
+.ed-glyph-split .ed-glyph-p2 { animation: ed-from-bottom .45s cubic-bezier(.34,1.56,.64,1); }
+@keyframes ed-from-top    { from { transform: translateY(-6px); opacity: 0; } }
+@keyframes ed-from-bottom { from { transform: translateY(6px);  opacity: 0; } }
+/* Trio: three panes drop into place one after another */
+.ed-glyph-trio .ed-glyph-p1 { animation: ed-drop .35s cubic-bezier(.34,1.56,.64,1) both; }
+.ed-glyph-trio .ed-glyph-p2 { animation: ed-drop .35s cubic-bezier(.34,1.56,.64,1) .08s both; }
+.ed-glyph-trio .ed-glyph-p3 { animation: ed-drop .35s cubic-bezier(.34,1.56,.64,1) .16s both; }
+@keyframes ed-drop { from { transform: translateY(-4px) scale(.6); opacity: 0; } }
+/* Horizontal: a landscape band stretches out across the phone */
+.ed-glyph-horizontal .ed-glyph-p1 { animation: ed-fill-x .5s cubic-bezier(.34,1.56,.64,1); }
+@keyframes ed-fill-x { from { transform: scaleX(.15); opacity: .2; } }
+
+/* Split: the scissors snip twice */
+.ed-snip { transform-origin: 30% 50%; animation: ed-snip .5s ease-in-out; }
+@keyframes ed-snip {
+  0%, 100% { transform: none; }
+  25% { transform: rotate(-14deg) scale(1.1); }
+  50% { transform: rotate(6deg); }
+  75% { transform: rotate(-10deg) scale(1.05); }
+}
+
+/* Motion: the record dot sends out a ripple when it turns on, then breathes while recording */
+.ed-rec { position: relative; transition: transform .2s; }
+.ed-rec-on { animation: ed-rec-breathe 1.6s ease-in-out .6s infinite; box-shadow: 0 0 6px #ef4444; }
+.ed-rec-on::after {
+  content: ''; position: absolute; inset: 0; border-radius: 50%;
+  border: 2px solid #ef4444; animation: ed-rec-ripple .6s ease-out forwards;
+}
+@keyframes ed-rec-ripple { from { transform: scale(1); opacity: .9; } to { transform: scale(3.2); opacity: 0; } }
+@keyframes ed-rec-breathe { 0%, 100% { opacity: 1; } 50% { opacity: .45; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .ed-press:not(:disabled):active { transform: none; }
+  .ed-glyph rect, .ed-snip, .ed-rec-on, .ed-rec-on::after { animation: none !important; }
+}
+
+/* ── Editor play/pause: a film reel (EditorShell transport) ──
+   ::before is a ring of sprocket holes that turns like a reel while playing and stops on pause;
+   ::after is a projector flash that bursts out when playback starts; the icon snaps like a clapperboard. */
+.ed-play { position: relative; }
+.ed-play::before {
+  content: ''; position: absolute; inset: -5px; border-radius: 50%; pointer-events: none;
+  background: repeating-conic-gradient(from 0deg, rgba(200,255,0,0.75) 0deg 9deg, transparent 9deg 30deg);
+  -webkit-mask: radial-gradient(circle, transparent 0 calc(100% - 3.5px), #000 calc(100% - 3px));
+          mask: radial-gradient(circle, transparent 0 calc(100% - 3.5px), #000 calc(100% - 3px));
+  opacity: 0; transform: scale(.85);
+  transition: opacity .3s ease, transform .3s ease;
+  animation: ed-reel 2.4s linear infinite paused;
+}
+.ed-play:hover::before { opacity: .35; transform: none; }
+.ed-play[data-playing]::before { opacity: 1; transform: none; animation-play-state: running; }
+@keyframes ed-reel { to { rotate: 360deg; } }
+.ed-play[data-playing]::after {
+  content: ''; position: absolute; inset: 0; border-radius: 50%; pointer-events: none;
+  background: radial-gradient(circle, rgba(255,255,230,0.9), rgba(200,255,0,0.4) 45%, transparent 70%);
+  animation: ed-projector .55s ease-out forwards;
+}
+@keyframes ed-projector { from { transform: scale(.6); opacity: 1; } to { transform: scale(2.4); opacity: 0; } }
+.ed-play-icon { transform-origin: 15% 85%; animation: ed-clap .35s cubic-bezier(.34,1.56,.64,1); }
+@keyframes ed-clap { 0% { transform: rotate(-28deg) scale(.7); opacity: .4; } 100% { transform: none; opacity: 1; } }
+@media (prefers-reduced-motion: reduce) {
+  .ed-play::before, .ed-play[data-playing]::after, .ed-play-icon { animation: none; }
+}
+
+/* ── Shiny button (components/ui/shiny-button.tsx) ──
+   On hover, a light fades in, travels once around the border (a conic gradient turned by
+   --gradient-angle) and fades out. It plays once per hover, never loops, and nothing animates
+   inside the button. Size/radius/font come from the
+   element's classes; colours default to Shortcut lime. */
+@property --gradient-angle { syntax: "<angle>"; initial-value: 0deg; inherits: false; }
+@property --shiny-border-mix { syntax: "<percentage>"; initial-value: 0%; inherits: false; }
+
+.shiny-cta {
+  --shiny-cta-bg: #C8FF00;
+  --shiny-cta-fg: #000000;
+  --shiny-cta-highlight: #ffffff;
+  --shiny-light: color-mix(in srgb, var(--shiny-cta-highlight) var(--shiny-border-mix), transparent);
+
+  position: relative;
+  cursor: pointer;
+  outline-offset: 4px;
+  border: 1.5px solid transparent;
+  color: var(--shiny-cta-fg);
+  background:
+    linear-gradient(var(--shiny-cta-bg), var(--shiny-cta-bg)) padding-box,
+    conic-gradient(
+      from var(--gradient-angle),
+      transparent,
+      var(--shiny-light) 10%,
+      var(--shiny-light) 30%,
+      transparent 40%,
+      transparent 50%,
+      var(--shiny-light) 60%,
+      var(--shiny-light) 80%,
+      transparent 90%
+    ) border-box;
+}
+.shiny-cta:active { translate: 0 1px; }
+.shiny-cta-label { display: inline-flex; align-items: center; gap: inherit; }
+
+.shiny-cta:is(:hover, :focus-visible) {
+  animation: shiny-sweep 3.2s cubic-bezier(.45, 0, .25, 1) 1 both;
+}
+.shiny-cta:disabled { cursor: default; opacity: .6; }
+
+@keyframes shiny-sweep {
+  0%   { --gradient-angle: 0deg;   --shiny-border-mix: 0%; }
+  15%  { --shiny-border-mix: 100%; }
+  80%  { --shiny-border-mix: 100%; }
+  100% { --gradient-angle: 360deg; --shiny-border-mix: 0%; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .shiny-cta, .shiny-cta:is(:hover, :focus-visible) { animation: none; }
+}
+
+/* ── Export press: a download animation (EditorShell, Export button) ──
+   The arrow drops into the tray and vanishes, the tray dips like it caught something, a fresh
+   arrow slides in from above; meanwhile a darker band fills the button left → right like a
+   progress bar and a soft ring pulses out. Then the render starts. */
+.ed-export { position: relative; isolation: isolate; }
+.ed-export-arrow, .ed-export-tray { transform-box: fill-box; transform-origin: 50% 100%; }
+.ed-export::before {
+  content: ''; position: absolute; inset: 0; z-index: -1; pointer-events: none;
+  background: linear-gradient(90deg, rgba(0,0,0,0.14), rgba(0,0,0,0.2));
+  transform: scaleX(0); transform-origin: left center;
+}
+.ed-export[data-pressed]::before { animation: ed-export-fill .75s cubic-bezier(.65,0,.35,1) forwards; }
+.ed-export[data-pressed] .ed-export-arrow { animation: ed-export-arrow .75s cubic-bezier(.65,0,.35,1); }
+.ed-export[data-pressed] .ed-export-tray  { animation: ed-export-tray .75s cubic-bezier(.34,1.56,.64,1); }
+.ed-export[data-pressed] { animation: ed-export-ring .75s ease-out; pointer-events: none; }
+@keyframes ed-export-fill { to { transform: scaleX(1); } }
+@keyframes ed-export-arrow {
+  0%   { transform: none; opacity: 1; }
+  35%  { transform: translateY(9px) scaleY(.6); opacity: 0; }
+  36%  { transform: translateY(-11px); opacity: 0; }
+  70%  { transform: translateY(1px); opacity: 1; }
+  100% { transform: none; opacity: 1; }
+}
+@keyframes ed-export-tray {
+  0%, 25% { transform: none; }
+  40%     { transform: scaleX(1.25) translateY(1.5px); }
+  100%    { transform: none; }
+}
+@keyframes ed-export-ring {
+  from { box-shadow: 0 0 0 0 rgba(200,255,0,0.55); }
+  to   { box-shadow: 0 0 0 10px rgba(200,255,0,0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ed-export[data-pressed], .ed-export[data-pressed]::before,
+  .ed-export[data-pressed] .ed-export-arrow, .ed-export[data-pressed] .ed-export-tray { animation: none; }
+}
+
+/* ── Editor canvas toolbar docks (EditorShell: FormatSwitcher + Tools) ──
+   Frosted pill docks with a hairline edge and a soft drop shadow; buttons are quiet until
+   hovered; the picked layout sits on a lime glass highlight that glides between options. */
+.ed-dock {
+  display: flex; align-items: center; gap: 2px; padding: 4px; border-radius: 14px;
+  background: linear-gradient(180deg, rgb(var(--ed-fg) / 0.06), rgb(var(--ed-fg) / 0.025));
+  box-shadow: inset 0 0 0 1px rgb(var(--ed-fg) / 0.08), inset 0 1px 0 rgb(var(--ed-fg) / 0.06), 0 8px 24px -12px rgba(0,0,0,0.8);
+  flex-shrink: 0;
+}
+.ed-dock-btn {
+  position: relative; z-index: 1;
+  display: inline-flex; align-items: center; gap: 8px; height: 34px; padding: 0 12px; border-radius: 10px;
+  font-size: 12.5px; font-weight: 500; white-space: nowrap; color: rgb(var(--ed-fg) / 0.6);
+  transition: color .2s, background-color .2s, transform .12s;
+}
+.ed-dock-btn:hover:not(:disabled):not([data-on]) { color: rgb(var(--ed-fg) / 0.92); background: rgb(var(--ed-fg) / 0.06); }
+.ed-dock-btn:disabled { opacity: .38; cursor: default; }
+.ed-dock-btn:focus-visible { outline: 2px solid rgba(200,255,0,0.6); outline-offset: 1px; }
+.ed-dock-choice[data-on] { color: #fff; font-weight: 600; }
+/* The lime glass highlight under the picked layout */
+.ed-dock-glider {
+  position: absolute; top: 4px; bottom: 4px; z-index: 0; border-radius: 10px; pointer-events: none;
+  background: linear-gradient(180deg, rgba(200,255,0,0.18), rgba(200,255,0,0.06));
+  box-shadow: inset 0 0 0 1px rgba(200,255,0,0.45), inset 0 1px 0 rgba(255,255,255,0.12), 0 6px 18px -8px rgba(200,255,0,0.55);
+  transition: left .38s cubic-bezier(.34,1.3,.64,1), width .38s cubic-bezier(.34,1.3,.64,1);
+}
+.ed-dock-sep { width: 1px; height: 18px; margin: 0 2px; background: rgb(var(--ed-fg) / 0.1); flex-shrink: 0; }
+.ed-kbd {
+  margin-left: 2px; min-width: 18px; height: 18px; padding: 0 5px; display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 5px; font-family: inherit; font-size: 10px; font-weight: 700; color: rgb(var(--ed-fg) / 0.55);
+  background: rgb(var(--ed-fg) / 0.07); box-shadow: inset 0 -1px 0 rgb(var(--ed-fg) / 0.14);
+}
+/* Motion while recording: red glass */
+.ed-dock-btn[data-rec] {
+  color: #fecaca; background: linear-gradient(180deg, rgba(239,68,68,0.22), rgba(239,68,68,0.1));
+  box-shadow: inset 0 0 0 1px rgba(239,68,68,0.5), 0 6px 18px -8px rgba(239,68,68,0.6);
+}
+/* Delete: neutral until hovered, then red */
+.ed-dock-danger:hover:not(:disabled) { color: #fca5a5 !important; background: rgba(239,68,68,0.14) !important; }
+/* Delete pops in when a section is clicked */
+.ed-dock-pop { animation: ed-dock-pop .3s cubic-bezier(.34,1.56,.64,1); }
+@keyframes ed-dock-pop { from { opacity: 0; transform: scale(.85); } }
+@media (prefers-reduced-motion: reduce) {
+  .ed-dock-glider { transition: none; }
+  .ed-dock-pop { animation: none; }
 }

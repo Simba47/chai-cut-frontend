@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import type { CaptionStyle, SegmentLocal, TextOverlay, TranscriptWord } from '@chai-cut/shared'
 import { Breadcrumbs } from '@/components/ui/breadcrumbs'
+import { BrandLoaderScreen } from '@/components/ui/brand-loader'
 import { AccountMenu } from '@/components/ui/account-menu'
 import { ClipPlayer } from '@/components/clips/ClipPlayer'
 import { PostText } from '@/components/clips/PostText'
@@ -33,6 +34,7 @@ export function ClipsGallery({ video, videoUrl, stockUrls, job, clips: initial }
 }) {
   const router = useRouter()
   const [clips, setClips] = useState(initial)
+  const [opening, setOpening] = useState(false)
   useEffect(() => { setClips(initial) }, [initial])
   const [exportError, setExportError] = useState<string | null>(null)
   const running = job?.status === 'queued' || job?.status === 'running'
@@ -73,6 +75,7 @@ export function ClipsGallery({ video, videoUrl, stockUrls, job, clips: initial }
 
   return (
     <div className="min-h-screen flex flex-col" style={{ background: '#0d0d0d' }}>
+      {opening && <BrandLoaderScreen overlay label="Getting your clip ready, please wait…" />}
       <nav className="flex items-center gap-3 px-4 shrink-0 sticky top-0 z-10"
         style={{ height: 56, background: '#111', borderBottom: '1px solid rgba(255,255,255,0.07)' }}>
         <Breadcrumbs shine items={[
@@ -104,7 +107,10 @@ export function ClipsGallery({ video, videoUrl, stockUrls, job, clips: initial }
             AI is still making clips. They appear here when ready.
           </p>
         )}
-        {job?.status === 'failed' && (
+        {job?.status === 'failed' && job.error === 'Cancelled by you' && (
+          <p className="text-sm" style={{ color: 'rgba(255,255,255,0.55)' }}>You stopped the last run{clips.length ? '; the clips it made are below' : ''}.</p>
+        )}
+        {job?.status === 'failed' && job.error !== 'Cancelled by you' && (
           <p className="text-sm" style={{ color: '#f87171' }}>Making clips failed{job.error ? `: ${job.error}` : ''}.</p>
         )}
         {exportError && <p className="text-sm" style={{ color: '#f87171' }}>{exportError}</p>}
@@ -122,7 +128,7 @@ export function ClipsGallery({ video, videoUrl, stockUrls, job, clips: initial }
           {b.clips.map(c => (
             <article key={c.id} className="flex flex-col gap-2.5 p-3 rounded-2xl"
               style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)' }}>
-              <ClipPlayer videoUrl={videoUrl}
+              <ClipPlayer videoUrl={videoUrl} mainVideoId={video.id}
                 stockUrls={Object.fromEntries(c.segments.flatMap(sg => sg.crop_boxes.map(b => b.source_video_id))
                   .filter((id): id is string => !!id && !!stockUrls[id]).map(id => [id, stockUrls[id]]))}
                 startMs={c.start_ms} endMs={c.end_ms} segments={c.segments}
@@ -138,7 +144,7 @@ export function ClipsGallery({ video, videoUrl, stockUrls, job, clips: initial }
               </div>
               {c.ai_reason && <p className="text-[11px] italic leading-relaxed" style={{ color: 'rgba(255,255,255,0.45)' }}>{c.ai_reason}</p>}
               <div className="flex gap-2">
-                <button onClick={() => router.push(`/editor/${c.id}`)}
+                <button onClick={() => { setOpening(true); router.push(`/editor/${c.id}`) }}
                   className="flex-1 py-2 rounded-lg text-xs font-bold transition-opacity hover:opacity-90"
                   style={{ background: ACCENT, color: '#000' }}>
                   Edit

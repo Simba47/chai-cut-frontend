@@ -4,6 +4,7 @@ import { useState } from 'react'
 import { useSession } from 'next-auth/react'
 import { useRouter } from 'next/navigation'
 import { PLANS } from '@/lib/plans'
+import { BrandLogo } from '@/components/ui/brand-logo'
 
 const PLAN_ORDER = ['free', 'starter', 'creator', 'agency'] as const
 
@@ -37,7 +38,10 @@ export default function PricingPage() {
   return (
     <div className="min-h-screen" style={{ background: '#0d0d0d' }}>
       <nav className="flex items-center justify-between px-6 py-3 border-b" style={{ background: '#111', borderColor: 'rgba(255,255,255,0.07)' }}>
-        <a href="/dashboard"><img src="/logo.png" alt="Shortcut" style={{ height: 26, objectFit: 'contain' }} /></a>
+        {/* Same animated logo as every other page; colours pinned because this header is always dark */}
+        <a href="/dashboard" aria-label="Shortcut dashboard" style={{ '--text': '#F4F4F5', '--logo': '#C8FF00', textDecoration: 'none' } as React.CSSProperties}>
+          <BrandLogo shine />
+        </a>
         {session && (
           <a href="/dashboard" className="text-xs px-3 py-1.5 rounded-lg" style={{ color: 'rgba(255,255,255,0.4)', background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)' }}>
             Dashboard

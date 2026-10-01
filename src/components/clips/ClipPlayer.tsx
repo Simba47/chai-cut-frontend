@@ -4,14 +4,17 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { CaptionStyle, SegmentLocal, TextOverlay, TranscriptWord } from '@chai-cut/shared'
 import { OutputCanvas } from '@/components/editor/VideoPreview'
 import { getBoxPositionAtLerp } from '@/lib/interpolation'
+import { BorrowedPool, isBorrowedSlot } from '@/modules/editor/brollSources'
 
 /**
  * A clip played in 9:16 without exporting it: the source video drawn through the clip's framing,
  * captions and text, exactly as the editor's preview draws it (OutputCanvas), with hard cuts
  * between formats and the B-roll shots in place, as in the export.
  */
-export function ClipPlayer({ videoUrl, stockUrls = {}, startMs, endMs, segments, words, captionStyle, textOverlays }: {
+export function ClipPlayer({ videoUrl, mainVideoId, stockUrls = {}, startMs, endMs, segments, words, captionStyle, textOverlays }: {
   videoUrl: string
+  /** The clip's own video: split/trio slots naming it are borrowed reactions from another moment */
+  mainVideoId?: string | null
   /** Signed URLs of the B-roll videos the clip shows, by video id */
   stockUrls?: Record<string, string>
   startMs: number
@@ -44,7 +47,22 @@ export function ClipPlayer({ videoUrl, stockUrls = {}, startMs, endMs, segments,
   const stockRefs = useRef<Record<string, HTMLVideoElement | null>>({})
   const brollOf = (seg: SegmentLocal | null) => {
     const box = seg?.crop_boxes[0]
-    return box?.source_video_id && stockUrls[box.source_video_id] ? box : null
+    return box?.source_video_id && box.source_video_id !== mainVideoId && stockUrls[box.source_video_id] ? box : null
+  }
+
+  // Borrowed reaction slots: the same video from another moment, from a small shared pool that
+  // loads nothing until the clip plays and parks the next split/trio ahead of time
+  const hasBorrowed = useMemo(() => segments.some(seg => seg.crop_boxes.some(b => isBorrowedSlot(seg, b, mainVideoId))), [segments, mainVideoId])
+  const poolRef = useRef<BorrowedPool | null>(null)
+  useEffect(() => {
+    if (!hasBorrowed || !mainVideoId) return
+    poolRef.current = new BorrowedPool(videoUrl, mainVideoId)
+    return () => { poolRef.current?.dispose(); poolRef.current = null }
+  }, [hasBorrowed, mainVideoId, videoUrl])
+  const slotSourceFor = (seg: SegmentLocal | null, box: SegmentLocal['crop_boxes'][number]) =>
+    isBorrowedSlot(seg, box, mainVideoId) ? poolRef.current?.source(box.id) ?? false : null
+  function syncBorrowed(rel: number, play: boolean) {
+    poolRef.current?.sync(bySegmentTime, rel, play)
   }
   const sourceFor = (seg: SegmentLocal | null) => {
     const box = brollOf(seg)
@@ -80,9 +98,10 @@ export function ClipPlayer({ videoUrl, stockUrls = {}, startMs, endMs, segments,
       const v = videoRef.current
       if (v) {
         const rel = v.currentTime * 1000 - startMs
-        if (rel >= lengthMs) { v.pause(); v.currentTime = startMs / 1000; setPlaying(false); setTMs(0); syncStock(0, false); return }
+        if (rel >= lengthMs) { v.pause(); v.currentTime = startMs / 1000; setPlaying(false); setTMs(0); syncStock(0, false); syncBorrowed(0, false); return }
         setTMs(Math.max(0, rel))
         syncStock(Math.max(0, rel), true)
+        syncBorrowed(Math.max(0, rel), true)
       }
       raf = requestAnimationFrame(tick)
     }
@@ -93,7 +112,7 @@ export function ClipPlayer({ videoUrl, stockUrls = {}, startMs, endMs, segments,
   function toggle() {
     const v = videoRef.current
     if (!v) return
-    if (playing) { v.pause(); setPlaying(false); syncStock(tMs, false); return }
+    if (playing) { v.pause(); setPlaying(false); syncStock(tMs, false); syncBorrowed(tMs, false); return }
     if (v.currentTime * 1000 < startMs || v.currentTime * 1000 >= endMs) v.currentTime = startMs / 1000
     v.play().then(() => setPlaying(true)).catch(() => setPlaying(false))
   }
@@ -104,6 +123,7 @@ export function ClipPlayer({ videoUrl, stockUrls = {}, startMs, endMs, segments,
     v.currentTime = (startMs + fraction * lengthMs) / 1000
     setTMs(fraction * lengthMs)
     syncStock(fraction * lengthMs, playing)
+    syncBorrowed(fraction * lengthMs, playing)
   }
 
   const fmt = (ms: number) => { const s = Math.floor(ms / 1000); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}` }
@@ -127,7 +147,7 @@ export function ClipPlayer({ videoUrl, stockUrls = {}, startMs, endMs, segments,
       <OutputCanvas
         videoRef={videoRef} currentTimeMs={tMs} clipStartMs={startMs}
         activeSegment={activeSegment} getPositionAt={getPositionAt}
-        segmentAt={segmentAt} hardCuts sourceFor={sourceFor}
+        segmentAt={segmentAt} hardCuts sourceFor={sourceFor} slotSourceFor={slotSourceFor}
         words={shownWords} captionStyle={captionStyle ?? {}} showCaptions={showCaptions}
         textOverlays={textOverlays}
         style={{ width: '100%', height: '100%', display: 'block' }}

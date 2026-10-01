@@ -7,6 +7,8 @@ import { findClips, type FoundClip, type Subscores } from './clipFinder'
 import { logSuggestionEvents, type SuggestionSource } from './suggestionEvents'
 
 const BEST_MOMENTS_MODEL = 'claude-haiku-4-5-20251001'
+/** Best moments without an Anthropic key: the model Make my clips already uses */
+const BEST_MOMENTS_FALLBACK_MODEL = 'gemini-2.5-flash'
 const CLIP_SEARCH_MODEL = 'gemini-3.1-pro-preview'
 
 /** 'shown' for each AI suggestion returned (plain fallback chunks are not AI picks) */
@@ -119,7 +121,7 @@ export interface ClipSuggestion {
 }
 type Word = { word: string; start_ms: number; end_ms: number }
 
-export async function getVideoSuggestions(userId: string, videoId: string): Promise<{ suggestions: ClipSuggestion[] }> {
+export async function getVideoSuggestions(userId: string, videoId: string): Promise<{ suggestions: ClipSuggestion[]; model?: string }> {
   const [video] = await sql`
     SELECT id, user_id, duration_ms, status FROM videos WHERE id = ${videoId}
   `
@@ -138,16 +140,89 @@ export async function getVideoSuggestions(userId: string, videoId: string): Prom
   const durationMs = video.duration_ms ?? 0
   if (words.length === 0) return { suggestions: makeTimeChunks(durationMs) }
 
+  // Claude when its key is set, otherwise Gemini; plain chunks only when no AI can answer
   const anthropicKey = process.env.ANTHROPIC_API_KEY
-  if (!anthropicKey) return { suggestions: makeWordChunks(words, durationMs) }
+  const geminiKey = process.env.GEMINI_API_KEY
+  if (!anthropicKey && !geminiKey) return { suggestions: makeWordChunks(words, durationMs) }
 
+  const exclude = await clippedRanges(videoId, durationMs)
+  const model = anthropicKey ? BEST_MOMENTS_MODEL : BEST_MOMENTS_FALLBACK_MODEL
   try {
-    const suggestions = await detectClipsWithClaude(words, durationMs, anthropicKey)
-    logShown(userId, videoId, 'best_moments', BEST_MOMENTS_MODEL, suggestions)
-    return { suggestions }
+    const suggestions = anthropicKey
+      ? await detectClipsWithClaude(words, durationMs, anthropicKey, exclude)
+      : await detectBestWithGemini(words, durationMs, geminiKey!, exclude)
+    logShown(userId, videoId, 'best_moments', model, suggestions)
+    return { suggestions, model }
   } catch (e) {
-    console.error('[suggestions] Claude error:', e)
+    console.error(`[suggestions] ${model} error:`, e)
     return { suggestions: makeWordChunks(words, durationMs) }
+  }
+}
+
+export interface AddedMoment extends ClipSuggestion {
+  /** The draft clip made for this moment (missing when the plan had no room left) */
+  clip_id?: string
+}
+
+/**
+ * "Find best moments": AI picks new moments (skipping ones already made into clips) and each one
+ * is saved straight away as a draft clip in the Best moments section — no "Use" needed. Plain
+ * fallback chunks (no AI, no score) are shown but not saved. On a plan with a clip limit, only
+ * as many as there is room for are saved.
+ */
+export async function addBestMoments(userId: string, videoId: string): Promise<{ moments: AddedMoment[]; notSaved: number; limitMessage: string | null }> {
+  const { suggestions, model } = await getVideoSuggestions(userId, videoId)
+  const picks = suggestions.filter(s => typeof s.score === 'number')
+  if (!picks.length) {
+    return {
+      moments: suggestions, notSaved: 0,
+      // Plain chunks: the AI didn't answer (not set up, or it failed), so nothing is saved
+      limitMessage: suggestions.length ? 'AI couldn\'t pick moments right now, so these are plain parts of the video and weren\'t added to your clips. Try again in a moment.' : null,
+    }
+  }
+
+  const { getUserPlanConfig } = await import('./quota')
+  const plan = await getUserPlanConfig(userId)
+  let room = picks.length
+  if (plan.maxClips) {
+    const [row] = await sql<{ count: string }[]>`
+      SELECT COUNT(*) AS count FROM clips c JOIN videos v ON v.id = c.video_id WHERE v.user_id = ${userId}
+    `
+    room = Math.max(0, Math.min(room, plan.maxClips - parseInt(row?.count ?? '0', 10)))
+  }
+  const toSave = picks.slice(0, room)
+  const rows = toSave.length
+    ? await sql<{ id: string; start_ms: number; end_ms: number }[]>`
+        INSERT INTO clips ${sql(toSave.map(s => ({
+          video_id: videoId, start_ms: Math.round(s.start_ms), end_ms: Math.round(s.end_ms), status: 'draft', title: s.title,
+        })))}
+        RETURNING id, start_ms, end_ms`
+    : []
+  // Pair each new clip with its moment by time (RETURNING order isn't guaranteed)
+  const clipIdOf = new Map<ClipSuggestion, string>()
+  for (const s of toSave) {
+    const row = rows.find(r => r.start_ms === Math.round(s.start_ms) && r.end_ms === Math.round(s.end_ms))
+    if (row) clipIdOf.set(s, row.id)
+  }
+  // Which section the clips belong to is read from this log (see the clip board page), so it is
+  // written before answering. "auto_added" tells these apart from clips a user picked with "Use".
+  if (clipIdOf.size) {
+    await sql`
+      INSERT INTO ai_suggestion_events ${sql([...clipIdOf].map(([s, clipId]) => ({
+        user_id: userId, video_id: videoId, clip_id: clipId, source: 'best_moments', event: 'used',
+        suggestion: sql.json({ start_ms: s.start_ms, end_ms: s.end_ms, title: s.title, score: s.score ?? null,
+          subscores: s.subscores ?? null, reason: s.reason ?? null, model: model ?? BEST_MOMENTS_MODEL, auto_added: true } as never),
+      })))}
+    `.catch(e => console.warn('[best-moments] section not recorded:', e instanceof Error ? e.message : e))
+  }
+  const saved = clipIdOf.size
+  const notSaved = picks.length - saved
+  return {
+    moments: picks.map(s => (clipIdOf.has(s) ? { ...s, clip_id: clipIdOf.get(s) } : s)),
+    notSaved,
+    limitMessage: notSaved > 0 && plan.maxClips
+      ? `Your ${plan.name} plan allows ${plan.maxClips} clips, so ${saved ? `only ${saved} of ${picks.length} were` : 'none were'} added. Upgrade to keep them all.`
+      : null,
   }
 }
 
@@ -193,8 +268,22 @@ function toSuggestion(c: FoundClip, id: string): ClipSuggestion {
   }
 }
 
+/**
+ * Moments of this video that are already clips (from "Use", Make my clips or made by hand), so
+ * Best moments offers new ones instead of the same moments again. Long clips, like "Edit full
+ * video", are editing sessions rather than a picked moment and don't count.
+ */
+async function clippedRanges(videoId: string, durationMs: number): Promise<Array<[number, number]>> {
+  const rows = await sql<{ start_ms: number; end_ms: number }[]>`
+    SELECT start_ms, end_ms FROM clips WHERE video_id = ${videoId}
+  `
+  return rows
+    .filter(c => c.end_ms - c.start_ms <= 3 * 60_000 && (!durationMs || c.end_ms - c.start_ms < 0.9 * durationMs))
+    .map(c => [c.start_ms, c.end_ms])
+}
+
 // Best moments: Claude reads the whole transcript in ~10-minute windows (see clipFinder.ts)
-async function detectClipsWithClaude(words: Word[], durationMs: number, apiKey: string): Promise<ClipSuggestion[]> {
+async function detectClipsWithClaude(words: Word[], durationMs: number, apiKey: string, exclude: Array<[number, number]>): Promise<ClipSuggestion[]> {
   const ask = async (system: string, user: string) => {
     const res = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
@@ -211,7 +300,21 @@ async function detectClipsWithClaude(words: Word[], durationMs: number, apiKey: 
     return (data.content?.[0]?.text ?? '') as string
   }
   const clips = await findClips({
-    words, durationMs, mode: { kind: 'best' }, ask,
+    words, durationMs, mode: { kind: 'best' }, ask, exclude,
+    log: msg => console.error('[suggestions]', msg),
+  })
+  return clips.map((c, i) => toSuggestion(c, `ai-${i}`))
+}
+
+// Best moments on Gemini (no Anthropic key): same windows, prompt and scoring as Claude's
+async function detectBestWithGemini(words: Word[], durationMs: number, apiKey: string, exclude: Array<[number, number]>): Promise<ClipSuggestion[]> {
+  const genAI = new GoogleGenerativeAI(apiKey)
+  const ask = async (system: string, user: string) => {
+    const m = genAI.getGenerativeModel({ model: BEST_MOMENTS_FALLBACK_MODEL, systemInstruction: system })
+    return (await m.generateContent(user)).response.text()
+  }
+  const clips = await findClips({
+    words, durationMs, mode: { kind: 'best' }, ask, exclude,
     log: msg => console.error('[suggestions]', msg),
   })
   return clips.map((c, i) => toSuggestion(c, `ai-${i}`))
@@ -314,6 +417,31 @@ export interface AutoClip {
 }
 
 /** The video's latest AI Edit job (status, progress, error) and every clip AI Edit made from it, newest batch first */
+/** Marks a stopped run (the table's statuses have no 'cancelled'); the worker watches for this exact text */
+export const AI_EDIT_CANCELLED = 'Cancelled by you'
+
+/**
+ * Stops this video's running (or waiting) Make my clips run. The worker notices within a few
+ * seconds and stops what it is doing; clips it already made are kept.
+ */
+export async function cancelAutoClips(userId: string, videoId: string) {
+  const [video] = await sql`SELECT id FROM videos WHERE id = ${videoId} AND user_id = ${userId}`
+  if (!video) throw Object.assign(new Error('Not found'), { status: 404 })
+  const stopped = await sql`
+    UPDATE ai_edit_jobs SET status = 'failed', error = ${AI_EDIT_CANCELLED}
+    WHERE video_id = ${videoId} AND status IN ('queued', 'running')
+    RETURNING id
+  `
+  if (!stopped.length) throw Object.assign(new Error('Nothing is running for this video'), { status: 409 })
+  // Not picked up by a worker yet: take it off the queue too
+  const ids = stopped.map(r => r.id as string)
+  await sql`
+    UPDATE jobs SET status = 'failed', error = ${AI_EDIT_CANCELLED}
+    WHERE type = 'ai_edit' AND status = 'queued' AND payload->>'ai_edit_job_id' = ANY(${ids})
+  `
+  return { stopped: ids.length }
+}
+
 export async function getAutoClips(userId: string, videoId: string) {
   const [video] = await sql`SELECT id FROM videos WHERE id = ${videoId} AND user_id = ${userId}`
   if (!video) throw Object.assign(new Error('Not found'), { status: 404 })

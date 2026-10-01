@@ -2,6 +2,7 @@
 
 import { useRef } from 'react'
 import type { AudioTrack } from '@chai-cut/shared'
+import { EmptyState } from './EditorTour'
 
 interface Props {
   tracks: AudioTrack[]
@@ -42,7 +43,8 @@ export function AudioMixerPanel({ tracks, onAddTrack, onUpdateTrack, onRemoveTra
       </button>
 
       {tracks.length === 0 ? (
-        <p className="text-xs" style={{ color: 'var(--text-muted)' }}>No audio tracks added.</p>
+        <EmptyState icon={<><path d="M9 18V5l12-2v13" /><circle cx="6" cy="18" r="3" /><circle cx="18" cy="16" r="3" /></>}
+          title="No music yet" tip="Add a background track above, then set its volume so your voice stays clear." />
       ) : (
         <div className="flex flex-col gap-3">
           {tracks.map(track => (

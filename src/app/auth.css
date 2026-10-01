@@ -69,34 +69,42 @@
   -webkit-background-clip: text; background-clip: text; color: transparent;
 }
 .auth-sub { margin: 0 0 14px; font-size: 14px; color: var(--text-muted); }
-/* Soft white input boxes with dark text; lime ring on focus */
-.auth-form input {
-  width: 100%;
-  padding: 13px 16px;
-  border-radius: 12px;
-  border: 1px solid transparent;
-  background: #E4E4E7;
-  color: #0A0A0A;
-  font-size: 14px;
-  outline: none;
+/* Labelled fields: label row on top, then a white box with an icon on the left */
+.auth-field { width: 100%; display: flex; flex-direction: column; gap: 8px; text-align: left; }
+.auth-field + .auth-field { margin-top: 4px; }
+.auth-field-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.auth-field-head label { font-size: 14px; font-weight: 700; color: var(--text); }
+.auth-box {
+  position: relative; width: 100%;
+  display: flex; align-items: center; gap: 12px;
+  height: 50px; padding: 0 16px;
+  border-radius: 14px;
+  border: 1px solid rgba(10,10,10,0.1);
+  background: #FFFFFF;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.06), 0 4px 12px -6px rgba(0,0,0,0.12);
   transition: border-color .2s, box-shadow .2s;
 }
-.auth-form input::placeholder { color: rgba(10,10,10,0.45); }
-.auth-form input:focus {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 28%, transparent);
+/* Focus ring in the same lime as the sliding panel */
+.auth-box:focus-within {
+  border-color: var(--auth-lime);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--auth-lime) 45%, transparent);
 }
+.auth-box-icon { flex-shrink: 0; width: 18px; height: 18px; color: rgba(10,10,10,0.6); }
+.auth-form .auth-box input {
+  flex: 1; min-width: 0; height: 100%;
+  padding: 0; border: 0; outline: none; background: transparent;
+  color: #0A0A0A; font: inherit; font-size: 15px;
+}
+.auth-form .auth-box input::placeholder { color: rgba(10,10,10,0.4); }
 /* Keep browser autofill from tinting the white boxes */
-.auth-form input:-webkit-autofill {
+.auth-form .auth-box input:-webkit-autofill {
   -webkit-text-fill-color: #0A0A0A;
-  -webkit-box-shadow: 0 0 0 40px #E4E4E7 inset;
+  -webkit-box-shadow: 0 0 0 40px #FFFFFF inset;
   caret-color: #0A0A0A;
 }
-/* Password box: room on the right for the show/hide eye */
-.auth-password { position: relative; width: 100%; }
-.auth-form .auth-password input { padding-right: 48px; }
+/* Password box: the eye sits at the right end */
 .auth-eye {
-  position: absolute; top: 50%; right: 8px; translate: 0 -50%;
+  flex-shrink: 0; margin-right: -8px;
   width: 34px; height: 34px;
   display: grid; place-items: center;
   border: 0; border-radius: 8px;
@@ -108,7 +116,7 @@
 .auth-eye:hover { color: #0A0A0A; background: rgba(10,10,10,0.06); }
 .auth-eye:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; color: #0A0A0A; }
 .auth-eye svg { width: 18px; height: 18px; }
-.auth-link { margin: 4px 0; font-size: 13px; color: var(--text-muted); text-decoration: none; transition: color .15s; }
+.auth-link { font-size: 13px; color: var(--text-muted); text-decoration: none; transition: color .15s; }
 .auth-link:hover { color: var(--text); }
 .auth-error { margin: 0; font-size: 13px; color: var(--danger); }
 

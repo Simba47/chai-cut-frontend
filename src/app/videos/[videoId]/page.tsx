@@ -1,6 +1,6 @@
 import { redirect, notFound } from 'next/navigation'
 import { requireUser } from '@/server/auth'
-import { ClipPickerShell } from './ClipPickerShell'
+import { ClipPickerShell, type ClipOrigin } from './ClipPickerShell'
 import sql from '@/lib/db'
 import { r2, R2_BUCKET } from '@/lib/r2'
 import { GetObjectCommand } from '@aws-sdk/client-s3'
@@ -49,16 +49,31 @@ export default async function VideoPickerPage({
   type RawClip = {
     id: string; title: string | null; start_ms: number; end_ms: number
     status: string; output_storage_path: string | null; created_at: string
-    layout: string | null
+    layout: string | null; auto: boolean
   }
 
   const clipsRaw = await sql<RawClip[]>`
     SELECT c.id, c.title, c.start_ms, c.end_ms, c.status, c.output_storage_path, c.created_at,
-      (SELECT layout FROM segments WHERE clip_id = c.id ORDER BY sort_order LIMIT 1) AS layout
+      (SELECT layout FROM segments WHERE clip_id = c.id ORDER BY sort_order LIMIT 1) AS layout,
+      -- Made by "Make my clips" (read through to_jsonb so this works before the worker adds the column)
+      (to_jsonb(c)->>'ai_edit_job_id') IS NOT NULL AS auto
     FROM clips c
     WHERE c.video_id = ${videoId}
     ORDER BY c.created_at ASC
   `
+
+  // Clips made with "Use" on a Best moments / Ask AI card: the suggestion log says which.
+  // No log table yet (or a hiccup reading it) just shows those clips under "Your clips".
+  const usedFrom = new Map((await sql<{ clip_id: string; source: string }[]>`
+    SELECT DISTINCT ON (clip_id) clip_id, source FROM ai_suggestion_events
+    WHERE video_id = ${videoId} AND event = 'used' AND clip_id IS NOT NULL
+    ORDER BY clip_id, created_at DESC
+  `.catch(() => [])).map(r => [r.clip_id, r.source]))
+  const originOf = (c: RawClip): ClipOrigin =>
+    c.auto ? 'auto'
+      : usedFrom.get(c.id) === 'best_moments' ? 'best'
+      : usedFrom.get(c.id) === 'clip_search' ? 'ask'
+      : 'yours'
 
   // Download links: fresh ones on every load (the link stored with a clip expires after 7 days)
   const savedClips = await Promise.all(clipsRaw.map(async (c, idx) => ({
@@ -68,7 +83,7 @@ export default async function VideoPickerPage({
       ? await getSignedUrl(r2, new GetObjectCommand({ Bucket: R2_BUCKET, Key: c.output_storage_path }), { expiresIn: 43200 }).catch(() => null)
       : null,
     created_at: c.created_at,
-    layout: c.layout ?? null, index: idx + 1,
+    layout: c.layout ?? null, index: idx + 1, origin: originOf(c),
   })))
 
   return (
