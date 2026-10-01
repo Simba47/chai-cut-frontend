@@ -1,13 +1,13 @@
 'use client'
 
-import { useState, useEffect, useRef, useMemo, Fragment } from 'react'
+import { useState, useEffect, useLayoutEffect, useRef, useMemo, Fragment } from 'react'
 import type { Clip, Segment, CropBox, BoxKeyframe, CaptionStyle, TextOverlay, AudioTrack, Transition, TranscriptWord, LayoutType, Overlay } from '@chai-cut/shared'
 import { VideoPreview, OutputCanvas } from '@/components/editor/VideoPreview'
 import { computeCutRanges, removedMs } from '@/lib/cuts'
 import { PostText, type PostTextValue } from '@/components/clips/PostText'
 import { BrollPanel, type StockResult } from '@/components/editor/BrollPanel'
 import { useBrollSources } from '@/modules/editor/brollSources'
-import { SegmentTimeline, LAYOUT_COLORS } from '@/components/editor/SegmentTimeline'
+import { SegmentTimeline, TimelineZoom, LAYOUT_COLORS } from '@/components/editor/SegmentTimeline'
 import { TranscriptPanel } from '@/components/editor/TranscriptPanel'
 import { CaptionStyler } from '@/components/editor/CaptionStyler'
 import { TextOverlayPanel } from '@/components/editor/TextOverlayPanel'
@@ -15,9 +15,11 @@ import { MediaPickerModal } from '@/components/editor/MediaPickerModal'
 import { AccountMenu } from '@/components/ui/account-menu'
 import { BrandLogo } from '@/components/ui/brand-logo'
 import { BrandLoader } from '@/components/ui/brand-loader'
+import { ShinyButton } from '@/components/ui/shiny-button'
 import { FramesPanel } from '@/components/editor/FramesPanel'
 import { FrameTextPanel } from '@/components/editor/FrameTextPanel'
 import { useConfirm } from '@/components/editor/ConfirmDialog'
+import { EditorTour, hasSeenEditorTour } from '@/components/editor/EditorTour'
 import { FrameAddMenu, type AddChoice } from '@/components/editor/FrameAddMenu'
 import { createFrameMediaPool } from '@/modules/editor/frameMedia'
 import { FRAME_TEMPLATES, isFrameLayout, frameOf, frameLanes, frameSlotLabels, emptySlotStretches, slotOffers, DEFAULT_BAND } from '@/modules/editor/frames'
@@ -200,6 +202,13 @@ export function EditorShell({
   const [isFreePlan, setIsFreePlan] = useState(false)
   const [tool, setTool] = useState<Tool>('format')
   const [optionsOpen, setOptionsOpen] = useState(true)
+  // First-time tour: opens once the page has settled; the header's "?" replays it
+  const [tourOpen, setTourOpen] = useState(false)
+  useEffect(() => {
+    if (hasSeenEditorTour()) return
+    const t = setTimeout(() => setTourOpen(true), 900)
+    return () => clearTimeout(t)
+  }, [])
   const [editingTranscript, setEditingTranscript] = useState(false)
   const [pickerAtMs, setPickerAtMs] = useState<number | null>(null)
   // Frames: the selected lane item (or `main:<slot>`), the "+" menu, and the media picker filling a lane
@@ -242,6 +251,19 @@ export function EditorShell({
   const [renderElapsed, setRenderElapsed] = useState(0)
   const [saveState, setSaveState] = useState<SaveState>('idle')
   const [motionMode, setMotionMode] = useState(false)
+  const [timelineZoom, setTimelineZoom] = useState(1)
+  // The section the user clicked (on the timeline strip or its card): the Delete buttons show only then
+  const [pickedSegId, setPickedSegId] = useState<string | null>(null)
+  // Export press: the download animation plays first, then the render starts (see .ed-export in globals.css)
+  const [exportPress, setExportPress] = useState(false)
+  function pressExport() {
+    if (exportPress) return
+    setExportPress(true)
+    setTimeout(() => { setExportPress(false); requestExport() }, 750)
+  }
+  // Click counters that replay each toolbar button's own animation (keys remount the icon)
+  const [formatPlay, setFormatPlay] = useState<{ id: LayoutType; n: number } | null>(null)
+  const [splitPlay, setSplitPlay] = useState(0)
   const motionModeRef = useRef(false)
   useEffect(() => { motionModeRef.current = motionMode }, [motionMode])
 
@@ -1191,6 +1213,8 @@ export function EditorShell({
   return (
     <div className="editor-theme h-screen flex flex-col overflow-hidden" style={{ background: 'var(--ed-app)', color: 'var(--ed-text)' }}>
 
+      <EditorTour open={tourOpen} onClose={() => setTourOpen(false)} />
+
       {/* ── Header: logo · where am I · is it saved · export ───────────────────── */}
       {/* Above everything in the body (preview overlays use z-index 10–20), so the account menu isn't drawn underneath them */}
       <header className="relative shrink-0 flex items-center gap-3 px-4"
@@ -1223,6 +1247,13 @@ export function EditorShell({
         <div className="flex-1" />
 
         <div className="flex items-center gap-3 shrink-0">
+          <button type="button" onClick={() => setTourOpen(true)} aria-label="Show the editor tour" title="How the editor works"
+            className="w-8 h-8 flex items-center justify-center rounded-full transition-colors hover:bg-[rgb(var(--ed-fg)/0.1)]"
+            style={{ color: 'rgb(var(--ed-fg) / 0.7)', boxShadow: 'inset 0 0 0 1px rgb(var(--ed-fg) / 0.14)' }}>
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <circle cx="12" cy="12" r="9" /><path d="M9.5 9a2.5 2.5 0 015 .5c0 1.5-2.5 2-2.5 3.5M12 17h.01" />
+            </svg>
+          </button>
           {/* Shared profile button; saves pending edits before leaving the editor */}
           <AccountMenu
             onNavigate={href => leave(() => { window.location.href = href })}
@@ -1243,7 +1274,7 @@ export function EditorShell({
       <div className="flex flex-1 min-h-0 overflow-hidden">
 
         {/* Tool rail */}
-        <nav aria-label="Editor tools" className="shrink-0 flex flex-col items-center gap-1 py-3"
+        <nav aria-label="Editor tools" data-tour="tools" className="shrink-0 flex flex-col items-center gap-1 py-3"
           style={{ width: 72, background: 'var(--ed-panel)', borderRight: '1px solid rgb(var(--ed-fg) / 0.07)' }}>
           {TOOLS.map(t => {
             const active = tool === t.id && optionsOpen
@@ -1255,8 +1286,8 @@ export function EditorShell({
                 }}
                 aria-pressed={active}
                 title={active ? `Hide ${t.label.toLowerCase()} options` : t.title}
-                className="flex flex-col items-center justify-center gap-1 rounded-xl transition-colors hover:bg-[rgb(var(--ed-fg)/0.05)]"
-                style={{ width: 60, height: 58, background: active ? 'rgba(200,255,0,0.1)' : undefined, color: active ? 'var(--ed-accent-text)' : 'rgb(var(--ed-fg) / 0.5)' }}>
+                className="ed-tool" data-active={active || undefined}
+                style={{ width: 60, height: 58 }}>
                 <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true">{t.icon}</svg>
                 <span className="text-[11px] font-medium">{t.label}</span>
               </button>
@@ -1266,8 +1297,8 @@ export function EditorShell({
           <div className="relative">
             <button onClick={() => setConfirmResetAll(v => !v)} aria-expanded={confirmResetAll}
               title="Reset all edits"
-              className="flex flex-col items-center justify-center gap-1 rounded-xl transition-colors hover:bg-[rgb(var(--ed-fg)/0.05)]"
-              style={{ width: 60, height: 52, color: confirmResetAll ? '#f87171' : 'rgb(var(--ed-fg) / 0.5)' }}>
+              className="ed-tool ed-tool-danger" data-active={confirmResetAll || undefined}
+              style={{ width: 60, height: 52 }}>
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                 <path d="M3 12a9 9 0 109-9 9.75 9.75 0 00-6.74 2.74L3 8" /><path d="M3 3v5h5" />
               </svg>
@@ -1335,11 +1366,16 @@ export function EditorShell({
           <div className="flex-1 min-h-0 overflow-y-auto">
             {tool === 'format' && (
               <div className="flex flex-col">
-                <div className="flex items-center gap-2 px-4 pt-3 pb-2">
-                  <span className="text-xs font-medium" style={{ color: 'rgb(var(--ed-fg) / 0.5)' }}>
-                    {cropPositions.length} format{cropPositions.length === 1 ? '' : 's'}
-                    {uncovered.length > 0 && <span style={{ color: 'rgb(var(--ed-fg) / 0.35)' }}> · {uncovered.length} default</span>}
+                <div className="px-4 pt-4 pb-3 flex flex-col gap-1.5">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-semibold text-[var(--ed-text)]">Sections</span>
+                  <span className="h-5 min-w-5 px-1.5 flex items-center justify-center rounded-full text-[11px] font-bold tabular-nums"
+                    style={{ background: 'rgba(200,255,0,0.12)', color: 'var(--ed-accent-text)' }}>
+                    {cropPositions.length}
                   </span>
+                  {uncovered.length > 0 && (
+                    <span className="text-[11px]" style={{ color: 'rgb(var(--ed-fg) / 0.4)' }}>+ {uncovered.length} default</span>
+                  )}
                   <div className="flex-1" />
                   {cropPositions.length > 1 && (
                     <button onClick={() => confirm({
@@ -1348,13 +1384,20 @@ export function EditorShell({
                         confirmLabel: 'Remove',
                       }, handleResetPositions)}
                       title="Remove every format except the first"
-                      className="px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors hover:bg-[rgb(var(--ed-fg)/0.06)]"
+                      className="h-7 px-2.5 flex items-center gap-1.5 rounded-lg text-[11px] font-medium transition-colors hover:bg-[rgb(var(--ed-fg)/0.06)] hover:text-[var(--ed-text)]"
                       style={{ color: 'rgb(var(--ed-fg) / 0.55)', border: '1px solid rgb(var(--ed-fg) / 0.12)' }}>
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                        <path d="M3 12a9 9 0 109-9 9.75 9.75 0 00-6.74 2.74L3 8" /><path d="M3 3v5h5" />
+                      </svg>
                       Reset
                     </button>
                   )}
                 </div>
-                <div className="px-2 pb-3 flex flex-col gap-0.5">
+                <p className="text-[11px] leading-relaxed" style={{ color: 'rgb(var(--ed-fg) / 0.42)' }}>
+                  Your clip is made of sections, each with its own layout. Click one to edit it.
+                </p>
+                </div>
+                <div className="px-3 pb-3 flex flex-col gap-1">
                   {uncovered.filter(g => g.start_ms < (cropPositions[0]?.start_ms ?? Infinity)).map(g => (
                     <GapRow key={`gap-${g.start_ms}`} gap={g} active={currentGap?.start_ms === g.start_ms}
                       onSelect={() => seekToMs(g.start_ms)} onAdd={() => addFormatInGap(g)} />
@@ -1369,43 +1412,70 @@ export function EditorShell({
                     const shown = formatLayoutOf(seg.layout)
                     const broll = seg.crop_boxes.some(b => b.source_video_id)
                     const col = broll ? BROLL_COLOR : LAYOUT_COLORS[shown]
-                    const box = seg.crop_boxes[0]
-                    const p = box ? getPositionAt(box.id, seg.start_ms) : { x: 0, w: 1, y: 0, h: 1 }
                     const isActiveSeg = seg.id === activeSegment?.id
                     const only = cropPositions.length === 1
                     const deleteLabel = only ? 'Reset this format to Vertical' : `Delete format ${i + 1} (its time goes back to default framing)`
+                    const name = broll ? 'B-roll' : LAYOUTS.find(l => l.id === shown)?.label ?? shown
                     return (
                       <Fragment key={seg.id}>
                       <div
                         role="button" tabIndex={0}
                         aria-current={isActiveSeg || undefined}
-                        className="group flex items-center gap-2.5 px-2.5 py-2.5 rounded-lg cursor-pointer transition-colors hover:bg-[rgb(var(--ed-fg)/0.05)]"
-                        style={{ background: isActiveSeg ? 'rgb(var(--ed-fg) / 0.07)' : undefined }}
-                        onClick={() => { setActiveSegmentId(seg.id); seekToMs(seg.start_ms) }}
-                        onKeyDown={e => { if (e.key === 'Enter') { setActiveSegmentId(seg.id); seekToMs(seg.start_ms) } }}>
-                        <span className="w-5 text-[11px] font-semibold tabular-nums text-center shrink-0" style={{ color: 'rgb(var(--ed-fg) / 0.35)' }}>{i + 1}</span>
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-2">
-                            <span className="w-2 h-2 rounded-full shrink-0" style={{ background: col }} />
-                            <span className="text-xs font-medium tabular-nums" style={{ color: 'rgb(var(--ed-fg) / 0.85)' }}>{msToLabel(seg.start_ms)} – {msToLabel(seg.end_ms)}</span>
-                            <span className="text-xs truncate" style={{ color: 'rgb(var(--ed-fg) / 0.4)' }}>{broll ? 'B-roll' : LAYOUTS.find(l => l.id === shown)?.label ?? shown}</span>
+                        aria-label={`Section ${i + 1}: ${name}, ${msToLabel(seg.start_ms)} to ${msToLabel(seg.end_ms)}`}
+                        className="group relative flex flex-col px-2 py-1.5 rounded-lg cursor-pointer transition-[background,border-color,box-shadow] duration-200 hover:border-[rgb(var(--ed-fg)/0.18)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[rgba(200,255,0,0.6)]"
+                        style={isActiveSeg
+                          ? { background: 'linear-gradient(180deg, rgba(200,255,0,0.07), rgba(200,255,0,0.02))', border: '1px solid rgba(200,255,0,0.45)', boxShadow: '0 8px 24px -14px rgba(200,255,0,0.45)' }
+                          : { background: 'rgb(var(--ed-fg) / 0.03)', border: '1px solid rgb(var(--ed-fg) / 0.08)' }}
+                        onClick={() => { setActiveSegmentId(seg.id); setPickedSegId(seg.id); seekToMs(seg.start_ms) }}
+                        onKeyDown={e => { if (e.key === 'Enter') { setActiveSegmentId(seg.id); setPickedSegId(seg.id); seekToMs(seg.start_ms) } }}>
+                        <div className="flex items-center gap-2">
+                          {/* Layout icon on a tile tinted with the section's colour */}
+                          <span className="relative shrink-0 w-7 h-8 flex items-center justify-center rounded-md"
+                            style={{ background: `${col}1f`, boxShadow: `inset 0 0 0 1px ${col}55` }}>
+                            {broll
+                              ? <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={col} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="2" y="5" width="15" height="14" rx="2" /><path d="M17 10l5-3v10l-5-3z" /></svg>
+                              : <LayoutGlyph layout={shown} color={col} active={isActiveSeg} />}
+                          </span>
+                          <div className="flex-1 min-w-0 flex flex-col">
+                            <span className="flex items-center gap-2 min-w-0">
+                              <span className="text-xs font-semibold truncate text-[var(--ed-text)]">{name}</span>
+                              {isActiveSeg && (
+                                <span className="shrink-0 px-1.5 py-px rounded text-[9px] font-bold uppercase tracking-wider"
+                                  style={{ background: 'rgba(200,255,0,0.14)', color: 'var(--ed-accent-text)' }}>Editing</span>
+                              )}
+                            </span>
+                            <span className="text-[10px] leading-tight tabular-nums" style={{ color: 'rgb(var(--ed-fg) / 0.45)' }}>
+                              {msToLabel(seg.start_ms)} → {msToLabel(seg.end_ms)}
+                              <span style={{ color: 'rgb(var(--ed-fg) / 0.25)' }}> · </span>
+                              {lengthLabel(seg.end_ms - seg.start_ms)}
+                            </span>
+                            {/* Where this section sits in the whole clip */}
+                            <div className="relative h-[3px] mt-1 rounded-full overflow-hidden" style={{ background: 'rgb(var(--ed-fg) / 0.07)' }}
+                              title={`${msToLabel(seg.start_ms)}–${msToLabel(seg.end_ms)} of ${msToLabel(clipDurationMs)}`}>
+                              <div className="absolute h-full rounded-full" style={{
+                                left: `${(seg.start_ms / clipDurationMs) * 100}%`,
+                                width: `max(3px, ${((seg.end_ms - seg.start_ms) / clipDurationMs) * 100}%)`,
+                                background: col,
+                                boxShadow: isActiveSeg ? `0 0 6px ${col}` : 'none',
+                              }} />
+                            </div>
                           </div>
-                          {/* Where the crop sits horizontally in the source frame */}
-                          <div className="relative h-1 rounded-full overflow-hidden mt-2" style={{ background: 'rgb(var(--ed-fg) / 0.08)' }}>
-                            <div className="absolute h-full rounded-full" style={{ left: `${p.x * 100}%`, width: `${p.w * 100}%`, background: col }} />
-                          </div>
+                          <button onClick={e => { e.stopPropagation(); askDeleteFormat(seg.id) }}
+                            aria-label={deleteLabel} title={`${deleteLabel} (Delete)`}
+                            className={`shrink-0 w-6 h-6 flex items-center justify-center rounded-md transition-[opacity,background,color] hover:bg-[rgba(239,68,68,0.12)] hover:text-[#f87171] ${isActiveSeg ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 focus:opacity-100'}`}
+                            style={{ color: 'rgb(var(--ed-fg) / 0.5)' }}>
+                            <TrashIcon />
+                          </button>
                         </div>
-                        <button onClick={e => { e.stopPropagation(); askDeleteFormat(seg.id) }}
-                          aria-label={deleteLabel} title={`${deleteLabel} (Delete)`}
-                          className={`shrink-0 w-7 h-7 flex items-center justify-center rounded-md transition-opacity hover:bg-[rgb(var(--ed-fg)/0.1)] ${isActiveSeg ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 focus:opacity-100'}`}
-                          style={{ color: 'rgb(var(--ed-fg) / 0.5)' }}>
-                          <TrashIcon />
-                        </button>
                       </div>
                       {gapRow}
                       </Fragment>
                     )
                   })}
+                  <p className="flex items-center gap-2 mt-1 px-1 text-[11px]" style={{ color: 'rgb(var(--ed-fg) / 0.38)' }}>
+                    <kbd className="px-1.5 py-px rounded text-[10px] font-semibold" style={{ background: 'rgb(var(--ed-fg) / 0.08)', color: 'rgb(var(--ed-fg) / 0.7)', boxShadow: 'inset 0 -1px 0 rgb(var(--ed-fg) / 0.12)' }}>S</kbd>
+                    Split at the playhead to add a section
+                  </p>
                 </div>
               </div>
             )}
@@ -1582,63 +1652,63 @@ export function EditorShell({
 
         {/* Canvas + transport + timeline */}
         <main className="flex flex-col flex-1 min-w-0 min-h-0">
-          {/* Canvas toolbar: formats, centred */}
-          <div className="shrink-0 flex items-center justify-center gap-3 px-4" style={{ minHeight: 52, borderBottom: '1px solid rgb(var(--ed-fg) / 0.06)' }}>
-            <div role="radiogroup" aria-label="Format" className="flex items-center gap-1 p-1 rounded-xl shrink-0"
-              style={{ background: 'rgb(var(--ed-fg) / 0.04)', border: '1px solid rgb(var(--ed-fg) / 0.07)' }}>
-              {LAYOUTS.map(l => {
-                const on = !!activeSegment && formatLayoutOf(activeSegment.layout) === l.id
-                // Shortcut theme: lime when selected, neutral otherwise (like the preview toggle)
-                const color = on ? 'var(--ed-accent-text)' : 'rgb(var(--ed-fg) / 0.45)'
-                return (
-                  <button key={l.id} role="radio" aria-checked={on} onClick={() => handleLayoutChange(l.id)}
-                    title={`${l.label} format`}
-                    className={`flex items-center gap-2 h-8 pl-2.5 pr-3 rounded-lg text-xs font-medium whitespace-nowrap transition-colors ${on ? '' : 'hover:text-[rgb(var(--ed-fg)/0.8)]'}`}
-                    style={on
-                      ? { background: 'rgb(var(--ed-fg) / 0.12)', color: 'var(--ed-text)', boxShadow: 'inset 0 0 0 1px rgb(var(--ed-fg) / 0.1)' }
-                      : { color: 'rgb(var(--ed-fg) / 0.5)' }}>
-                    <LayoutGlyph layout={l.id} color={color} active={on} />
-                    {l.label}
-                  </button>
-                )
-              })}
+          {/* Canvas toolbar: two docks, centred — Layout (a segmented switch with a sliding lime
+              highlight) and Tools (Split · Motion · Delete). Styles: .ed-dock* in globals.css */}
+          <div className="shrink-0 flex items-center justify-center gap-3 px-4" style={{ minHeight: 60, borderBottom: '1px solid rgb(var(--ed-fg) / 0.06)' }}>
+            <FormatSwitcher
+              activeId={activeSegment ? formatLayoutOf(activeSegment.layout) : null}
+              play={formatPlay}
+              onPick={id => { setFormatPlay(p => ({ id, n: (p?.n ?? 0) + 1 })); handleLayoutChange(id) }}
+            />
+
+            <div className="ed-dock" role="toolbar" aria-label="Tools">
+              <button
+                onClick={() => { setSplitPlay(n => n + 1); splitHere() }}
+                disabled={!canSplitHere}
+                title={canSplitHere ? 'Split this format at the playhead (S), then pick a layout for either part' : 'Move the playhead inside a format to split it'}
+                className="ed-press ed-dock-btn"
+              >
+                <svg key={splitPlay} className={splitPlay ? 'ed-snip' : undefined} width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <circle cx="6" cy="6" r="3" /><circle cx="6" cy="18" r="3" /><path d="M20 4L8.1 15.9M14.5 14.5L20 20M8.1 8.1L12 12" />
+                </svg>
+                Split
+                <kbd className="ed-kbd">S</kbd>
+              </button>
+
+              <span className="ed-dock-sep" aria-hidden="true" />
+
+              <button
+                onClick={() => setMotionMode(m => !m)}
+                aria-pressed={motionMode}
+                title={motionMode
+                  ? 'Motion is on: drag the view while the video plays and it follows your hand smoothly'
+                  : 'Motion is off: moving the view changes it from the playhead on (a cut). Turn on to record a smooth follow while the video plays'}
+                className="ed-press ed-dock-btn select-none" data-rec={motionMode || undefined}
+              >
+                <span key={motionMode ? 'on' : 'off'} className={motionMode ? 'ed-rec ed-rec-on' : 'ed-rec'} style={{
+                  display: 'inline-block', width: 8, height: 8, borderRadius: '50%',
+                  background: motionMode ? '#ef4444' : 'rgb(var(--ed-fg) / 0.35)',
+                }} />
+                {motionMode ? 'Recording motion' : 'Motion'}
+              </button>
+
+              {/* Delete the clicked trimmed part — shows only after a section is clicked. Button only for now;
+                  the delete itself (cutting the part out of the video) is being built on the backend */}
+              {pickedSegId && segments.some(x => x.id === pickedSegId) && <>
+                <span className="ed-dock-sep" aria-hidden="true" />
+                <button
+                  onClick={() => { /* TODO(backend): delete the selected trimmed part */ }}
+                  title="Delete the selected section"
+                  aria-label="Delete the selected section"
+                  className="ed-press ed-dock-btn ed-dock-danger ed-dock-pop"
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14M10 11v6M14 11v6" />
+                  </svg>
+                  Delete
+                </button>
+              </>}
             </div>
-
-            <div className="w-px h-6 shrink-0" style={{ background: 'rgb(var(--ed-fg) / 0.1)' }} />
-
-            <button
-              onClick={splitHere}
-              disabled={!canSplitHere}
-              title={canSplitHere ? 'Split this format at the playhead (S), then pick a layout for either part' : 'Move the playhead inside a format to split it'}
-              className="flex items-center gap-2 h-8 px-3 rounded-lg text-xs font-medium whitespace-nowrap shrink-0 transition-colors hover:bg-[rgb(var(--ed-fg)/0.05)] disabled:opacity-40 disabled:hover:bg-transparent"
-              style={{ background: 'rgb(var(--ed-fg) / 0.04)', color: 'rgb(var(--ed-fg) / 0.62)', boxShadow: 'inset 0 0 0 1px rgb(var(--ed-fg) / 0.07)' }}
-            >
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                <circle cx="6" cy="6" r="3" /><circle cx="6" cy="18" r="3" /><path d="M20 4L8.1 15.9M14.5 14.5L20 20M8.1 8.1L12 12" />
-              </svg>
-              Split
-            </button>
-
-            <button
-              onClick={() => setMotionMode(m => !m)}
-              aria-pressed={motionMode}
-              title={motionMode
-                ? 'Motion is on: drag the view while the video plays and it follows your hand smoothly'
-                : 'Motion is off: moving the view changes it from the playhead on (a cut). Turn on to record a smooth follow while the video plays'}
-              className={`flex items-center gap-2 h-8 px-3 rounded-lg text-xs font-medium whitespace-nowrap shrink-0 transition-colors select-none ${motionMode ? '' : 'hover:bg-[rgb(var(--ed-fg)/0.05)]'}`}
-              style={{
-                background: motionMode ? 'rgba(239,68,68,0.15)' : 'rgb(var(--ed-fg) / 0.04)',
-                color: motionMode ? '#fca5a5' : 'rgb(var(--ed-fg) / 0.62)',
-                boxShadow: motionMode ? 'inset 0 0 0 1px rgba(239,68,68,0.5)' : 'inset 0 0 0 1px rgb(var(--ed-fg) / 0.07)',
-              }}
-            >
-              <span style={{
-                display: 'inline-block', width: 7, height: 7, borderRadius: '50%',
-                background: motionMode ? '#ef4444' : 'rgb(var(--ed-fg) / 0.3)',
-                boxShadow: motionMode ? '0 0 6px #ef4444' : 'none',
-              }} />
-              Motion
-            </button>
           </div>
 
           <div className="relative flex-1 min-h-0" style={{ background: 'var(--ed-canvas)' }}>
@@ -1658,33 +1728,45 @@ export function EditorShell({
           </div>
 
           {/* Transport */}
-          <div className="shrink-0 grid items-center px-4" style={{ gridTemplateColumns: '1fr auto 1fr', height: 52, borderTop: '1px solid rgb(var(--ed-fg) / 0.06)', background: 'var(--ed-panel)' }}>
-            <div />
+          {/* One control bar for the canvas and timeline: timecode · playback · timeline zoom */}
+          <div className="shrink-0 grid items-center px-4" style={{ gridTemplateColumns: '1fr auto 1fr', height: 56, borderTop: '1px solid rgb(var(--ed-fg) / 0.06)', background: 'var(--ed-panel)' }}>
+            <div className="justify-self-start flex items-baseline gap-1.5 tabular-nums"
+              aria-label={`${msToTenths(currentTimeMs)} of ${msToLabel(clipDurationMs)}`}>
+              <span className="text-[15px] font-semibold tracking-tight text-[var(--ed-text)]">{msToTenths(currentTimeMs)}</span>
+              <span className="text-xs font-medium" style={{ color: 'rgb(var(--ed-fg) / 0.38)' }}>/ {msToLabel(clipDurationMs)}</span>
+            </div>
             <div className="flex items-center gap-3">
               <button onClick={() => seekToMs(Math.max(0, currentTimeMs - 5000))} aria-label="Back 5 seconds" title="Back 5 seconds (Shift + ←)"
                 className="w-9 h-9 flex items-center justify-center rounded-full transition-colors hover:bg-[rgb(var(--ed-fg)/0.1)]" style={{ color: 'rgb(var(--ed-fg) / 0.75)' }}>
                 <SkipFiveIcon dir="back" />
               </button>
+              {/* Film-reel play button (styles: .ed-play in globals.css): a ring of sprocket holes turns
+                  like a reel while playing, a projector flash bursts out on play, and the icon snaps
+                  shut like a clapperboard on every press */}
               <button onClick={togglePlay} aria-label={playing ? 'Pause' : 'Play'} title={`${playing ? 'Pause' : 'Play'} (Space)`}
-                className="w-10 h-10 flex items-center justify-center rounded-full shrink-0 transition-opacity hover:opacity-90" style={{ background: ACCENT }}>
-                {playing
-                  ? <svg width="12" height="12" viewBox="0 0 12 12" fill="black"><rect x="2" y="1.5" width="3" height="9" rx="1"/><rect x="7" y="1.5" width="3" height="9" rx="1"/></svg>
-                  : <svg width="12" height="12" viewBox="0 0 12 12" fill="black"><path d="M3 1.5l7.5 4.5L3 10.5V1.5z"/></svg>
-                }
+                data-playing={playing || undefined}
+                className="ed-play w-10 h-10 flex items-center justify-center rounded-full shrink-0 transition-opacity hover:opacity-90" style={{ background: ACCENT }}>
+                <span key={playing ? 'pause' : 'play'} className="ed-play-icon flex">
+                  {playing
+                    ? <svg width="12" height="12" viewBox="0 0 12 12" fill="black"><rect x="2" y="1.5" width="3" height="9" rx="1"/><rect x="7" y="1.5" width="3" height="9" rx="1"/></svg>
+                    : <svg width="12" height="12" viewBox="0 0 12 12" fill="black"><path d="M3 1.5l7.5 4.5L3 10.5V1.5z"/></svg>
+                  }
+                </span>
               </button>
               <button onClick={() => seekToMs(Math.min(clipDurationMs, currentTimeMs + 5000))} aria-label="Forward 5 seconds" title="Forward 5 seconds (Shift + →)"
                 className="w-9 h-9 flex items-center justify-center rounded-full transition-colors hover:bg-[rgb(var(--ed-fg)/0.1)]" style={{ color: 'rgb(var(--ed-fg) / 0.75)' }}>
                 <SkipFiveIcon dir="forward" />
               </button>
             </div>
-            <span className="justify-self-end text-xs tabular-nums" style={{ color: 'rgb(var(--ed-fg) / 0.6)' }}>
-              {msToTenths(currentTimeMs)}<span style={{ color: 'rgb(var(--ed-fg) / 0.25)' }}> / </span>{msToLabel(clipDurationMs)}
-            </span>
+            <div className="justify-self-end">
+              <TimelineZoom zoom={timelineZoom} onZoom={setTimelineZoom} />
+            </div>
           </div>
 
           {/* Timeline */}
-          <div className="shrink-0 overflow-y-auto px-4 pt-3 pb-4" style={{ maxHeight: '38vh', background: 'var(--ed-track)', borderTop: '1px solid rgb(var(--ed-fg) / 0.06)' }}>
+          <div data-tour="timeline" className="shrink-0 overflow-y-auto px-4 pt-3 pb-4" style={{ maxHeight: '38vh', background: 'var(--ed-track)', borderTop: '1px solid rgb(var(--ed-fg) / 0.06)' }}>
             <SegmentTimeline
+              zoom={timelineZoom} onZoomChange={setTimelineZoom} showToolbar={false}
               segments={segments} clipStartMs={clip.start_ms} clipEndMs={clip.end_ms}
               currentTimeMs={currentTimeMs} activeSegmentId={activeSegment?.id ?? null}
               videoUrl={videoUrl} safeDurationMs={clipDurationMs} onSeek={seekToMs}
@@ -1695,6 +1777,8 @@ export function EditorShell({
               onSetEdge={(id, edge, t) => setSegmentEdge(id, edge, t, clipLengthMs)}
               onMoveJunction={moveJunction}
               onInsertBrollAfter={handleInsertBrollAfterSeg}
+              onDeleteSegment={() => { /* TODO(backend): delete the selected trimmed part */ }}
+              pickedSegmentId={pickedSegId} onPickSegment={setPickedSegId}
               textOverlays={textOverlays} activeTextOverlayId={activeTextOverlayId}
               onSelectTextOverlay={id => { setActiveTextOverlayId(id); if (id) { setTool('text'); toggleOptions(true) } }}
               onTextOverlayUpdate={updateTextOverlay}
@@ -1741,7 +1825,7 @@ export function EditorShell({
         </main>
 
         {/* Right column: 9:16 output preview, always visible */}
-        <aside className="shrink-0 flex flex-col min-h-0" style={{ width: 360, background: 'var(--ed-panel)', borderLeft: '1px solid rgb(var(--ed-fg) / 0.07)' }}>
+        <aside data-tour="export" className="shrink-0 flex flex-col min-h-0" style={{ width: 360, background: 'var(--ed-panel)', borderLeft: '1px solid rgb(var(--ed-fg) / 0.07)' }}>
           <div className="shrink-0 px-4 flex items-center justify-between" style={{ height: 48, borderBottom: '1px solid rgb(var(--ed-fg) / 0.06)' }}>
             <span className="text-sm font-semibold text-[var(--ed-text)]">Preview</span>
             <div className="flex items-center gap-1.5">
@@ -1768,12 +1852,13 @@ export function EditorShell({
                   </a>
                 </>
               ) : (
-                <button onClick={() => requestExport()}
+                <ShinyButton onClick={pressExport}
                   title="Render the reel so you can download it"
-                  className="flex items-center gap-1.5 h-8 px-3 rounded-lg text-xs font-bold transition-opacity hover:opacity-90"
-                  style={{ background: ACCENT, color: '#000' }}>
-                  <DownloadIcon /> Export
-                </button>
+                  aria-busy={exportPress || undefined}
+                  data-pressed={exportPress || undefined}
+                  className="ed-export flex items-center gap-1.5 h-8 px-3.5 rounded-lg text-xs font-bold overflow-hidden">
+                  <ExportIcon /> Export
+                </ShinyButton>
               )}
             </div>
           </div>
@@ -1883,6 +1968,12 @@ export function EditorShell({
 
 // ── Small UI pieces ───────────────────────────────────────────────────────────
 
+/** A length in words people read at a glance: "11s", "1m 05s" */
+function lengthLabel(ms: number): string {
+  const s = Math.max(0, Math.round(ms / 1000))
+  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s`
+}
+
 function GapRow({ gap, active, onSelect, onAdd }: {
   gap: { start_ms: number; end_ms: number }
   active: boolean
@@ -1891,16 +1982,20 @@ function GapRow({ gap, active, onSelect, onAdd }: {
 }) {
   return (
     <div role="button" tabIndex={0} onClick={onSelect} onKeyDown={e => { if (e.key === 'Enter') onSelect() }}
-      className="flex items-center gap-2.5 px-2.5 py-2 rounded-lg cursor-pointer transition-colors hover:bg-[rgb(var(--ed-fg)/0.05)]"
-      style={{ background: active ? 'rgb(var(--ed-fg) / 0.05)' : undefined, border: '1px dashed rgb(var(--ed-fg) / 0.12)' }}>
-      <span className="w-5 shrink-0" />
-      <span className="w-2 h-2 rounded-full shrink-0" style={{ border: '1.5px dashed rgb(var(--ed-fg) / 0.5)' }} />
-      <span className="text-xs tabular-nums" style={{ color: 'rgb(var(--ed-fg) / 0.6)' }}>{msToLabel(gap.start_ms)} – {msToLabel(gap.end_ms)}</span>
-      <span className="text-xs flex-1 truncate" style={{ color: 'rgb(var(--ed-fg) / 0.35)' }}>Default framing</span>
-      <button onClick={e => { e.stopPropagation(); onAdd() }} title="Add a format here"
-        className="shrink-0 px-2 py-1 rounded-md text-[11px] font-semibold transition-colors hover:bg-[rgb(var(--ed-fg)/0.15)]"
-        style={{ color: 'var(--ed-accent-text)', background: 'rgba(200,255,0,0.12)' }}>
-        + Add
+      className="flex items-center gap-2 px-2 py-1.5 rounded-lg cursor-pointer transition-colors hover:bg-[rgb(var(--ed-fg)/0.04)]"
+      style={{ background: active ? 'rgb(var(--ed-fg) / 0.05)' : undefined, border: '1px dashed rgb(var(--ed-fg) / 0.16)' }}>
+      <span className="shrink-0 w-7 h-8 flex items-center justify-center rounded-md" style={{ border: '1px dashed rgb(var(--ed-fg) / 0.25)', color: 'rgb(var(--ed-fg) / 0.4)' }}>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><rect x="7" y="3" width="10" height="18" rx="2" /></svg>
+      </span>
+      <span className="flex-1 min-w-0 flex flex-col gap-0.5">
+        <span className="text-xs font-medium truncate" style={{ color: 'rgb(var(--ed-fg) / 0.6)' }}>Default framing</span>
+        <span className="text-[11px] tabular-nums" style={{ color: 'rgb(var(--ed-fg) / 0.38)' }}>{msToLabel(gap.start_ms)} → {msToLabel(gap.end_ms)}</span>
+      </span>
+      <button onClick={e => { e.stopPropagation(); onAdd() }} title="Give this part its own layout"
+        className="shrink-0 h-7 px-2.5 flex items-center gap-1 rounded-lg text-[11px] font-bold transition-opacity hover:opacity-90"
+        style={{ color: '#000', background: '#C8FF00' }}>
+        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3.5" strokeLinecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+        Add
       </button>
     </div>
   )
@@ -1920,15 +2015,63 @@ function SkipFiveIcon({ dir }: { dir: 'back' | 'forward' }) {
 }
 
 /** Tiny 9:16 frame showing how a format divides the reel */
-function LayoutGlyph({ layout, color, active }: { layout: LayoutType; color: string; active: boolean }) {
+/**
+ * Layout switch for the section under the playhead: a dock of the four formats with a lime highlight
+ * that slides to the picked one (measured from the buttons, so it fits any label length or language).
+ */
+function FormatSwitcher({ activeId, play, onPick }: {
+  activeId: LayoutType | null
+  play: { id: LayoutType; n: number } | null
+  onPick: (id: LayoutType) => void
+}) {
+  const btns = useRef(new Map<LayoutType, HTMLButtonElement>())
+  const [box, setBox] = useState<{ left: number; width: number } | null>(null)
+  useLayoutEffect(() => {
+    const measure = () => {
+      const el = activeId ? btns.current.get(activeId) : null
+      setBox(el ? { left: el.offsetLeft, width: el.offsetWidth } : null)
+    }
+    measure()
+    window.addEventListener('resize', measure)
+    return () => window.removeEventListener('resize', measure)
+  }, [activeId])
+
+  return (
+    <div role="radiogroup" aria-label="Layout" data-tour="formats" className="ed-dock relative">
+      {box && <span className="ed-dock-glider" style={{ left: box.left, width: box.width }} aria-hidden="true" />}
+      {LAYOUTS.map(l => {
+        const on = activeId === l.id
+        return (
+          <button key={l.id} role="radio" aria-checked={on}
+            ref={el => { if (el) btns.current.set(l.id, el); else btns.current.delete(l.id) }}
+            onClick={() => onPick(l.id)}
+            title={`${l.label} layout`}
+            className="ed-press ed-dock-btn ed-dock-choice" data-on={on || undefined}>
+            <LayoutGlyph key={play?.id === l.id ? play.n : 0} layout={l.id}
+              color={on ? 'var(--ed-accent-text)' : 'rgb(var(--ed-fg) / 0.5)'} active={on} play={play?.id === l.id} />
+            {l.label}
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
+/**
+ * Phone-shaped icon of a format. When `play` is set (just clicked) it acts out its format
+ * (styles: .ed-glyph-* in globals.css): Vertical fills the screen top to bottom, Split screen
+ * slides its two halves in from the top and bottom, Trio stacks its three panes one by one,
+ * Horizontal widens into a landscape band.
+ */
+function LayoutGlyph({ layout, color, play = false }: { layout: LayoutType; color: string; active: boolean; play?: boolean }) {
   const fill = color
   return (
-    <svg width="12" height="18" viewBox="0 0 12 18" aria-hidden="true" className="shrink-0">
-      <rect x="0.75" y="0.75" width="10.5" height="16.5" rx="2" fill="none" stroke={fill} strokeWidth="1.5" />
-      {layout === 'vertical' && <rect x="2.5" y="2.5" width="7" height="13" rx="1" fill={fill} opacity="0.55" />}
-      {layout === 'split' && <><rect x="2.5" y="2.5" width="7" height="5.6" rx="1" fill={fill} opacity="0.55" /><rect x="2.5" y="9.9" width="7" height="5.6" rx="1" fill={fill} opacity="0.55" /></>}
-      {layout === 'trio' && <><rect x="2.5" y="2.5" width="7" height="3.7" rx="0.8" fill={fill} opacity="0.55" /><rect x="2.5" y="7.15" width="7" height="3.7" rx="0.8" fill={fill} opacity="0.55" /><rect x="2.5" y="11.8" width="7" height="3.7" rx="0.8" fill={fill} opacity="0.55" /></>}
-      {layout === 'horizontal' && <rect x="2.5" y="6.5" width="7" height="5" rx="1" fill={fill} opacity="0.55" />}
+    <svg width="12" height="18" viewBox="0 0 12 18" aria-hidden="true" className={`shrink-0 overflow-visible${play ? ` ed-glyph ed-glyph-${layout}` : ''}`}>
+      <rect className="ed-glyph-frame" x="0.75" y="0.75" width="10.5" height="16.5" rx="2" fill="none" stroke={fill} strokeWidth="1.5" />
+      {layout === 'vertical' && <rect className="ed-glyph-p1" x="2.5" y="2.5" width="7" height="13" rx="1" fill={fill} opacity="0.55" />}
+      {layout === 'split' && <><rect className="ed-glyph-p1" x="2.5" y="2.5" width="7" height="5.6" rx="1" fill={fill} opacity="0.55" /><rect className="ed-glyph-p2" x="2.5" y="9.9" width="7" height="5.6" rx="1" fill={fill} opacity="0.55" /></>}
+      {layout === 'trio' && <><rect className="ed-glyph-p1" x="2.5" y="2.5" width="7" height="3.7" rx="0.8" fill={fill} opacity="0.55" /><rect className="ed-glyph-p2" x="2.5" y="7.15" width="7" height="3.7" rx="0.8" fill={fill} opacity="0.55" /><rect className="ed-glyph-p3" x="2.5" y="11.8" width="7" height="3.7" rx="0.8" fill={fill} opacity="0.55" /></>}
+      {layout === 'horizontal' && <rect className="ed-glyph-p1" x="2.5" y="6.5" width="7" height="5" rx="1" fill={fill} opacity="0.55" />}
     </svg>
   )
 }
@@ -2044,6 +2187,16 @@ function SidebarIcon({ open }: { open: boolean }) {
 
 function DownloadIcon() {
   return <svg width="14" height="14" viewBox="0 0 15 15" fill="none" aria-hidden="true"><path d="M7.5 2v8M4 7l3.5 3.5L11 7M2 13h11" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"/></svg>
+}
+
+/** Download arrow over a tray, drawn in two parts so the Export press can animate them */
+function ExportIcon() {
+  return (
+    <svg className="ed-export-icon" width="14" height="14" viewBox="0 0 15 15" fill="none" aria-hidden="true" style={{ overflow: 'visible' }}>
+      <g className="ed-export-arrow"><path d="M7.5 2v8M4 7l3.5 3.5L11 7" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" /></g>
+      <path className="ed-export-tray" d="M2 13h11" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
+    </svg>
+  )
 }
 
 function TrashIcon() {
