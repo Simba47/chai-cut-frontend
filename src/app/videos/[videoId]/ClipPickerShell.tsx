@@ -614,18 +614,26 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: P
       </p>
     </form>
   ) : (
-    <div className="shrink-0 flex justify-center gap-3">
+    // Two equal-width, equal-height buttons: same border, weight and icon size, so they read as a pair
+    <div className="shrink-0 grid grid-cols-2 gap-3 w-full max-w-md mx-auto">
       <button onClick={editFullVideo} disabled={!!busy}
         title="Open the whole video in the editor as one clip"
-        className="flex items-center gap-2 px-6 py-3 rounded-xl text-sm font-semibold transition-colors hover:bg-white/10 disabled:opacity-40"
-        style={{ color: 'rgba(255,255,255,0.85)', border: '1px solid rgba(255,255,255,0.14)' }}>
-        {busy === 'full' && <Spinner />}
+        className="h-12 flex items-center justify-center gap-2 px-5 rounded-xl text-sm font-semibold transition-colors hover:bg-white/10 disabled:opacity-40"
+        style={{ color: 'rgba(255,255,255,0.9)', border: '1px solid rgba(255,255,255,0.16)', background: 'rgba(255,255,255,0.03)' }}>
+        {busy === 'full' ? <Spinner /> : (
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+            <rect x="3" y="5" width="18" height="14" rx="2" /><path d="M10 9l5 3-5 3z" />
+          </svg>
+        )}
         Edit full video
       </button>
       <button onClick={openForm} disabled={!!busy}
-        className="px-6 py-3 rounded-xl text-sm font-bold transition-opacity hover:opacity-90 disabled:opacity-40"
-        style={{ background: ACCENT, color: '#000' }}>
-        + New clip from {msToDisplay(nowMs)}
+        className="h-12 flex items-center justify-center gap-2 px-5 rounded-xl text-sm font-semibold transition-opacity hover:opacity-90 disabled:opacity-40"
+        style={{ background: ACCENT, color: '#000', border: `1px solid ${ACCENT}` }}>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" aria-hidden>
+          <path d="M12 5v14M5 12h14" />
+        </svg>
+        New clip from <span className="tabular-nums">{msToDisplay(nowMs)}</span>
       </button>
     </div>
   )

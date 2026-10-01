@@ -119,13 +119,54 @@ function VideoThumbnails({ videoUrl, startMs, durationMs, count = THUMB_COUNT, r
   )
 }
 
+// Friendly name of a format, shown on its block and in its handles' labels
+function formatName(seg: SegmentLocal): string {
+  if (isBroll(seg)) return 'B-roll'
+  if (isFrameLayout(seg.layout)) return `Frame · ${FRAME_TEMPLATES[seg.layout].name}`
+  if (seg.layout === 'split') return 'Split screen'
+  return seg.layout.charAt(0).toUpperCase() + seg.layout.slice(1)
+}
+
+/** Seconds as "12.4s" under a minute, else "1:05" */
+function durLabel(ms: number): string {
+  return ms < 60000 ? `${(ms / 1000).toFixed(ms < 10000 ? 1 : 0)}s` : msToLabel(ms)
+}
+
+const ACCENT = '#c8ff00'
+const iconProps = { width: 14, height: 14, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 2, strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const, 'aria-hidden': true }
+
 function msToLabel(ms: number): string {
   const s = Math.floor(ms / 1000)
   const m = Math.floor(s / 60)
   return `${m}:${String(s % 60).padStart(2, '0')}`
 }
 
-const ZOOM_STEPS = [1, 1.5, 2, 3, 4, 6, 8]
+export const ZOOM_STEPS = [1, 1.5, 2, 3, 4, 6, 8]
+
+/** Zoom out · Fit · Zoom in, for the timeline (inside it, or in the editor's control bar) */
+export function TimelineZoom({ zoom, onZoom }: { zoom: number; onZoom: (z: number) => void }) {
+  const i = ZOOM_STEPS.indexOf(zoom)
+  const step = (dir: 1 | -1) => onZoom(ZOOM_STEPS[Math.max(0, Math.min(ZOOM_STEPS.length - 1, i + dir))])
+  const btn = 'w-8 h-8 flex items-center justify-center rounded-lg transition-colors disabled:opacity-30 hover:bg-[rgb(var(--ed-fg)/0.08)]'
+  return (
+    <div className="flex items-center gap-0.5 p-0.5 rounded-xl" role="group" aria-label="Timeline zoom"
+      style={{ background: 'rgb(var(--ed-fg) / 0.04)', border: '1px solid rgb(var(--ed-fg) / 0.08)' }}>
+      <button onClick={() => step(-1)} disabled={zoom === ZOOM_STEPS[0]} aria-label="Zoom out timeline" title="Zoom out"
+        className={btn} style={{ color: 'rgb(var(--ed-fg) / 0.8)' }}>
+        <svg {...iconProps}><circle cx="11" cy="11" r="7" /><path d="M8 11h6M20 20l-4-4" /></svg>
+      </button>
+      <button onClick={() => onZoom(1)} disabled={zoom === 1} title="Fit the whole clip"
+        className="h-8 min-w-[48px] px-2 flex items-center justify-center rounded-lg text-xs font-semibold tabular-nums transition-colors hover:bg-[rgb(var(--ed-fg)/0.08)] disabled:hover:bg-transparent"
+        style={{ color: zoom === 1 ? 'rgb(var(--ed-fg) / 0.6)' : ACCENT }}>
+        {zoom === 1 ? 'Fit' : `${zoom}×`}
+      </button>
+      <button onClick={() => step(1)} disabled={zoom === ZOOM_STEPS[ZOOM_STEPS.length - 1]} aria-label="Zoom in timeline" title="Zoom in"
+        className={btn} style={{ color: 'rgb(var(--ed-fg) / 0.8)' }}>
+        <svg {...iconProps}><circle cx="11" cy="11" r="7" /><path d="M8 11h6M11 8v6M20 20l-4-4" /></svg>
+      </button>
+    </div>
+  )
+}
 // Major tick spacing candidates and how many minor ticks sit between two majors
 const TICK_STEPS: [number, number][] = [
   [1000, 5], [2000, 4], [5000, 5], [10000, 5], [15000, 3], [30000, 6], [60000, 6], [120000, 4], [300000, 5], [600000, 5],
@@ -177,6 +218,17 @@ interface Props {
   videoUrls?: Record<string, string>
   /** B-roll shots (shown on their own lane over the film strip): moved or trimmed to a new time */
   onBrollChange?: (segId: string, startMs: number, endMs: number) => void
+  /** Bin on the section the user clicked on the strip: delete that section */
+  onDeleteSegment?: (id: string) => void
+  /** The section the user clicked on the film strip (its bin shows only then); null when none */
+  pickedSegmentId?: string | null
+  /** Clicking the strip picks the section under the pointer; clicking anywhere else clears it */
+  onPickSegment?: (id: string | null) => void
+  /** Controlled zoom (e.g. when the zoom buttons live in the editor's control bar) */
+  zoom?: number
+  onZoomChange?: (z: number) => void
+  /** Show the timeline's own zoom row (off when the zoom buttons live elsewhere) */
+  showToolbar?: boolean
 }
 
 export function SegmentTimeline({
@@ -211,10 +263,18 @@ export function SegmentTimeline({
   onRemoveView,
   onBrollChange,
   videoUrls = {},
+  zoom: zoomProp,
+  onZoomChange,
+  onDeleteSegment,
+  pickedSegmentId = null,
+  onPickSegment,
+  showToolbar = true,
 }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const trackRef = useRef<HTMLDivElement>(null)
-  const [zoom, setZoom] = useState(1)
+  const [zoomState, setZoomState] = useState(1)
+  const zoom = zoomProp ?? zoomState
+  const setZoom = (z: number) => { if (onZoomChange) onZoomChange(z); else setZoomState(z) }
   const [viewW, setViewW] = useState(0)
   const [dragging, setDragging] = useState<string | null>(null)
   const [snapLine, setSnapLine] = useState<number | null>(null)
@@ -274,10 +334,6 @@ export function SegmentTimeline({
     }
   }, [currentTimeMs, zoom, duration])
 
-  function changeZoom(dir: 1 | -1) {
-    const i = ZOOM_STEPS.indexOf(zoom)
-    setZoom(ZOOM_STEPS[Math.max(0, Math.min(ZOOM_STEPS.length - 1, i + dir))])
-  }
 
   function msFromClientX(clientX: number): number {
     const rect = trackRef.current?.getBoundingClientRect()
@@ -287,6 +343,15 @@ export function SegmentTimeline({
 
   function handleTrackDrag(e: React.PointerEvent) {
     if (e.button !== 0) return
+    // A click on the film strip picks the section under it (showing its bin); anywhere else clears it
+    if (onPickSegment) {
+      const rect = trackRef.current?.getBoundingClientRect()
+      const y = rect ? e.clientY - rect.top : -1
+      const onStrip = y >= STRIP_TOP && y <= STRIP_TOP + STRIP_H
+      const t = msFromClientX(e.clientX)
+      const hit = onStrip ? mains.find(m => t >= m.start_ms && t < m.end_ms) : undefined
+      onPickSegment(hit?.id ?? null)
+    }
     onSeek(msFromClientX(e.clientX))
     const move = (ev: PointerEvent) => onSeek(msFromClientX(ev.clientX))
     const up = () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up) }
@@ -522,7 +587,7 @@ export function SegmentTimeline({
   const brolls = byTime.filter(sg => isBroll(sg) && !isFrameLayout(sg.layout))
   const mains = byTime.filter(sg => !brolls.includes(sg))
   // One lane over the strip holds the joins between touching formats and the B-roll shots
-  const RULER_H = 26, LANE_H = brolls.length ? 40 : 24, STRIP_H = 48
+  const RULER_H = 30, LANE_H = brolls.length ? 42 : 22, STRIP_H = 52
   /** The format a B-roll shot sits over (the one before it, else after): the strip keeps its colour there */
   const underBroll = (seg: SegmentLocal) =>
     [...mains].reverse().find(m => m.end_ms <= seg.start_ms + 1) ?? mains.find(m => m.start_ms >= seg.end_ms - 1)
@@ -581,21 +646,23 @@ export function SegmentTimeline({
 
   return (
     <div className="flex flex-col select-none" style={{ gap: 6 }}>
-      {/* Zoom */}
-      <div className="flex items-center gap-2">
-        <div className="flex items-center rounded-lg" style={{ background: 'rgb(var(--ed-fg) / 0.05)' }}>
-          <button onClick={() => changeZoom(-1)} disabled={zoom === ZOOM_STEPS[0]} aria-label="Zoom out timeline"
-            className="w-7 h-7 flex items-center justify-center rounded-lg text-sm disabled:opacity-30 hover:bg-[rgb(var(--ed-fg)/0.1)]" style={{ color: 'rgb(var(--ed-fg) / 0.7)' }}>−</button>
-          <span className="w-9 text-center text-xs tabular-nums" style={{ color: 'rgb(var(--ed-fg) / 0.6)' }}>{zoom}x</span>
-          <button onClick={() => changeZoom(1)} disabled={zoom === ZOOM_STEPS[ZOOM_STEPS.length - 1]} aria-label="Zoom in timeline"
-            className="w-7 h-7 flex items-center justify-center rounded-lg text-sm disabled:opacity-30 hover:bg-[rgb(var(--ed-fg)/0.1)]" style={{ color: 'rgb(var(--ed-fg) / 0.7)' }}>+</button>
+      {/* ── Toolbar: zoom (hidden when the editor's control bar holds the zoom buttons) ── */}
+      {showToolbar && (
+        <div className="flex items-center gap-3">
+          <TimelineZoom zoom={zoom} onZoom={setZoom} />
         </div>
-      </div>
+      )}
 
       {/* No visible scrollbar: when zoomed in, the wheel scrolls sideways and the view follows the playhead */}
-      <div ref={scrollRef} className="relative overflow-x-auto overflow-y-hidden rounded-lg no-scrollbar"
-        style={{ background: 'var(--ed-ruler)', border: '1px solid rgb(var(--ed-fg) / 0.06)', scrollbarWidth: 'none' }}>
-        <div className="relative" style={{ width: `${zoom * 100}%`, minWidth: '100%' }}>
+      <div ref={scrollRef} className="relative overflow-x-auto overflow-y-hidden rounded-2xl no-scrollbar"
+        style={{
+          background: 'linear-gradient(180deg, rgb(var(--ed-fg) / 0.035), rgb(var(--ed-fg) / 0.01)), var(--ed-ruler)',
+          border: '1px solid rgb(var(--ed-fg) / 0.08)',
+          boxShadow: 'inset 0 1px 0 rgb(var(--ed-fg) / 0.05), 0 12px 32px -18px rgba(0,0,0,0.8)',
+          scrollbarWidth: 'none',
+        }}>
+        {/* Side padding keeps the handles at the very ends of the clip clear of the rounded border */}
+        <div className="relative" style={{ width: `${zoom * 100}%`, minWidth: '100%', padding: '0 14px' }}>
           <div ref={trackRef} className="relative" style={{ cursor: 'pointer', paddingBottom: 10 }} onPointerDown={handleTrackDrag}>
 
             {/* ── Ruler ─────────────────────────────────────────────── */}
@@ -603,10 +670,12 @@ export function SegmentTimeline({
               {ticks.map(({ t, major }) => {
                 const p = pct(t)
                 return (
-                  <div key={t} className="absolute bottom-0 pointer-events-none" style={{ left: `${p}%`, width: 1, height: major ? 10 : 5, background: major ? 'rgb(var(--ed-fg) / 0.35)' : 'rgb(var(--ed-fg) / 0.14)' }}>
+                  <div key={t} className="absolute pointer-events-none" style={major
+                    ? { left: `${p}%`, bottom: 2, width: 1, height: 7, marginLeft: -0.5, background: 'rgb(var(--ed-fg) / 0.28)', borderRadius: 1 }
+                    : { left: `${p}%`, bottom: 4, width: 2, height: 2, marginLeft: -1, background: 'rgb(var(--ed-fg) / 0.16)', borderRadius: 999 }}>
                     {major && (
                       <span className="absolute tabular-nums" style={{
-                        bottom: 12, fontSize: 10, color: 'rgb(var(--ed-fg) / 0.45)', whiteSpace: 'nowrap',
+                        bottom: 11, fontSize: 10, fontWeight: 500, letterSpacing: '0.03em', color: 'rgb(var(--ed-fg) / 0.42)', whiteSpace: 'nowrap',
                         transform: p < 2 ? 'translateX(2px)' : p > 98 ? 'translateX(-100%)' : 'translateX(-50%)',
                       }}>{msToLabel(t)}</span>
                     )}
@@ -617,10 +686,11 @@ export function SegmentTimeline({
 
 
             {/* ── Overlay lane: B-roll shots, and a handle wherever two formats touch ── */}
-            <div className="relative" style={{ height: LANE_H, background: 'rgb(var(--ed-fg) / 0.025)', borderTop: '1px solid rgb(var(--ed-fg) / 0.05)' }}>
+            <div className="relative" style={{ height: LANE_H }}>
               {junctions.length === 0 && brolls.length === 0 && (
-                <span className="absolute left-2 top-1/2 -translate-y-1/2 text-[10px] pointer-events-none" style={{ color: 'rgb(var(--ed-fg) / 0.25)' }}>
-                  B-roll and joins between formats appear here
+                <span className="absolute left-0 top-1/2 -translate-y-1/2 flex items-center gap-1.5 text-[10px] pointer-events-none" style={{ color: 'rgb(var(--ed-fg) / 0.24)' }}>
+                  <span className="w-1 h-1 rounded-full" style={{ background: '#f97316', boxShadow: '0 0 6px #f97316' }} />
+                  B-roll and joins between formats show up here
                 </span>
               )}
                 {brolls.map(seg => {
@@ -691,9 +761,9 @@ export function SegmentTimeline({
             </div>
 
             {/* ── Film strip: tinted per format, hatched where no format is set ── */}
-            <div className="relative overflow-hidden" style={{ height: STRIP_H }}>
+            <div className="relative overflow-hidden" style={{ height: STRIP_H, borderRadius: 12, boxShadow: '0 0 0 1px rgb(var(--ed-fg) / 0.1), 0 10px 24px -12px rgba(0,0,0,0.9)' }}>
               {videoUrl
-                ? <VideoThumbnails videoUrl={videoUrl} startMs={clipStartMs} durationMs={duration} />
+                ? <VideoThumbnails videoUrl={videoUrl} startMs={clipStartMs} durationMs={duration} radius={12} dim={false} />
                 : <div className="absolute inset-0" style={{ background: 'var(--ed-raise)' }} />}
 
               {gaps.map(g => (
@@ -701,10 +771,10 @@ export function SegmentTimeline({
                   title={`${msToLabel(g.start_ms)}–${msToLabel(g.end_ms)} · no format: default Vertical framing`}
                   style={{
                     left: `${pct(g.start_ms)}%`, width: `${pct(g.end_ms - g.start_ms)}%`,
-                    background: 'repeating-linear-gradient(135deg, rgba(0,0,0,0.55) 0 6px, rgba(0,0,0,0.35) 6px 12px)',
-                    borderTop: '3px dashed rgb(var(--ed-fg) / 0.35)',
+                    background: 'repeating-linear-gradient(135deg, rgba(0,0,0,0.6) 0 6px, rgba(0,0,0,0.4) 6px 12px)',
+                    boxShadow: 'inset 0 0 0 1px rgb(var(--ed-fg) / 0.12)',
                   }}>
-                  <span className="text-[10px] font-semibold px-1.5 rounded" style={{ color: 'rgba(255,255,255,0.85)', background: 'rgba(0,0,0,0.5)' }}>Default</span>
+                  <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full" style={{ color: 'rgba(255,255,255,0.8)', background: 'rgba(0,0,0,0.6)', border: '1px solid rgba(255,255,255,0.12)' }}>Default framing</span>
                 </div>
               ))}
 
@@ -717,29 +787,58 @@ export function SegmentTimeline({
                     style={{ left: `${pct(seg.start_ms)}%`, width: `${pct(seg.end_ms - seg.start_ms)}%`, background: `${color}2a`, borderTop: `3px solid ${color}aa` }} />
                 )
               })}
+              {/* Each format: the selected one stays bright inside a lime trim frame (its handles are the
+                  frame's sides), the others are dimmed. Its colour only shows as the dot on its chip. */}
               {mains.map(seg => {
                 const color = colorOf(seg)
                 const isActive = seg.id === activeSegmentId
+                const widthPx = (pct(seg.end_ms - seg.start_ms) / 100) * contentW
                 return (
                   <div key={seg.id} className="absolute inset-y-0 pointer-events-none"
                     style={{
                       left: `${pct(seg.start_ms)}%`, width: `${pct(seg.end_ms - seg.start_ms)}%`,
-                      background: `${color}${isActive ? '38' : '2a'}`,
-                      borderTop: `3px solid ${color}${isActive ? '' : 'aa'}`,
-                      boxShadow: isActive ? `inset 0 0 0 2px ${color}` : 'none',
-                    }} />
+                      background: isActive
+                        ? 'linear-gradient(180deg, transparent 55%, rgba(0,0,0,0.45))'
+                        : 'linear-gradient(180deg, rgba(0,0,0,0.3), rgba(0,0,0,0.5))',
+                      boxShadow: isActive
+                        ? `inset 0 2px 0 ${ACCENT}, inset 0 -2px 0 ${ACCENT}, 0 0 10px -3px rgba(200,255,0,0.4)`
+                        : 'inset 0 0 0 1px rgba(255,255,255,0.12)',
+                      borderRadius: 12,
+                      transition: 'box-shadow .25s, background .25s',
+                    }}>
+                    {widthPx > 96 && (
+                      <span className="absolute left-4 bottom-1.5 flex items-center gap-1.5 max-w-[calc(100%-28px)] pl-1.5 pr-2 h-[18px] rounded-full text-[10px] font-semibold whitespace-nowrap overflow-hidden"
+                        style={{ background: 'rgba(10,10,10,0.55)', color: '#fff', border: '1px solid rgba(255,255,255,0.14)', backdropFilter: 'blur(10px)', WebkitBackdropFilter: 'blur(10px)', boxShadow: '0 4px 12px rgba(0,0,0,0.35)' }}>
+                        <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: color, boxShadow: `0 0 8px ${color}` }} />
+                        <span className="truncate">{formatName(seg)}</span>
+                        {widthPx > 170 && <span className="tabular-nums font-medium" style={{ color: 'rgba(255,255,255,0.5)' }}>{durLabel(seg.end_ms - seg.start_ms)}</span>}
+                      </span>
+                    )}
+                    {/* Bin on the selected section */}
+                    {pickedSegmentId === seg.id && onDeleteSegment && widthPx > 56 && (
+                      <button type="button"
+                        onPointerDown={e => e.stopPropagation()}
+                        onClick={e => { e.stopPropagation(); onDeleteSegment(seg.id) }}
+                        aria-label={`Delete this ${formatName(seg)} section`} title="Delete this section"
+                        className="absolute top-1.5 right-4 w-6 h-6 flex items-center justify-center rounded-full transition-colors hover:bg-[#ef4444] hover:text-white"
+                        style={{ pointerEvents: 'auto', background: 'rgba(10,10,10,0.6)', color: 'rgba(255,255,255,0.85)', border: '1px solid rgba(255,255,255,0.16)', backdropFilter: 'blur(8px)', WebkitBackdropFilter: 'blur(8px)' }}>
+                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                          <path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14" />
+                        </svg>
+                      </button>
+                    )}
+                  </div>
                 )
               })}
             </div>
 
             {/* ── Views: one ◆ per view change of the format under the playhead ── */}
-            <div className="relative" style={{ height: 22, borderTop: '1px solid rgb(var(--ed-fg) / 0.05)' }}>
-              {viewMarkers.length > 0 ? (
-                <span className="absolute left-2 top-1/2 -translate-y-1/2 text-[10px] pointer-events-none" style={{ color: 'rgb(var(--ed-fg) / 0.3)' }}>
-                  Views
-                </span>
-              ) : (
-                <span className="absolute left-2 top-1/2 -translate-y-1/2 text-[10px] pointer-events-none" style={{ color: 'rgb(var(--ed-fg) / 0.25)' }}>
+            <div className="relative" style={{ height: 24, marginTop: 6 }}>
+              {/* Faint guide the markers sit on */}
+              <div className="absolute inset-x-0 top-1/2 pointer-events-none" style={{ height: 1, background: 'rgb(var(--ed-fg) / 0.06)' }} />
+              {viewMarkers.length === 0 && (
+                <span className="absolute left-0 top-1/2 -translate-y-1/2 flex items-center gap-1.5 pr-2 text-[10px] font-medium pointer-events-none" style={{ color: 'rgb(var(--ed-fg) / 0.3)', background: 'var(--ed-ruler)' }}>
+                  <span className="w-1.5 h-1.5 rotate-45" style={{ background: 'rgb(var(--ed-fg) / 0.35)', borderRadius: 1 }} />
                   Move the view at any moment — each change shows here
                 </span>
               )}
@@ -761,10 +860,10 @@ export function SegmentTimeline({
                       style={{
                         left: `${pct(v.t_ms)}%`, width: size, height: size,
                         transform: `translate(${v.t_ms <= 0 ? '0' : '-50%'}, -50%) rotate(45deg)`,
-                        borderRadius: v.cut || first ? 2 : 999,
-                        background: on ? '#c8ff00' : v.cut || first ? 'rgb(var(--ed-fg) / 0.85)' : 'rgb(var(--ed-fg) / 0.45)',
-                        border: '1.5px solid rgba(0,0,0,0.6)',
-                        boxShadow: dragging === `view-${v.t_ms}` ? '0 0 0 4px rgba(200,255,0,0.35)' : '0 1px 3px rgba(0,0,0,0.6)',
+                        borderRadius: v.cut || first ? 3 : 999,
+                        background: on ? ACCENT : v.cut || first ? 'rgb(var(--ed-fg) / 0.9)' : 'rgb(var(--ed-fg) / 0.5)',
+                        border: '1.5px solid rgba(0,0,0,0.7)',
+                        boxShadow: dragging === `view-${v.t_ms}` ? '0 0 0 4px rgba(200,255,0,0.35)' : on ? '0 0 10px rgba(200,255,0,0.6)' : '0 1px 3px rgba(0,0,0,0.6)',
                         cursor: first ? 'pointer' : 'ew-resize', touchAction: 'none', zIndex: on ? 36 : 35,
                       }} />
                     {on && !first && onRemoveView && (
@@ -781,15 +880,14 @@ export function SegmentTimeline({
               })}
             </div>
 
-            {/* ── Keys: ◆ start (top edge) and ◆ end (bottom edge) of every format ── */}
+            {/* ── Trim handles: the start and end of every format ── */}
             {mains.flatMap((seg, i) => {
-              const color = colorOf(seg)
               const selected = seg.id === activeSegmentId
-              const label = isBroll(seg) ? 'B-roll' : isFrameLayout(seg.layout) ? `Frame · ${FRAME_TEMPLATES[seg.layout].name}` : seg.layout === 'split' ? 'Split screen' : seg.layout.charAt(0).toUpperCase() + seg.layout.slice(1)
+              const label = formatName(seg)
               return (['start', 'end'] as const).map(edge => {
                 const t = edge === 'start' ? seg.start_ms : seg.end_ms
                 const key = `${edge}-${seg.id}`
-                const size = selected ? 16 : 13
+                const active = dragging === key
                 return (
                   <button key={key}
                     onPointerDown={e => handleEdgeDown(e, seg, edge)}
@@ -803,17 +901,25 @@ export function SegmentTimeline({
                     }}
                     aria-label={`${edge === 'start' ? 'Start' : 'End'} of format ${i + 1} (${label}) at ${msToLabel(t)}. Drag or use arrow keys to trim`}
                     title={`${edge === 'start' ? 'Start' : 'End'} of format ${i + 1} · ${label} · ${msToLabel(t)} · drag to trim`}
-                    className="absolute"
+                    // Grip bars sit just inside their format, so where two formats touch the end
+                    // of one and the start of the next stand side by side instead of overlapping
+                    className="group absolute flex items-center justify-center transition-[background,box-shadow] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white"
                     style={{
-                      left: `${pct(t)}%`, top: edge === 'start' ? STRIP_TOP + 3 : STRIP_TOP + STRIP_H - 3,
-                      width: size, height: size,
-                      // Keep keys at the very ends of the clip fully visible
-                      transform: `translate(${t <= 0 ? '0' : t >= duration ? '-100%' : '-50%'}, -50%) rotate(45deg)`,
-                      background: color, borderRadius: 3,
-                      border: `2px solid ${selected ? '#fff' : 'rgba(0,0,0,0.6)'}`,
-                      boxShadow: dragging === key ? `0 0 0 4px ${color}55` : '0 1px 4px rgba(0,0,0,0.6)',
+                      left: `${pct(t)}%`, top: STRIP_TOP, height: STRIP_H, width: selected || active ? 10 : 6,
+                      transform: edge === 'start' ? 'translateX(0)' : 'translateX(-100%)',
+                      borderRadius: edge === 'start' ? '12px 3px 3px 12px' : '3px 12px 12px 3px',
+                      background: selected || active ? ACCENT : 'transparent',
+                      boxShadow: active ? '0 0 0 2px rgba(200,255,0,0.3), 0 0 10px rgba(200,255,0,0.6)' : 'none',
                       cursor: 'ew-resize', touchAction: 'none', zIndex: selected ? 32 : 30,
-                    }} />
+                    }}>
+                    {selected || active ? (
+                      <svg width="5" height="9" viewBox="0 0 8 12" aria-hidden="true" style={{ transform: edge === 'start' ? 'none' : 'scaleX(-1)' }}>
+                        <path d="M6 1.5L1.8 6 6 10.5" stroke="#000" strokeOpacity="0.8" strokeWidth="2.4" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+                      </svg>
+                    ) : (
+                      <span className="transition-colors group-hover:bg-white" style={{ width: 2, height: 14, borderRadius: 2, background: 'rgba(255,255,255,0.45)' }} />
+                    )}
+                  </button>
                 )
               })
             })}
@@ -843,9 +949,16 @@ export function SegmentTimeline({
             )}
 
             {/* ── Playhead ─────────────────────────────────────────── */}
+            {/* White line with the current time on a pill at the top (the pill stays on screen at the ends).
+                White keeps it distinct from the lime trim frame. */}
             <div className="absolute top-0 bottom-0 pointer-events-none z-40" style={{ left: `${playheadPct}%` }}>
-              <svg width="12" height="10" viewBox="0 0 12 10" className="absolute" style={{ top: 0, left: -6 }}><path d="M0 0h12L6 10z" fill="#c8ff00" /></svg>
-              <div className="absolute" style={{ top: 0, bottom: 0, left: -1, width: 2, background: '#c8ff00', boxShadow: '0 0 6px rgba(200,255,0,0.7)' }} />
+              <div className="absolute" style={{ top: 18, bottom: 0, left: -1, width: 2, borderRadius: 2, background: '#fff', boxShadow: '0 0 0 1px rgba(0,0,0,0.35), 0 0 12px rgba(255,255,255,0.35)' }} />
+              <div className="absolute rounded-full" style={{ top: 15, left: -4, width: 8, height: 8, background: '#fff', boxShadow: '0 0 0 2px rgba(0,0,0,0.5)' }} />
+              <div className="absolute" style={{ top: 0, transform: playheadPct < 3 ? 'translateX(-8px)' : playheadPct > 97 ? 'translateX(calc(-100% + 8px))' : 'translateX(-50%)' }}>
+                <span className="block px-2 rounded-full text-[10px] font-bold tabular-nums leading-[16px]" style={{ background: '#fff', color: '#0a0a0a', boxShadow: '0 4px 12px rgba(0,0,0,0.5)' }}>
+                  {msToLabel(currentTimeMs)}
+                </span>
+              </div>
             </div>
           </div>
 

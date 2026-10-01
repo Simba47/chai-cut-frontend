@@ -13,6 +13,7 @@ import { EditorMockup } from '@/components/ui/editor-mockup'
 import { BrandLogo } from '@/components/ui/brand-logo'
 import { CircularCarousel, type CarouselItem } from '@/components/ui/circular-carousel'
 import { SectionTransition } from '@/components/ui/section-transition'
+import { FaqSection, type FaqItem } from '@/components/ui/faq-section'
 import { neutralStyle, useLiteMotion } from '@/components/ui/use-lite-motion'
 import { PLANS } from '@/lib/plans'
 
@@ -73,6 +74,34 @@ const PRICING_PLANS: PricingPlan[] = [
   },
 ]
 
+// FAQ between Pricing and the closing section. Plan-by-plan differences live in Pricing, not here.
+const FAQS: FaqItem[] = [
+  {
+    question: 'What is Shortcut?',
+    answer: 'Shortcut turns your long videos — podcasts, interviews, vlogs, streams — into short vertical clips for Instagram Reels, YouTube Shorts and TikTok. You upload once, pick the moments you want, reframe them to 9:16, add captions and export, all in one editor.',
+  },
+  {
+    question: 'Which video formats and sizes can I upload?',
+    answer: `MP4, MOV, MKV and WebM. You can upload from your device or paste a Google Drive link shared as “Anyone with the link”. Large files are welcome, so you can upload full-length podcasts and streams.`,
+  },
+  {
+    question: 'Can Shortcut caption videos in my language?',
+    answer: 'Yes! Speak in the language your audience loves — Shortcut captions videos in multiple languages, even when you mix them mid-sentence. Captions are timed and styled automatically, so your clips are ready to post, and you can tweak any word or style before you export.',
+  },
+  {
+    question: 'Will my exported clips lose quality?',
+    answer: 'No. Clips export in the original quality you uploaded, ready to post, and you can add your own logo to every clip.',
+  },
+  {
+    question: 'Is Shortcut free to start?',
+    answer: 'Yes. You can sign up and start clipping for free — no credit card needed. When you need more, pick the plan that fits you in the Pricing section above.',
+  },
+  {
+    question: 'Are my videos private?',
+    answer: 'Yes. Everything you upload stays private to your account. Only you can see your videos and clips, and we never publish anything on your behalf.',
+  },
+]
+
 // Languages drifting across the closing section
 const LANGUAGES = [
   { native: 'English', name: 'English' },
@@ -114,10 +143,11 @@ const FEATURES: CarouselItem[] = [
   { id: 'search', tag: 'Search', icon: featureIcon('⌕', 'fi-blue'), title: 'Scene Search', description: 'Shortcut searches the captions and pulls out that exact moment from your video which is needed for you.' },
 ]
 
+// Placeholder email until the real support inbox is ready
 const CONTACT = {
-  email: 'connect@mutinytalent.com',
-  phone: '+91 8106929015',
-  address: ['Block B, 4th Floor, Plot No. 206,', 'Kavuri Hills, Madhapur,', 'Hyderabad, Telangana 500033'],
+  email: 'hello@example.com',
+  phone: '+91 77024 04917',
+  address: ['Hyderabad, Telangana'],
 }
 
 const EXPLORE = [
@@ -125,16 +155,17 @@ const EXPLORE = [
   { label: 'How it works', href: '#process' },
   { label: 'Editor', href: '#editor' },
   { label: 'Pricing', href: '#pricing' },
+  { label: 'FAQ', href: '#faq' },
 ]
 
-// Placeholder Instagram handle ("shortcut") — swap in the real account later.
+// Instagram links to the official account.
 // bg is the brand colour of the circle that slides up on hover; hoverIcon (optional)
 // replaces the icon on that circle.
 const SOCIALS = [
   {
     label: 'Shortcut on Instagram',
     bg: 'linear-gradient(72.44deg, #FF7A00 11.92%, #FF0169 51.56%, #D300C5 85.69%)',
-    href: 'https://instagram.com/shortcut',
+    href: 'https://www.instagram.com/shortcutapp_official',
     icon: (
       <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" aria-hidden>
         <path fillRule="evenodd" clipRule="evenodd" d="M12 18a6 6 0 1 0 0-12 6 6 0 0 0 0 12Zm0-2a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z" />
@@ -170,7 +201,7 @@ const SOCIALS = [
   {
     label: 'Shortcut on WhatsApp',
     bg: '#25D366',
-    href: 'https://wa.me/918106929015',
+    href: 'https://wa.me/917702404917',
     icon: (
       <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" aria-hidden>
         <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 0 1-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 0 1-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 0 1 2.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0 0 12.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 0 0 5.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 0 0-3.48-8.413Z" />
@@ -512,6 +543,16 @@ export function LandingPage() {
         />
       </SectionTransition>
 
+      {/* ── FAQ ── */}
+      <div id="faq" className="section-wrap">
+        <FaqSection
+          eyebrow="Shortcut FAQs"
+          title="Frequently asked questions"
+          description="Everything you need to know about turning long videos into short clips with Shortcut."
+          items={FAQS}
+        />
+      </div>
+
       {/* ── CTA ── */}
       <section className="cta-section">
         {/* One language per line, gliding across in alternating directions (decorative) */}
@@ -544,8 +585,9 @@ export function LandingPage() {
 
       {/* ── FOOTER ── */}
       <footer className="lp-footer">
+        <div className="footer-glow" aria-hidden />
         <div className="footer-top">
-          <div className="footer-brand">
+          <FooterReveal className="footer-brand">
             <a href="#" className="footer-logo" aria-label="Shortcut home"><BrandLogo size="sm" /></a>
             <p className="footer-tagline">Transcribe, clip, and edit vertical videos in multiple languages.</p>
             <div className="socials">
@@ -565,34 +607,58 @@ export function LandingPage() {
                 </a>
               ))}
             </div>
-          </div>
+          </FooterReveal>
 
+          <FooterReveal delay={0.2}>
           <nav className="footer-col" aria-label="Explore">
             <h4 className="footer-heading">Explore</h4>
             <ul className="footer-list">
               {EXPLORE.map(l => <li key={l.href}><a href={l.href} onClick={e => goToSection(e, l.href)}>{l.label}</a></li>)}
             </ul>
           </nav>
+          </FooterReveal>
 
-          <div className="footer-col" id="contact">
+          <FooterReveal delay={0.3} className="footer-col" id="contact">
             <h4 className="footer-heading">Contact</h4>
             <ul className="footer-list footer-contact">
               <li><Mail aria-hidden /><a href={`mailto:${CONTACT.email}`}>{CONTACT.email}</a></li>
               <li><Phone aria-hidden /><a href={`tel:${CONTACT.phone.replace(/\s/g, '')}`}>{CONTACT.phone}</a></li>
               <li><MapPin aria-hidden /><address>{CONTACT.address.map(line => <span key={line}>{line}</span>)}</address></li>
             </ul>
-          </div>
+          </FooterReveal>
         </div>
 
-        <div className="footer-bottom">
-          <span className="footer-copy">© 2026 Shortcut. All rights reserved.</span>
+        <FooterReveal delay={0.4} className="footer-bottom">
+          <span className="footer-copy">© 2026 STOORY MARKETING PRIVATE LIMITED. All rights reserved.</span>
           <div className="footer-links">
-            <a href="#">Privacy</a>
-            <a href="#">Terms</a>
-            <a href="#contact">Contact</a>
+            <a href="#">Privacy Policy</a>
+            <a href="#">Terms of Service</a>
           </div>
-        </div>
+        </FooterReveal>
       </footer>
     </div>
+  )
+}
+
+// Footer columns drift down out of a blur as the footer scrolls into view, one after another
+function FooterReveal({ className, id, delay = 0.1, children }: {
+  className?: string
+  id?: string
+  delay?: number
+  children: React.ReactNode
+}) {
+  const reduce = useReducedMotion()
+  if (reduce) return <div className={className} id={id}>{children}</div>
+  return (
+    <motion.div
+      className={className}
+      id={id}
+      initial={{ filter: 'blur(4px)', y: -8, opacity: 0 }}
+      whileInView={{ filter: 'blur(0px)', y: 0, opacity: 1 }}
+      viewport={{ once: true }}
+      transition={{ delay, duration: 0.8 }}
+    >
+      {children}
+    </motion.div>
   )
 }

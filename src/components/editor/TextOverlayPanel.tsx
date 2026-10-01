@@ -3,6 +3,7 @@
 import { useState } from 'react'
 import type { TextOverlay } from '@chai-cut/shared'
 import { FontPicker, loadVideoFonts } from './CaptionStyler'
+import { EmptyState } from './EditorTour'
 
 interface Props {
   overlays: TextOverlay[]
@@ -63,7 +64,8 @@ export function TextOverlayPanel({ overlays, currentTimeMs, clipDurationMs, onAd
 
       {/* List */}
       {overlays.length === 0 ? (
-        <p className="text-xs" style={{ color: 'rgb(var(--ed-fg) / 0.25)' }}>No text yet.</p>
+        <EmptyState icon={<path d="M4 7V5h16v2M9 19h6M12 5v14" />} title="No text yet"
+          tip="Type above and press Add. Your text appears at the playhead — drag it on the timeline to set when it shows." />
       ) : (
         <div className="flex flex-col gap-2">
           {overlays.map(o => (
