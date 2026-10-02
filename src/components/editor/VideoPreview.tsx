@@ -3,6 +3,7 @@
 import { useRef, useEffect, useCallback, useState, useMemo, useId } from 'react'
 import type { RefObject } from 'react'
 import type { SegmentLocal, Overlay, TextOverlay as TextOverlayType, CaptionStyle, TranscriptWord, FrameItem, FrameLane, CornerStyle } from '@chai-cut/shared'
+import { BG_PAD, shownText, textCss, textReplayElapsed, withAlpha } from '@/modules/editor/textStyle'
 import type { BoxPosition } from '@/lib/interpolation'
 import type { TextCase } from './CaptionStyler'
 import { applyCase } from './CaptionStyler'
@@ -819,27 +820,140 @@ function drawTextOverlays(
   ctx: CanvasRenderingContext2D,
   overlays: TextOverlayType[],
   tMs: number,
+  paused = false,
 ) {
-  const W = ctx.canvas.width, H = ctx.canvas.height
   for (const o of overlays) {
-    if (tMs < o.start_ms || tMs >= o.end_ms) continue
+    // A text whose animation was just picked replays it now, even outside its time or while paused
+    const replay = textReplayElapsed(o.id)
+    if (replay == null && (tMs < o.start_ms || tMs >= o.end_ms)) continue
     if (o.x == null) { drawCenteredText(ctx, o); continue }
-    const x = (o.x ?? 0.1) * W
-    const y = (o.y ?? 0.4) * H
-    // Same size and shadow as the export's drawtext: px at 1080 wide, a 2 px black@0.7 shadow
-    const fontSize = Math.max(8, Math.round(((o.size ?? 72) / 1080) * W))
-    // A bundled font id (e.g. 'roboto') draws with the export's own file, as drawtext does
-    const bundled = EXPORT_FONTS[o.font ?? ''] ? exportFont(o.font) : null
-    const fontFamily = bundled ? `"${bundled.family}", sans-serif` : (o.font ?? 'sans-serif')
-    ctx.save()
-    ctx.font = `${bundled ? 400 : 700} ${fontSize}px ${fontFamily}`
-    ctx.textBaseline = 'top'
-    ctx.shadowColor = 'rgba(0,0,0,0.7)'
-    ctx.shadowOffsetX = ctx.shadowOffsetY = 2 * W / 1080
-    ctx.fillStyle = o.color ?? '#ffffff'
-    ctx.fillText(o.text, x, y)
-    ctx.restore()
+    // Time into the entrance: the replay's; paused = finished (never stuck invisible on its first
+    // frame); playing = from when the text starts
+    const elapsed = replay ?? (paused ? Infinity : tMs - o.start_ms)
+    drawStyledText(ctx, o, elapsed)
   }
+}
+
+/**
+ * One positioned text with its Text-tool styling: weight, italic, capitals, letter spacing,
+ * opacity, rotation, outline, background box, shadow / glow, and its entrance animation
+ * (`elapsed` = ms since the text came in). Sizes are px at 1080 wide, like the export.
+ * (The panel's tiles show the same look in CSS: modules/editor/textStyle.ts)
+ */
+function drawStyledText(ctx: CanvasRenderingContext2D, o: TextOverlayType, elapsed: number) {
+  const W = ctx.canvas.width, H = ctx.canvas.height
+  const k = W / 1080
+  const fontSize = Math.max(8, Math.round((o.size ?? 72) * k))
+  // A bundled font id (e.g. 'roboto') draws with the export's own file, as drawtext does
+  const bundled = EXPORT_FONTS[o.font ?? ''] ? exportFont(o.font) : null
+  const fontFamily = bundled ? `"${bundled.family}", sans-serif` : (o.font ?? 'sans-serif')
+  const weight = o.weight ?? (bundled ? 400 : 700)
+  const full = shownText(o)
+
+  // Entrance animation over the first moments the text is on screen
+  const dt = elapsed
+  const anim = o.animation ?? 'none'
+  const long = anim === 'drop' || anim === 'bounce' || anim === 'spin' || anim === 'glitch' || anim === 'flicker'
+  const p = Math.max(0, Math.min(1, dt / (long ? 620 : 400)))
+  const ease = 1 - Math.pow(1 - p, 3)
+  const back = (q: number) => { const c = 2.2; return 1 + (c + 1) * Math.pow(q - 1, 3) + c * Math.pow(q - 1, 2) }
+  const bounceOut = (q: number) => {
+    const n = 7.5625, d = 2.75
+    if (q < 1 / d) return n * q * q
+    if (q < 2 / d) return n * (q -= 1.5 / d) * q + 0.75
+    if (q < 2.5 / d) return n * (q -= 2.25 / d) * q + 0.9375
+    return n * (q -= 2.625 / d) * q + 0.984375
+  }
+  const elastic = (q: number) => q <= 0 ? 0 : q >= 1 ? 1 : Math.pow(2, -10 * q) * Math.sin((q * 10 - 0.75) * (2 * Math.PI) / 3) + 1
+  let alpha = Math.max(0, Math.min(1, o.opacity ?? 1))
+  let scale = 1, dx = 0, dy = 0, spin = 0, blur = 0, wipe = 1, glitch = 0, text = full
+  switch (anim) {
+    case 'fade': alpha *= ease; break
+    case 'pop': scale = p >= 1 ? 1 : 0.6 + 0.4 * back(p); alpha *= Math.min(1, p * 2.5); break
+    case 'zoom-in': scale = 0.3 + 0.7 * ease; alpha *= ease; break
+    case 'zoom-out': scale = 1.8 - 0.8 * ease; alpha *= ease; break
+    case 'blur': blur = (1 - ease) * 14; alpha *= ease; break
+    case 'slide': dy = (1 - ease) * 0.05 * H; alpha *= ease; break
+    case 'slide-down': dy = -(1 - ease) * 0.05 * H; alpha *= ease; break
+    case 'slide-left': dx = (1 - ease) * 0.08 * W; alpha *= ease; break
+    case 'slide-right': dx = -(1 - ease) * 0.08 * W; alpha *= ease; break
+    case 'drop': dy = -(1 - bounceOut(p)) * 0.14 * H; alpha *= Math.min(1, p * 4); break
+    case 'bounce': scale = p >= 1 ? 1 : Math.max(0.05, elastic(p)); break
+    case 'spin': spin = (1 - ease) * -200; scale = 0.4 + 0.6 * ease; alpha *= ease; break
+    case 'wipe': wipe = ease; break
+    case 'flicker': if (p < 1) alpha *= [1, 0.15, 0.9, 0.1, 1, 0.4, 1][Math.floor(p * 7)] ?? 1; break
+    case 'glitch': if (p < 1) { glitch = 1 - p; dx = Math.sin(dt * 0.9) * 10 * (W / 1080) * glitch } break
+    case 'typewriter': {
+      const span = Math.max(400, full.length * 45)
+      text = full.slice(0, Math.ceil(full.length * Math.max(0, Math.min(1, dt / span))))
+      break
+    }
+  }
+  if (alpha <= 0) return
+
+  ctx.save()
+  ctx.font = `${o.italic ? 'italic ' : ''}${weight} ${fontSize}px ${fontFamily}`
+  ctx.textBaseline = 'top'
+  const spacing = (o.letter_spacing ?? 0) * k
+  if ('letterSpacing' in ctx) (ctx as CanvasRenderingContext2D & { letterSpacing: string }).letterSpacing = `${spacing}px`
+  // Size from the whole text, so the box doesn't grow while typing in
+  const textW = ctx.measureText(full).width
+  const lineH = fontSize * 1.15
+  const padX = o.bg_color ? fontSize * BG_PAD.x : 0
+  const padY = o.bg_color ? fontSize * BG_PAD.y : 0
+  const boxW = textW + padX * 2, boxH = lineH + padY * 2
+  const x = (o.x ?? 0.1) * W, y = (o.y ?? 0.4) * H + dy
+
+  ctx.globalAlpha = alpha
+  if (blur > 0.2) ctx.filter = `blur(${blur * k}px)`
+  // Move, rotate, spin and scale around the middle of the text
+  const cx = x + dx + boxW / 2, cy = y + boxH / 2
+  ctx.translate(cx, cy)
+  const turn = (o.rotation ?? 0) + spin
+  if (turn) ctx.rotate((turn * Math.PI) / 180)
+  if (scale !== 1) ctx.scale(scale, scale)
+  ctx.translate(-cx + dx, -cy)
+  // Wipe: reveal from left to right
+  if (wipe < 1) { ctx.beginPath(); ctx.rect(x - 4 * k, y - boxH, (boxW + 8 * k) * wipe, boxH * 3); ctx.clip() }
+
+  // Background box
+  if (o.bg_color) {
+    ctx.fillStyle = withAlpha(o.bg_color, o.bg_opacity ?? 1)
+    const r = Math.min((o.bg_radius ?? 12) * k, boxH / 2)
+    ctx.beginPath()
+    ctx.roundRect(x, y, boxW, boxH, r)
+    ctx.fill()
+  }
+
+  // Shadow (none · soft · hard · glow); the default keeps the original soft 2 px shadow
+  const shadow = o.shadow ?? 'soft'
+  if (shadow === 'soft') { ctx.shadowColor = 'rgba(0,0,0,0.7)'; ctx.shadowBlur = 8 * k; ctx.shadowOffsetX = 0; ctx.shadowOffsetY = 2 * k }
+  else if (shadow === 'hard') { ctx.shadowColor = o.shadow_color ?? '#000000'; ctx.shadowBlur = 0; ctx.shadowOffsetX = ctx.shadowOffsetY = 6 * k }
+  else if (shadow === 'glow') { ctx.shadowColor = o.shadow_color ?? o.color ?? '#ffffff'; ctx.shadowBlur = 24 * k; ctx.shadowOffsetX = ctx.shadowOffsetY = 0 }
+  if (o.bg_color) { ctx.shadowColor = 'transparent' }
+
+  const tx = x + padX, ty = y + padY + (lineH - fontSize) / 2
+  // Outline first (it carries the shadow), then the fill on top
+  if (o.stroke_color && (o.stroke_width ?? 0) > 0) {
+    ctx.lineJoin = 'round'
+    ctx.lineWidth = 2 * (o.stroke_width ?? 0) * k
+    ctx.strokeStyle = o.stroke_color
+    ctx.strokeText(text, tx, ty)
+    if (shadow !== 'glow') ctx.shadowColor = 'transparent'
+  }
+  ctx.fillStyle = o.color ?? '#ffffff'
+  ctx.fillText(text, tx, ty)
+  // A glow reads stronger with a second pass
+  if (shadow === 'glow' && !o.bg_color) ctx.fillText(text, tx, ty)
+  // Glitch: red and cyan copies split off either side for a moment
+  if (glitch > 0) {
+    ctx.shadowColor = 'transparent'
+    ctx.globalAlpha = alpha * 0.7 * glitch
+    const off = 8 * k * glitch
+    ctx.fillStyle = '#ff2a55'; ctx.fillText(text, tx - off, ty)
+    ctx.fillStyle = '#22e5ff'; ctx.fillText(text, tx + off, ty)
+  }
+  ctx.restore()
 }
 
 /**
@@ -1050,7 +1164,7 @@ export function OutputCanvas({
 
           // Draw text overlays (clip-relative time)
           if (textOverlaysRef.current.length > 0) {
-            drawTextOverlays(ctx, textOverlaysRef.current, clipRelativeMs)
+            drawTextOverlays(ctx, textOverlaysRef.current, clipRelativeMs, video.paused)
           }
         }
       }
@@ -1385,7 +1499,7 @@ function TextOverlayBox({ overlay, isActive, onChange, onSelect, onDelete }: Tex
         position: 'absolute',
         left: `${x * 100}%`,
         top: `${y * 100}%`,
-        transform: centred ? 'translateX(-50%)' : undefined,
+        transform: [centred ? 'translateX(-50%)' : '', overlay.rotation ? `rotate(${overlay.rotation}deg)` : ''].join(' ').trim() || undefined,
         cursor: 'move',
         userSelect: 'none',
         border: `1.5px solid ${isActive ? accent : 'transparent'}`,
@@ -1398,7 +1512,7 @@ function TextOverlayBox({ overlay, isActive, onChange, onSelect, onDelete }: Tex
       }}
     >
       {/* Invisible text — sized to match canvas text (canvas 540×960; size/6.075 cqw = size/1080*960/540 of container width) */}
-      <span style={{ color: 'transparent', fontSize: `${(overlay.size ?? 72) / 10.8}cqw`, fontWeight: 700, fontFamily: 'sans-serif', whiteSpace: 'nowrap', display: 'block', pointerEvents: 'none', lineHeight: 1, userSelect: 'none', margin: 0, padding: 0 }}>
+      <span style={{ ...textCss(overlay, true), fontSize: `${(overlay.size ?? 72) / 10.8}cqw`, display: 'block', pointerEvents: 'none', userSelect: 'none', margin: 0 }}>
         {overlay.text || '…'}
       </span>
       {isActive && (

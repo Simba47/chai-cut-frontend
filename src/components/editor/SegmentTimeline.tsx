@@ -225,13 +225,18 @@ interface Props {
   /** Clicking the strip picks the section under the pointer; clicking anywhere else clears it */
   onPickSegment?: (id: string | null) => void
   /** Background music, one bar per track on a Music lane (drag a bar to change when it starts) */
-  musicTracks?: { id: string; name: string; start_ms: number; duration_ms?: number }[]
+  musicTracks?: {
+    id: string; name: string; start_ms: number; duration_ms?: number
+    /** 'original' = the video's own sound, extracted: teal, on the first row, and it can't be moved
+     *  (it belongs to the picture) */
+    tone?: 'music' | 'original'
+  }[]
   onMusicMove?: (id: string, startMs: number) => void
   /** The music bar selected for Trim / Delete (it gets a white ring), and clicking a bar selects it */
   selectedMusicId?: string | null
   onSelectMusic?: (id: string) => void
-  /** "+" at the start / end of the strip: open the Add menu (photos, videos, music, text) there */
-  onAddAt?: (where: 'start' | 'end', anchor: DOMRect) => void
+  /** "+" on the Add lane (at the clip's start and at every split): open the Add menu at that time */
+  onAddAt?: (tMs: number, anchor: DOMRect) => void
   /** Controlled zoom (e.g. when the zoom buttons live in the editor's control bar) */
   zoom?: number
   onZoomChange?: (z: number) => void
@@ -476,6 +481,8 @@ export function SegmentTimeline({
     if (e.button !== 0) return
     e.stopPropagation(); e.preventDefault()
     onSelectMusic?.(id)
+    // The video's own sound stays under its picture: it's selected, not moved
+    if (musicTracks.find(m => m.id === id)?.tone === 'original') return
     const rect = trackRef.current?.getBoundingClientRect()
     if (!rect || duration <= 0) return
     const sx = e.clientX
@@ -664,16 +671,25 @@ export function SegmentTimeline({
     window.addEventListener('pointerup', up)
   }
 
+  // "+" points of the Add lane: the clip's start and every place the video is split
+  const addPoints = [...new Set([0, ...mains.flatMap(m => [m.start_ms, m.end_ms])])]
+    .filter(t => t >= 0 && t < duration - 50)
+    .sort((a, b) => a - b)
+
   // Music rows: tracks that don't overlap in time share a row (so a trimmed song stays on one
   // line, like the video); music playing at the same time as other music gets the next row
   const musicEnd = (m: { start_ms: number; duration_ms?: number }) => Math.min(duration, m.start_ms + (m.duration_ms ?? duration))
   const musicRows: (typeof musicTracks)[] = []
   {
+    // The video's own sound (if extracted) always has the first row to itself
+    const originals = musicTracks.filter(m => m.tone === 'original').sort((a, b) => a.start_ms - b.start_ms)
+    if (originals.length) musicRows.push(originals)
+    const base = musicRows.length
     const ends: number[] = []
-    for (const m of [...musicTracks].sort((a, b) => a.start_ms - b.start_ms)) {
+    for (const m of musicTracks.filter(m => m.tone !== 'original').sort((a, b) => a.start_ms - b.start_ms)) {
       let r = ends.findIndex(e => e <= m.start_ms + 1)
       if (r === -1) { r = ends.length; ends.push(0); musicRows.push([]) }
-      musicRows[r].push(m)
+      musicRows[base + r].push(m)
       ends[r] = musicEnd(m)
     }
   }
@@ -698,9 +714,7 @@ export function SegmentTimeline({
         </div>
       )}
 
-      {/* "+" on the left of the strip (lined up with it) opens the Add menu */}
       <div className="flex items-start gap-2">
-      {onAddAt && <AddEndButton where="start" top={STRIP_TOP + 1} height={STRIP_H} onAdd={onAddAt} />}
       {/* No visible scrollbar: when zoomed in, the wheel scrolls sideways and the view follows the playhead */}
       <div ref={scrollRef} className="relative flex-1 min-w-0 overflow-x-auto overflow-y-hidden rounded-2xl no-scrollbar"
         style={{
@@ -905,6 +919,28 @@ export function SegmentTimeline({
                 )
               })}
             </div>
+
+            {/* ── Add lane: a "+" at the clip's start and wherever the video is split. Each opens the
+                Add menu (photos / videos in a frame, videos, music, text) at that moment. ── */}
+            {onAddAt && (
+              <div className="relative" style={{ height: 26, marginTop: 2 }} onPointerDown={e => e.stopPropagation()}>
+                <div className="absolute inset-x-0 top-1/2 pointer-events-none" style={{ borderTop: '1px dashed rgb(var(--ed-fg) / 0.12)' }} />
+                {addPoints.map(t => (
+                  <button key={t} type="button"
+                    onClick={e => onAddAt(t, e.currentTarget.getBoundingClientRect())}
+                    aria-label={`Add photos, videos, music or text at ${msToLabel(t)}`}
+                    title={`Add here (${msToLabel(t)}): photos, videos, music or text`}
+                    className="absolute top-1/2 flex items-center justify-center rounded-full transition-[transform,background-color,color] hover:scale-110 hover:bg-[#c8ff00] hover:text-black focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[rgba(200,255,0,0.6)]"
+                    style={{
+                      left: `${pct(t)}%`, width: 20, height: 20, zIndex: 31,
+                      transform: `translate(${t <= 0 ? '0' : t >= duration ? '-100%' : '-50%'}, -50%)`,
+                      background: 'var(--ed-ruler)', color: ACCENT, boxShadow: `inset 0 0 0 1.5px ${ACCENT}`,
+                    }}>
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3.5" strokeLinecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+                  </button>
+                ))}
+              </div>
+            )}
 
             {/* ── Trim handles: the start and end of every format ── */}
             {mains.flatMap((seg, i) => {
@@ -1139,25 +1175,30 @@ export function SegmentTimeline({
                 const end = musicEnd(m)
                 const on = dragging === `music-${m.id}`
                 const sel = selectedMusicId === m.id
+                const orig = m.tone === 'original'
+                // rgb of the bar: teal for the video's own sound, purple for music
+                const c = orig ? '45,212,191' : '192,132,252'
                 return (
                   <Fragment key={m.id}>
                     <div onPointerDown={e => handleMusicDrag(e, m.id, m.start_ms)}
-                      title={`Music · ${m.name} · starts at ${msToLabel(m.start_ms)} · drag to move`}
+                      title={orig ? `${m.name} · ${msToLabel(m.start_ms)}–${msToLabel(end)} · click to select` : `Music · ${m.name} · starts at ${msToLabel(m.start_ms)} · drag to move`}
                       className="absolute inset-y-0 flex items-center gap-1.5 px-2 overflow-hidden"
                       style={{
                         left: `${pct(m.start_ms)}%`, width: `max(24px, ${pct(end - m.start_ms)}%)`, borderRadius: 7,
-                        background: on || sel ? 'rgba(192,132,252,0.42)' : 'rgba(192,132,252,0.24)',
-                        // Selected: a white ring and glow, matching the "Music selected" label in the bar above
-                        boxShadow: sel ? 'inset 0 0 0 2px #fff, 0 0 14px rgba(192,132,252,0.7)' : on ? 'inset 0 0 0 1.5px #c084fc, 0 0 12px rgba(192,132,252,0.5)' : 'inset 0 0 0 1px rgba(192,132,252,0.55)',
-                        cursor: on ? 'grabbing' : 'grab', touchAction: 'none',
+                        background: on || sel ? `rgba(${c},0.42)` : `rgba(${c},0.24)`,
+                        // Selected: a white ring and glow, matching the label in the bar above
+                        boxShadow: sel ? `inset 0 0 0 2px #fff, 0 0 14px rgba(${c},0.7)` : on ? `inset 0 0 0 1.5px rgb(${c}), 0 0 12px rgba(${c},0.5)` : `inset 0 0 0 1px rgba(${c},0.55)`,
+                        cursor: orig ? 'pointer' : on ? 'grabbing' : 'grab', touchAction: 'none',
                       }}>
                       {/* A little sound-wave pattern so it reads as audio at a glance */}
                       <span className="absolute inset-0 pointer-events-none opacity-40" aria-hidden="true"
                         style={{ background: 'repeating-linear-gradient(90deg, transparent 0 3px, rgba(255,255,255,0.35) 3px 4px)', WebkitMaskImage: 'linear-gradient(180deg, transparent 20%, #000 50%, transparent 80%)', maskImage: 'linear-gradient(180deg, transparent 20%, #000 50%, transparent 80%)' }} />
-                      <svg className="relative shrink-0" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#e9d5ff" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                        <path d="M9 18V5l12-2v13" /><circle cx="6" cy="18" r="3" /><circle cx="18" cy="16" r="3" />
+                      <svg className="relative shrink-0" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke={orig ? '#ccfbf1' : '#e9d5ff'} strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                        {orig
+                          ? <><path d="M11 5L6 9H2v6h4l5 4V5z" /><path d="M15.5 8.5a5 5 0 010 7" /></>
+                          : <><path d="M9 18V5l12-2v13" /><circle cx="6" cy="18" r="3" /><circle cx="18" cy="16" r="3" /></>}
                       </svg>
-                      <span className="relative truncate text-[10px] font-semibold" style={{ color: '#f3e8ff' }}>{m.name}</span>
+                      <span className="relative truncate text-[10px] font-semibold" style={{ color: orig ? '#ccfbf1' : '#f3e8ff' }}>{m.name}</span>
                     </div>
                   </Fragment>
                 )
@@ -1195,21 +1236,5 @@ export function SegmentTimeline({
       </div>
       </div>
     </div>
-  )
-}
-
-/** The big "+" beside the strip: adds photos, videos, music or text at the clip's start or end */
-function AddEndButton({ where, top, height, onAdd }: {
-  where: 'start' | 'end'; top: number; height: number
-  onAdd: (where: 'start' | 'end', anchor: DOMRect) => void
-}) {
-  return (
-    <button type="button" onClick={e => onAdd(where, e.currentTarget.getBoundingClientRect())}
-      aria-label={`Add photos, videos, music or text at the ${where} of the clip`}
-      title={`Add at the ${where}: photos, videos, music or text`}
-      className="shrink-0 w-12 flex items-center justify-center rounded-xl transition-colors hover:bg-[rgb(var(--ed-fg)/0.08)] hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[rgba(200,255,0,0.6)]"
-      style={{ marginTop: top, height, color: 'rgb(var(--ed-fg) / 0.7)', background: 'rgb(var(--ed-fg) / 0.04)', border: '1px dashed rgb(var(--ed-fg) / 0.2)' }}>
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
-    </button>
   )
 }

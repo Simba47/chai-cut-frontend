@@ -205,6 +205,37 @@ export interface TextOverlay {
   font: string | null
   size: number | null
   color: string | null
+  // ── Text styling (Text tool). All optional: older text keeps its look.
+  // TODO(backend): save these with the text and draw them in the export.
+  /** 400 regular · 700 bold · 900 black (default 700) */
+  weight?: number
+  italic?: boolean
+  /** Show the text in capitals */
+  uppercase?: boolean
+  /** Extra space between letters, px at 1080 wide (default 0) */
+  letter_spacing?: number
+  /** 0–1 (default 1) */
+  opacity?: number
+  /** Degrees, around the text's centre (default 0) */
+  rotation?: number
+  /** Outline round the letters (null/absent = none) */
+  stroke_color?: string | null
+  /** Outline thickness, px at 1080 wide */
+  stroke_width?: number
+  /** A box behind the text (null/absent = none) */
+  bg_color?: string | null
+  /** 0–1 */
+  bg_opacity?: number
+  /** Box corner roundness, px at 1080 wide */
+  bg_radius?: number
+  /** none · soft (blurred) · hard (solid offset) · glow (coloured halo) */
+  shadow?: 'none' | 'soft' | 'hard' | 'glow'
+  /** Colour of the hard shadow or the glow */
+  shadow_color?: string | null
+  /** How the text comes in ('slide' = slide up) */
+  animation?: 'none' | 'fade' | 'pop' | 'zoom-in' | 'zoom-out' | 'blur'
+    | 'slide' | 'slide-down' | 'slide-left' | 'slide-right' | 'drop' | 'bounce'
+    | 'typewriter' | 'wipe' | 'spin' | 'flicker' | 'glitch'
 }
 
 export interface AudioTrack {
