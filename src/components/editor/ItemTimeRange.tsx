@@ -35,6 +35,22 @@ export function ItemTimeRange({ item, segment, currentTimeMs, onChange }: {
   )
 }
 
+/** Start and end of any timed item (photo, text…): type a time, or set it to the playhead */
+export function TimeRange({ startMs, endMs, currentTimeMs, onStart, onEnd }: {
+  startMs: number
+  endMs: number
+  currentTimeMs: number
+  onStart: (ms: number) => void
+  onEnd: (ms: number) => void
+}) {
+  return (
+    <div className="grid grid-cols-2 gap-2">
+      <TimeField label="Starts" ms={startMs} onCommit={onStart} onNow={() => onStart(currentTimeMs)} />
+      <TimeField label="Ends" ms={endMs} onCommit={onEnd} onNow={() => onEnd(currentTimeMs)} />
+    </div>
+  )
+}
+
 function TimeField({ label, ms, onCommit, onNow }: { label: string; ms: number; onCommit: (ms: number) => void; onNow: () => void }) {
   const [draft, setDraft] = useState(format(ms))
   useEffect(() => { setDraft(format(ms)) }, [ms])

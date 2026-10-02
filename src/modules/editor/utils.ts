@@ -13,8 +13,8 @@ const OUT_H = 1920
 const DEFAULT_SOURCE_AR = 16 / 9
 
 /** Pixel aspect (w/h) of one output slot, or null when the slot takes the whole frame letterboxed. */
-export function slotPixelAspect(layout: LayoutType, frameBand = false): number | null {
-  if (isFrameLayout(layout)) return OUT_W / (OUT_H * frameSlotHeight(layout, frameBand))
+export function slotPixelAspect(layout: LayoutType, frameBand = false, slot = 0): number | null {
+  if (isFrameLayout(layout)) return OUT_W / (OUT_H * frameSlotHeight(layout, frameBand, slot))
   switch (layout) {
     case 'horizontal': return null
     case 'split': return OUT_W / (OUT_H / 2)   // 9:8
@@ -24,8 +24,8 @@ export function slotPixelAspect(layout: LayoutType, frameBand = false): number |
 }
 
 /** Slot aspect expressed in normalised source units (box.w / box.h), or null if unlocked. */
-export function normalizedSlotAspect(layout: LayoutType, videoAR = DEFAULT_SOURCE_AR, frameBand = false): number | null {
-  const a = slotPixelAspect(layout, frameBand)
+export function normalizedSlotAspect(layout: LayoutType, videoAR = DEFAULT_SOURCE_AR, frameBand = false, slot = 0): number | null {
+  const a = slotPixelAspect(layout, frameBand, slot)
   return a === null ? null : a / (videoAR || DEFAULT_SOURCE_AR)
 }
 
@@ -51,7 +51,8 @@ function rectAt(a: number, cx: number, cy: number, h: number): BoxPosition {
 
 /** Starting crop for a slot. `centerX` keeps a vertical crop on the subject the user already framed. */
 export function defaultCropForSlot(layout: LayoutType, slotIdx: number, videoAR = DEFAULT_SOURCE_AR, centerX?: number): BoxPosition {
-  const a = normalizedSlotAspect(layout, videoAR)
+  // A frame's slots are shaped with its band showing (as the preview and the export draw them)
+  const a = isFrameLayout(layout) ? normalizedSlotAspect(layout, videoAR, true, slotIdx) : normalizedSlotAspect(layout, videoAR)
   if (a === null) return { x: 0, y: 0, w: 1, h: 1 }
   const portrait = a > 1 // source narrower than the slot: stack slots vertically instead
   // Frame slots each show their own media, so every slot starts centred on it
@@ -117,6 +118,9 @@ function toLocal(s: SegmentRow): SegmentLocal {
     layout: s.layout,
     sort_order: s.sort_order,
     frame: s.frame ?? null,
+    ...(s.hidden ? { hidden: true } : {}),
+    ...(s.muted ? { muted: true } : {}),
+    ...(s.locked ? { locked: true } : {}),
     crop_boxes: s.crop_boxes.map(b => ({
       id: b.id,
       slot_index: b.slot_index,
@@ -127,6 +131,7 @@ function toLocal(s: SegmentRow): SegmentLocal {
       image_motion: b.image_motion ?? null,
       volume: b.volume ?? 1,
       muted: b.muted ?? false,
+      ...(b.hidden ? { hidden: true } : {}),
       keyframes: b.box_keyframes,
     })),
   })

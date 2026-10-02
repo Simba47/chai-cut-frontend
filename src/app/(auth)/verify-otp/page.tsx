@@ -3,6 +3,7 @@
 import { useState, useEffect, Suspense } from 'react'
 import { useSearchParams, useRouter } from 'next/navigation'
 import { signIn } from 'next-auth/react'
+import { BrandLoader } from '@/components/ui/brand-loader'
 
 const RESEND_COOLDOWN = 60
 
@@ -116,7 +117,7 @@ export default function VerifyOtpPage() {
   return (
     <div className="min-h-screen flex items-center justify-center px-4" style={{ background: 'var(--bg)' }}>
       <div className="w-full max-w-sm p-8 rounded-xl" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
-        <Suspense fallback={<div className="w-8 h-8 border-2 border-white/20 border-t-white rounded-full animate-spin mx-auto" />}>
+        <Suspense fallback={<BrandLoader size={36} />}>
           <VerifyOtpForm />
         </Suspense>
       </div>

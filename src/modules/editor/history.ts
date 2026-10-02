@@ -26,6 +26,12 @@ const LIMIT = 100
 // Edits closer together than this belong to the same step
 const BURST_IDLE_MS = 600
 
+/** The saved state of the clip as the stores hold it now (the auto-save also uses this) */
+export function editableSnapshot(): Snapshot { return take() }
+/** Whether two snapshots hold the same saved state */
+export function sameEditable(a: Snapshot, b: Snapshot) { return same(a, b) }
+export type EditableSnapshot = Snapshot
+
 function take(): Snapshot {
   const e = useEditorStore.getState(), m = useMediaStore.getState(), c = useCaptionStore.getState()
   return {

@@ -4,7 +4,8 @@ import type { FrameLayout, FrameBand, FrameItem, FrameLane, FrameSettings, Layou
 // letterbox band for text. Heights are shares of the 1920 px frame. render.py mirrors these
 // numbers — keep the two in step.
 
-export type FrameRow = { kind: 'slot'; slot: number; h: number } | { kind: 'band'; h: number }
+// 'caption': a plain strip (no lane) where the clip's captions sit while this frame shows
+export type FrameRow = { kind: 'slot'; slot: number; h: number } | { kind: 'band'; h: number } | { kind: 'caption'; h: number }
 
 export interface FrameTemplate {
   name: string
@@ -12,6 +13,8 @@ export interface FrameTemplate {
   rows: FrameRow[]
   /** What each slot starts as when the frame is applied */
   defaults: ('video' | 'photo')[]
+  /** No slot shows the main video to start with; it's heard under the frame (photo frames) */
+  mainUnder?: boolean
 }
 
 export const FRAME_TEMPLATES: Record<FrameLayout, FrameTemplate> = {
@@ -40,6 +43,22 @@ export const FRAME_TEMPLATES: Record<FrameLayout, FrameTemplate> = {
     rows: [{ kind: 'slot', slot: 0, h: 1 / 3 }, { kind: 'slot', slot: 1, h: 1 / 3 }, { kind: 'slot', slot: 2, h: 1 / 3 }],
     defaults: ['video', 'video', 'photo'],
   },
+  frame_title_caption: {
+    name: 'Title + Caption', description: 'A title on top, the video, and a strip below for captions.',
+    rows: [{ kind: 'band', h: 0.16 }, { kind: 'slot', slot: 0, h: 0.68 }, { kind: 'caption', h: 0.16 }],
+    defaults: ['video'],
+  },
+  frame_big_small: {
+    name: 'Big + Small', description: 'A large video on top and a smaller video or photo below.',
+    rows: [{ kind: 'slot', slot: 0, h: 0.7 }, { kind: 'slot', slot: 1, h: 0.3 }],
+    defaults: ['video', 'video'],
+  },
+  frame_photo_story: {
+    name: 'Photo Story', description: 'Two photos under a title — before/after or a slideshow, with the video\u2019s sound.',
+    rows: [{ kind: 'band', h: 0.16 }, { kind: 'slot', slot: 0, h: 0.42 }, { kind: 'slot', slot: 1, h: 0.42 }],
+    defaults: ['photo', 'photo'],
+    mainUnder: true,
+  },
 }
 
 export const FRAME_LAYOUTS = Object.keys(FRAME_TEMPLATES) as FrameLayout[]
@@ -59,14 +78,18 @@ export function frameRows(layout: FrameLayout, showBand = true): (FrameRow & { y
   return rows.map(r => { const h = r.h / total, row = { ...r, h, y }; y += h; return row })
 }
 
-/** Height (share of the frame) of one media slot — every slot in a template is the same height */
-export function frameSlotHeight(layout: FrameLayout, showBand = true): number {
-  return frameRows(layout, showBand).find(r => r.kind === 'slot')?.h ?? 1
+/** Height (share of the frame) of one media slot (slots differ in Big + Small) */
+export function frameSlotHeight(layout: FrameLayout, showBand = true, slot = 0): number {
+  const rows = frameRows(layout, showBand)
+  return (rows.find(r => r.kind === 'slot' && r.slot === slot) ?? rows.find(r => r.kind === 'slot'))?.h ?? 1
 }
 
 export function frameHasBand(layout: FrameLayout): boolean {
   return FRAME_TEMPLATES[layout].rows.some(r => r.kind === 'band')
 }
+
+/** Rounded corners a video or photo starts with when it's put in a frame (the Corners slider, 0–100) */
+export const DEFAULT_CORNERS = 80
 
 export const DEFAULT_BAND: FrameBand = { text: '', bg: '#000000', color: '#ffffff', size: 64, font: null }
 
@@ -85,9 +108,10 @@ export interface FrameLaneInfo { lane: FrameLane; label: string; y: number; h: n
 /** A frame's lanes, top to bottom, the same order as the preview */
 export function frameLanes(layout: FrameLayout, showBand = true): FrameLaneInfo[] {
   const names = frameSlotLabels(layout)
-  return frameRows(layout, showBand).map(r => r.kind === 'band'
-    ? { lane: 'band' as const, label: 'Text', y: r.y, h: r.h }
-    : { lane: r.slot, label: names[r.slot] ?? `Slot ${r.slot + 1}`, y: r.y, h: r.h })
+  return frameRows(layout, showBand).flatMap((r): FrameLaneInfo[] => r.kind === 'band'
+    ? [{ lane: 'band' as const, label: 'Text', y: r.y, h: r.h }]
+    : r.kind === 'slot' ? [{ lane: r.slot, label: names[r.slot] ?? `Slot ${r.slot + 1}`, y: r.y, h: r.h }]
+      : [])   // the caption strip isn't a lane: the captions go there by themselves
 }
 
 export const MIN_ITEM_MS = 200
@@ -105,6 +129,9 @@ export function slotOffers(layout: FrameLayout, slot: number): { video: boolean;
     case 'frame_dual': return { video: true, photo: false, text: false }
     case 'frame_dual_letterbox': return { video: true, photo: false, text: false }
     case 'frame_triple': return { video: true, photo: true, text: false }
+    case 'frame_title_caption': return { video: true, photo: false, text: true }
+    case 'frame_big_small': return { video: true, photo: true, text: false }
+    case 'frame_photo_story': return { video: false, photo: true, text: true }
   }
 }
 
@@ -123,6 +150,8 @@ export function mainSlotSound(frame: FrameSettings, slot: number): { volume: num
 
 /** How loud the main video plays in a frame: every slot showing it adds its own sound */
 export function mainAudioVolume(frame: FrameSettings): number {
+  // Heard under a frame no slot shows it in (Photo Story)
+  if (frame.main_under && !(frame.main_slots ?? [0]).length) return frame.main_muted ? 0 : frame.main_volume ?? 1
   return (frame.main_slots ?? [0]).reduce((sum, slot) => {
     const s = mainSlotSound(frame, slot)
     return sum + (s.muted ? 0 : s.volume)
@@ -157,13 +186,26 @@ export function frameLanesFor(seg: SegmentLocal): FrameLaneInfo[] {
 export function defaultFrame(layout: FrameLayout, prev?: FrameSettings | null): FrameSettings {
   const slots = FRAME_TEMPLATES[layout].rows.filter(r => r.kind === 'slot').length
   const band = frameHasBand(layout)
+  const under = !!FRAME_TEMPLATES[layout].mainUnder
+  // The main video stays in the slots that still take a video; a frame for videos never starts without it
+  const kept = (prev?.main_slots ?? [0]).filter(i => i < slots && slotOffers(layout, i).video)
   return {
     band: { ...DEFAULT_BAND, ...prev?.band },
-    main_slots: prev?.main_slots ? prev.main_slots.filter(i => i < slots) : [0],
+    main_slots: under ? [] : kept.length ? kept : [0],
+    main_under: under,
     main_volume: prev?.main_volume ?? 1,
     main_muted: prev?.main_muted ?? false,
-    // Items stay on lanes the new template still has
-    items: (prev?.items ?? []).filter(it => it.lane === 'band' ? band : it.lane < slots),
+    // The main video keeps its corners; put in a frame for the first time, it starts rounded
+    main_corners: prev?.main_corners ?? { '0': DEFAULT_CORNERS, '1': DEFAULT_CORNERS, '2': DEFAULT_CORNERS },
+    // Items stay on lanes the new template still has, and only if that slot can show them
+    // (e.g. a photo in Video + Photo's bottom slot doesn't carry into Dual Video, whose slots are
+    // video-only, so that slot comes up empty with its "+")
+    items: (prev?.items ?? []).filter(it => {
+      if (it.lane === 'band') return band
+      if (it.lane >= slots) return false
+      const offers = slotOffers(layout, it.lane)
+      return it.kind === 'photo' ? offers.photo : it.kind === 'video' ? offers.video : offers.text
+    }),
   }
 }
 
@@ -251,11 +293,13 @@ export function itemBounds(frame: FrameSettings, item: FrameItem, seg: { start_m
 
 /** Frame text-band item showing live captions at t, if any */
 export function captionBandAt(seg: SegmentLocal | null, t: number): { y: number; h: number } | null {
-  if (!seg || !isFrameLayout(seg.layout) || !frameHasBand(seg.layout)) return null
-  const it = itemAt(frameOf(seg), 'band', t, seg)
-  if (!it?.captions) return null
-  const row = frameRows(seg.layout).find(r => r.kind === 'band')!
-  return { y: row.y, h: row.h }
+  if (!seg || !isFrameLayout(seg.layout)) return null
+  const rows = frameRows(seg.layout)
+  const it = frameHasBand(seg.layout) ? itemAt(frameOf(seg), 'band', t, seg) : null
+  if (it?.captions && !it.hidden) { const row = rows.find(r => r.kind === 'band')!; return { y: row.y, h: row.h } }
+  // A frame with a caption strip: the captions sit there
+  const strip = rows.find(r => r.kind === 'caption')
+  return strip ? { y: strip.y, h: strip.h } : null
 }
 
 /**
@@ -264,7 +308,9 @@ export function captionBandAt(seg: SegmentLocal | null, t: number): { y: number;
  */
 export function emptySlotStretches(seg: SegmentLocal, minMs = 300): { start_ms: number; end_ms: number; slots: number[] }[] {
   if (!isFrameLayout(seg.layout)) return []
-  const frame = frameOf(seg)
+  const all = frameOf(seg)
+  // A hidden item doesn't fill its slot (only its sound may play)
+  const frame = { ...all, items: (all.items ?? []).filter(it => !it.hidden) }
   const main = frame.main_slots ?? [0]
   // Cut the frame at every item edge; each piece is either empty or filled for every slot
   const cuts = new Set<number>([seg.start_ms, seg.end_ms])

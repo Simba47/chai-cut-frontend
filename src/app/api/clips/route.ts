@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { requireUser } from '@/server/auth'
-import { createClip } from '@/server/services/clips'
+import { createClip, deleteClips } from '@/server/services/clips'
 import { apiError } from '@/lib/api-error'
 
 export const runtime = 'nodejs'
@@ -13,6 +13,18 @@ export async function POST(req: NextRequest) {
   if (!body?.video_id) return NextResponse.json({ error: 'video_id required' }, { status: 400 })
   try {
     return NextResponse.json(await createClip(user.id, body))
+  } catch (err) {
+    return apiError(err)
+  }
+}
+
+// Delete one or more clips: body { ids: string[] }
+export async function DELETE(req: NextRequest) {
+  const user = await requireUser()
+  if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  const body = await req.json().catch(() => null)
+  try {
+    return NextResponse.json(await deleteClips(user.id, body?.ids))
   } catch (err) {
     return apiError(err)
   }

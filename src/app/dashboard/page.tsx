@@ -5,12 +5,14 @@ import { useState, useEffect, useRef, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import type { Video } from '@chai-cut/shared'
-import { ACCEPTED_VIDEO_EXTENSIONS, MAX_UPLOAD_BYTES } from '@chai-cut/shared'
+import { ACCEPTED_VIDEO_EXTENSIONS } from '@chai-cut/shared'
 import { Breadcrumbs } from '@/components/ui/breadcrumbs'
 import { AccountMenu } from '@/components/ui/account-menu'
+import { BrandLoaderScreen } from '@/components/ui/brand-loader'
 import { FillButtonContent } from '@/components/ui/fill-button'
+import { useVideoUpload } from '@/modules/upload/useVideoUpload'
 
-type DashVideo = Video & { video_url?: string | null; clip_count?: number }
+type DashVideo = Video & { video_url?: string | null; clip_count?: number; error?: string | null }
 type SortKey = 'newest' | 'oldest' | 'name'
 interface PlanInfo {
   plan: string
@@ -49,15 +51,22 @@ export default function DashboardPage() {
 
   const [query, setQuery] = useState('')
   const [sort, setSort] = useState<SortKey>('newest')
-  const [pendingDelete, setPendingDelete] = useState<{ video: DashVideo; title: string } | null>(null)
+  // Videos waiting for the delete confirmation (one from a card, or several from Select)
+  const [pendingDelete, setPendingDelete] = useState<{ video: DashVideo; title: string }[] | null>(null)
+  // Select mode: tick several videos, then delete them together
+  const [selecting, setSelecting] = useState(false)
+  const [selected, setSelected] = useState<Set<string>>(new Set())
 
   const [dragOver, setDragOver] = useState(false)
   const dragDepth = useRef(0)
-  const [uploading, setUploading] = useState(false)
-  const [uploadName, setUploadName] = useState('')
-  const [uploadProgress, setUploadProgress] = useState(0)
+  // Resumable upload straight to storage (see useVideoUpload); problems before it starts
+  // (wrong type, too big, plan full) show in uploadError
+  const upload = useVideoUpload(videoId => router.push(`/videos/${videoId}`))
+  const uploading = upload.state.phase === 'uploading' || upload.state.phase === 'finishing'
   const [uploadError, setUploadError] = useState<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  // "Upload video" asks where the video comes from: this device, or a Drive link
+  const [chooserOpen, setChooserOpen] = useState(false)
 
   async function fetchVideos() {
     const res = await fetch('/api/videos')
@@ -100,9 +109,8 @@ export default function DashboardPage() {
   }, [videos, indexById, query, sort])
 
   function validateFile(f: File): string | null {
-    const limitBytes = planInfo?.maxFileSizeBytes ?? MAX_UPLOAD_BYTES
-    const limitGb = planInfo?.maxFileSizeGb ?? 2
-    if (f.size > limitBytes) return `This file is larger than your plan's ${limitGb} GB limit.`
+    // The plan's limit, once it's loaded (the server checks it again either way)
+    if (planInfo && f.size > planInfo.maxFileSizeBytes) return `This file is larger than your plan's ${planInfo.maxFileSizeGb} GB limit.`
     const ext = '.' + f.name.split('.').pop()?.toLowerCase()
     if (!ACCEPTED_VIDEO_EXTENSIONS.includes(ext as never)) return `Unsupported format. Accepted: ${ACCEPTED_VIDEO_EXTENSIONS.join(', ')}`
     return null
@@ -113,63 +121,8 @@ export default function DashboardPage() {
     if (atLimit) { setUploadError(`You've used all ${planInfo?.maxVideos} videos on your plan. Delete a video or upgrade to add more.`); return }
     const error = validateFile(f)
     if (error) { setUploadError(error); return }
-    handleFileUpload(f)
-  }
-
-  async function handleFileUpload(f: File) {
-    setUploading(true)
-    setUploadName(f.name)
-    setUploadProgress(0)
     setUploadError(null)
-    try {
-      const signRes = await fetch('/api/ingest/signed-url', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ filename: f.name, content_type: f.type, file_size: f.size }),
-      })
-      if (!signRes.ok) throw new Error((await signRes.json()).error ?? 'Failed to get upload URL')
-      const { signed_url, storage_path } = await signRes.json()
-
-      await new Promise<void>((resolve, reject) => {
-        const xhr = new XMLHttpRequest()
-        xhr.open('PUT', signed_url)
-        xhr.setRequestHeader('Content-Type', f.type || 'video/mp4')
-        xhr.upload.addEventListener('progress', ev => {
-          if (ev.lengthComputable) setUploadProgress(Math.round((ev.loaded / ev.total) * 100))
-        })
-        xhr.addEventListener('load', () => {
-          if (xhr.status >= 200 && xhr.status < 300) resolve()
-          else reject(new Error(`Upload failed (${xhr.status})`))
-        })
-        xhr.addEventListener('error', () => reject(new Error('Network error')))
-        xhr.send(f)
-      })
-
-      let durationMs: number | undefined
-      try {
-        durationMs = await new Promise<number>((res, rej) => {
-          const v = document.createElement('video')
-          v.preload = 'metadata'
-          const url = URL.createObjectURL(f)
-          v.onloadedmetadata = () => { URL.revokeObjectURL(url); res(Math.round(v.duration * 1000)) }
-          v.onerror = () => { URL.revokeObjectURL(url); rej(new Error('metadata')) }
-          v.src = url
-        })
-      } catch { /* leave undefined */ }
-
-      const title = f.name.replace(/\.[^.]+$/, '')
-      const completeRes = await fetch('/api/ingest/complete', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ storage_path, title, ...(durationMs ? { duration_ms: durationMs } : {}) }),
-      })
-      if (!completeRes.ok) throw new Error((await completeRes.json()).error ?? 'Failed')
-      const { video_id } = await completeRes.json()
-      router.push(`/videos/${video_id}`)
-    } catch (err) {
-      setUploadError(err instanceof Error ? err.message : 'Upload failed')
-      setUploading(false)
-    }
+    upload.start(f)
   }
 
   // Page-wide drag-and-drop; the depth counter stops child elements from flickering the overlay
@@ -193,6 +146,33 @@ export default function DashboardPage() {
     if (dropped) startUpload(dropped)
   }
 
+  function toggleSelected(id: string) {
+    setSelected(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id); else next.add(id)
+      return next
+    })
+  }
+  function stopSelecting() {
+    setSelecting(false)
+    setSelected(new Set())
+  }
+  // A video that disappears (deleted elsewhere) can't stay selected
+  useEffect(() => {
+    setSelected(prev => {
+      const live = new Set(videos.map(v => v.id))
+      const next = new Set([...prev].filter(id => live.has(id)))
+      return next.size === prev.size ? prev : next
+    })
+  }, [videos])
+  // Esc leaves select mode (unless the delete dialog is open — it handles Esc itself)
+  useEffect(() => {
+    if (!selecting || pendingDelete) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') stopSelecting() }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [selecting, pendingDelete])
+
   async function renameVideo(id: string, title: string) {
     const prev = videos
     setVideos(vs => vs.map(v => v.id === id ? { ...v, title } : v))
@@ -204,13 +184,8 @@ export default function DashboardPage() {
     if (!res?.ok) setVideos(prev)
   }
 
-  if (loading) {
-    return (
-      <div className="dash" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--accent)' }}>
-        <div className="dash-spinner" style={{ width: 32, height: 32 }} />
-      </div>
-    )
-  }
+  // Same full-screen loader as the clip board and editor (ring, glow, progress bar, tips)
+  if (loading) return <BrandLoaderScreen label="Loading your videos…" />
 
   const usagePct = planInfo ? Math.min(100, (planInfo.usage.videos / planInfo.maxVideos) * 100) : 0
   const isEmpty = videos.length === 0
@@ -242,7 +217,7 @@ export default function DashboardPage() {
         </div>
       </nav>
 
-      <main className="dash-main">
+      <main className={`dash-main${selecting ? ' has-selectbar' : ''}`}>
         {!isEmpty && (
           <div className="dash-head">
             <h1><span className="dash-title">Your videos</span><span className="dash-count">{videos.length}</span></h1>
@@ -262,6 +237,14 @@ export default function DashboardPage() {
                 />
               </label>
               <SortMenu value={sort} onChange={setSort} />
+              <button
+                type="button"
+                className={`dash-sort-btn dash-select-toggle${selecting ? ' is-on' : ''}`}
+                aria-pressed={selecting}
+                onClick={() => (selecting ? stopSelecting() : setSelecting(true))}
+              >
+                {selecting ? 'Done' : 'Select'}
+              </button>
             </div>
           </div>
         )}
@@ -286,10 +269,19 @@ export default function DashboardPage() {
             </svg>
           </div>
           <div className="dash-drop-text">
-            {uploading ? (
+            {upload.state.phase === 'failed' ? (
               <>
-                <p>Uploading {uploadName}… {uploadProgress}%</p>
-                <div className="dash-progress"><div style={{ width: `${uploadProgress}%` }} /></div>
+                <p>{upload.state.canRetry ? 'Upload paused' : 'Upload stopped'} · {upload.state.fileName}{upload.state.canRetry ? ` · ${upload.state.progress}%` : ''}</p>
+                <p className="dash-drop-error" role="alert">{upload.state.error}</p>
+                <div className="dash-progress"><div style={{ width: `${upload.state.progress}%` }} /></div>
+              </>
+            ) : uploading ? (
+              <>
+                <p>
+                  {upload.state.phase === 'finishing' ? `Finishing ${upload.state.fileName}…` : `Uploading ${upload.state.fileName}… ${upload.state.progress}%`}
+                </p>
+                <p>Keep this tab open. If the connection drops, the upload continues where it stopped.</p>
+                <div className="dash-progress"><div style={{ width: `${upload.state.progress}%` }} /></div>
               </>
             ) : atLimit ? (
               <>
@@ -299,13 +291,32 @@ export default function DashboardPage() {
             ) : (
               <>
                 <p>{isEmpty ? 'Upload your first video' : 'Drag and drop a video anywhere on this page'}</p>
-                <p>MP4, MOV, WEBM · up to {planInfo?.maxFileSizeGb ?? 2} GB{isEmpty ? ' · we’ll transcribe it so you can cut clips' : ''}</p>
+                <p>MP4, MOV, MKV, WebM{planInfo ? ` · up to ${planInfo.maxFileSizeGb} GB` : ''}{isEmpty ? ' · we’ll transcribe it so you can cut clips' : ''}</p>
               </>
             )}
           </div>
-          {!atLimit && (
-            <button className="dash-btn-fill fill-btn" disabled={uploading} onClick={() => fileInputRef.current?.click()}>
-              {uploading ? <><span className="dash-spinner" /> Uploading</> : <FillButtonContent>Upload video</FillButtonContent>}
+          {upload.state.phase === 'failed' ? (
+            <div className="dash-drop-actions">
+              <button type="button" className="dash-link-btn" onClick={upload.cancel}>{upload.state.canRetry ? 'Cancel' : 'OK'}</button>
+              {upload.state.canRetry && (
+                <button type="button" className="dash-upload-btn dash-upload-btn--plain" onClick={upload.retry}>Retry</button>
+              )}
+            </div>
+          ) : upload.state.phase === 'uploading' ? (
+            <button type="button" className="dash-link-btn" onClick={upload.cancel}>Cancel</button>
+          ) : null}
+          {!atLimit && upload.state.phase === 'idle' && (
+            <button className="dash-upload-btn" disabled={uploading} aria-haspopup="dialog" onClick={() => { setUploadError(null); setChooserOpen(true) }}>
+              {/* Arrow flies out to the top-right on hover while a copy slides in from the bottom-left */}
+              <span className="dash-upload-icon" aria-hidden>
+                {uploading ? <span className="dash-spinner" /> : (
+                  <>
+                    <svg viewBox="0 0 14 15" width="10" fill="none" className="dash-upload-arrow"><path d="M13.376 11.552l-.264-10.44-10.44-.24.024 2.28 6.96-.048L.2 12.56l1.488 1.488 9.432-9.432-.048 6.912 2.304.024z" fill="currentColor" /></svg>
+                    <svg viewBox="0 0 14 15" width="10" fill="none" className="dash-upload-arrow dash-upload-arrow--copy"><path d="M13.376 11.552l-.264-10.44-10.44-.24.024 2.28 6.96-.048L.2 12.56l1.488 1.488 9.432-9.432-.048 6.912 2.304.024z" fill="currentColor" /></svg>
+                  </>
+                )}
+              </span>
+              {uploading ? 'Uploading' : 'Upload video'}
             </button>
           )}
         </div>
@@ -319,8 +330,11 @@ export default function DashboardPage() {
                 key={video.id}
                 video={video}
                 title={title}
+                selecting={selecting}
+                selected={selected.has(video.id)}
+                onToggle={() => toggleSelected(video.id)}
                 onRename={t => renameVideo(video.id, t)}
-                onDelete={() => setPendingDelete({ video, title })}
+                onDelete={() => setPendingDelete([{ video, title }])}
               />
             ))}
           </div>
@@ -331,15 +345,47 @@ export default function DashboardPage() {
 
       {dragOver && <div className="dash-drop-overlay">Drop your video to upload</div>}
 
-      {pendingDelete && (
+      {/* Select mode: what's ticked, and what to do with it */}
+      {selecting && (() => {
+        const allIds = visible.map(x => x.video.id)
+        const allOn = allIds.length > 0 && allIds.every(id => selected.has(id))
+        return (
+          <div className="dash-selectbar" role="toolbar" aria-label="Selected videos">
+            <span className="dash-selectbar-count" aria-live="polite">
+              {selected.size === 0 ? 'Tap videos to select them' : `${selected.size} selected`}
+            </span>
+            <button type="button" className="dash-link-btn"
+              onClick={() => setSelected(allOn ? new Set() : new Set(allIds))} disabled={allIds.length === 0}>
+              {allOn ? 'Clear' : `Select all (${allIds.length})`}
+            </button>
+            <button type="button" className="dash-link-btn" onClick={stopSelecting}>Cancel</button>
+            <button type="button" className="dash-btn dash-btn-danger" disabled={selected.size === 0}
+              onClick={() => setPendingDelete(visible.filter(x => selected.has(x.video.id)).map(x => ({ video: x.video, title: x.title })))}>
+              Delete{selected.size > 0 ? ` ${selected.size}` : ''}
+            </button>
+          </div>
+        )
+      })()}
+
+      {chooserOpen && (
+        <UploadChooser
+          maxFileSizeGb={planInfo?.maxFileSizeGb}
+          onClose={() => setChooserOpen(false)}
+          onDevice={() => { setChooserOpen(false); fileInputRef.current?.click() }}
+          onFile={f => { setChooserOpen(false); startUpload(f) }}
+          onImported={() => { setChooserOpen(false); fetchVideos(); fetchPlan() }}
+        />
+      )}
+
+      {pendingDelete && pendingDelete.length > 0 && (
         <DeleteDialog
-          title={pendingDelete.title}
-          clipCount={pendingDelete.video.clip_count ?? 0}
-          videoId={pendingDelete.video.id}
+          items={pendingDelete.map(p => ({ id: p.video.id, title: p.title, clipCount: p.video.clip_count ?? 0 }))}
           onClose={() => setPendingDelete(null)}
-          onDeleted={id => {
-            setVideos(prev => prev.filter(x => x.id !== id))
+          onDeleted={ids => {
+            const gone = new Set(ids)
+            setVideos(prev => prev.filter(x => !gone.has(x.id)))
             setPendingDelete(null)
+            if (selecting) stopSelecting()
             fetchPlan()
           }}
         />
@@ -425,9 +471,13 @@ function SortMenu({ value, onChange }: { value: SortKey; onChange: (v: SortKey) 
   )
 }
 
-function VideoCard({ video, title, onRename, onDelete }: {
+function VideoCard({ video, title, selecting, selected, onToggle, onRename, onDelete }: {
   video: DashVideo
   title: string
+  /** Select mode: the whole card toggles its tick; rename, delete and "Make clips" step aside */
+  selecting: boolean
+  selected: boolean
+  onToggle: () => void
   onRename: (title: string) => void
   onDelete: () => void
 }) {
@@ -469,8 +519,25 @@ function VideoCard({ video, title, onRename, onDelete }: {
 
   return (
     <div
-      className={`vcard${ready ? ' is-ready' : ''}`}
+      className={`vcard${ready ? ' is-ready' : ''}${selecting ? ' is-selecting' : ''}${selected ? ' is-selected' : ''}`}
+      {...(selecting ? {
+        role: 'checkbox',
+        'aria-checked': selected,
+        'aria-label': `Select ${title}`,
+        tabIndex: 0,
+        onClick: onToggle,
+        onKeyDown: (e: React.KeyboardEvent) => { if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); onToggle() } },
+      } : {})}
     >
+      {selecting && (
+        <span className="vcard-check" aria-hidden="true">
+          {selected && (
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
+              <path d="M5 12.5l4.5 4.5L19 7.5" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          )}
+        </span>
+      )}
       <div className="vcard-thumb">
         {!thumbLoaded && (
           <div className="vcard-placeholder">
@@ -503,12 +570,12 @@ function VideoCard({ video, title, onRename, onDelete }: {
           </div>
         )}
         {video.status === 'failed' && (
-          <div className="vcard-overlay is-failed">Couldn&apos;t process this video</div>
+          <div className="vcard-overlay is-failed">{video.error || 'Couldn’t process this video'}</div>
         )}
 
 
         {/* Details on the thumbnail: date (top-left), clips (bottom-left), length (bottom-right) */}
-        <span className="vcard-chip vcard-date">{dateStr}</span>
+        {!selecting && <span className="vcard-chip vcard-date">{dateStr}</span>}
         {ready && (
           <span className="vcard-chip vcard-clips">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -522,7 +589,7 @@ function VideoCard({ video, title, onRename, onDelete }: {
       </div>
 
       {/* Quick actions: frosted pill in the thumbnail's top-right corner */}
-      <div className="vcard-actions" onClick={e => e.stopPropagation()} onKeyDown={e => e.stopPropagation()}>
+      {!selecting && <div className="vcard-actions" onClick={e => e.stopPropagation()} onKeyDown={e => e.stopPropagation()}>
         <button
           type="button"
           className="vcard-action"
@@ -546,7 +613,7 @@ function VideoCard({ video, title, onRename, onDelete }: {
             <path d="M4 7h16M10 11v6M14 11v6M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
           </svg>
         </button>
-      </div>
+      </div>}
 
       <div className="vcard-info">
         <div className="vcard-text">
@@ -572,7 +639,7 @@ function VideoCard({ video, title, onRename, onDelete }: {
           )}
         </div>
         {/* The only way into the clip picker, so a stray click on the card doesn't navigate */}
-        {ready && (
+        {ready && !selecting && (
           <Link href={`/videos/${video.id}`} className="vcard-open fill-btn fill-btn-sm" aria-label={`Make clips from ${title}`}>
             <FillButtonContent icon="scissors">Make clips</FillButtonContent>
           </Link>
@@ -582,13 +649,168 @@ function VideoCard({ video, title, onRename, onDelete }: {
   )
 }
 
-function DeleteDialog({ title, clipCount, videoId, onClose, onDeleted }: {
-  title: string
-  clipCount: number
-  videoId: string
+// Which service a pasted link points at — lights up that logo in the upload sheet
+function linkProvider(url: string): 'drive' | null {
+  const u = url.trim().toLowerCase()
+  if (/(^|\/\/|\.)(drive|docs)\.google\.com\//.test(u)) return 'drive'
+  return null
+}
+
+function DriveLogo() {
+  return (
+    <svg width="18" height="16" viewBox="0 0 87.3 78" aria-hidden="true">
+      <path d="M6.6 66.85l3.85 6.65c.8 1.4 1.95 2.5 3.3 3.3L27.5 53H0c0 1.55.4 3.1 1.2 4.5z" fill="#0066da" />
+      <path d="M43.65 25L29.9 1.2c-1.35.8-2.5 1.9-3.3 3.3l-25.4 44A9.06 9.06 0 000 53h27.5z" fill="#00ac47" />
+      <path d="M73.55 76.8c1.35-.8 2.5-1.9 3.3-3.3l1.6-2.75 7.65-13.25c.8-1.4 1.2-2.95 1.2-4.5H59.8l5.85 11.5z" fill="#ea4335" />
+      <path d="M43.65 25L57.4 1.2C56.05.4 54.5 0 52.9 0H34.4c-1.6 0-3.15.45-4.5 1.2z" fill="#00832d" />
+      <path d="M59.8 53H27.5L13.75 76.8c1.35.8 2.9 1.2 4.5 1.2h50.8c1.6 0 3.15-.45 4.5-1.2z" fill="#2684fc" />
+      <path d="M73.4 26.5l-12.7-22c-.8-1.4-1.95-2.5-3.3-3.3L43.65 25 59.8 53h27.45c0-1.55-.4-3.1-1.2-4.5z" fill="#ffba00" />
+    </svg>
+  )
+}
+
+// "Upload video": drop or browse a file from this device, or import from a Google Drive link
+function UploadChooser({ maxFileSizeGb, onClose, onDevice, onFile, onImported }: {
+  maxFileSizeGb?: number
   onClose: () => void
-  onDeleted: (id: string) => void
+  onDevice: () => void
+  onFile: (f: File) => void
+  onImported: () => void
 }) {
+  const [link, setLink] = useState('')
+  const [importing, setImporting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [over, setOver] = useState(false)
+  const provider = linkProvider(link)
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape' && !importing) onClose() }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [importing, onClose])
+
+  async function importLink(e: React.FormEvent) {
+    e.preventDefault()
+    const url = link.trim()
+    if (!url || importing) return
+    setImporting(true)
+    setError(null)
+    try {
+      const res = await fetch('/api/ingest/link', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.error ?? 'Could not import that link')
+      onImported() // the new video appears on the dashboard with its download progress
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not import that link')
+      setImporting(false)
+    }
+  }
+
+  // Drops inside the sheet are handled here, not by the page-wide drop zone behind it
+  const stop = (e: React.DragEvent) => { e.preventDefault(); e.stopPropagation() }
+
+  return (
+    <div
+      className="dash-modal-backdrop dash-sheet-backdrop"
+      onClick={() => { if (!importing) onClose() }}
+      onDragEnter={stop}
+      onDragOver={stop}
+      onDragLeave={stop}
+      onDrop={stop}
+    >
+      <div className="dash-sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-title" onClick={e => e.stopPropagation()}>
+        <div className="dash-sheet-head">
+          <div>
+            <h2 id="sheet-title">Add a video</h2>
+            <p>MP4, MOV, MKV or WebM{maxFileSizeGb ? ` · up to ${maxFileSizeGb} GB` : ''}</p>
+          </div>
+          <button type="button" className="dash-sheet-close" aria-label="Close" onClick={onClose} disabled={importing}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="M6 6l12 12M18 6L6 18" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" />
+            </svg>
+          </button>
+        </div>
+
+        <button
+          type="button"
+          className={`dash-sheet-drop${over ? ' is-over' : ''}`}
+          onClick={onDevice}
+          onDragEnter={e => { stop(e); setOver(true) }}
+          onDragOver={stop}
+          onDragLeave={e => { stop(e); if (!e.currentTarget.contains(e.relatedTarget as Node)) setOver(false) }}
+          onDrop={e => { stop(e); setOver(false); const f = e.dataTransfer.files[0]; if (f) onFile(f) }}
+          autoFocus
+        >
+          <span className="dash-sheet-drop-icon" aria-hidden="true">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+              <path d="M12 15V4m0 0L7.5 8.5M12 4l4.5 4.5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+              <path d="M4 15v3a2 2 0 002 2h12a2 2 0 002-2v-3" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+            </svg>
+          </span>
+          <strong>{over ? 'Release to upload' : 'Drag and drop your video'}</strong>
+          <span>or <em>browse files</em> from your computer</span>
+        </button>
+
+        <div className="dash-sheet-or" aria-hidden="true"><span>or import from a link</span></div>
+
+        <form className="dash-sheet-link" onSubmit={importLink}>
+          <div className={`dash-sheet-field${provider ? ' is-known' : ''}`}>
+            <span className="dash-sheet-field-icon" aria-hidden="true">
+              {provider === 'drive' ? <DriveLogo /> : (
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+                  <path d="M10 14a4 4 0 005.66 0l3-3a4 4 0 00-5.66-5.66l-1 1" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                  <path d="M14 10a4 4 0 00-5.66 0l-3 3a4 4 0 005.66 5.66l1-1" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                </svg>
+              )}
+            </span>
+            <input
+              type="url"
+              inputMode="url"
+              aria-label="Google Drive link"
+              placeholder="Paste a Google Drive link"
+              value={link}
+              onChange={e => { setLink(e.target.value); setError(null) }}
+              disabled={importing}
+            />
+            <button type="submit" className="dash-sheet-import" disabled={!link.trim() || importing}>
+              {importing ? <><span className="dash-spinner" /> Importing</> : 'Import'}
+            </button>
+          </div>
+          {error ? (
+            <p className="dash-sheet-error" role="alert">{error}</p>
+          ) : (
+            <div className="dash-sheet-sources">
+              <span className={`dash-sheet-source${provider === 'drive' ? ' is-on' : ''}`}><DriveLogo /> Google Drive</span>
+              <span className="dash-sheet-note">Share as &ldquo;Anyone with the link&rdquo;</span>
+            </div>
+          )}
+        </form>
+
+        <div className="dash-sheet-foot">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <rect x="5" y="11" width="14" height="10" rx="2" stroke="currentColor" strokeWidth="2" />
+            <path d="M8 11V7a4 4 0 018 0v4" stroke="currentColor" strokeWidth="2" />
+          </svg>
+          Your videos stay private to your account
+          <span className="dash-sheet-soon">YouTube import coming soon</span>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// Confirms deleting one video (from its card) or several (from Select), then deletes them together
+function DeleteDialog({ items, onClose, onDeleted }: {
+  items: { id: string; title: string; clipCount: number }[]
+  onClose: () => void
+  onDeleted: (ids: string[]) => void
+}) {
+  const one = items.length === 1
+  const clipCount = items.reduce((n, it) => n + it.clipCount, 0)
   const [deleting, setDeleting] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -602,9 +824,14 @@ function DeleteDialog({ title, clipCount, videoId, onClose, onDeleted }: {
     setDeleting(true)
     setError(null)
     try {
-      const res = await fetch(`/api/videos/${videoId}`, { method: 'DELETE' })
-      if (!res.ok) throw new Error((await res.json()).error ?? 'Delete failed')
-      onDeleted(videoId)
+      const ids = items.map(it => it.id)
+      const res = await fetch('/api/videos', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids }),
+      })
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? 'Delete failed')
+      onDeleted(ids)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Delete failed')
       setDeleting(false)
@@ -614,16 +841,17 @@ function DeleteDialog({ title, clipCount, videoId, onClose, onDeleted }: {
   return (
     <div className="dash-modal-backdrop" onClick={() => { if (!deleting) onClose() }}>
       <div className="dash-modal" role="alertdialog" aria-modal="true" aria-labelledby="delete-title" onClick={e => e.stopPropagation()}>
-        <h2 id="delete-title">Delete &ldquo;{title}&rdquo;?</h2>
+        <h2 id="delete-title">{one ? <>Delete &ldquo;{items[0].title}&rdquo;?</> : `Delete ${items.length} videos?`}</h2>
         <p>
-          This permanently removes the video{clipCount > 0 ? ` and its ${clipCount} clip${clipCount === 1 ? '' : 's'}` : ''}.
+          This permanently removes {one ? 'the video' : `${items.length} videos`}
+          {clipCount > 0 ? ` and ${one ? 'its' : 'their'} ${clipCount} clip${clipCount === 1 ? '' : 's'}` : ''}.
           This can&apos;t be undone.
           {error && <><br /><span style={{ color: 'var(--danger)' }}>{error}</span></>}
         </p>
         <div className="dash-modal-actions">
           <button className="dash-btn" onClick={onClose} disabled={deleting} autoFocus>Cancel</button>
           <button className="dash-btn dash-btn-danger" onClick={confirm} disabled={deleting}>
-            {deleting ? <><span className="dash-spinner" /> Deleting</> : 'Delete'}
+            {deleting ? <><span className="dash-spinner" /> Deleting</> : one ? 'Delete' : `Delete ${items.length} videos`}
           </button>
         </div>
       </div>

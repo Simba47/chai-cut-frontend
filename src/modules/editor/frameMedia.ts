@@ -12,6 +12,8 @@ export interface FrameMediaPool {
   image: (url: string) => HTMLImageElement | null
   /** Call every frame with the format being shown; plays/pauses/seeks its videos to match */
   sync: (seg: SegmentLocal | null, clipMs: number, playing: boolean, main?: HTMLVideoElement | null) => void
+  /** The editor's "Original video sound" level (0–1): scales the main video's sound everywhere */
+  setMainGain: (gain: number) => void
   dispose: () => void
 }
 
@@ -60,12 +62,16 @@ export function createFrameMediaPool(getVideoUrl: (videoId: string) => string | 
     return img
   }
 
+  let mainGain = 1
+  function setMainGain(gain: number) { mainGain = Math.max(0, Math.min(1, gain)) }
+
   function sync(seg: SegmentLocal | null, clipMs: number, playing: boolean, main?: HTMLVideoElement | null) {
     const frame = seg && isFrameLayout(seg.layout) ? frameOf(seg) : null
     // The main video's own sound in this frame
     if (main) {
       // Every slot showing the main video adds its own sound (one element: capped at full volume)
-      const vol = frame ? Math.min(1, mainAudioVolume(frame)) : 1
+      // …scaled by the editor's "Original video sound" level
+      const vol = (frame ? Math.min(1, mainAudioVolume(frame)) : 1) * mainGain
       if (Math.abs(main.volume - vol) > 0.01) main.volume = Math.max(0, Math.min(1, vol))
     }
     const inUse = new Set<string>()
@@ -106,5 +112,5 @@ export function createFrameMediaPool(getVideoUrl: (videoId: string) => string | 
     images.clear()
   }
 
-  return { video, image, sync, dispose }
+  return { video, image, sync, setMainGain, dispose }
 }

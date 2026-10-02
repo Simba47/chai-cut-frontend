@@ -3,11 +3,12 @@
 import { useRef, useEffect, useCallback, useState, useMemo, useId } from 'react'
 import type { RefObject } from 'react'
 import type { SegmentLocal, Overlay, TextOverlay as TextOverlayType, CaptionStyle, TranscriptWord, FrameItem, FrameLane, CornerStyle } from '@chai-cut/shared'
+import { BG_PAD, shownText, textCss, textReplayElapsed, withAlpha } from '@/modules/editor/textStyle'
 import type { BoxPosition } from '@/lib/interpolation'
 import type { TextCase } from './CaptionStyler'
 import { applyCase } from './CaptionStyler'
 import { normalizedSlotAspect, fitToAspect } from '@/modules/editor/utils'
-import { isFrameLayout, frameSlotLabels, frameLanesFor, frameBandShown, frameOf, itemAt, captionBandAt, cornerGeometry } from '@/modules/editor/frames'
+import { isFrameLayout, frameSlotLabels, frameLanesFor, frameBandShown, frameOf, itemAt, captionBandAt, cornerGeometry, frameRows } from '@/modules/editor/frames'
 import type { FrameMediaPool } from '@/modules/editor/frameMedia'
 
 const BOX_COLORS = ['#22c55e', '#3b82f6', '#f59e0b']
@@ -88,7 +89,11 @@ export function VideoPreview({
           const boxes = activeSegment.crop_boxes.slice(0, count)
             // In a frame only the slots showing the main video are framed on it
             .filter(box => !mainSlots || mainSlots.includes(box.slot_index))
-            .map(box => ({ box, label: labels?.[box.slot_index] ?? String(box.slot_index + 1), pos: fitToAspect(getPositionAt(box.id, currentTimeMs), aspect) }))
+            .map(box => {
+              // Slots can differ in shape (Big + Small): each box is locked to its own slot's
+              const a = frame ? normalizedSlotAspect(layout, videoAR ?? undefined, frameBandShown(activeSegment), box.slot_index) : aspect
+              return { box, aspect: a, label: labels?.[box.slot_index] ?? String(box.slot_index + 1), pos: fitToAspect(getPositionAt(box.id, currentTimeMs), a) }
+            })
           return (
             <div className="absolute inset-0" style={{ pointerEvents: 'none', zIndex: 10 }}>
               {/* One shared dim layer with a hole per box, so boxes never darken each other */}
@@ -101,7 +106,7 @@ export function VideoPreview({
                 </defs>
                 <rect x="0" y="0" width="1" height="1" fill="rgba(0,0,0,0.55)" mask={`url(#${maskId})`} />
               </svg>
-              {boxes.map(({ box, pos, label }, slotIdx) => (
+              {boxes.map(({ box, pos, label, aspect }, slotIdx) => (
                 <DraggableBox
                   key={box.id}
                   pos={pos}
@@ -341,9 +346,17 @@ function paintFrame(
   const frame = frameOf(seg)
   const main = new Set(frame.main_slots ?? [0])
   const bandBg = frame.band?.bg || '#000000'
+  // Caption strip (no lane): a plain band the captions are drawn on
+  for (const r of frameRows(seg.layout as Parameters<typeof frameRows>[0])) {
+    if (r.kind !== 'caption') continue
+    ctx.fillStyle = bandBg
+    ctx.fillRect(0, Math.round(r.y * H), W, Math.round((r.y + r.h) * H) - Math.round(r.y * H))
+  }
   for (const row of frameLanesFor(seg)) {
     const y = Math.round(row.y * H), h = Math.round((row.y + row.h) * H) - Math.round(row.y * H)
-    const it = itemAt(frame, row.lane, tMs, seg)
+    // A hidden item (kept only for its sound) isn't drawn: what's under it shows
+    const at = itemAt(frame, row.lane, tMs, seg)
+    const it = at?.hidden ? null : at
     if (row.lane === 'band') {
       ctx.fillStyle = bandBg
       ctx.fillRect(0, y, W, h)
@@ -385,6 +398,9 @@ function paintSegment(
   tMs: number,
   getPositionAt: (id: string, t: number) => BoxPosition,
   pool?: FrameMediaPool | null,
+  /** A split/trio slot's own picture (a borrowed reaction from another moment): null = draw `video`,
+   *  false = it has its own picture but it isn't ready (stays dark for that moment, never the wrong one) */
+  slotSource?: ((seg: SegmentLocal, box: SegmentLocal['crop_boxes'][number]) => HTMLVideoElement | null | false) | null,
 ) {
   if (seg && isFrameLayout(seg.layout)) { paintFrame(ctx, video, seg, tMs, getPositionAt, pool); return }
   const W = ctx.canvas.width, H = ctx.canvas.height
@@ -414,17 +430,24 @@ function paintSegment(
     } else {
       ctx.drawImage(video, p.x * vW, p.y * vH, srcW, srcH, 0, 0, W, H)
     }
-  } else if (layout === 'split') {
-    const slotH = H / 2
-    crop_boxes.slice(0, 2).forEach((box, i) => {
+  } else if (layout === 'split' || layout === 'trio') {
+    const n = layout === 'split' ? 2 : 3
+    const slotH = H / n
+    crop_boxes.slice(0, n).forEach((box, i) => {
       const p = getPositionAt(box.id, tMs)
-      coverCrop(ctx, video, p.x * vW, p.y * vH, p.w * vW, p.h * vH, 0, i * slotH, W, slotH)
-    })
-  } else if (layout === 'trio') {
-    const slotH = H / 3
-    crop_boxes.slice(0, 3).forEach((box, i) => {
-      const p = getPositionAt(box.id, tMs)
-      coverCrop(ctx, video, p.x * vW, p.y * vH, p.w * vW, p.h * vH, 0, i * slotH, W, slotH)
+      const own = slotSource?.(seg, box)
+      // A borrowed slot still loading stays dark for a moment rather than showing the wrong moment
+      if (own === false || (own && own.readyState < 2)) return
+      const src = own ?? video
+      const sW = own ? own.videoWidth || vW : vW, sH = own ? own.videoHeight || vH : vH
+      // A slot framing the whole picture (a related visual) shows it whole, fitted with bars,
+      // as the export does (render.py _is_full_frame)
+      if (p.x < 0.005 && p.y < 0.005 && p.w > 0.995 && p.h > 0.995) {
+        const k = Math.min(W / sW, slotH / sH)
+        ctx.drawImage(src, 0, 0, sW, sH, (W - sW * k) / 2, i * slotH + (slotH - sH * k) / 2, sW * k, sH * k)
+        return
+      }
+      coverCrop(ctx, src, p.x * sW, p.y * sH, p.w * sW, p.h * sH, 0, i * slotH, W, slotH)
     })
   } else if (layout === 'horizontal') {
     const box = crop_boxes[0]; if (!box) return
@@ -443,7 +466,7 @@ const CAPTION_GAP_MS = 300
 // Tag words whose timestamps were estimated from a phrase-level Sarvam token.
 type FlatWord = TranscriptWord & { _est?: true }
 
-function buildCaptionChunks(words: TranscriptWord[]): FlatWord[][] {
+function buildCaptionChunks(words: TranscriptWord[], maxWords = CAPTION_MAX_WORDS): FlatWord[][] {
   if (words.length === 0) return []
   const sorted = [...words].sort((a, b) => a.start_ms - b.start_ms)
   const chunks: FlatWord[][] = []
@@ -465,7 +488,7 @@ function buildCaptionChunks(words: TranscriptWord[]): FlatWord[][] {
       const gap = prev ? w.start_ms - prev.end_ms : 0
       // A different speaker always starts a new line (never mix two people's words)
       const speakerChange = !!prev && prev.speaker_id != null && w.speaker_id != null && prev.speaker_id !== w.speaker_id
-      if (wordChunk.length >= CAPTION_MAX_WORDS || (prev && gap > CAPTION_GAP_MS) || speakerChange) {
+      if (wordChunk.length >= maxWords || (prev && gap > CAPTION_GAP_MS) || speakerChange) {
         flushWordChunk()
       }
       wordChunk.push(w)
@@ -479,12 +502,12 @@ function buildCaptionChunks(words: TranscriptWord[]): FlatWord[][] {
       // phrase start/end instead of drifting with character-count estimates.
       flushWordChunk()
 
-      const numDisplayChunks = Math.ceil(parts.length / CAPTION_MAX_WORDS)
+      const numDisplayChunks = Math.ceil(parts.length / maxWords)
       const phraseDurMs = w.end_ms - w.start_ms
       const chunkDurMs = phraseDurMs / numDisplayChunks
 
       for (let ci = 0; ci < numDisplayChunks; ci++) {
-        const chunkWords = parts.slice(ci * CAPTION_MAX_WORDS, (ci + 1) * CAPTION_MAX_WORDS)
+        const chunkWords = parts.slice(ci * maxWords, (ci + 1) * maxWords)
         const chunkStartMs = Math.round(w.start_ms + ci * chunkDurMs)
         const chunkEndMs = ci === numDisplayChunks - 1
           ? w.end_ms
@@ -528,6 +551,187 @@ function findCaptionChunk(chunks: FlatWord[][], tMs: number) {
   return chunks.find(c => tMs >= c[0].start_ms && tMs <= c[c.length - 1].end_ms) ?? null
 }
 
+// ── Animated caption presets ──────────────────────────────────────────────────
+// Mirrors render.py _preset_events: same lines, timing and colours as the export.
+//   pop       — each word appears when spoken, scaling 80% → 110% → 100% in 150 ms
+//   highlight — 3 words a line; a highlight_color box behind the spoken word
+//   bounce    — the line slides up into place and fades in; the spoken word in highlight_color
+//   word      — one big word at a time, centre screen
+//   hormozi   — 3 capitalised words a line, thick outline; the spoken word in highlight_color, 115%
+//   box       — the line on a dark box, no outline; the spoken word in highlight_color
+//   glow      — words glow in highlight_color; the spoken word bright, the others dimmed
+// Emphasised words (style.emphasis, keyed by the word's start_ms) are highlight_color and 15% larger.
+
+export const PRESET_ANIMATIONS = ['pop', 'highlight', 'bounce', 'word', 'hormozi', 'box', 'glow'] as const
+const isPreset = (a?: string | null) => (PRESET_ANIMATIONS as readonly string[]).includes(a ?? '')
+const POP_MS = 150
+const BOUNCE_MS = 180
+const BOX_PAD = 14
+const WORD_SCALE = 1.5
+const EMPHASIS_SCALE = 1.15
+const HORMOZI_SCALE = 1.15      // the spoken word
+const HORMOZI_STROKE = 2        // added to the outline
+const LINE_BOX = 'rgba(0,0,0,0.62)'   // box preset (render.py &H60000000)
+const GLOW_BLUR = 6             // px at 1080 wide
+const GLOW_DIM = 0.65           // the words not being spoken
+
+/** The karaoke colour of the spoken word: the highlight colour, unless it is the text's own */
+export function karaokeLive(color: string, hl: string) {
+  if (hl.toLowerCase() !== color.toLowerCase()) return hl
+  return color.toLowerCase() === '#ffffff' ? '#FFE700' : '#FFFFFF'
+}
+
+// The export draws captions with these bundled fonts (render.py _FONT_FILES; anything else falls
+// back to Roboto) through libass, which sizes a font so its full height (OS/2 winAscent +
+// winDescent) equals the caption size. The preview loads the same files (public/caption-fonts)
+// and applies the same factor (unitsPerEm / (winAscent + winDescent)), so preset captions come
+// out the size they will be in the download.
+const EXPORT_FONTS: Record<string, { family: string; file: string; em: number }> = {
+  'noto-sans-telugu':     { family: 'CC Noto Sans Telugu', file: 'NotoSansTelugu-Regular.ttf', em: 0.677 },
+  'noto-sans-devanagari': { family: 'CC Noto Sans Devanagari', file: 'NotoSansDevanagari-Regular.ttf', em: 0.525 },
+  'roboto':               { family: 'CC Roboto', file: 'Roboto-Regular.ttf', em: 0.758 },
+  'montserrat-bold':      { family: 'CC Montserrat Bold', file: 'Montserrat-Bold.ttf', em: 0.640 },
+}
+const loadedExportFonts = new Set<string>()
+function exportFont(id?: string | null) {
+  const f = EXPORT_FONTS[id ?? ''] ?? EXPORT_FONTS.roboto
+  if (!loadedExportFonts.has(f.family) && typeof FontFace !== 'undefined') {
+    loadedExportFonts.add(f.family)
+    new FontFace(f.family, `url(/caption-fonts/${f.file})`).load()
+      .then(face => document.fonts.add(face))
+      .catch(() => loadedExportFonts.delete(f.family))
+  }
+  return f
+}
+
+/** Words per caption line for a style (render.py _preset_events uses the same rule) */
+export function captionWordsPerLine(style: Partial<CaptionStyle>) {
+  if (style.animation === 'word') return 1
+  if (style.words_per_line) return Math.max(1, Math.min(8, style.words_per_line))
+  return style.animation === 'highlight' || style.animation === 'hormozi' ? 3 : CAPTION_MAX_WORDS
+}
+
+/** Black or white, whichever reads on a box of this colour (render.py _text_on) */
+function textOn(hex: string) {
+  let h = hex.replace('#', '')
+  if (h.length === 3) h = h.split('').map(c => c + c).join('')
+  const r = parseInt(h.slice(0, 2), 16), g = parseInt(h.slice(2, 4), 16), b = parseInt(h.slice(4, 6), 16)
+  return 0.299 * r + 0.587 * g + 0.114 * b > 150 ? '#000000' : '#FFFFFF'
+}
+
+function drawPresetCaptions(
+  ctx: CanvasRenderingContext2D,
+  chunk: FlatWord[],
+  tMs: number,
+  style: Partial<CaptionStyle>,
+  band?: { y: number; h: number } | null,
+) {
+  const W = ctx.canvas.width, H = ctx.canvas.height
+  const k = W / 1080                                   // export is laid out at 1080 wide
+  const anim = style.animation!
+  const color = style.color ?? '#FFFFFF'
+  const hl = style.highlight_color ?? '#FFE700'
+  const stroke = ((style.stroke_width ?? 4) + (anim === 'hormozi' ? HORMOZI_STROKE : 0)) * k * (anim === 'box' ? 0 : 1)
+  const upper = style.uppercase || anim === 'hormozi'
+  const emphasis = style.emphasis ?? {}
+  const baseScale = anim === 'word' ? WORD_SCALE : 1
+  // The Noto Indic fonts have no Latin letters: Roman-letter captions use Roboto (as render.py)
+  const font = exportFont(style.language === 'roman' ? 'roboto' : style.font)
+  const fontPx = (style.size ?? 52) * k * font.em
+  const fontFamily = `"${font.family}", sans-serif`
+  const lineStart = chunk[0].start_ms
+  const lineEnd = chunk[chunk.length - 1].end_ms
+
+  const posY = style.position_y ?? (anim === 'word' ? 0.5 : 0.84)
+  let y = band ? (band.y + band.h / 2) * H : posY * H
+  let alpha = 1
+  if (anim === 'bounce') {
+    const p = Math.min(1, Math.max(0, (tMs - lineStart) / BOUNCE_MS))
+    y += (1 - p) * H * 0.02
+    alpha = Math.min(1, Math.max(0, (tMs - lineStart) / 80))
+  }
+
+  // Per word: text, scale, colour, visibility, spoken
+  const items = chunk.map((w, j) => {
+    const text = upper ? w.word.toUpperCase() : w.word
+    const on = w.start_ms, off = chunk[j + 1]?.start_ms ?? lineEnd
+    const emph = !!emphasis[String(w.start_ms)]
+    let scale = baseScale * (emph ? EMPHASIS_SCALE : 1)
+    let visible = true
+    if (anim === 'pop' || anim === 'word') {
+      const dt = tMs - on
+      if (dt < 0) { visible = false; scale *= 0.8 }
+      else if (dt < POP_MS / 2) scale *= 0.8 + 0.3 * (dt / (POP_MS / 2))
+      else if (dt < POP_MS) scale *= 1.1 - 0.1 * ((dt - POP_MS / 2) / (POP_MS / 2))
+    }
+    const spoken = tMs >= on && tMs < off
+    if (anim === 'hormozi' && spoken) scale *= HORMOZI_SCALE
+    const rest = emph ? hl : color
+    const fill = anim === 'word' || anim === 'glow' ? rest : spoken ? (anim === 'highlight' ? textOn(hl) : hl) : rest
+    return { text, scale, visible, spoken, fill }
+  })
+
+  ctx.save()
+  ctx.globalAlpha = alpha
+  ctx.textBaseline = 'middle'
+  ctx.lineJoin = 'round'
+  const widthOf = (it: typeof items[number]) => {
+    ctx.font = `700 ${fontPx * it.scale}px ${fontFamily}`
+    return ctx.measureText(it.text).width
+  }
+  ctx.font = `700 ${fontPx}px ${fontFamily}`
+  const space = ctx.measureText(' ').width
+  const widths = items.map(widthOf)
+  const total = widths.reduce((a, b) => a + b, 0) + space * (items.length - 1)
+  let x = (W - total) / 2
+  if (anim === 'box') {
+    // One box round the whole line (libass BorderStyle 3: the text's full height plus the padding)
+    const pad = BOX_PAD * k, hPx = fontPx / font.em
+    ctx.fillStyle = LINE_BOX
+    ctx.fillRect(x - pad, y - hPx / 2 - pad, total + pad * 2, hPx + pad * 2)
+  }
+  items.forEach((it, j) => {
+    const w = widths[j]
+    ctx.font = `700 ${fontPx * it.scale}px ${fontFamily}`
+    if (it.visible && anim === 'glow') {
+      // libass blurs the 3 px outline: a soft halo, not a solid ring
+      const a = alpha * (it.spoken ? 1 : GLOW_DIM)
+      ctx.globalAlpha = a * 0.45
+      ctx.shadowColor = hl
+      ctx.shadowBlur = GLOW_BLUR * 2 * k
+      ctx.lineWidth = 3 * 2 * k
+      ctx.strokeStyle = hl
+      ctx.textAlign = 'left'
+      ctx.strokeText(it.text, x, y)
+      ctx.shadowBlur = 0
+      ctx.shadowColor = 'transparent'
+      ctx.globalAlpha = a
+      ctx.fillStyle = it.fill
+      ctx.fillText(it.text, x, y)
+      ctx.globalAlpha = alpha
+    } else if (it.visible) {
+      if (anim === 'highlight' && it.spoken) {
+        // libass boxes the font's full height (the caption size) plus the padding
+        const pad = BOX_PAD * k, hPx = (fontPx / font.em) * it.scale
+        ctx.fillStyle = hl
+        ctx.fillRect(x - pad, y - hPx / 2 - pad, w + pad * 2, hPx + pad * 2)
+      } else {
+        ctx.shadowColor = 'rgba(0,0,0,0.5)'
+        ctx.shadowOffsetX = ctx.shadowOffsetY = 2 * k
+        ctx.lineWidth = stroke * 2
+        ctx.strokeStyle = '#000000'
+        if (stroke > 0) ctx.strokeText(it.text, x, y)
+        ctx.shadowColor = 'transparent'
+      }
+      ctx.fillStyle = it.fill
+      ctx.textAlign = 'left'
+      ctx.fillText(it.text, x, y)
+    }
+    x += w + space
+  })
+  ctx.restore()
+}
+
 function drawCaptions(
   ctx: CanvasRenderingContext2D,
   chunks: FlatWord[][],
@@ -540,21 +744,30 @@ function drawCaptions(
   const W = ctx.canvas.width, H = ctx.canvas.height
   const chunk = findCaptionChunk(chunks, tMs)
   if (!chunk) return
+  if (isPreset(style.animation)) { drawPresetCaptions(ctx, chunk, tMs, style, band); return }
 
   const color     = style.color    ?? '#FFFFFF'
   const animation = style.animation ?? 'karaoke'
 
-  const fontSize   = Math.round(Math.min(((style.size ?? 48) / 1080) * W, W / 18))
+  // As the export draws these (render.py _write_ass, Default style): the bundled font (Roboto for
+  // Roman letters or any other font), sized the way libass sizes it, regular weight, a 3 px black
+  // outline and a 2 px half-black shadow (px at 1080 wide)
+  const k          = W / 1080
+  const font       = exportFont(style.language === 'roman' ? 'roboto' : style.font)
+  const fontSize   = Math.round((style.size ?? 52) * k * font.em)
   const lineHeight = Math.round(fontSize * 1.4)
   const PAD_X      = Math.round(W * 0.05)
   const maxLineW   = W - PAD_X * 2
-  const fontFamily = style.font ?? 'sans-serif'
+  const fontFamily = `"${font.family}", sans-serif`
 
   ctx.save()
-  ctx.font         = `700 ${fontSize}px ${fontFamily}`
+  ctx.font         = `400 ${fontSize}px ${fontFamily}`
   ctx.textBaseline = 'middle'
-  ctx.shadowColor  = 'rgba(0,0,0,0.92)'
-  ctx.shadowBlur   = 9
+  ctx.lineJoin     = 'round'
+  ctx.lineWidth    = 2 * 3 * k
+  ctx.strokeStyle  = '#000000'
+  ctx.shadowColor  = 'rgba(0,0,0,0.5)'
+  ctx.shadowOffsetX = ctx.shadowOffsetY = 2 * k
 
   // Words are already single-token after buildCaptionChunks explodes phrases.
   const wordTexts = chunk.map(w => applyCase(w.word, textCase))
@@ -576,14 +789,17 @@ function drawCaptions(
   const totalH = lines.length * lineHeight
   const yBase  = band
     ? (band.y + band.h / 2) * H - totalH / 2 + lineHeight / 2
-    : (style.position_y ?? 0.84) * H - totalH + lineHeight / 2
+    // centred on position_y, as libass centres the line there (\pos with alignment 5)
+    : (style.position_y ?? 0.84) * H - totalH / 2 + lineHeight / 2
 
   // Only do per-word karaoke when timestamps are real (not evenly distributed from a phrase split).
   // Estimated words (_est=true) have proportional-but-approximate timestamps that look wrong when highlighted.
   const hasEstimated = chunk.some(w => w._est)
+  // A word stays lit until the next one starts (render.py _write_ass does the same)
   const activeWIdx = (animation === 'karaoke' && !hasEstimated)
-    ? chunk.findIndex(w => tMs >= w.start_ms && tMs <= w.end_ms)
+    ? chunk.findIndex((w, j) => tMs >= w.start_ms && tMs < (chunk[j + 1]?.start_ms ?? w.end_ms + 1))
     : -1
+  const live = karaokeLive(color, style.highlight_color ?? '#FFE700')
 
   // Track cumulative word index so each token maps to its chunk position.
   let wordOffset = 0
@@ -597,6 +813,7 @@ function drawCaptions(
     if (!activeInLine) {
       ctx.fillStyle = color
       ctx.textAlign = 'center'
+      ctx.strokeText(ln.join(' '), W / 2, y)
       ctx.fillText(ln.join(' '), W / 2, y)
     } else {
       const spW    = ctx.measureText(' ').width
@@ -605,7 +822,8 @@ function drawCaptions(
       let x        = (W - rowW) / 2
       ln.forEach((word, i) => {
         ctx.textAlign = 'left'
-        ctx.fillStyle = color
+        ctx.fillStyle = lineStart + i === activeWIdx ? live : color
+        ctx.strokeText(word, x, y)
         ctx.fillText(word, x, y)
         x += widths[i] + (i < ln.length - 1 ? spW : 0)
       })
@@ -621,29 +839,184 @@ function drawTextOverlays(
   ctx: CanvasRenderingContext2D,
   overlays: TextOverlayType[],
   tMs: number,
+  paused = false,
 ) {
-  const W = ctx.canvas.width, H = ctx.canvas.height
   for (const o of overlays) {
-    if (tMs < o.start_ms || tMs >= o.end_ms) continue
-    const x = (o.x ?? 0.1) * W
-    const y = (o.y ?? 0.4) * H
-    const fontSize = Math.max(14, Math.round(((o.size ?? 72) / 1080) * H))
-    const fontFamily = o.font ?? 'sans-serif'
-    ctx.save()
-    ctx.font = `700 ${fontSize}px ${fontFamily}`
-    ctx.textBaseline = 'top'
-    ctx.shadowColor = 'rgba(0,0,0,0.85)'
-    ctx.shadowBlur = 8
-    ctx.fillStyle = o.color ?? '#ffffff'
-    ctx.fillText(o.text, x, y)
-    ctx.restore()
+    // A text whose animation was just picked replays it now, even outside its time or while paused
+    const replay = textReplayElapsed(o.id)
+    if (replay == null && (tMs < o.start_ms || tMs >= o.end_ms)) continue
+    if (o.x == null) { drawCenteredText(ctx, o); continue }
+    // Time into the entrance: the replay's; paused = finished (never stuck invisible on its first
+    // frame); playing = from when the text starts
+    const elapsed = replay ?? (paused ? Infinity : tMs - o.start_ms)
+    drawStyledText(ctx, o, elapsed)
   }
+}
+
+/**
+ * One positioned text with its Text-tool styling: weight, italic, capitals, letter spacing,
+ * opacity, rotation, outline, background box, shadow / glow, and its entrance animation
+ * (`elapsed` = ms since the text came in). Sizes are px at 1080 wide, like the export.
+ * (The panel's tiles show the same look in CSS: modules/editor/textStyle.ts)
+ */
+function drawStyledText(ctx: CanvasRenderingContext2D, o: TextOverlayType, elapsed: number) {
+  const W = ctx.canvas.width, H = ctx.canvas.height
+  const k = W / 1080
+  const fontSize = Math.max(8, Math.round((o.size ?? 72) * k))
+  // A bundled font id (e.g. 'roboto') draws with the export's own file, as drawtext does
+  const bundled = EXPORT_FONTS[o.font ?? ''] ? exportFont(o.font) : null
+  const fontFamily = bundled ? `"${bundled.family}", sans-serif` : (o.font ?? 'sans-serif')
+  const weight = o.weight ?? (bundled ? 400 : 700)
+  const full = shownText(o)
+
+  // Entrance animation over the first moments the text is on screen
+  const dt = elapsed
+  const anim = o.animation ?? 'none'
+  const long = anim === 'drop' || anim === 'bounce' || anim === 'spin' || anim === 'glitch' || anim === 'flicker'
+  const p = Math.max(0, Math.min(1, dt / (long ? 620 : 400)))
+  const ease = 1 - Math.pow(1 - p, 3)
+  const back = (q: number) => { const c = 2.2; return 1 + (c + 1) * Math.pow(q - 1, 3) + c * Math.pow(q - 1, 2) }
+  const bounceOut = (q: number) => {
+    const n = 7.5625, d = 2.75
+    if (q < 1 / d) return n * q * q
+    if (q < 2 / d) return n * (q -= 1.5 / d) * q + 0.75
+    if (q < 2.5 / d) return n * (q -= 2.25 / d) * q + 0.9375
+    return n * (q -= 2.625 / d) * q + 0.984375
+  }
+  const elastic = (q: number) => q <= 0 ? 0 : q >= 1 ? 1 : Math.pow(2, -10 * q) * Math.sin((q * 10 - 0.75) * (2 * Math.PI) / 3) + 1
+  let alpha = Math.max(0, Math.min(1, o.opacity ?? 1))
+  let scale = 1, dx = 0, dy = 0, spin = 0, blur = 0, wipe = 1, glitch = 0, text = full
+  switch (anim) {
+    case 'fade': alpha *= ease; break
+    case 'pop': scale = p >= 1 ? 1 : 0.6 + 0.4 * back(p); alpha *= Math.min(1, p * 2.5); break
+    case 'zoom-in': scale = 0.3 + 0.7 * ease; alpha *= ease; break
+    case 'zoom-out': scale = 1.8 - 0.8 * ease; alpha *= ease; break
+    case 'blur': blur = (1 - ease) * 14; alpha *= ease; break
+    case 'slide': dy = (1 - ease) * 0.05 * H; alpha *= ease; break
+    case 'slide-down': dy = -(1 - ease) * 0.05 * H; alpha *= ease; break
+    case 'slide-left': dx = (1 - ease) * 0.08 * W; alpha *= ease; break
+    case 'slide-right': dx = -(1 - ease) * 0.08 * W; alpha *= ease; break
+    case 'drop': dy = -(1 - bounceOut(p)) * 0.14 * H; alpha *= Math.min(1, p * 4); break
+    case 'bounce': scale = p >= 1 ? 1 : Math.max(0.05, elastic(p)); break
+    case 'spin': spin = (1 - ease) * -200; scale = 0.4 + 0.6 * ease; alpha *= ease; break
+    case 'wipe': wipe = ease; break
+    case 'flicker': if (p < 1) alpha *= [1, 0.15, 0.9, 0.1, 1, 0.4, 1][Math.floor(p * 7)] ?? 1; break
+    case 'glitch': if (p < 1) { glitch = 1 - p; dx = Math.sin(dt * 0.9) * 10 * (W / 1080) * glitch } break
+    case 'typewriter': {
+      const span = Math.max(400, full.length * 45)
+      text = full.slice(0, Math.ceil(full.length * Math.max(0, Math.min(1, dt / span))))
+      break
+    }
+  }
+  if (alpha <= 0) return
+
+  ctx.save()
+  ctx.font = `${o.italic ? 'italic ' : ''}${weight} ${fontSize}px ${fontFamily}`
+  ctx.textBaseline = 'top'
+  const spacing = (o.letter_spacing ?? 0) * k
+  if ('letterSpacing' in ctx) (ctx as CanvasRenderingContext2D & { letterSpacing: string }).letterSpacing = `${spacing}px`
+  // Size from the whole text, so the box doesn't grow while typing in
+  const textW = ctx.measureText(full).width
+  const lineH = fontSize * 1.15
+  const padX = o.bg_color ? fontSize * BG_PAD.x : 0
+  const padY = o.bg_color ? fontSize * BG_PAD.y : 0
+  const boxW = textW + padX * 2, boxH = lineH + padY * 2
+  const x = (o.x ?? 0.1) * W, y = (o.y ?? 0.4) * H + dy
+
+  ctx.globalAlpha = alpha
+  if (blur > 0.2) ctx.filter = `blur(${blur * k}px)`
+  // Move, rotate, spin and scale around the middle of the text
+  const cx = x + dx + boxW / 2, cy = y + boxH / 2
+  ctx.translate(cx, cy)
+  const turn = (o.rotation ?? 0) + spin
+  if (turn) ctx.rotate((turn * Math.PI) / 180)
+  if (scale !== 1) ctx.scale(scale, scale)
+  ctx.translate(-cx + dx, -cy)
+  // Wipe: reveal from left to right
+  if (wipe < 1) { ctx.beginPath(); ctx.rect(x - 4 * k, y - boxH, (boxW + 8 * k) * wipe, boxH * 3); ctx.clip() }
+
+  // Background box
+  if (o.bg_color) {
+    ctx.fillStyle = withAlpha(o.bg_color, o.bg_opacity ?? 1)
+    const r = Math.min((o.bg_radius ?? 12) * k, boxH / 2)
+    ctx.beginPath()
+    ctx.roundRect(x, y, boxW, boxH, r)
+    ctx.fill()
+  }
+
+  // Shadow (none · soft · hard · glow); the default keeps the original soft 2 px shadow
+  const shadow = o.shadow ?? 'soft'
+  if (shadow === 'soft') { ctx.shadowColor = 'rgba(0,0,0,0.7)'; ctx.shadowBlur = 8 * k; ctx.shadowOffsetX = 0; ctx.shadowOffsetY = 2 * k }
+  else if (shadow === 'hard') { ctx.shadowColor = o.shadow_color ?? '#000000'; ctx.shadowBlur = 0; ctx.shadowOffsetX = ctx.shadowOffsetY = 6 * k }
+  else if (shadow === 'glow') { ctx.shadowColor = o.shadow_color ?? o.color ?? '#ffffff'; ctx.shadowBlur = 24 * k; ctx.shadowOffsetX = ctx.shadowOffsetY = 0 }
+  if (o.bg_color) { ctx.shadowColor = 'transparent' }
+
+  const tx = x + padX, ty = y + padY + (lineH - fontSize) / 2
+  // Outline first (it carries the shadow), then the fill on top
+  if (o.stroke_color && (o.stroke_width ?? 0) > 0) {
+    ctx.lineJoin = 'round'
+    ctx.lineWidth = 2 * (o.stroke_width ?? 0) * k
+    ctx.strokeStyle = o.stroke_color
+    ctx.strokeText(text, tx, ty)
+    if (shadow !== 'glow') ctx.shadowColor = 'transparent'
+  }
+  ctx.fillStyle = o.color ?? '#ffffff'
+  ctx.fillText(text, tx, ty)
+  // A glow reads stronger with a second pass
+  if (shadow === 'glow' && !o.bg_color) ctx.fillText(text, tx, ty)
+  // Glitch: red and cyan copies split off either side for a moment
+  if (glitch > 0) {
+    ctx.shadowColor = 'transparent'
+    ctx.globalAlpha = alpha * 0.7 * glitch
+    const off = 8 * k * glitch
+    ctx.fillStyle = '#ff2a55'; ctx.fillText(text, tx - off, ty)
+    ctx.fillStyle = '#22e5ff'; ctx.fillText(text, tx + off, ty)
+  }
+  ctx.restore()
+}
+
+/**
+ * A text overlay with no x (the AI hook): centred, in the export's font and size, shrunk to fit
+ * 90% of the width — as render.py draws it (drawtext x=(w-text_w)/2, _fit_font_size).
+ */
+function drawCenteredText(ctx: CanvasRenderingContext2D, o: TextOverlayType) {
+  const W = ctx.canvas.width, H = ctx.canvas.height
+  const font = EXPORT_FONTS[o.font ?? ''] ? exportFont(o.font) : null
+  const family = font ? `"${font.family}", sans-serif` : (o.font ?? 'sans-serif')
+  const weight = font ? 400 : 700                      // drawtext uses the font file as it is
+  let px = (o.size ?? 48) * W / 1080
+  ctx.save()
+  ctx.font = `${weight} ${px}px ${family}`
+  const width = ctx.measureText(o.text).width
+  if (width > W * 0.9) px = Math.max(28 * W / 1080, px * (W * 0.9) / width)
+  ctx.font = `${weight} ${px}px ${family}`
+  ctx.textAlign = 'center'
+  ctx.textBaseline = 'top'
+  ctx.shadowColor = 'rgba(0,0,0,0.7)'
+  ctx.shadowOffsetX = ctx.shadowOffsetY = 2 * W / 1080
+  // Black outline, as drawtext borderw=4 (px at 1080 wide)
+  ctx.lineJoin = 'round'
+  ctx.lineWidth = 2 * Math.max(2, 4 * W / 1080)
+  ctx.strokeStyle = '#000000'
+  ctx.strokeText(o.text, W / 2, (o.y ?? 0.15) * H)
+  ctx.shadowColor = 'transparent'
+  ctx.fillStyle = o.color ?? '#ffffff'
+  ctx.fillText(o.text, W / 2, (o.y ?? 0.15) * H)
+  ctx.restore()
 }
 
 // ── 9:16 output canvas ────────────────────────────────────────────────────────
 
 interface OutputCanvasProps {
   videoRef: RefObject<HTMLVideoElement | null>
+  /** The format at a clip time, read on every frame (instead of activeSegment, which follows React renders) */
+  segmentAt?: (clipMs: number) => SegmentLocal | null
+  /** Cut straight to the next format, as the export does (no crossfade) */
+  hardCuts?: boolean
+  /** The video a format shows, when it isn't the main one (B-roll) */
+  sourceFor?: (seg: SegmentLocal | null) => HTMLVideoElement | null
+  /** Split/trio slots that show their own picture (borrowed reactions): see useBorrowedSlots */
+  slotSourceFor?: (seg: SegmentLocal | null, box: SegmentLocal['crop_boxes'][number]) => HTMLVideoElement | null | false
   currentTimeMs: number
   clipStartMs?: number
   activeSegment: SegmentLocal | null
@@ -681,7 +1054,7 @@ interface OutputCanvasProps {
 }
 
 export function OutputCanvas({
-  videoRef, currentTimeMs, clipStartMs = 0, activeSegment, getPositionAt,
+  videoRef, currentTimeMs, clipStartMs = 0, activeSegment, getPositionAt, segmentAt, hardCuts = false, sourceFor, slotSourceFor,
   overlays = [], activeOverlayId, onOverlayChange, onSelectOverlay, onDeleteOverlay,
   className, style, skipTransitionRef,
   words, captionStyle, captionTextCase = 'title', showCaptions = false,
@@ -699,6 +1072,14 @@ export function OutputCanvas({
   const clipStartMsRef   = useRef(clipStartMs)
   const getPositionAtRef = useRef(getPositionAt)
   activeSegmentRef.current = activeSegment
+  const segmentAtRef = useRef(segmentAt)
+  segmentAtRef.current = segmentAt
+  const sourceForRef = useRef(sourceFor)
+  sourceForRef.current = sourceFor
+  const slotSourceForRef = useRef(slotSourceFor)
+  slotSourceForRef.current = slotSourceFor
+  const hardCutsRef = useRef(hardCuts)
+  hardCutsRef.current = hardCuts
   currentTimeMsRef.current = currentTimeMs
   clipStartMsRef.current   = clipStartMs
   getPositionAtRef.current = getPositionAt
@@ -722,9 +1103,13 @@ export function OutputCanvas({
   // Rebuild only when the words array identity changes.
   const captionChunksRef  = useRef<FlatWord[][]>([])
   const prevWordsRef      = useRef<typeof words>(undefined)
-  if (words !== prevWordsRef.current) {
+  // Presets change how many words a line holds
+  const wordsPerLine = captionWordsPerLine(captionStyle ?? {})
+  const prevPerLineRef    = useRef(wordsPerLine)
+  if (words !== prevWordsRef.current || wordsPerLine !== prevPerLineRef.current) {
     prevWordsRef.current   = words
-    captionChunksRef.current = buildCaptionChunks(words ?? [])
+    prevPerLineRef.current = wordsPerLine
+    captionChunksRef.current = buildCaptionChunks(words ?? [], wordsPerLine)
   }
 
   useEffect(() => {
@@ -736,14 +1121,16 @@ export function OutputCanvas({
 
       if (canvas && video && video.readyState >= 2) {
         const ctx    = canvas.getContext('2d')
-        const seg    = activeSegmentRef.current
+        const seg    = segmentAtRef.current
+          ? segmentAtRef.current(Math.max(0, video.currentTime * 1000 - clipStartMsRef.current))
+          : activeSegmentRef.current
         const newId  = seg?.id ?? null
 
         if (ctx) {
           // Detect segment boundary — snapshot MUST be captured before paintSegment
           // overwrites the canvas with new-segment content.
           if (newId !== prevSegIdRef.current && prevSegIdRef.current !== null) {
-            const skip = skipTransitionRef?.current ?? false
+            const skip = hardCutsRef.current || (skipTransitionRef?.current ?? false)
             if (skipTransitionRef) skipTransitionRef.current = false
             if (!skip) {
               if (!snapshotRef.current) snapshotRef.current = document.createElement('canvas')
@@ -767,7 +1154,16 @@ export function OutputCanvas({
 
           // Keep frame slots' own videos in step with the main player, then draw
           frameMediaRef.current?.sync(seg, clipRelativeMs, !video.paused, video)
-          paintSegment(ctx, video, seg, clipRelativeMs, getPositionAtRef.current, frameMediaRef.current)
+          // A B-roll shot whose video is still seeking keeps the last frame (never flashes the main video)
+          const other = sourceForRef.current?.(seg)
+          if (seg?.hidden) {
+            // The main video hidden here (shownSegment): black, as in the export; captions and text still go on top
+            ctx.fillStyle = '#000'
+            ctx.fillRect(0, 0, canvas.width, canvas.height)
+          } else if (!other || other.readyState >= 2) {
+            paintSegment(ctx, other ?? video, seg, clipRelativeMs, getPositionAtRef.current, frameMediaRef.current,
+              slotSourceForRef.current ? (sg, box) => slotSourceForRef.current!(sg, box) : null)
+          }
 
           // Composite the outgoing snapshot on top with decreasing alpha
           if (transitionStart.current !== null && snapshotRef.current) {
@@ -791,7 +1187,7 @@ export function OutputCanvas({
 
           // Draw text overlays (clip-relative time)
           if (textOverlaysRef.current.length > 0) {
-            drawTextOverlays(ctx, textOverlaysRef.current, clipRelativeMs)
+            drawTextOverlays(ctx, textOverlaysRef.current, clipRelativeMs, video.paused)
           }
         }
       }
@@ -1079,7 +1475,12 @@ function TextOverlayBox({ overlay, isActive, onChange, onSelect, onDelete }: Tex
     e.stopPropagation()
     onSelect(overlay.id)
     const sx = e.clientX, sy = e.clientY
-    const ox = overlay.x ?? 0.1, oy = overlay.y ?? 0.4
+    // A centred overlay (no x) starts its drag from where it is drawn
+    const centredX = () => {
+      const el = ref.current, parent = el?.parentElement
+      return el && parent ? el.getBoundingClientRect().left / 1 - parent.getBoundingClientRect().left : 0
+    }
+    const ox = overlay.x ?? (centredX() / cRect().w), oy = overlay.y ?? 0.4
     function move(ev: MouseEvent) {
       const { w, h } = cRect()
       onChange({
@@ -1106,7 +1507,8 @@ function TextOverlayBox({ overlay, isActive, onChange, onSelect, onDelete }: Tex
     window.addEventListener('mouseup', up)
   }
 
-  const x = overlay.x ?? 0.1
+  const centred = overlay.x == null
+  const x = overlay.x ?? 0.5
   const y = overlay.y ?? 0.4
   const color = overlay.color ?? '#ffffff'
   const accent = '#c8ff00'
@@ -1120,6 +1522,7 @@ function TextOverlayBox({ overlay, isActive, onChange, onSelect, onDelete }: Tex
         position: 'absolute',
         left: `${x * 100}%`,
         top: `${y * 100}%`,
+        transform: [centred ? 'translateX(-50%)' : '', overlay.rotation ? `rotate(${overlay.rotation}deg)` : ''].join(' ').trim() || undefined,
         cursor: 'move',
         userSelect: 'none',
         border: `1.5px solid ${isActive ? accent : 'transparent'}`,
@@ -1132,7 +1535,7 @@ function TextOverlayBox({ overlay, isActive, onChange, onSelect, onDelete }: Tex
       }}
     >
       {/* Invisible text — sized to match canvas text (canvas 540×960; size/6.075 cqw = size/1080*960/540 of container width) */}
-      <span style={{ color: 'transparent', fontSize: `${(overlay.size ?? 72) / 6.075}cqw`, fontWeight: 700, fontFamily: 'sans-serif', whiteSpace: 'nowrap', display: 'block', pointerEvents: 'none', lineHeight: 1, userSelect: 'none', margin: 0, padding: 0 }}>
+      <span style={{ ...textCss(overlay, true), fontSize: `${(overlay.size ?? 72) / 10.8}cqw`, display: 'block', pointerEvents: 'none', userSelect: 'none', margin: 0 }}>
         {overlay.text || '…'}
       </span>
       {isActive && (
