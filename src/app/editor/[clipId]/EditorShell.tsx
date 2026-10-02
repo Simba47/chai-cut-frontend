@@ -18,7 +18,7 @@ import { shownSegment, addedVideoBox, STAND_IN_SUFFIX } from '@/modules/editor/v
 import { AccountMenu } from '@/components/ui/account-menu'
 import { BrandLogo } from '@/components/ui/brand-logo'
 import { BrandLoader } from '@/components/ui/brand-loader'
-import { ShinyButton } from '@/components/ui/shiny-button'
+import { SpinningBorderButton } from '@/components/ui/spinning-border-button'
 import { FramesPanel } from '@/components/editor/FramesPanel'
 import { FrameTextPanel } from '@/components/editor/FrameTextPanel'
 import { useConfirm } from '@/components/editor/ConfirmDialog'
@@ -277,6 +277,16 @@ export function EditorShell({
   const [motionMode, setMotionMode] = useState(false)
   const [timelineZoom, setTimelineZoom] = useState(1)
   const [timelineHidden, setTimelineHidden] = useState(false)
+  // Cleanup: the list of cuts can be folded away
+  const [cutsOpen, setCutsOpen] = useState(true)
+  // Options panel: the tool's explanation is one line until expanded (remembered on this device)
+  const [hintOpen, setHintOpenState] = useState(false)
+  useEffect(() => { try { setHintOpenState(localStorage.getItem('shortcut.toolHintOpen') === '1') } catch { /* private mode */ } }, [])
+  const setHintOpen = (f: (v: boolean) => boolean) => setHintOpenState(v => {
+    const next = f(v)
+    try { localStorage.setItem('shortcut.toolHintOpen', next ? '1' : '0') } catch { /* private mode */ }
+    return next
+  })
   // Lengths of music files added in this session (read from the file), so their timeline bars
   // show the right length; tracks without one run to the clip's end
   const [musicDurations, setMusicDurations] = useState<Record<string, number>>({})
@@ -1138,6 +1148,11 @@ export function EditorShell({
     useCaptionStore.setState(st => ({
       captionStyle: { ...st.captionStyle, font: null, size: null, color: '#FFE700', position: null, position_y: null, animation: 'karaoke' },
     }))
+    // The video's own sound: full volume, not muted; and nothing stays selected
+    setOriginalVolume(1)
+    setOriginalMuted(false)
+    setPickedSegIdState(null)
+    setPickedMusicId(null)
   }
   useEffect(() => {
     if (!confirmResetAll) return
@@ -1486,19 +1501,26 @@ export function EditorShell({
     words: words.filter(w => (w.start_ms + w.end_ms) / 2 >= a && (w.start_ms + w.end_ms) / 2 < b).map(w => w.word),
   })), [fillerCuts, words, clip.start_ms])
   /** "Remove pauses & filler words": in the preview column and in the Captions panel, one setting */
+  // On / off switch (not a checkbox): the whole card toggles it; lime with a black knob when on
   const fillersToggle = (place: string) => words.length > 0 && (
-    <label className={`shrink-0 ${place} flex items-start gap-2.5 px-3 py-2.5 rounded-xl cursor-pointer`}
-      style={{ background: 'rgb(var(--ed-fg) / 0.04)', border: '1px solid rgb(var(--ed-fg) / 0.07)' }}>
-      <input type="checkbox" checked={removeFillers} onChange={e => setRemoveFillers(e.target.checked)}
-        className="mt-0.5" style={{ accentColor: '#c8ff00' }} />
-      <span className="flex flex-col gap-0.5">
+    <button type="button" role="switch" aria-checked={removeFillers} onClick={() => setRemoveFillers(!removeFillers)}
+      className={`shrink-0 ${place} w-full flex items-start gap-3 px-3 py-2.5 rounded-xl text-left transition-[background,box-shadow] duration-200`}
+      style={removeFillers
+        ? { background: 'rgba(200,255,0,0.06)', boxShadow: 'inset 0 0 0 1px rgba(200,255,0,0.4)' }
+        : { background: 'rgb(var(--ed-fg) / 0.04)', boxShadow: 'inset 0 0 0 1px rgb(var(--ed-fg) / 0.07)' }}>
+      <span className="flex-1 min-w-0 flex flex-col gap-0.5">
         <span className="text-xs font-semibold text-[var(--ed-text)]">Remove pauses &amp; filler words</span>
         <span className="text-[11px]" style={{ color: 'rgb(var(--ed-fg) / 0.5)' }}>
           {fillerCutMs >= 500 ? `Removes about ${Math.round(fillerCutMs / 1000)} s. ` : 'Nothing much to remove in this clip. '}
           Applied when you export; the preview plays the full clip.
         </span>
       </span>
-    </label>
+      <span aria-hidden="true" className="relative shrink-0 rounded-full transition-colors mt-0.5"
+        style={{ width: 36, height: 20, background: removeFillers ? '#c8ff00' : 'rgb(var(--ed-fg) / 0.15)' }}>
+        <span className="absolute rounded-full transition-all"
+          style={{ top: 3, left: removeFillers ? 19 : 3, width: 14, height: 14, background: removeFillers ? '#0a0a0a' : '#fff', boxShadow: '0 1px 3px rgba(0,0,0,0.3)' }} />
+      </span>
+    </button>
   )
 
   function setRemoveFillers(on: boolean) {
@@ -1749,7 +1771,7 @@ export function EditorShell({
                   style={{ width: 280, zIndex: 71, background: 'var(--ed-panel)', border: '1px solid rgb(var(--ed-fg) / 0.12)', boxShadow: '0 12px 32px rgba(0,0,0,0.55)' }}>
                   <p id="reset-all-title" className="text-sm font-semibold text-[var(--ed-text)]">Reset all edits?</p>
                   <p id="reset-all-desc" className="text-xs leading-relaxed" style={{ color: 'rgb(var(--ed-fg) / 0.55)' }}>
-                    Formats, frames, text, media, music and the caption look go back to the start. Your captions stay. You can undo this.
+                    Formats, frames, text, media, music, the video’s sound and the caption look go back to the start. Your captions stay. You can undo this.
                   </p>
                   <div className="flex justify-end gap-2">
                     <button onClick={() => setConfirmResetAll(false)} autoFocus
@@ -1763,14 +1785,6 @@ export function EditorShell({
               </>
             )}
           </div>
-          <button onClick={() => toggleOptions(!optionsOpen)}
-            aria-label={optionsOpen ? 'Close options sidebar' : 'Open options sidebar'}
-            aria-expanded={optionsOpen} aria-controls="options-sidebar"
-            title={optionsOpen ? 'Close options sidebar' : 'Open options sidebar'}
-            className="flex items-center justify-center rounded-lg transition-colors hover:bg-[rgb(var(--ed-fg)/0.1)]"
-            style={{ width: 36, height: 36, color: 'rgb(var(--ed-fg) / 0.55)' }}>
-            <SidebarIcon open={optionsOpen} />
-          </button>
         </nav>
 
         {/* Options sidebar — settings for the selected tool only; collapsible */}
@@ -1790,7 +1804,14 @@ export function EditorShell({
             ) : (
               <>
                 <h2 className="text-sm font-semibold text-[var(--ed-text)]">{activeTool.title}</h2>
-                <p className="text-xs mt-1 leading-relaxed" style={{ color: 'rgb(var(--ed-fg) / 0.45)' }}>{activeTool.hint}</p>
+                {/* The tool's explanation: one line until expanded with the chevron (remembered) */}
+                <button type="button" onClick={() => setHintOpen(v => !v)} aria-expanded={hintOpen}
+                  title={hintOpen ? 'Show less' : 'Show more'} className="ed-hint">
+                  <span className={hintOpen ? 'ed-hint-text' : 'ed-hint-text ed-hint-clamp'}>{activeTool.hint}</span>
+                  <span className="ed-collapse" data-open={hintOpen || undefined} aria-hidden="true">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M6 9l6 6 6-6" /></svg>
+                  </span>
+                </button>
               </>
             )}
             </div>
@@ -2048,47 +2069,64 @@ export function EditorShell({
                 <TranscriptPanel words={displayWords} clipStartMs={clip.start_ms} clipEndMs={clip.end_ms} currentTimeMs={currentTimeMs} onSeek={seekToMs} onWordChange={(id, text) => updateWord(id, text, romanize ? 'word_roman' : 'word')} />
               ) : (
                 <div className="flex flex-col">
-                  <div className="p-4 flex flex-col gap-3" style={{ borderBottom: '1px solid rgb(var(--ed-fg) / 0.06)' }}>
-                    <SwitchRow label="Show captions" description={!showCaptions && !clipHasWords(words) ? 'Turning them on makes captions for this clip' : undefined}
-                      checked={showCaptions} onChange={turnCaptions} />
-                    {(transcribing || retranscribing) ? (
-                      <div className="flex items-center gap-2.5 px-3 py-2.5 rounded-lg" style={{ background: 'rgba(200,255,0,0.07)', border: '1px solid rgba(200,255,0,0.18)' }}>
-                        <span className="w-3.5 h-3.5 rounded-full border-2 border-t-transparent animate-spin shrink-0" style={{ borderColor: ACCENT, borderTopColor: 'transparent' }} />
-                        <p className="text-xs font-medium" style={{ color: 'var(--ed-accent-text)' }}>Generating captions… this can take a minute</p>
-                      </div>
-                    ) : words.length > 0 ? (
-                      <p className="text-xs" style={{ color: 'rgb(var(--ed-fg) / 0.45)' }}>
-                        <span style={{ color: '#4ade80' }}>✓</span> {words.length} words transcribed
-                      </p>
-                    ) : (
-                      <p className="text-xs" style={{ color: 'rgb(var(--ed-fg) / 0.45)' }}>No captions for this clip yet.</p>
-                    )}
-                    {showCaptions && words.length > 0 && (
-                      <div className="flex flex-col gap-1.5">
-                        <span className="text-xs font-medium" style={{ color: 'rgb(var(--ed-fg) / 0.5)' }}>Caption language</span>
-                        <div role="radiogroup" aria-label="Caption language" className="grid grid-cols-2 gap-1 p-0.5 rounded-lg" style={{ background: 'rgb(var(--ed-fg) / 0.05)' }}>
-                          {([[false, 'Auto language', 'As spoken, in its own script'], [true, 'English', hasRoman ? `In English letters (${scriptLabel})` : "English letters aren't available for these captions"]] as const).map(([v, label, title]) => {
-                            const on = romanize === v
-                            const disabled = v && !hasRoman
-                            return (
-                              <button key={label} role="radio" aria-checked={on} disabled={disabled} title={title}
-                                onClick={() => setRomanize(v)}
-                                className="h-8 rounded-md text-xs font-medium transition-colors disabled:opacity-40"
-                                style={on ? { background: 'rgb(var(--ed-fg) / 0.14)', color: 'var(--ed-text)' } : { color: 'rgb(var(--ed-fg) / 0.6)' }}>
-                                {label}
-                              </button>
-                            )
-                          })}
+                  {/* ── Captions: on/off with its status, the language, and editing the words ── */}
+                  <div className="p-4 flex flex-col gap-3">
+                    <div className="cap-card">
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="min-w-0 flex items-center gap-2.5">
+                          <span className="cap-card-icon" data-on={showCaptions || undefined} aria-hidden="true">
+                            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                              <rect x="3" y="5" width="18" height="14" rx="3" /><path d="M10 10.5a2 2 0 100 3M16 10.5a2 2 0 100 3" />
+                            </svg>
+                          </span>
+                          <div className="min-w-0">
+                            <p className="text-[13px] font-semibold text-[var(--ed-text)]">Show captions</p>
+                            {(transcribing || retranscribing) ? (
+                              <p className="flex items-center gap-1.5 text-[11px]" style={{ color: 'var(--ed-accent-text)' }}>
+                                <span className="w-2.5 h-2.5 rounded-full border-[1.5px] border-t-transparent animate-spin shrink-0" style={{ borderColor: ACCENT, borderTopColor: 'transparent' }} />
+                                Generating… this can take a minute
+                              </p>
+                            ) : words.length > 0 ? (
+                              <p className="text-[11px]" style={{ color: 'rgb(var(--ed-fg) / 0.45)' }}>
+                                <span style={{ color: '#4ade80' }}>●</span> {words.length} words ready
+                              </p>
+                            ) : (
+                              <p className="text-[11px]" style={{ color: 'rgb(var(--ed-fg) / 0.45)' }}>No captions for this clip yet</p>
+                            )}
+                          </div>
                         </div>
+                        <button role="switch" aria-checked={showCaptions} aria-label="Show captions" onClick={() => turnCaptions(!showCaptions)}
+                          className="relative shrink-0 rounded-full transition-colors"
+                          style={{ width: 40, height: 22, background: showCaptions ? ACCENT : 'rgb(var(--ed-fg) / 0.15)' }}>
+                          <span className="absolute rounded-full transition-all"
+                            style={{ top: 3, left: showCaptions ? 21 : 3, width: 16, height: 16, background: showCaptions ? '#0a0a0a' : '#fff', boxShadow: '0 1px 3px rgba(0,0,0,0.3)' }} />
+                        </button>
                       </div>
-                    )}
+                    </div>
+
                     {showCaptions && words.length > 0 && (
-                      <button onClick={() => setEditingTranscript(true)}
-                        className="flex items-center justify-center gap-2 w-full py-2 rounded-lg text-xs font-medium transition-colors hover:bg-[rgb(var(--ed-fg)/0.1)]"
-                        style={{ color: 'rgb(var(--ed-fg) / 0.85)', border: '1px solid rgb(var(--ed-fg) / 0.12)' }}>
-                        <svg width="12" height="12" viewBox="0 0 14 14" fill="none"><path d="M9.5 2L12 4.5M2 12l.7-2.8L10 1.5 12.5 4 4.8 11.3 2 12z" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/></svg>
-                        Edit caption text
-                      </button>
+                      <>
+                        <div className="cap-row">
+                          <span className="cap-label">Language</span>
+                          <div role="radiogroup" aria-label="Caption language" className="cap-seg">
+                            {([[false, 'Original', 'As spoken, in its own script'], [true, 'English letters', hasRoman ? `In English letters (${scriptLabel})` : "English letters aren't available for these captions"]] as const).map(([v, label, title]) => {
+                              const on = romanize === v
+                              const disabled = v && !hasRoman
+                              return (
+                                <button key={label} role="radio" aria-checked={on} disabled={disabled} title={title}
+                                  onClick={() => setRomanize(v)} className="cap-seg-btn" data-on={on || undefined}>
+                                  {label}
+                                </button>
+                              )
+                            })}
+                          </div>
+                        </div>
+                        <button onClick={() => setEditingTranscript(true)} className="cap-link">
+                          <svg width="13" height="13" viewBox="0 0 14 14" fill="none" aria-hidden="true"><path d="M9.5 2L12 4.5M2 12l.7-2.8L10 1.5 12.5 4 4.8 11.3 2 12z" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                          <span className="flex-1 text-left">Edit caption words</span>
+                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6" /></svg>
+                        </button>
+                      </>
                     )}
                   </div>
                   {showCaptions && (
@@ -2113,10 +2151,18 @@ export function EditorShell({
                 {fillersToggle('')}
                 {words.length === 0 && <p className="text-xs" style={{ color: 'rgb(var(--ed-fg) / 0.5)' }}>This needs the clip's captions (transcript) first.</p>}
                 {fillerCutList.length > 0 && (
-                  <div className="flex flex-col gap-1 min-h-0">
-                    <span className="text-xs font-medium" style={{ color: 'rgb(var(--ed-fg) / 0.5)' }}>
-                      {fillerCutList.length} cut{fillerCutList.length === 1 ? '' : 's'}{removeFillers ? '' : ' (when switched on)'}
-                    </span>
+                  <div className="flex flex-col gap-2 min-h-0">
+                    {/* The list of cuts folds away with the collapse / expand chevron */}
+                    <button type="button" onClick={() => setCutsOpen(v => !v)} aria-expanded={cutsOpen}
+                      title={cutsOpen ? 'Hide the list of cuts' : 'Show the list of cuts'} className="tx-fold">
+                      <span className="text-xs font-medium" style={{ color: 'rgb(var(--ed-fg) / 0.6)' }}>
+                        {fillerCutList.length} cut{fillerCutList.length === 1 ? '' : 's'}{removeFillers ? '' : ' (when switched on)'}
+                      </span>
+                      <span className="ed-collapse" data-open={cutsOpen || undefined} aria-hidden="true">
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M6 9l6 6 6-6" /></svg>
+                      </span>
+                    </button>
+                    {cutsOpen && (
                     <div className="flex flex-col gap-1 overflow-y-auto -mr-2 pr-2" style={{ maxHeight: 420 }}>
                       {fillerCutList.map(c => (
                         <button key={c.at} onClick={() => seekToMs(Math.max(0, c.at - 1000))} title="Play from just before this cut"
@@ -2130,6 +2176,7 @@ export function EditorShell({
                         </button>
                       ))}
                     </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -2504,10 +2551,15 @@ export function EditorShell({
             <span className="text-sm font-semibold text-[var(--ed-text)]">Preview</span>
             <div className="flex items-center gap-1.5">
               {rendering ? (
-                <span className="flex items-center gap-2 h-8 px-3 rounded-lg text-xs font-semibold"
-                  style={{ background: 'rgba(200,255,0,0.12)', color: 'var(--ed-accent-text)', boxShadow: 'inset 0 0 0 1px rgba(200,255,0,0.3)' }}>
-                  <span className="w-3 h-3 rounded-full border-2 border-t-transparent animate-spin" style={{ borderColor: 'var(--ed-accent-text)', borderTopColor: 'transparent' }} />
-                  {exporting ? 'Starting…' : `Rendering ${formatElapsed(renderElapsed)}`}
+                // While the reel renders, the Export button stays and keeps playing its download
+                // animation on a loop (.ed-export[data-busy] in globals.css) until it's done
+                <span className="sbb ed-export" data-busy role="status"
+                  aria-label={exporting ? 'Starting the export' : `Exporting, ${formatElapsed(renderElapsed)} so far`}
+                  title={exporting ? 'Starting…' : `Exporting · ${formatElapsed(renderElapsed)}`}>
+                  <span className="sbb-beam" aria-hidden="true" />
+                  <span className="sbb-surface gap-1.5 h-8 px-3.5 text-xs font-bold">
+                    <ExportIcon /> Exporting
+                  </span>
                 </span>
               ) : hasOutput ? (
                 <>
@@ -2526,13 +2578,16 @@ export function EditorShell({
                   </a>
                 </>
               ) : (
-                <ShinyButton onClick={pressExport}
+                // Lime button with a light spinning round its border on hover (SpinningBorderButton);
+                // clicking plays the download animation (.ed-export) before the render starts
+                <SpinningBorderButton onClick={pressExport}
                   title="Render the reel so you can download it"
                   aria-busy={exportPress || undefined}
                   data-pressed={exportPress || undefined}
-                  className="ed-export flex items-center gap-1.5 h-8 px-3.5 rounded-lg text-xs font-bold overflow-hidden">
+                  className="ed-export rounded-[10px]"
+                  surfaceClassName="gap-1.5 h-8 px-3.5 text-xs font-bold">
                   <ExportIcon /> Export
-                </ShinyButton>
+                </SpinningBorderButton>
               )}
             </div>
           </div>
@@ -3047,12 +3102,11 @@ function DownloadIcon() {
   return <svg width="14" height="14" viewBox="0 0 15 15" fill="none" aria-hidden="true"><path d="M7.5 2v8M4 7l3.5 3.5L11 7M2 13h11" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"/></svg>
 }
 
-/** Download arrow over a tray, drawn in two parts so the Export press can animate them */
+/** A clean up-right arrow (the reel going out); the Export press and the exporting loop animate it */
 function ExportIcon() {
   return (
-    <svg className="ed-export-icon" width="14" height="14" viewBox="0 0 15 15" fill="none" aria-hidden="true" style={{ overflow: 'visible' }}>
-      <g className="ed-export-arrow"><path d="M7.5 2v8M4 7l3.5 3.5L11 7" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" /></g>
-      <path className="ed-export-tray" d="M2 13h11" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
+    <svg className="ed-export-icon" width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true" style={{ overflow: 'visible' }}>
+      <g className="ed-export-arrow"><path d="M4.5 11.5l7-7M6 4.5h5.5V10" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /></g>
     </svg>
   )
 }

@@ -899,7 +899,6 @@ export function SegmentTimeline({
         </div>
       )}
 
-      {/* "+" on the left of the strip (lined up with it) opens the Add menu */}
       <div className="flex items-start gap-2">
       {/* No visible scrollbar: when zoomed in, the wheel scrolls sideways and the view follows the playhead */}
       <div ref={scrollRef} className="relative flex-1 min-w-0 overflow-x-auto overflow-y-hidden rounded-2xl no-scrollbar"

@@ -8,7 +8,7 @@ import type { Video } from '@chai-cut/shared'
 import { ACCEPTED_VIDEO_EXTENSIONS } from '@chai-cut/shared'
 import { Breadcrumbs } from '@/components/ui/breadcrumbs'
 import { AccountMenu } from '@/components/ui/account-menu'
-import { BrandLoader } from '@/components/ui/brand-loader'
+import { BrandLoaderScreen } from '@/components/ui/brand-loader'
 import { FillButtonContent } from '@/components/ui/fill-button'
 import { useVideoUpload } from '@/modules/upload/useVideoUpload'
 
@@ -184,13 +184,8 @@ export default function DashboardPage() {
     if (!res?.ok) setVideos(prev)
   }
 
-  if (loading) {
-    return (
-      <div className="dash" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--accent)' }}>
-        <BrandLoader label="Loading your videos…" />
-      </div>
-    )
-  }
+  // Same full-screen loader as the clip board and editor (ring, glow, progress bar, tips)
+  if (loading) return <BrandLoaderScreen label="Loading your videos…" />
 
   const usagePct = planInfo ? Math.min(100, (planInfo.usage.videos / planInfo.maxVideos) * 100) : 0
   const isEmpty = videos.length === 0
