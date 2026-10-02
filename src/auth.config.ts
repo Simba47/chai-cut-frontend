@@ -1,6 +1,9 @@
 import type { NextAuthConfig } from 'next-auth'
 
 export const authConfig = {
+  // AUTH_TRUST_HOST isn't reliably picked up on Railway (vs. Vercel, which sets it for you) —
+  // set it directly so both middleware (edge) and auth.ts (node) trust the deployed host.
+  trustHost: true,
   pages: {
     signIn: '/login',
   },
