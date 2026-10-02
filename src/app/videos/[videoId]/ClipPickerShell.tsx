@@ -35,6 +35,8 @@ interface SavedClip {
 /** Where a clip came from, so the clip list can be split into sections */
 export type ClipOrigin = 'yours' | 'ask' | 'auto' | 'best'
 type ClipTab = 'all' | ClipOrigin
+/** Typed one after another as the Ask AI hint */
+const ASK_EXAMPLES = ['funny reactions', 'controversial takes', 'emotional moments', 'big announcements', 'best advice']
 const CLIP_TABS: Array<{ id: ClipTab; label: string; empty: string }> = [
   { id: 'all', label: 'All clips', empty: '' },
   { id: 'yours', label: 'Your clips', empty: 'Clips you make yourself (New clip or Edit full video) show here.' },
@@ -151,12 +153,41 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: P
   const [loadingSuggestions, setLoadingSuggestions] = useState(false)
   const [suggestionsError, setSuggestionsError] = useState<string | null>(null)
   const [aiCriteria, setAiCriteria] = useState('')
+  // Click counters that replay the AI buttons' animations (styles: .ai-btn in globals.css)
+  const [makePulse, setMakePulse] = useState(0)
+  const [findPulse, setFindPulse] = useState(0)
+  const [bestPulse, setBestPulse] = useState(0)
+  // Typing hint in the Ask AI box: whenever it's empty, example searches are typed out letter by
+  // letter (left → right), held for a moment, erased, and the next one typed — on a loop
+  const [typedHint, setTypedHint] = useState('')
+  useEffect(() => {
+    if (aiCriteria) { setTypedHint(''); return }
+    let i = 0, n = 0, erasing = false
+    let t: ReturnType<typeof setTimeout>
+    const tick = () => {
+      const full = `e.g. ${ASK_EXAMPLES[i]}`
+      if (!erasing) {
+        n++
+        setTypedHint(full.slice(0, n))
+        if (n >= full.length) { erasing = true; t = setTimeout(tick, 1600); return }
+        t = setTimeout(tick, 55)
+      } else {
+        n--
+        setTypedHint(full.slice(0, n))
+        if (n <= 0) { erasing = false; i = (i + 1) % ASK_EXAMPLES.length; t = setTimeout(tick, 350); return }
+        t = setTimeout(tick, 22)
+      }
+    }
+    t = setTimeout(tick, 250)
+    return () => clearTimeout(t)
+  }, [aiCriteria])
   const [aiSuggestions, setAiSuggestions] = useState<Suggestion[] | null>(null)
   const [loadingAi, setLoadingAi] = useState(false)
   const [aiError, setAiError] = useState<string | null>(null)
   // "Make my clips": the AI Edit job for this video and the clips it made
   const [autoCount, setAutoCount] = useState<number>(5)
-  const [autoBroll, setAutoBroll] = useState(false)
+  // B-roll in Make my clips: its option was taken off the card, so clips are made without it
+  const autoBroll = false
   const [autoJob, setAutoJob] = useState<AutoJob | null>(null)
   const [autoClips, setAutoClips] = useState<AutoClip[]>([])
   const [autoStarting, setAutoStarting] = useState(false)
@@ -543,12 +574,14 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: P
   // Toggle between the video and clip previews, and (in preview) which clip and what to do with it
   const viewBar = isReady && (
     <div className="shrink-0 flex items-center gap-2 flex-wrap">
-      <div role="tablist" aria-label="Show" className="flex rounded-lg p-0.5" style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)' }}>
+      {/* A switch: two equal halves and a lime knob that slides (and stretches a little) to the
+          picked side (styles: .view-switch in globals.css) */}
+      <div role="tablist" aria-label="Show" className="view-switch" data-side={viewMode === 'preview' ? 'right' : 'left'}>
+        <span className="view-switch-knob" aria-hidden="true" />
         {([['video', 'Video'], ['preview', 'Clip preview']] as const).map(([mode, label]) => (
           <button key={mode} type="button" role="tab" aria-selected={viewMode === mode}
             onClick={() => (mode === 'preview' ? showPreviewMode() : setViewMode('video'))}
-            className="px-3 py-1.5 rounded-md text-xs font-semibold transition-colors"
-            style={viewMode === mode ? { background: ACCENT, color: '#000' } : { color: 'rgba(255,255,255,0.7)' }}>
+            className="view-switch-opt" data-on={viewMode === mode || undefined}>
             {label}{mode === 'preview' && clips.length > 0 ? ` (${clips.length})` : ''}
           </button>
         ))}
@@ -565,10 +598,6 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: P
           <button type="button" aria-label="Next clip" disabled={previewIdx < 0 || previewIdx >= previewList.length - 1}
             onClick={() => previewClip(previewList[previewIdx + 1].id)}
             className="w-7 h-7 rounded-md flex items-center justify-center text-sm transition-colors hover:bg-white/10 disabled:opacity-30" style={{ color: '#fff' }}>›</button>
-          <button type="button" disabled={!!busy} onClick={() => { setBusy('open'); router.push(`/editor/${previewed.id}`) }}
-            className="px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors hover:bg-white/15 disabled:opacity-40" style={{ color: '#fff', background: 'rgba(255,255,255,0.08)' }}>
-            Edit
-          </button>
         </>
       )}
     </div>
@@ -641,32 +670,27 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: P
   // ── AI tools: Ask AI + Best moments (left column on wide screens, under the video otherwise) ──
   const aiTools = (
     <>
-      <section className="shrink-0 max-h-[50%] p-4 flex flex-col gap-2 rounded-2xl" style={CARD}>
+      <section className="shrink-0 p-3.5 flex flex-col gap-2 rounded-2xl" style={CARD}>
         <h2 className="text-sm font-semibold text-white">Make my clips</h2>
         <p className="text-xs leading-relaxed" style={{ color: 'rgba(255,255,255,0.45)' }}>
-          AI picks the best moments, frames them vertically and adds captions. Each new batch finds new moments.
+          AI picks the best moments, frames them vertically and adds captions.
         </p>
-        <div className="flex gap-2">
-          <div className="flex rounded-lg overflow-hidden" role="radiogroup" aria-label="How many clips" style={{ border: '1px solid rgba(255,255,255,0.12)' }}>
+        {/* How many clips: the label on the left, the picker on the right; the buttons follow below */}
+        <div className="flex items-center justify-between gap-3">
+          <span className="text-xs font-medium" style={{ color: 'rgba(255,255,255,0.55)' }}>How many clips</span>
+          {/* The highlight glides to the picked number, which pops (styles: .clip-count in globals.css) */}
+          <div className="clip-count relative flex rounded-lg overflow-hidden" role="radiogroup" aria-label="How many clips" style={{ border: '1px solid rgba(255,255,255,0.12)' }}>
+            <span className="clip-count-glider" aria-hidden="true"
+              style={{ transform: `translateX(${Math.max(0, AUTO_COUNTS.findIndex(n => n === autoCount)) * 36}px)` }} />
             {AUTO_COUNTS.map(n => (
               <button key={n} role="radio" aria-checked={autoCount === n} onClick={() => setAutoCount(n)} disabled={autoRunning}
-                className="px-3 py-2 text-xs font-semibold tabular-nums transition-colors disabled:opacity-40"
-                style={autoCount === n ? { background: 'rgba(255,255,255,0.14)', color: '#fff' } : { color: 'rgba(255,255,255,0.55)' }}>
-                {n}
+                className="relative z-[1] w-9 h-8 text-xs font-semibold tabular-nums transition-colors disabled:opacity-40 hover:text-white"
+                style={{ color: autoCount === n ? '#fff' : 'rgba(255,255,255,0.55)' }}>
+                <span key={autoCount === n ? 'on' : 'off'} className={autoCount === n ? 'clip-count-pop inline-block' : 'inline-block'}>{n}</span>
               </button>
             ))}
           </div>
-          <button onClick={makeClips} disabled={autoRunning || autoStarting}
-            className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-xs font-bold disabled:opacity-40"
-            style={{ background: ACCENT, color: '#000' }}>
-            {autoStarting || autoRunning ? <Spinner /> : '✦'} {autoRunning ? 'Making clips…' : 'Make my clips'}
-          </button>
         </div>
-        <label className="flex items-center gap-2 text-xs cursor-pointer" style={{ color: 'rgba(255,255,255,0.6)' }}>
-          <input type="checkbox" checked={autoBroll} onChange={e => setAutoBroll(e.target.checked)} disabled={autoRunning}
-            style={{ accentColor: ACCENT }} />
-          Add B-roll <span style={{ color: 'rgba(255,255,255,0.35)' }}>(free stock shots from Pexels or Pixabay)</span>
-        </label>
         {autoError && <p className="text-xs" style={{ color: '#f87171' }}>{autoError}</p>}
         {autoRunning && autoJob && (
           <div className="flex flex-col gap-1">
@@ -704,27 +728,52 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: P
             ▶ AI edits ({autoClips.length} clip{autoClips.length === 1 ? '' : 's'})
           </button>
         )}
+        {/* Main action last, under AI edits */}
+        <button onClick={() => { setMakePulse(n => n + 1); makeClips() }} disabled={autoRunning || autoStarting}
+          data-busy={autoRunning || autoStarting || undefined}
+          className="ai-btn ai-make flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-lg text-xs font-bold disabled:opacity-40"
+          style={{ background: ACCENT, color: '#000' }}>
+          <span key={makePulse} className={`ai-fire${makePulse ? ' is-on' : ''}`} aria-hidden="true" />
+          {autoStarting || autoRunning ? <Spinner /> : (
+            <span key={`s${makePulse}`} className={`ai-spark${makePulse ? ' is-on' : ''}`} aria-hidden="true">
+              ✦<i /><i /><i />
+            </span>
+          )} {autoRunning ? 'Making clips…' : 'Make my clips'}
+        </button>
       </section>
 
-      <section className="flex-1 min-h-0 p-4 flex flex-col gap-2 rounded-2xl" style={CARD}>
+      <section className="flex-1 min-h-[148px] p-3.5 flex flex-col gap-2 rounded-2xl" style={CARD}>
         <h2 className="text-sm font-semibold text-white">Ask AI</h2>
         <p className="text-xs leading-relaxed" style={{ color: 'rgba(255,255,255,0.45)' }}>
-          Describe what to look for — an emotion, a controversial moment, a specific topic — and AI scans the transcript for matching clips.
+          Describe a moment — an emotion, a topic, a hot take — and AI finds matching clips.
         </p>
-        <form className="flex gap-2" onSubmit={e => { e.preventDefault(); findByCriteria() }}>
-          <input
-            type="text"
-            placeholder="e.g. funny reactions, controversial takes…"
-            aria-label="What should AI look for?"
-            value={aiCriteria}
-            onChange={e => setAiCriteria(e.target.value)}
-            className="min-w-0 flex-1 px-3 py-2 rounded-lg text-sm text-white outline-none focus:border-[#c8ff00]"
-            style={{ background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.12)' }}
-          />
+        <form className="shrink-0 flex gap-2" onSubmit={e => { e.preventDefault(); setFindPulse(n => n + 1); findByCriteria() }}>
+          {/* While the box is empty, example searches are typed out left → right with a blinking
+              caret, on a loop; the newest letters stay in view (styles: .ai-hint in globals.css) */}
+          <div className="ai-hint-wrap relative min-w-0 flex-1">
+            <input
+              type="text"
+              aria-label="What should AI look for? For example: funny reactions, controversial takes"
+              value={aiCriteria}
+              onChange={e => setAiCriteria(e.target.value)}
+              className="w-full px-3 py-2 rounded-lg text-sm text-white outline-none focus:border-[#c8ff00]"
+              style={{ background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.12)' }}
+            />
+            {!aiCriteria && (
+              <span className="ai-hint" aria-hidden="true">
+                <span className="ai-hint-line"><span className="ai-hint-text">{typedHint}</span></span>
+                <span className="ai-hint-caret" />
+              </span>
+            )}
+          </div>
           <button type="submit" disabled={loadingAi || !aiCriteria.trim()}
-            className="shrink-0 flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-bold disabled:opacity-40"
+            data-busy={loadingAi || undefined}
+            className="ai-btn ai-find shrink-0 flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-bold disabled:opacity-40"
             style={{ background: ACCENT, color: '#000' }}>
-            {loadingAi ? <Spinner /> : '✦'} Find
+            <span key={findPulse} className={`ai-scan${findPulse ? ' is-on' : ''}`} aria-hidden="true" />
+            {loadingAi ? <Spinner /> : (
+              <span key={`p${findPulse}`} className={`ai-ping${findPulse ? ' is-on' : ''}`} aria-hidden="true">✦</span>
+            )} Find
           </button>
         </form>
         {/* Results scroll inside the card, so the card never grows */}
@@ -744,7 +793,7 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: P
         </div>
       </section>
 
-      <section className="flex-1 min-h-0 p-4 flex flex-col gap-2 rounded-2xl" style={CARD}>
+      <section className="flex-1 min-h-[134px] p-3.5 flex flex-col gap-2 rounded-2xl" style={CARD}>
         <div className="flex items-center justify-between gap-2">
           <h2 className="text-sm font-semibold text-white">Best moments</h2>
           {suggestions && !loadingSuggestions && (
@@ -755,12 +804,18 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: P
         {!suggestions && !loadingSuggestions && (
           <>
             <p className="text-xs leading-relaxed" style={{ color: 'rgba(255,255,255,0.45)' }}>
-              AI reads the transcript, picks the moments most likely to work as reels and adds them to your clips (Best moments). Each time finds new ones.
+              AI picks the moments most likely to work as reels and adds them to your clips.
             </p>
-            <button onClick={findMoments}
-              className="flex items-center justify-center gap-2 py-2 rounded-lg text-xs font-medium transition-colors hover:bg-white/10"
-              style={{ color: 'rgba(255,255,255,0.85)', border: '1px solid rgba(255,255,255,0.12)' }}>
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8L12 3zM19 16l.8 2.2L22 19l-2.2.8L19 22l-.8-2.2L16 19l2.2-.8L19 16z" fill="currentColor"/></svg>
+            {/* Spotlight: on hover the stars twinkle in turn and the edge warms to lime;
+                on click a lime spotlight flashes out of the stars (styles: .ai-best in globals.css) */}
+            <button onClick={() => { setBestPulse(n => n + 1); findMoments() }}
+              className="ai-btn ai-best shrink-0 flex items-center justify-center gap-2 h-9 rounded-lg text-xs font-medium"
+              style={{ color: 'rgba(255,255,255,0.85)' }}>
+              <span key={bestPulse} className={`ai-spot${bestPulse ? ' is-on' : ''}`} aria-hidden="true" />
+              <svg className="ai-stars" width="13" height="13" viewBox="0 0 24 24" fill="none" aria-hidden="true" style={{ overflow: 'visible' }}>
+                <path className="ai-star-big" d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8L12 3z" fill="currentColor"/>
+                <path className="ai-star-small" d="M19 16l.8 2.2L22 19l-2.2.8L19 22l-.8-2.2L16 19l2.2-.8L19 16z" fill="currentColor"/>
+              </svg>
               Find best moments
             </button>
           </>
@@ -812,7 +867,7 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: P
 
         {/* ── Left: AI tools (wide screens) ─────────────────────── */}
         {wide && isReady && (
-          <aside className="shrink-0 flex flex-col gap-4 p-4 min-h-0" style={{ width: 340, background: PANEL_BG, borderRight: PANEL_LINE }}>
+          <aside className="shrink-0 flex flex-col gap-3 p-3 min-h-0 overflow-y-auto" style={{ width: 340, background: PANEL_BG, borderRight: PANEL_LINE }}>
             {aiTools}
           </aside>
         )}
@@ -1101,7 +1156,7 @@ function ClipCard({ id, focused, number, origin, title, startMs, endMs, status, 
         onClick: onToggle,
         onKeyDown: (e: React.KeyboardEvent) => { if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); onToggle?.() } },
       } : {})}>
-      <div className="flex items-start gap-2.5">
+      <div className="flex items-start gap-3">
         {selecting ? (
           <span aria-hidden="true" className="shrink-0 w-6 h-6 rounded-full flex items-center justify-center transition-colors"
             style={selected
@@ -1112,39 +1167,43 @@ function ClipCard({ id, focused, number, origin, title, startMs, endMs, status, 
             )}
           </span>
         ) : (
-          <span className="shrink-0 w-6 h-6 rounded-md flex items-center justify-center text-[11px] font-bold" style={{ background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.12)', color: '#fff' }}>
+          <span className="shrink-0 w-6 h-6 rounded-lg flex items-center justify-center text-[11px] font-bold tabular-nums" style={{ background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.12)', color: '#fff' }}>
             {number}
           </span>
         )}
-        <div className="flex-1 min-w-0">
-          <div className="flex items-start justify-between gap-2">
-            <div className="min-w-0">
-              <p className="text-sm font-medium text-white leading-snug truncate" title={title}>{title}</p>
-              {origin && (
-                <span className="inline-flex items-center gap-1 mt-0.5 text-[10px] font-semibold uppercase tracking-wide" style={{ color: ORIGIN_BADGE[origin].color }}>
-                  <span aria-hidden="true" className="w-1.5 h-1.5 rounded-full" style={{ background: ORIGIN_BADGE[origin].color }} />
-                  {ORIGIN_BADGE[origin].label}
-                </span>
-              )}
-            </div>
-            <span className="shrink-0 flex items-center gap-1.5 text-[11px] font-medium mt-0.5" style={{ color: chip.color }}>
+        <div className="flex-1 min-w-0 flex flex-col gap-1.5">
+          {/* Title on up to two lines, then one quiet meta line: where it came from · status */}
+          <p className="text-sm font-semibold text-white leading-snug line-clamp-2" title={title}>{title}</p>
+          <div className="flex items-center gap-2 flex-wrap text-[10px] font-semibold uppercase tracking-wide">
+            {origin && (
+              <span className="inline-flex items-center gap-1" style={{ color: ORIGIN_BADGE[origin].color }}>
+                <span aria-hidden="true" className="w-1.5 h-1.5 rounded-full" style={{ background: ORIGIN_BADGE[origin].color }} />
+                {ORIGIN_BADGE[origin].label}
+              </span>
+            )}
+            {origin && <span aria-hidden="true" style={{ color: 'rgba(255,255,255,0.2)' }}>•</span>}
+            <span className="inline-flex items-center gap-1" style={{ color: chip.color }}>
               {status === 'rendering' ? <Spinner /> : <span className="w-1.5 h-1.5 rounded-full" style={{ background: chip.color }} />}
               {chip.label}
             </span>
           </div>
           {selecting ? (
-            <p className="mt-1 text-xs font-mono tabular-nums" style={{ color: 'rgba(255,255,255,0.55)' }}>
+            <p className="text-xs tabular-nums" style={{ color: 'rgba(255,255,255,0.55)' }}>
               {msToDisplay(startMs)} – {msToDisplay(endMs)} · {durLabel(startMs, endMs)}
             </p>
           ) : (
             <button onClick={onSeek} title="Play this clip"
-              className="mt-1 text-xs font-mono tabular-nums px-2 py-0.5 -ml-2 rounded-md transition-colors hover:bg-white/10" style={{ color: 'rgba(255,255,255,0.55)' }}>
-              ▶ {msToDisplay(startMs)} – {msToDisplay(endMs)} · {durLabel(startMs, endMs)}
+              className="self-start flex items-center gap-1.5 text-xs font-medium tabular-nums px-2 py-0.5 -ml-2 rounded-md transition-colors hover:bg-white/10" style={{ color: 'rgba(255,255,255,0.6)' }}>
+              <svg width="9" height="9" viewBox="0 0 12 12" fill="currentColor" aria-hidden="true"><path d="M3 1.5l7.5 4.5L3 10.5z" /></svg>
+              {msToDisplay(startMs)} – {msToDisplay(endMs)}
+              <span style={{ color: 'rgba(255,255,255,0.3)' }}>·</span>
+              {durLabel(startMs, endMs)}
             </button>
           )}
-          {!selecting && <div className="flex items-center gap-2 mt-2">
+          {/* Actions share the card's width equally, so they never spill out of it */}
+          {!selecting && <div className={`grid gap-2 mt-1 ${outputUrl && status === 'done' ? 'grid-cols-3' : 'grid-cols-2'}`}>
             <button onClick={onEdit} disabled={disabled}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold disabled:opacity-40 transition-colors hover:bg-white/15"
+              className="flex items-center justify-center gap-1.5 h-8 rounded-lg text-xs font-semibold disabled:opacity-40 transition-colors hover:bg-white/15"
               style={{ color: '#fff', background: 'rgba(255,255,255,0.08)' }}>
               <svg width="11" height="11" viewBox="0 0 14 14" fill="none" aria-hidden="true">
                 <path d="M9.5 2L12 4.5M2 12l.7-2.8L10 1.5 12.5 4 4.8 11.3 2 12z" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
@@ -1152,7 +1211,7 @@ function ClipCard({ id, focused, number, origin, title, startMs, endMs, status, 
               Edit
             </button>
             <button onClick={onPreview} aria-pressed={!!previewing} title="Play this clip as edited, in 9:16"
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors hover:bg-white/15"
+              className="flex items-center justify-center gap-1.5 h-8 rounded-lg text-xs font-semibold transition-colors hover:bg-white/15"
               style={previewing ? { color: '#000', background: ACCENT } : { color: '#fff', background: 'rgba(255,255,255,0.08)' }}>
               <svg width="11" height="11" viewBox="0 0 24 24" fill="none" aria-hidden="true">
                 <path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" />
@@ -1162,7 +1221,7 @@ function ClipCard({ id, focused, number, origin, title, startMs, endMs, status, 
             </button>
             {outputUrl && status === 'done' && (
               <a href={outputUrl} download target="_blank" rel="noopener noreferrer"
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-opacity hover:opacity-90"
+                className="flex items-center justify-center gap-1.5 h-8 rounded-lg text-xs font-bold transition-opacity hover:opacity-90"
                 style={{ background: ACCENT, color: '#000' }}>
                 <svg width="11" height="11" viewBox="0 0 14 14" fill="none" aria-hidden="true">
                   <path d="M7 2v7M4 7l3 3 3-3M2 11h10" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/>

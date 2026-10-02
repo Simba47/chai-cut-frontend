@@ -214,6 +214,10 @@ export interface AudioTrack {
   start_ms: number
   volume: number
   duck_under_speech: boolean
+  /** Trimmed music: how far into the song this track starts playing (default 0) */
+  offset_ms?: number
+  /** Trimmed music: clip time where this track stops (default: when the song ends) */
+  end_ms?: number
 }
 
 export interface Transition {
