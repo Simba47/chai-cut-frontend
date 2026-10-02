@@ -7,7 +7,7 @@ import type { BoxPosition } from '@/lib/interpolation'
 import type { TextCase } from './CaptionStyler'
 import { applyCase } from './CaptionStyler'
 import { normalizedSlotAspect, fitToAspect } from '@/modules/editor/utils'
-import { isFrameLayout, frameSlotLabels, frameLanesFor, frameBandShown, frameOf, itemAt, captionBandAt, cornerGeometry } from '@/modules/editor/frames'
+import { isFrameLayout, frameSlotLabels, frameLanesFor, frameBandShown, frameOf, itemAt, captionBandAt, cornerGeometry, frameRows } from '@/modules/editor/frames'
 import type { FrameMediaPool } from '@/modules/editor/frameMedia'
 
 const BOX_COLORS = ['#22c55e', '#3b82f6', '#f59e0b']
@@ -88,7 +88,11 @@ export function VideoPreview({
           const boxes = activeSegment.crop_boxes.slice(0, count)
             // In a frame only the slots showing the main video are framed on it
             .filter(box => !mainSlots || mainSlots.includes(box.slot_index))
-            .map(box => ({ box, label: labels?.[box.slot_index] ?? String(box.slot_index + 1), pos: fitToAspect(getPositionAt(box.id, currentTimeMs), aspect) }))
+            .map(box => {
+              // Slots can differ in shape (Big + Small): each box is locked to its own slot's
+              const a = frame ? normalizedSlotAspect(layout, videoAR ?? undefined, frameBandShown(activeSegment), box.slot_index) : aspect
+              return { box, aspect: a, label: labels?.[box.slot_index] ?? String(box.slot_index + 1), pos: fitToAspect(getPositionAt(box.id, currentTimeMs), a) }
+            })
           return (
             <div className="absolute inset-0" style={{ pointerEvents: 'none', zIndex: 10 }}>
               {/* One shared dim layer with a hole per box, so boxes never darken each other */}
@@ -101,7 +105,7 @@ export function VideoPreview({
                 </defs>
                 <rect x="0" y="0" width="1" height="1" fill="rgba(0,0,0,0.55)" mask={`url(#${maskId})`} />
               </svg>
-              {boxes.map(({ box, pos, label }, slotIdx) => (
+              {boxes.map(({ box, pos, label, aspect }, slotIdx) => (
                 <DraggableBox
                   key={box.id}
                   pos={pos}
@@ -341,9 +345,17 @@ function paintFrame(
   const frame = frameOf(seg)
   const main = new Set(frame.main_slots ?? [0])
   const bandBg = frame.band?.bg || '#000000'
+  // Caption strip (no lane): a plain band the captions are drawn on
+  for (const r of frameRows(seg.layout as Parameters<typeof frameRows>[0])) {
+    if (r.kind !== 'caption') continue
+    ctx.fillStyle = bandBg
+    ctx.fillRect(0, Math.round(r.y * H), W, Math.round((r.y + r.h) * H) - Math.round(r.y * H))
+  }
   for (const row of frameLanesFor(seg)) {
     const y = Math.round(row.y * H), h = Math.round((row.y + row.h) * H) - Math.round(row.y * H)
-    const it = itemAt(frame, row.lane, tMs, seg)
+    // A hidden item (kept only for its sound) isn't drawn: what's under it shows
+    const at = itemAt(frame, row.lane, tMs, seg)
+    const it = at?.hidden ? null : at
     if (row.lane === 'band') {
       ctx.fillStyle = bandBg
       ctx.fillRect(0, y, W, h)

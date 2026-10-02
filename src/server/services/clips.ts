@@ -331,7 +331,7 @@ function cleanFrame(frame: FrameSettings): FrameSettings {
     const lane = it.lane === 'band' ? 'band' as const : num(it.lane, 0, 2)
     const start = num(it.start_ms, 0, 1e9), end = num(it.end_ms, 0, 1e9)
     if (lane === undefined || start === undefined || end === undefined || end <= start) return []
-    const base: FrameItem = { id: it.id.slice(0, 64), lane: lane === 'band' ? lane : Math.round(lane), kind: it.kind, start_ms: Math.round(start), end_ms: Math.round(end) }
+    const base: FrameItem = { id: it.id.slice(0, 64), lane: lane === 'band' ? lane : Math.round(lane), kind: it.kind, start_ms: Math.round(start), end_ms: Math.round(end), ...(it.hidden ? { hidden: true } : {}) }
     if (it.kind === 'video') {
       if (typeof it.source_video_id !== 'string') return []
       return [{ ...base, source_video_id: it.source_video_id, source_offset_ms: Math.round(num(it.source_offset_ms, 0, 1e9) ?? 0), volume: num(it.volume, 0, 1) ?? 1, muted: !!it.muted, corners: corner(it.corners) }]
@@ -354,6 +354,7 @@ function cleanFrame(frame: FrameSettings): FrameSettings {
     main_slots: Array.isArray(frame.main_slots) ? [...new Set(frame.main_slots.filter(i => Number.isInteger(i) && i >= 0 && i <= 2))] : undefined,
     main_volume: num(frame.main_volume, 0, 1),
     main_muted: frame.main_muted === undefined ? undefined : !!frame.main_muted,
+    main_under: frame.main_under ? true : undefined,
     main_volumes: slotMap(frame.main_volumes, v => num(v, 0, 1)),
     main_mutes: slotMap(frame.main_mutes, v => typeof v === 'boolean' ? v : undefined),
     main_corners: frame.main_corners && typeof frame.main_corners === 'object'

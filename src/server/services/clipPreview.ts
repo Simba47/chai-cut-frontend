@@ -57,7 +57,17 @@ export async function getClipPreview(userId: string, clipId: string): Promise<Cl
   const segments = rowsToLocal(segRows as any[]).map(s => shownSegment(s, clip.video_id))
   // B-roll the clip shows (only the owner's own videos, as the export uses)
   // (the clip's own video, named by borrowed reaction slots, is played from the main URL)
-  const brollIds = [...new Set(segments.flatMap(s => s.crop_boxes.map(b => b.source_video_id)).filter((id): id is string => !!id && id !== clip.video_id))]
+  const brollIds = [...new Set(segments.flatMap(s => [
+    ...s.crop_boxes.map(b => b.source_video_id),
+    // Videos in frame slots
+    ...(s.frame?.items ?? []).map(it => it.kind === 'video' ? it.source_video_id : null),
+  ]).filter((id): id is string => !!id && id !== clip.video_id))]
+  // Photos in frame slots: signed, so the player can draw them
+  await Promise.all(segments.flatMap(s => (s.frame?.items ?? []).map(async it => {
+    if (it.kind === 'photo' && it.image_path) {
+      it.image_url = await getSignedUrl(r2, new GetObjectCommand({ Bucket: R2_BUCKET, Key: it.image_path }), { expiresIn: 43200 }).catch(() => null)
+    }
+  })))
   const brollRows = brollIds.length
     ? await sql`SELECT id, storage_path FROM videos WHERE id = ANY(${brollIds}) AND user_id = ${userId} AND storage_path IS NOT NULL`
     : []

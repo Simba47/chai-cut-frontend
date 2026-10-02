@@ -17,6 +17,9 @@ export const LAYOUT_COLORS: Record<LayoutType, string> = {
   frame_dual: '#2dd4bf',
   frame_dual_letterbox: '#2dd4bf',
   frame_triple: '#2dd4bf',
+  frame_title_caption: '#2dd4bf',
+  frame_big_small: '#2dd4bf',
+  frame_photo_story: '#2dd4bf',
 }
 
 // Frame lane items: one colour per kind of media
@@ -666,6 +669,7 @@ export function SegmentTimeline({
     e.stopPropagation()
     e.preventDefault()
     onSelectFrameItem?.(item.id)
+    if (frameSeg.locked) return
     const rect = trackRef.current?.getBoundingClientRect()
     if (!rect || duration <= 0) return
     const frame = frameOf(frameSeg)

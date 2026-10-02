@@ -636,3 +636,59 @@ body {
 }
 .ed-tip:hover::after, .ed-tip:focus-visible::after { opacity: 1; translate: -50% 0; }
 .ed-tl-btn[data-active] { color: #c8ff00; background: rgba(200,255,0,0.1); }
+
+/* ── Editor options sidebar: opens and closes smoothly ─────────────────────────
+   The column's width eases open (a soft, decelerating curve); the panel inside slides in from the
+   tool rail and fades, a beat after the column starts, so it never looks squeezed. Closing is quicker:
+   the panel fades out first, then the column folds away. */
+.ed-options {
+  border-right: 1px solid transparent;
+  transition: width 340ms cubic-bezier(0.32, 0.72, 0, 1), border-color 240ms ease;
+  will-change: width;
+}
+.ed-options[data-open] { border-right-color: rgb(var(--ed-fg) / 0.07); }
+.ed-options:not([data-open]) { transition-duration: 260ms, 160ms; }
+.ed-options-inner {
+  opacity: 0;
+  transform: translateX(-14px);
+  transition: opacity 160ms ease, transform 220ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+.ed-options[data-open] .ed-options-inner {
+  opacity: 1;
+  transform: none;
+  transition: opacity 260ms ease 70ms, transform 360ms cubic-bezier(0.32, 0.72, 0, 1) 40ms;
+}
+/* Switching tools: the new panel rises in gently */
+.ed-options-body { animation: ed-options-swap 240ms cubic-bezier(0.32, 0.72, 0, 1) both; }
+@keyframes ed-options-swap {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ed-options, .ed-options-inner, .ed-options[data-open] .ed-options-inner { transition: none; }
+  .ed-options-body { animation: none; }
+}
+
+/* ── Editor bars adapt to the space they have (the options sidebar takes ~270px when open) ─────
+   They're size containers: what goes first as space runs out is decided by their own width,
+   not the window's. */
+.ed-transport, .ed-canvas-bar { container-type: inline-size; }
+.ed-transport .ed-transport-time {
+  padding: 3px 8px; border-radius: 999px; background: rgb(var(--ed-fg) / 0.05);
+}
+@container (max-width: 760px) {
+  .ed-transport-tools { gap: 2px; }
+  .ed-transport-tools .ed-tl-sep { margin: 0 1px; }
+  .ed-transport .ed-tl-btn { min-width: 28px; height: 30px; padding: 0 4px; }
+  .ed-transport-total { display: none; }
+}
+@container (max-width: 600px) {
+  .ed-transport-tools .ed-tl-sep { display: none; }
+  .ed-transport-time { display: none; }
+}
+@container (max-width: 860px) {
+  .ed-canvas-bar .ed-applies { display: none; }
+}
+@container (max-width: 700px) {
+  .ed-canvas-bar .ed-dock-label { display: none; }
+}

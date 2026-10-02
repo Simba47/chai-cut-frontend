@@ -25,7 +25,7 @@ import { useConfirm } from '@/components/editor/ConfirmDialog'
 import { EditorTour, hasSeenEditorTour } from '@/components/editor/EditorTour'
 import { FrameAddMenu, type AddChoice } from '@/components/editor/FrameAddMenu'
 import { createFrameMediaPool } from '@/modules/editor/frameMedia'
-import { FRAME_TEMPLATES, isFrameLayout, frameOf, frameLanes, frameSlotLabels, emptySlotStretches, slotOffers, DEFAULT_BAND } from '@/modules/editor/frames'
+import { FRAME_TEMPLATES, isFrameLayout, frameOf, frameLanes, frameSlotLabels, emptySlotStretches, slotOffers, DEFAULT_BAND, DEFAULT_CORNERS } from '@/modules/editor/frames'
 import { signOut } from 'next-auth/react'
 import { PlatformOverlay, PLATFORM_SAFE, type Platform } from '@/components/editor/PlatformOverlay'
 // ── Domain stores ──────────────────────────────────────────────────────────────
@@ -78,7 +78,7 @@ const ACCENT = '#c8ff00'
 const TOOLS: { id: Tool; label: string; title: string; hint: string; icon: React.ReactNode }[] = [
   {
     id: 'format', label: 'Format', title: 'Formats',
-    hint: 'Each format is a section of the clip with its own layout. Move the playhead to where the new layout should start and pick it: it runs from there to the end of that section (at a section\'s start the whole section changes). Move the view at any moment to change it from there on — each change is a ◆ on the timeline.',
+    hint: 'Pick a layout and it starts at the playhead. Drag the view to reframe — each change is a ◆.',
     icon: <path d="M6 2v14a2 2 0 002 2h14M2 6h14a2 2 0 012 2v14" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" fill="none" />,
   },
   {
@@ -365,6 +365,14 @@ export function EditorShell({
     const now = performance.now(), last = lastTapRef.current
     lastTapRef.current = { key, at: now }
     return !!last && last.key === key && now - last.at < 450
+  }
+  // "Locked" note: a short message when an edit is refused because something is locked
+  const [lockNote, setLockNote] = useState<string | null>(null)
+  const lockNoteTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  function notifyLocked(msg: string) {
+    setLockNote(msg)
+    if (lockNoteTimer.current) clearTimeout(lockNoteTimer.current)
+    lockNoteTimer.current = setTimeout(() => setLockNote(null), 2200)
   }
   // The timeline's "+" menu: where it was opened (start / end of the clip) and where to show it
   const [plusMenu, setPlusMenu] = useState<{ atMs: number; anchor: DOMRect } | null>(null)
@@ -753,6 +761,7 @@ export function EditorShell({
   function handleLayoutChange(layout: LayoutType, mode: 'section' | 'fromPlayhead' = 'section') {
     const t = currentTimeMs
     const ar = getVideoAR()
+    if (activeSegment && sectionBlocked(activeSegment.id)) return
     if (!activeSegment && currentGap) {
       // No format here yet: create one over the uncovered stretch (from the playhead, unless 'section')
       const start = mode === 'section' || t - currentGap.start_ms <= LAYOUT_SNAP_MS ? currentGap.start_ms : t
@@ -786,7 +795,7 @@ export function EditorShell({
       // Playhead is on the line into what follows: change the next format if it touches this one
       const next = [...segments].sort((a, b) => a.start_ms - b.start_ms).find(s => s.start_ms >= seg.end_ms - 1)
       if (next && next.start_ms - seg.end_ms < LAYOUT_SNAP_MS) {
-        if (next.layout !== layout && formatLayoutOf(next.layout) !== layout) {
+        if (next.layout !== layout && formatLayoutOf(next.layout) !== layout && !sectionBlocked(next.id)) {
           applyLayout(next.id, layout, ar, neighbourFraming(layout, next.start_ms, next.end_ms, next.id))
           seekToMs(joinSameLayoutNeighbours(next.id, transitionAfter()) === next.id ? next.start_ms : seg.end_ms)
         }
@@ -814,7 +823,7 @@ export function EditorShell({
    * A frame with photos, videos or text in it asks first. One undo step.
    */
   function swallowSection(removeId: string, keepId: string) {
-    if (isLocked({ kind: 'section', id: removeId }) || isLocked({ kind: 'section', id: keepId })) return
+    if (blocked({ kind: 'section', id: removeId }) || blocked({ kind: 'section', id: keepId })) return
     const gone = segments.find(x => x.id === removeId)
     if (!gone) return
     const go = () => {
@@ -841,7 +850,7 @@ export function EditorShell({
   const canSplitHere = !!activeSegment && currentTimeMs > activeSegment.start_ms + 100 && currentTimeMs < activeSegment.end_ms - 100
   function splitHere() {
     const seg = activeSegment
-    if (!seg || !canSplitHere) return
+    if (!seg || !canSplitHere || sectionBlocked(seg.id)) return
     pause()
     skipCanvasTransitionRef.current = true
     splitAtMs(seg.id, currentTimeMs, getPositionAt)
@@ -872,7 +881,7 @@ export function EditorShell({
    * (never past the song's end or the clip's).
    */
   function trimMusicEdge(id: string, edge: 'start' | 'end', ms: number) {
-    if (isLocked({ kind: 'music', id })) return
+    if (blocked({ kind: 'music', id })) return
     setAudioTracks(prev => prev.map(t => {
       if (t.id !== id) return t
       const off = t.offset_ms ?? 0
@@ -925,7 +934,7 @@ export function EditorShell({
   useEffect(() => { setOriginalMuted(hasMainAudio) }, [hasMainAudio])
 
   function deleteMusic(id: string) {
-    if (isLocked({ kind: 'music', id })) return
+    if (blocked({ kind: 'music', id })) return
     setAudioTracks(prev => prev.filter(t => t.id !== id))
     setPickedMusicId(null)
   }
@@ -959,13 +968,14 @@ export function EditorShell({
       return
     }
     const vid = videoRef.current
+    if (sectionBlocked(segments.find(s => s.crop_boxes.some(b => b.id === boxId))?.id)) return
     if (motionModeRef.current) {
       const t_ms = vid && !vid.paused ? Math.round(vid.currentTime * 1000) - clip.start_ms : currentTimeMs
       recordMotionAt(boxId, Math.max(0, t_ms), pos)
       return
     }
     const seg = segments.find(s => s.crop_boxes.some(b => b.id === boxId))
-    if (!seg) return
+    if (!seg || sectionBlocked(seg.id)) return
     // One drag = one view change at one moment: stop playback so the playhead can't run on
     if (vid && !vid.paused) pause()
     const t = Math.max(seg.start_ms, Math.min(seg.end_ms - 1, currentTimeMs))
@@ -1024,7 +1034,7 @@ export function EditorShell({
   // Text on a frame's band: added straight away at the playhead, then typed in the Text tool
   function addBandText(segId: string, t: number) {
     const seg = segments.find(x => x.id === segId)
-    if (!seg) return
+    if (!seg || sectionBlocked(segId)) return
     pause()
     const band = { ...DEFAULT_BAND, ...seg.frame?.band }
     addToLane(segId, 'band', t, { kind: 'text', text: '', bg: band.bg, color: band.color, size: band.size })
@@ -1034,6 +1044,7 @@ export function EditorShell({
     if (!addMenu) return
     const { segId, lane, t } = addMenu
     setAddMenu(null)
+    if (sectionBlocked(segId)) return
     const seg = segments.find(x => x.id === segId)
     if (!seg) return
     if (choice === 'photo' || choice === 'video') { setFramePicker({ segId, kind: choice, lane, t }); return }
@@ -1061,7 +1072,7 @@ export function EditorShell({
     if (!videoLibraryRef.current[videoId]) loadVideoLibrary()
     if (!p) return
     if (p.replaceId) { updateFrameItem(p.segId, p.replaceId, { kind: 'video', source_video_id: videoId, source_offset_ms: 0, image_path: null, image_url: null }); return }
-    if (p.lane !== undefined) addToLane(p.segId, p.lane, p.t ?? currentTimeMs, { kind: 'video', source_video_id: videoId, source_offset_ms: 0, volume: 1, muted: false })
+    if (p.lane !== undefined) addToLane(p.segId, p.lane, p.t ?? currentTimeMs, { kind: 'video', source_video_id: videoId, source_offset_ms: 0, volume: 1, muted: false, corners: DEFAULT_CORNERS })
   }
 
   function handlePickedPhoto(storagePath: string, url: string) {
@@ -1069,7 +1080,7 @@ export function EditorShell({
     setFramePicker(null)
     if (!p) return
     if (p.replaceId) { updateFrameItem(p.segId, p.replaceId, { kind: 'photo', image_path: storagePath, image_url: url || null, source_video_id: null }); return }
-    if (p.lane !== undefined) addToLane(p.segId, p.lane, p.t ?? currentTimeMs, { kind: 'photo', image_path: storagePath, image_url: url || null, motion: 'none' })
+    if (p.lane !== undefined) addToLane(p.segId, p.lane, p.t ?? currentTimeMs, { kind: 'photo', image_path: storagePath, image_url: url || null, motion: 'none', corners: DEFAULT_CORNERS })
   }
 
   // "+" in the preview (or an empty lane in the panel) points at the lane on the timeline.
@@ -1148,6 +1159,7 @@ export function EditorShell({
   function handleResetPositions() {
     const first = [...segments].sort((a, b) => a.start_ms - b.start_ms)[0]
     if (!first) return
+    if (segments.some(x => x.locked)) { notifyLocked('Some sections are locked — unlock them first'); return }
     segments.filter(s => s.id !== first.id).forEach(s => removeSegment(s.id))
     updateSegment(first.id, { start_ms: 0, end_ms: clipLengthMs })
     setActiveSegmentId(first.id)
@@ -1167,7 +1179,7 @@ export function EditorShell({
   const UNDO_NOTE = 'You can undo this.'
 
   function askDeleteFormat(segId: string) {
-    if (isLocked({ kind: 'section', id: segId })) return
+    if (blocked({ kind: 'section', id: segId })) return
     const i = cropPositions.findIndex(x => x.id === segId)
     const seg = cropPositions[i]
     if (!seg) return
@@ -1181,6 +1193,7 @@ export function EditorShell({
   }
 
   function askRemoveFrame(segId: string) {
+    if (sectionBlocked(segId)) return
     confirm({ title: 'Remove this frame?', body: `This part goes back to Vertical, and the photos, videos and text in the frame are removed. ${UNDO_NOTE}`, confirmLabel: 'Remove' },
       () => removeFrame(segId))
   }
@@ -1196,6 +1209,7 @@ export function EditorShell({
   }
 
   function askRemoveFrameItem(segId: string, id: string) {
+    if (sectionBlocked(segId)) return
     confirm({ title: `Remove ${frameItemName(segId, id)}?`, body: UNDO_NOTE, confirmLabel: 'Remove' }, () => {
       removeFrameItem(segId, id)
       setActiveFrameItemId(cur => cur === id ? null : cur)
@@ -1203,6 +1217,7 @@ export function EditorShell({
   }
 
   function askRemoveMain(segId: string, slot: number) {
+    if (sectionBlocked(segId)) return
     const seg = segments.find(x => x.id === segId)
     if (!seg || !isFrameLayout(seg.layout)) return
     const label = frameLanes(seg.layout).find(l => l.lane === slot)?.label ?? ''
@@ -1213,7 +1228,7 @@ export function EditorShell({
   }
 
   function askDeleteTextOverlay(id: string) {
-    if (isLocked({ kind: 'text', id })) return
+    if (blocked({ kind: 'text', id })) return
     const o = textOverlays.find(x => x.id === id)
     confirm({ title: o?.text?.trim() ? `Delete the text "${o.text.trim().slice(0, 40)}"?` : 'Delete this text?', body: UNDO_NOTE }, () => {
       deleteTextOverlay(id)
@@ -1288,7 +1303,7 @@ export function EditorShell({
   }
 
   function askDeleteOverlay(id: string) {
-    if (isLocked({ kind: 'photo', id })) return
+    if (blocked({ kind: 'photo', id })) return
     const o = overlays.find(x => x.id === id)
     confirm({ title: `Delete this ${o?.type === 'video' ? 'video' : 'image'}?`, body: UNDO_NOTE }, () => {
       deleteOverlay(id)
@@ -1301,6 +1316,7 @@ export function EditorShell({
     setPickerAtMs(null); setPendingBrollMs(null); setPickerOnly(null)
     // 5 s from here, across section edges if it gets there (it isn't cut off at the section's end)
     const at = Math.max(0, Math.min(atMs, clipLengthMs - 500))
+    if (rangeBlocked(at, Math.min(clipLengthMs, at + 5000))) return
     const newId = placeBroll(videoId, at, Math.min(clipLengthMs, at + 5000), getPositionAt)
     setActiveSegmentId(newId); seekToMs(at)
   }
@@ -1318,6 +1334,7 @@ export function EditorShell({
 
   /** Save the stock video as the user's asset, then put it in at the playhead as a muted cutaway */
   async function addStockBroll(item: StockResult, lengthMs: number) {
+    { const at0 = Math.min(currentTimeMs, Math.max(0, clipLengthMs - 500)); if (rangeBlocked(at0, Math.min(clipLengthMs, at0 + lengthMs))) return }
     const res = await fetch('/api/stock/import', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ref: item.ref, url: item.url, title: item.title }),
@@ -1343,12 +1360,13 @@ export function EditorShell({
    * back in at the new place, as a new shot is. Same video, muted.
    */
   function retimeBroll(id: string, startMs: number, endMs: number) {
-    if (isLocked({ kind: 'section', id })) return
+    if (blocked({ kind: 'section', id })) return
     const { seg } = neighbours(id)
     const videoId = seg?.crop_boxes[0]?.source_video_id
     if (!seg || !videoId) return
     const start = Math.max(0, Math.min(clipLengthMs - 500, startMs))
     const end = Math.min(clipLengthMs, Math.max(start + 500, endMs))
+    if (rangeBlocked(start, end, id)) return
     removeBrollShot(id)
     setActiveSegmentId(placeBroll(videoId, start, end, getPositionAt))
   }
@@ -1356,7 +1374,7 @@ export function EditorShell({
   const resizeBroll = (id: string, delta: number) => { const { seg } = neighbours(id); if (seg) retimeBroll(id, seg.start_ms, seg.end_ms + delta) }
 
   /** Remove a shot: the framing before it (or after it, at the start) takes its time back */
-  const removeBroll = (id: string) => { if (!isLocked({ kind: 'section', id })) removeBrollShot(id) }
+  const removeBroll = (id: string) => { if (!blocked({ kind: 'section', id })) removeBrollShot(id) }
 
   function handleInsertBrollAfterSeg(afterSegId: string) {
     const seg = segments.find(s => s.id === afterSegId)
@@ -1522,7 +1540,39 @@ export function EditorShell({
     if (t.kind === 'text') return textOverlays.find(x => x.id === t.id)
     return audioTracks.find(x => x.id === t.id)
   }
-  function isLocked(t: CtlTarget) { return !!ctlState(t)?.locked }
+  /** The locked section an item's time falls in, if any: everything inside a locked section is locked too */
+  function lockedSectionOver(startMs: number, endMs: number, exceptId?: string) {
+    return segments.find(x => x.locked && x.id !== exceptId && x.start_ms < endMs && x.end_ms > startMs) ?? null
+  }
+  /** A thing's own time (for the section lock) */
+  function spanOf(t: CtlTarget): [number, number] | null {
+    if (t.kind === 'photo') { const o = overlays.find(x => x.id === t.id); return o ? [o.start_ms, o.end_ms] : null }
+    if (t.kind === 'text') { const o = textOverlays.find(x => x.id === t.id); return o ? [o.start_ms, o.end_ms] : null }
+    if (t.kind === 'music') { const o = audioTracks.find(x => x.id === t.id); return o ? [o.start_ms, Math.min(clipLengthMs, musicEnd(o))] : null }
+    return null
+  }
+  /** Locked itself, or inside a locked section (a frame item: its frame's section) */
+  function isLocked(t: CtlTarget): boolean {
+    if (ctlState(t)?.locked) return true
+    if (t.kind === 'frameItem') return !!segments.find(x => x.id === t.segId)?.locked
+    const span = spanOf(t)
+    return !!span && !!lockedSectionOver(span[0], span[1])
+  }
+  /** Lock check for an edit: true (and a short note why) when the thing can't be changed */
+  function blocked(t: CtlTarget): boolean {
+    if (!isLocked(t)) return false
+    const own = !!ctlState(t)?.locked
+    notifyLocked(own ? 'This is locked — unlock it to change it' : 'Its section is locked — unlock the section to change it')
+    return true
+  }
+  /** A section by id (frames, layouts, views): blocked when it's locked */
+  function sectionBlocked(segId: string | null | undefined) { return !!segId && blocked({ kind: 'section', id: segId }) }
+  /** Something new put over this time (a video cuts the sections under it): blocked by a locked section there */
+  function rangeBlocked(startMs: number, endMs: number, exceptId?: string) {
+    const sec = lockedSectionOver(startMs, endMs, exceptId)
+    if (sec) notifyLocked(`The section ${msToLabel(sec.start_ms)}–${msToLabel(sec.end_ms)} is locked — unlock it first`)
+    return !!sec
+  }
   /** Which controls a thing has: the main video mutes and locks, an added video hides, mutes and locks, photos and text hide and lock, music mutes and locks */
   function canCtl(t: CtlTarget): CtlKey[] {
     if (t.kind === 'section') return isFrameLayout(segments.find(x => x.id === t.id)?.layout ?? 'vertical') ? ['muted', 'locked'] : ['hidden', 'muted', 'locked']
@@ -1725,10 +1775,11 @@ export function EditorShell({
 
         {/* Options sidebar — settings for the selected tool only; collapsible */}
         <aside id="options-sidebar" aria-label={`${activeTool.title} options`} aria-hidden={!optionsOpen}
-          className="shrink-0 min-h-0 overflow-hidden transition-[width] duration-200 ease-out motion-reduce:transition-none"
-          style={{ width: optionsOpen ? OPTIONS_W : 0, background: 'var(--ed-panel)', borderRight: optionsOpen ? '1px solid rgb(var(--ed-fg) / 0.07)' : 'none' }}
+          className="ed-options shrink-0 min-h-0 overflow-hidden" data-open={optionsOpen || undefined}
+          style={{ width: optionsOpen ? OPTIONS_W : 0, background: 'var(--ed-panel)' }}
           {...(!optionsOpen ? { inert: true } : {})}>
-          <div className="h-full flex flex-col min-h-0" style={{ width: OPTIONS_W }}>
+          {/* Fixed width inside, so the panel slides and fades as one piece while the column opens */}
+          <div className="ed-options-inner h-full flex flex-col min-h-0" style={{ width: OPTIONS_W }}>
           <div className="shrink-0 pl-4 pr-2 pt-3 pb-3 flex items-start gap-2" style={{ borderBottom: '1px solid rgb(var(--ed-fg) / 0.06)' }}>
             <div className="flex-1 min-w-0 pt-1">
             {tool === 'captions' && editingTranscript ? (
@@ -1750,10 +1801,11 @@ export function EditorShell({
             </button>
           </div>
 
-          <div className="flex-1 min-h-0 overflow-y-auto">
+          {/* Keyed by tool: switching tools fades the new panel in */}
+          <div key={tool} className="ed-options-body flex-1 min-h-0 overflow-y-auto">
             {tool === 'format' && (
               <div className="flex flex-col">
-                <div className="px-4 pt-4 pb-3 flex flex-col gap-1.5">
+                <div className="px-4 pt-3 pb-2 flex flex-col gap-1.5">
                 <div className="flex items-center gap-2">
                   <span className="text-sm font-semibold text-[var(--ed-text)]">Sections</span>
                   <span className="h-5 min-w-5 px-1.5 flex items-center justify-center rounded-full text-[11px] font-bold tabular-nums"
@@ -1780,18 +1832,15 @@ export function EditorShell({
                     </button>
                   )}
                 </div>
-                <p className="text-[11px] leading-relaxed" style={{ color: 'rgb(var(--ed-fg) / 0.42)' }}>
-                  Your clip is made of sections, each with its own layout. Click one to edit it.
-                </p>
                 {/* Show what's in the sections: everything, or one kind (sections without it fade) */}
-                <div role="radiogroup" aria-label="Show in the sections" className="flex flex-wrap gap-1 mt-1">
+                <div role="radiogroup" aria-label="Show in the sections" className="flex gap-1 mt-1 overflow-x-auto no-scrollbar -mx-1 px-1">
                   {(['all', ...SECTION_KINDS.map(k => k.id)] as const).map(id => {
                     const on = sectionFilter === id
                     const meta = SECTION_KINDS.find(k => k.id === id)
                     const n = id === 'all' ? null : [...itemsBySection.values()].reduce((c, list) => c + list.filter(x => x.kind === id).length, 0)
                     return (
                       <button key={id} role="radio" aria-checked={on} onClick={() => setSectionFilter(id)}
-                        className="h-6 px-2 flex items-center gap-1 rounded-full text-[11px] font-medium transition-colors"
+                        className="shrink-0 h-6 px-2 flex items-center gap-1 rounded-full text-[11px] font-medium transition-colors"
                         style={on
                           ? { background: meta ? `${meta.color}26` : 'rgb(var(--ed-fg) / 0.12)', color: 'var(--ed-text)', boxShadow: `inset 0 0 0 1px ${meta ? meta.color : 'rgb(var(--ed-fg) / 0.25)'}` }
                           : { color: 'rgb(var(--ed-fg) / 0.55)', boxShadow: 'inset 0 0 0 1px rgb(var(--ed-fg) / 0.1)' }}>
@@ -1803,7 +1852,7 @@ export function EditorShell({
                   })}
                 </div>
                 </div>
-                <div ref={sectionListRef} className="px-3 pb-3 flex flex-col gap-1">
+                <div ref={sectionListRef} className="px-3 pb-3 flex flex-col gap-1.5">
                   {uncovered.filter(g => g.start_ms < (cropPositions[0]?.start_ms ?? Infinity)).map(g => (
                     <GapRow key={`gap-${g.start_ms}`} gap={g} active={currentGap?.start_ms === g.start_ms}
                       onSelect={() => seekToMs(g.start_ms)} onAdd={() => addFormatInGap(g)} />
@@ -1834,87 +1883,76 @@ export function EditorShell({
                         role="button" tabIndex={0}
                         aria-current={isActiveSeg || undefined}
                         aria-label={`Section ${i + 1}: ${name}, ${msToLabel(seg.start_ms)} to ${msToLabel(seg.end_ms)}`}
-                        className="group relative flex flex-col px-2 py-1.5 rounded-lg cursor-pointer transition-[background,border-color,box-shadow] duration-200 hover:border-[rgb(var(--ed-fg)/0.18)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[rgba(200,255,0,0.6)]"
-                        style={isActiveSeg
-                          ? { background: 'linear-gradient(180deg, rgba(200,255,0,0.07), rgba(200,255,0,0.02))', border: '1px solid rgba(200,255,0,0.45)', boxShadow: '0 8px 24px -14px rgba(200,255,0,0.45)' }
-                          : { background: 'rgb(var(--ed-fg) / 0.03)', border: '1px solid rgb(var(--ed-fg) / 0.08)', opacity: faded ? 0.45 : 1 }}
+                        className="group relative flex flex-col rounded-xl cursor-pointer overflow-hidden transition-[background,box-shadow,opacity] duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[rgba(200,255,0,0.6)]"
+                        style={{
+                          background: isActiveSeg ? 'linear-gradient(180deg, rgba(200,255,0,0.06), rgba(200,255,0,0.015))' : 'rgb(var(--ed-fg) / 0.03)',
+                          boxShadow: isActiveSeg ? 'inset 0 0 0 1px rgba(200,255,0,0.45), 0 8px 22px -16px rgba(200,255,0,0.5)' : 'inset 0 0 0 1px rgb(var(--ed-fg) / 0.07)',
+                          opacity: faded ? 0.45 : 1,
+                        }}
                         onClick={() => { setActiveSegmentId(seg.id); setPickedSegId(seg.id); seekToMs(seg.start_ms) }}
                         onKeyDown={e => { if (e.key === 'Enter') { setActiveSegmentId(seg.id); setPickedSegId(seg.id); seekToMs(seg.start_ms) } }}>
-                        <div className="flex items-center gap-2">
-                          {/* Layout icon on a tile tinted with the section's colour */}
-                          <span className="relative shrink-0 w-7 h-8 flex items-center justify-center rounded-md"
-                            style={{ background: `${col}1f`, boxShadow: `inset 0 0 0 1px ${col}55` }}>
+                        <div className="flex items-start gap-2.5 pl-2.5 pr-1.5 pt-2 pb-1.5">
+                          <span className="shrink-0 w-8 h-8 mt-px flex items-center justify-center rounded-lg"
+                            style={{ background: isActiveSeg ? 'rgba(200,255,0,0.1)' : 'rgb(var(--ed-fg) / 0.06)' }}>
                             {broll
-                              ? <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={col} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="2" y="5" width="15" height="14" rx="2" /><path d="M17 10l5-3v10l-5-3z" /></svg>
-                              : <LayoutGlyph layout={shown} color={col} active={isActiveSeg} />}
+                              ? <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke={isActiveSeg ? '#c8ff00' : 'currentColor'} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ color: 'rgb(var(--ed-fg) / 0.7)' }}><rect x="2" y="5" width="15" height="14" rx="2" /><path d="M17 10l5-3v10l-5-3z" /></svg>
+                              : <LayoutGlyph layout={shown} color={isActiveSeg ? '#c8ff00' : '#9ca3af'} active={isActiveSeg} />}
                           </span>
                           <div className="flex-1 min-w-0 flex flex-col">
-                            <span className="flex items-center gap-2 min-w-0">
-                              <span className="text-xs font-semibold truncate text-[var(--ed-text)]">{name}</span>
-                              {isActiveSeg && (
-                                <span className="shrink-0 px-1.5 py-px rounded text-[9px] font-bold uppercase tracking-wider"
-                                  style={{ background: 'rgba(200,255,0,0.14)', color: 'var(--ed-accent-text)' }}>Editing</span>
-                              )}
-                            </span>
-                            <span className="text-[10px] leading-tight tabular-nums" style={{ color: 'rgb(var(--ed-fg) / 0.45)' }}>
-                              {msToLabel(seg.start_ms)} → {msToLabel(seg.end_ms)}
-                              <span style={{ color: 'rgb(var(--ed-fg) / 0.25)' }}> · </span>
-                              {lengthLabel(seg.end_ms - seg.start_ms)}
-                            </span>
-                            {/* Where this section sits in the whole clip */}
-                            <div className="relative h-[3px] mt-1 rounded-full overflow-hidden" style={{ background: 'rgb(var(--ed-fg) / 0.07)' }}
-                              title={`${msToLabel(seg.start_ms)}–${msToLabel(seg.end_ms)} of ${msToLabel(clipDurationMs)}`}>
-                              <div className="absolute h-full rounded-full" style={{
-                                left: `${(seg.start_ms / clipDurationMs) * 100}%`,
-                                width: `max(3px, ${((seg.end_ms - seg.start_ms) / clipDurationMs) * 100}%)`,
-                                background: col,
-                                boxShadow: isActiveSeg ? `0 0 6px ${col}` : 'none',
-                              }} />
+                            {/* Line 1: name · time range · open */}
+                            <div className="flex items-center gap-2 min-w-0 h-6">
+                              <span className="text-[13px] font-semibold truncate text-[var(--ed-text)]">{name}</span>
+                              {isActiveSeg && <span className="shrink-0 w-1.5 h-1.5 rounded-full" style={{ background: '#c8ff00' }} title="Under the playhead" />}
+                              <span className="ml-auto shrink-0 whitespace-nowrap text-[11px] tabular-nums" style={{ color: 'rgb(var(--ed-fg) / 0.55)' }}>
+                                {msToLabel(seg.start_ms)} – {msToLabel(seg.end_ms)}
+                              </span>
+                            </div>
+                            {/* Line 2: length and what's in it · lock · delete */}
+                            <div className="flex items-center gap-1 min-w-0 h-6">
+                              <span className="flex-1 min-w-0 truncate text-[11px]" style={{ color: 'rgb(var(--ed-fg) / 0.42)' }}>
+                                {[lengthLabel(seg.end_ms - seg.start_ms), ...SECTION_KINDS.flatMap(k => {
+                                  const c = all.filter(x => x.kind === k.id).length
+                                  return c ? [`${c} ${(c === 1 ? k.one : k.plural).toLowerCase()}`] : []
+                                })].join(' · ')}
+                              </span>
+                              <span className={`shrink-0 flex items-center transition-opacity ${isActiveSeg || seg.locked ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 focus-within:opacity-100'}`}>
+                                <CtlButtons size="sm" state={seg} can={['locked']} onToggle={k => toggleCtl({ kind: 'section', id: seg.id }, k)}
+                                  what={name.toLowerCase() === 'video' ? 'this video section' : 'this section'} />
+                              </span>
+                              <button onClick={e => { e.stopPropagation(); askDeleteFormat(seg.id) }}
+                                aria-label={deleteLabel} title={`${deleteLabel} (Delete)`}
+                                className={`shrink-0 w-[22px] h-[22px] flex items-center justify-center rounded-md transition-[opacity,background,color] hover:bg-[rgba(239,68,68,0.12)] hover:text-[#f87171] ${isActiveSeg ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 focus:opacity-100'}`}
+                                style={{ color: 'rgb(var(--ed-fg) / 0.5)' }}>
+                                <TrashIcon />
+                              </button>
                             </div>
                           </div>
-                          <CtlButtons size="sm" state={seg} can={['locked']} onToggle={k => toggleCtl({ kind: 'section', id: seg.id }, k)}
-                            what={name.toLowerCase() === 'video' ? 'this video section' : 'this section'} />
-                          <button onClick={e => { e.stopPropagation(); askDeleteFormat(seg.id) }}
-                            aria-label={deleteLabel} title={`${deleteLabel} (Delete)`}
-                            className={`shrink-0 w-6 h-6 flex items-center justify-center rounded-md transition-[opacity,background,color] hover:bg-[rgba(239,68,68,0.12)] hover:text-[#f87171] ${isActiveSeg ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 focus:opacity-100'}`}
-                            style={{ color: 'rgb(var(--ed-fg) / 0.5)' }}>
-                            <TrashIcon />
+                          {/* What's in this section: open / close its list */}
+                          <button onClick={e => { e.stopPropagation(); setOpenSections(prev => { const n = new Set(prev); if (n.has(seg.id)) n.delete(seg.id); else n.add(seg.id); return n }) }}
+                            aria-expanded={open} aria-label={`${open ? 'Hide' : 'Show'} what's in section ${i + 1}`} title={open ? 'Hide what\u2019s in it' : 'Show what\u2019s in it'}
+                            className="shrink-0 w-6 h-6 flex items-center justify-center rounded-md transition-colors hover:bg-[rgb(var(--ed-fg)/0.08)]"
+                            style={{ color: 'rgb(var(--ed-fg) / 0.55)' }}>
+                            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"
+                              style={{ transform: open ? 'rotate(180deg)' : 'none', transition: 'transform .2s' }}><path d="M6 9l6 6 6-6" /></svg>
                           </button>
                         </div>
-                        {/* What's in this section: a count per kind, and a dropdown listing each one */}
-                        <button onClick={e => { e.stopPropagation(); setOpenSections(prev => { const n = new Set(prev); if (n.has(seg.id)) n.delete(seg.id); else n.add(seg.id); return n }) }}
-                          aria-expanded={open} aria-label={`${open ? 'Hide' : 'Show'} what's in section ${i + 1}`}
-                          className="mt-1.5 -mx-1 px-1 h-6 flex items-center gap-2 rounded-md text-[11px] transition-colors hover:bg-[rgb(var(--ed-fg)/0.05)]"
-                          style={{ color: 'rgb(var(--ed-fg) / 0.5)' }}>
-                          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"
-                            style={{ transform: open ? 'rotate(90deg)' : 'none', transition: 'transform .15s' }}><path d="M9 6l6 6-6 6" /></svg>
-                          {all.length === 0 ? 'Nothing added here yet' : SECTION_KINDS.map(k => {
-                            const c = all.filter(x => x.kind === k.id).length
-                            return c ? (
-                              <span key={k.id} className="flex items-center gap-1">
-                                <span className="w-1.5 h-1.5 rounded-full" style={{ background: k.color }} />
-                                {c} {c === 1 ? k.one : k.plural.toLowerCase()}
-                              </span>
-                            ) : null
-                          })}
-                        </button>
                         {open && (
-                          <div className="mt-1 flex flex-col gap-0.5" onClick={e => e.stopPropagation()}>
+                          <div className="mx-2 mb-2 flex flex-col rounded-lg overflow-hidden" onClick={e => e.stopPropagation()}
+                            style={{ background: 'rgb(var(--ed-fg) / 0.035)', boxShadow: 'inset 0 0 0 1px rgb(var(--ed-fg) / 0.05)' }}>
                             {/* The main video, in every section (under a video section its sound carries on) */}
                             {sectionFilter === 'all' && (
-                              <div className="flex items-center gap-1" style={{ opacity: seg.hidden ? 0.5 : 1 }}>
+                              <div className="flex items-center gap-1 pr-1" style={{ opacity: seg.hidden ? 0.5 : 1 }}>
                                 <button onClick={() => { pause(); seekToMs(seg.start_ms); setActiveSegmentId(seg.id); setPickedSegId(seg.id) }}
                                   title={`Main video · ${msToLabel(seg.start_ms)}–${msToLabel(seg.end_ms)}`}
-                                  className="flex-1 min-w-0 flex items-center gap-2 px-1.5 py-1 rounded-md text-left transition-colors hover:bg-[rgb(var(--ed-fg)/0.07)]">
-                                  <span className="w-5 h-5 shrink-0 flex items-center justify-center rounded" style={{ background: 'rgba(200,255,0,0.14)', color: 'var(--ed-accent-text)' }}>
-                                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                                  className="flex-1 min-w-0 h-8 flex items-center gap-2 pl-2 pr-1 text-left transition-colors hover:bg-[rgb(var(--ed-fg)/0.05)]">
+                                  <span className="w-[18px] h-[18px] shrink-0 flex items-center justify-center rounded-[5px]" style={{ background: 'rgba(200,255,0,0.14)', color: 'var(--ed-accent-text)' }}>
+                                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                                       <rect x="3" y="4" width="18" height="16" rx="2" /><path d="M7 4v16M17 4v16M3 9h4M3 15h4M17 9h4M17 15h4" />
                                     </svg>
                                   </span>
-                                  <span className="flex-1 min-w-0 truncate text-[11px] font-medium text-[var(--ed-text)]">
-                                    Main video{broll ? <span style={{ color: 'rgb(var(--ed-fg) / 0.45)' }}> · under the video</span> : null}
+                                  <span className="flex-1 min-w-0 truncate text-[11.5px] font-medium text-[var(--ed-text)]">
+                                    Main video{broll ? <span style={{ color: 'rgb(var(--ed-fg) / 0.42)' }}> · under</span> : null}
                                   </span>
-                                  <span className="shrink-0 text-[10px] tabular-nums" style={{ color: 'rgb(var(--ed-fg) / 0.42)' }}>{msToLabel(seg.start_ms)}–{msToLabel(seg.end_ms)}</span>
                                 </button>
                                 <CtlButtons size="sm" state={seg} can={isFrameLayout(seg.layout) ? ['muted'] : ['hidden', 'muted']} onToggle={k => toggleCtl({ kind: 'section', id: seg.id }, k)} what="the main video here"
                                   inert={(() => {
@@ -1930,24 +1968,24 @@ export function EditorShell({
                             )}
                             {items.length === 0 ? (
                               sectionFilter === 'all' ? null : (
-                                <span className="px-1 py-1 text-[11px]" style={{ color: 'rgb(var(--ed-fg) / 0.4)' }}>None of this kind here.</span>
+                                <span className="px-2.5 py-2 text-[11px]" style={{ color: 'rgb(var(--ed-fg) / 0.4)' }}>None of this kind here.</span>
                               )
                             ) : items.map(it => {
                               const k = SECTION_KINDS.find(x => x.id === it.kind)!
                               const st = it.ctl ? ctlState(it.ctl) : undefined
                               return (
-                                <div key={it.key} className="flex items-center gap-1" style={{ opacity: st?.hidden ? 0.5 : 1 }}>
+                                <div key={it.key} className="flex items-center gap-1 pr-1" style={{ opacity: st?.hidden ? 0.5 : 1, borderTop: '1px solid rgb(var(--ed-fg) / 0.045)' }}>
                                 <button onClick={it.focus}
                                   title={`${k.one} · ${msToLabel(it.start)}–${msToLabel(it.end)} · open its settings`}
-                                  className="flex-1 min-w-0 flex items-center gap-2 px-1.5 py-1 rounded-md text-left transition-colors hover:bg-[rgb(var(--ed-fg)/0.07)]">
+                                  className="group/row flex-1 min-w-0 h-8 flex items-center gap-2 pl-2 pr-1 text-left transition-colors hover:bg-[rgb(var(--ed-fg)/0.05)]">
                                   {it.thumb
                                     // eslint-disable-next-line @next/next/no-img-element
-                                    ? <img src={it.thumb} alt="" className="w-5 h-5 rounded object-cover shrink-0" />
-                                    : <span className="w-5 h-5 shrink-0 flex items-center justify-center rounded" style={{ background: `${k.color}26`, color: k.color }}>
-                                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{k.icon}</svg>
+                                    ? <img src={it.thumb} alt="" className="w-[18px] h-[18px] rounded-[5px] object-cover shrink-0" />
+                                    : <span className="w-[18px] h-[18px] shrink-0 flex items-center justify-center rounded-[5px]" style={{ background: `${k.color}24`, color: k.color }}>
+                                        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{k.icon}</svg>
                                       </span>}
-                                  <span className="flex-1 min-w-0 truncate text-[11px] font-medium text-[var(--ed-text)]">{it.name}</span>
-                                  <span className="shrink-0 text-[10px] tabular-nums" style={{ color: 'rgb(var(--ed-fg) / 0.42)' }}>{msToLabel(it.start)}–{msToLabel(it.end)}</span>
+                                  <span className="flex-1 min-w-0 truncate text-[11.5px] font-medium text-[var(--ed-text)]">{it.name}</span>
+                                  <span className="shrink-0 text-[10px] tabular-nums opacity-0 group-hover/row:opacity-100 transition-opacity" style={{ color: 'rgb(var(--ed-fg) / 0.42)' }}>{msToLabel(it.start)}–{msToLabel(it.end)}</span>
                                 </button>
                                 {it.ctl && <CtlButtons size="sm" state={st} can={it.ctl.kind === 'broll' ? ['hidden', 'muted'] : canCtl(it.ctl)} onToggle={key => toggleCtl(it.ctl!, key)} what={`this ${k.one.toLowerCase()}`} />}
                                 </div>
@@ -1979,10 +2017,14 @@ export function EditorShell({
                 onApply={handleApplyFrame}
                 onOpenFrame={openFrame}
                 onSelectItem={selectInFrame}
-                onUpdateItem={updateFrameItem}
+                onToggleLock={segId => toggleCtl({ kind: 'section', id: segId }, 'locked')}
+                onUpdateItem={(segId, id, patch) => {
+                  const switchOnly = Object.keys(patch).every(k => k === 'hidden' || k === 'muted')
+                  if (switchOnly || !sectionBlocked(segId)) updateFrameItem(segId, id, patch)
+                }}
                 onRemoveItem={askRemoveFrameItem}
-                onUpdateFrame={updateFrame}
-                onReplaceMedia={(segId, id, kind) => { pause(); setFramePicker({ segId, kind, replaceId: id }) }}
+                onUpdateFrame={(segId, patch) => { if (!sectionBlocked(segId)) updateFrame(segId, patch) }}
+                onReplaceMedia={(segId, id, kind) => { if (sectionBlocked(segId)) return; pause(); setFramePicker({ segId, kind, replaceId: id }) }}
                 onRemoveFrame={askRemoveFrame}
                 onRemoveMain={askRemoveMain}
               />
@@ -2142,7 +2184,7 @@ export function EditorShell({
                 currentTimeMs={currentTimeMs} clipLengthMs={clipLengthMs} durations={musicDurations}
                 onAddTrack={addMusicTrack}
                 onRemoveTrack={deleteMusic}
-                onUpdateTrack={(id, u) => setAudioTracks(prev => prev.map(t => t.id === id ? { ...t, ...u } : t))} />
+                onUpdateTrack={(id, u) => { if (!blocked({ kind: 'music', id })) setAudioTracks(prev => prev.map(t => t.id === id ? { ...t, ...u } : t)) }} />
               </>
             )}
 
@@ -2168,7 +2210,7 @@ export function EditorShell({
                 clipLengthMs={clipLengthMs}
                 onSelect={pickPhoto}
                 onAdd={() => { pause(); setPickerOnly('photo'); setPickerAtMs(Math.min(currentTimeMs, Math.max(0, clipLengthMs - 500))) }}
-                onUpdate={updateOverlay}
+                onUpdate={(id, patch) => { if (!blocked({ kind: 'photo', id })) updateOverlay(id, patch) }}
                 onRemove={askDeleteOverlay}
                 onSeek={seekToMs}
               />
@@ -2182,9 +2224,9 @@ export function EditorShell({
                 selectedId={activeFrameItemId}
                 onSelect={setActiveFrameItemId}
                 onAdd={lane => { if (frameSeg && lane === 'band') addBandText(frameSeg.id, currentTimeMs) }}
-                onUpdate={(id, patch) => { if (frameSeg) updateFrameItem(frameSeg.id, id, patch) }}
+                onUpdate={(id, patch) => { if (frameSeg && !sectionBlocked(frameSeg.id)) updateFrameItem(frameSeg.id, id, patch) }}
                 onRemove={id => { if (frameSeg) askRemoveFrameItem(frameSeg.id, id) }}
-                onUpdateBand={patch => { if (frameSeg) updateFrameBand(frameSeg.id, patch) }}
+                onUpdateBand={patch => { if (frameSeg && !sectionBlocked(frameSeg.id)) updateFrameBand(frameSeg.id, patch) }}
               />
               <TextOverlayPanel
                 overlays={textOverlays}
@@ -2195,7 +2237,7 @@ export function EditorShell({
                 onFocused={() => setFocusTextId(null)}
                 selectedId={activeTextOverlayId}
                 onSelect={pickText}
-                onUpdate={updateTextOverlay}
+                onUpdate={(id, patch) => { if (!blocked({ kind: 'text', id })) updateTextOverlay(id, patch) }}
                 onRemove={askDeleteTextOverlay}
               />
               </>
@@ -2209,7 +2251,7 @@ export function EditorShell({
         <main className="flex flex-col flex-1 min-w-0 min-h-0">
           {/* Canvas toolbar: two docks, centred — Layout (a segmented switch with a sliding lime
               highlight) and Tools (Split · Motion · Delete). Styles: .ed-dock* in globals.css */}
-          <div className="shrink-0 flex items-center justify-center gap-3 px-4" style={{ minHeight: 60, borderBottom: '1px solid rgb(var(--ed-fg) / 0.06)' }}>
+          <div className="ed-canvas-bar shrink-0 flex items-center justify-center gap-3 px-4" style={{ minHeight: 60, borderBottom: '1px solid rgb(var(--ed-fg) / 0.06)' }}>
             <FormatSwitcher
               activeId={activeSegment ? formatLayoutOf(activeSegment.layout) : null}
               play={formatPlay}
@@ -2217,7 +2259,7 @@ export function EditorShell({
             />
             {/* Where a layout picked now goes: from the playhead to the end of this section */}
             {frameTarget && (
-              <span className="hidden lg:flex flex-col leading-tight text-[10px] tabular-nums" style={{ color: 'rgb(var(--ed-fg) / 0.45)' }}
+              <span className="ed-applies flex flex-col leading-tight text-[10px] tabular-nums whitespace-nowrap" style={{ color: 'rgb(var(--ed-fg) / 0.45)' }}
                 title="Pick a layout: it starts here and runs to the end of this section">
                 <span className="uppercase tracking-wider font-semibold" style={{ color: 'rgb(var(--ed-fg) / 0.35)' }}>Applies</span>
                 {frameTarget}
@@ -2237,7 +2279,7 @@ export function EditorShell({
                   display: 'inline-block', width: 8, height: 8, borderRadius: '50%',
                   background: motionMode ? '#ef4444' : 'rgb(var(--ed-fg) / 0.35)',
                 }} />
-                {motionMode ? 'Recording motion' : 'Motion'}
+                <span className="ed-dock-label">{motionMode ? 'Recording motion' : 'Motion'}</span>
               </button>
             </div>
           </div>
@@ -2261,9 +2303,9 @@ export function EditorShell({
           {/* Transport */}
           {/* Timeline bar: [show/hide timeline · trim · delete] [previous section · play · next section · time]
               [zoom slider]. Every button has a plain-words tooltip. */}
-          <div className="shrink-0 grid items-center px-3" style={{ gridTemplateColumns: '1fr auto 1fr', height: 52, borderTop: '1px solid rgb(var(--ed-fg) / 0.06)', background: 'var(--ed-panel)' }}>
+          <div className="ed-transport shrink-0 grid items-center gap-2 px-3" style={{ gridTemplateColumns: 'minmax(0,1fr) auto minmax(0,1fr)', height: 52, borderTop: '1px solid rgb(var(--ed-fg) / 0.06)', background: 'var(--ed-panel)' }}>
             {/* Left: timeline tools */}
-            <div className="justify-self-start flex items-center gap-1">
+            <div className="ed-transport-tools justify-self-start min-w-0 flex items-center gap-1">
               {/* Show / hide the timeline. The icon is the editor with its bottom panel (the timeline)
                   and an arrow saying what a click does (down = tuck it away, up = bring it back); a
                   label pops up instantly on hover (.ed-tip in globals.css) */}
@@ -2343,8 +2385,8 @@ export function EditorShell({
               })()}
             </div>
 
-            {/* Centre: jump between sections, play, and the time */}
-            <div className="flex items-center gap-2">
+            {/* Centre: previous section · play · next section (the play button sits exactly in the middle) */}
+            <div className="flex items-center gap-1.5">
               <button onClick={jumpPrevSection} aria-label="Go to the previous section" title="Previous section"
                 className="ed-tl-btn">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="5" y="5" width="2.4" height="14" rx="1" /><path d="M19 5.8v12.4a.8.8 0 01-1.2.7L9.5 12.7a.8.8 0 010-1.4l8.3-6.2a.8.8 0 011.2.7z" /></svg>
@@ -2364,15 +2406,16 @@ export function EditorShell({
                 className="ed-tl-btn">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="16.6" y="5" width="2.4" height="14" rx="1" /><path d="M5 5.8v12.4a.8.8 0 001.2.7l8.3-6.2a.8.8 0 000-1.4L6.2 5.1A.8.8 0 005 5.8z" /></svg>
               </button>
-              <span className="ml-2 flex items-baseline gap-1.5 tabular-nums" aria-label={`${msToClock(currentTimeMs)} of ${msToClock(clipDurationMs)}`}>
-                <span className="text-sm font-semibold text-[var(--ed-text)]">{msToClock(currentTimeMs)}</span>
-                <span className="text-xs" style={{ color: 'rgb(var(--ed-fg) / 0.38)' }}>/ {msToClock(clipDurationMs)}</span>
-              </span>
             </div>
 
-            {/* Right: timeline zoom */}
-            <div className="justify-self-end">
-              <ZoomSlider zoom={timelineZoom} onZoom={setTimelineZoom} />
+            {/* Right: the time (small) and the timeline zoom */}
+            <div className="min-w-0 flex items-center justify-between gap-2">
+              <span className="ed-transport-time shrink-0 whitespace-nowrap text-[11px] tabular-nums" aria-label={`${msToClock(currentTimeMs)} of ${msToClock(clipDurationMs)}`}>
+                <span className="font-semibold" style={{ color: 'rgb(var(--ed-fg) / 0.85)' }}>{msToTenths(currentTimeMs)}</span>
+                <span className="ed-transport-total" style={{ color: 'rgb(var(--ed-fg) / 0.38)' }}> / {msToLabel(clipDurationMs)}</span>
+              </span>
+              {/* Always at the far end of the bar, with or without the time beside it */}
+              <div className="ml-auto shrink-0"><ZoomSlider zoom={timelineZoom} onZoom={setTimelineZoom} /></div>
             </div>
           </div>
 
@@ -2380,17 +2423,17 @@ export function EditorShell({
           <div data-tour="timeline" hidden={timelineHidden} className="shrink-0 overflow-y-auto px-4 pt-3 pb-4" style={{ maxHeight: '38vh', background: 'var(--ed-track)', borderTop: '1px solid rgb(var(--ed-fg) / 0.06)' }}>
             <SegmentTimeline
               selectedMusicId={pickedMusicId} onSelectMusic={id => pickMusicTrack(id, doubleTap(`m${id}`))}
-              photos={overlays.filter(o => o.type === 'image').map(o => ({ id: o.id, start_ms: o.start_ms, end_ms: o.end_ms, url: o.preview_url, hidden: o.hidden, locked: o.locked }))}
+              photos={overlays.filter(o => o.type === 'image').map(o => ({ id: o.id, start_ms: o.start_ms, end_ms: o.end_ms, url: o.preview_url, hidden: o.hidden, locked: isLocked({ kind: 'photo', id: o.id }) }))}
               activePhotoId={activeOverlayId} onSelectPhoto={id => pickPhoto(id, doubleTap(`p${id}`))}
-              onPhotoTimeChange={(id, t) => { if (!isLocked({ kind: 'photo', id })) updateOverlay(id, t) }}
+              onPhotoTimeChange={(id, t) => { if (!blocked({ kind: 'photo', id })) updateOverlay(id, t) }}
               musicTracks={audioTracks.map(t => ({
                 id: t.id, start_ms: t.start_ms,
                 duration_ms: t.end_ms != null ? t.end_ms - t.start_ms
                   : musicDurations[t.id] != null ? musicDurations[t.id] - (t.offset_ms ?? 0) : undefined,
-                name: musicName(t), original: isMainAudio(t), muted: t.muted, locked: t.locked,
+                name: musicName(t), original: isMainAudio(t), muted: t.muted, locked: isLocked({ kind: 'music', id: t.id }),
               }))}
               onMusicTrim={trimMusicEdge}
-              onMusicMove={(id, startMs) => !isLocked({ kind: 'music', id }) && setAudioTracks(prev => prev.map(t => {
+              onMusicMove={(id, startMs) => !blocked({ kind: 'music', id }) && setAudioTracks(prev => prev.map(t => {
                 if (t.id !== id) return t
                 // A trimmed track keeps its length when moved
                 const len = t.end_ms != null ? t.end_ms - t.start_ms : null
@@ -2405,20 +2448,20 @@ export function EditorShell({
               onBrollChange={retimeBroll}
               videoUrls={videoUrls}
               onUpdateSegment={(id, updates) => updateSegment(id, updates)}
-              onSetEdge={(id, edge, t) => { if (!isLocked({ kind: 'section', id })) setSegmentEdge(id, edge, t, clipLengthMs) }}
-              onMoveJunction={(l, r, t) => { if (!isLocked({ kind: 'section', id: l }) && !isLocked({ kind: 'section', id: r })) moveJunction(l, r, t) }}
+              onSetEdge={(id, edge, t) => { if (!blocked({ kind: 'section', id })) setSegmentEdge(id, edge, t, clipLengthMs) }}
+              onMoveJunction={(l, r, t) => { if (!blocked({ kind: 'section', id: l }) && !blocked({ kind: 'section', id: r })) moveJunction(l, r, t) }}
               onSwallowSection={swallowSection}
               onInsertBrollAfter={handleInsertBrollAfterSeg}
               pickedSegmentId={pickedSegId} onPickSegment={id => pickSection(id, !!id && doubleTap(`s${id}`))}
-              textOverlays={textOverlays} activeTextOverlayId={activeTextOverlayId}
+              textOverlays={textOverlays.map(o => o.locked || !isLocked({ kind: 'text', id: o.id }) ? o : { ...o, locked: true })} activeTextOverlayId={activeTextOverlayId}
               onSelectTextOverlay={id => { if (id) pickText(id, doubleTap(`t${id}`)); else setActiveTextOverlayId(null) }}
-              onTextOverlayUpdate={(id, u) => { if (!isLocked({ kind: 'text', id })) updateTextOverlay(id, u) }}
+              onTextOverlayUpdate={(id, u) => { if (!blocked({ kind: 'text', id })) updateTextOverlay(id, u) }}
               frameSeg={frameSeg}
               activeFrameItemId={activeFrameItemId}
               laneHighlight={laneHighlight}
               videoTitles={videoTitles}
               onSelectFrameItem={id => selectFrameItem(id, undefined, !!id && doubleTap(`f${id}`))}
-              onUpdateFrameItem={(id, patch) => { if (frameSeg) updateFrameItem(frameSeg.id, id, patch) }}
+              onUpdateFrameItem={(id, patch) => { if (frameSeg && !sectionBlocked(frameSeg.id)) updateFrameItem(frameSeg.id, id, patch) }}
               onJumpToFrameItem={(segId, itemId) => {
                 const sg = segments.find(x => x.id === segId)
                 const it = sg ? frameOf(sg).items?.find(x => x.id === itemId) : undefined
@@ -2439,7 +2482,7 @@ export function EditorShell({
                 seekToMs(t)
               }}
               onMoveView={(from, to) => {
-                if (!viewBox || !activeSegment) return
+                if (!viewBox || !activeSegment || sectionBlocked(activeSegment.id)) return
                 moveViewChange(viewBox.id, from, to, activeSegment.start_ms, activeSegment.end_ms)
                 const moved = viewChanges(useEditorStore.getState().keyframes[viewBox.id] ?? [])
                   .reduce((best, v) => Math.abs(v.t_ms - to) < Math.abs(best - to) ? v.t_ms : best, from)
@@ -2447,7 +2490,7 @@ export function EditorShell({
                 return moved
               }}
               onRemoveView={t => {
-                if (!viewBox || viewMarkers.length <= 1) return
+                if (!viewBox || viewMarkers.length <= 1 || (activeSegment && sectionBlocked(activeSegment.id))) return
                 removeViewChange(viewBox.id, t)
                 setSelectedView(null)
               }}
@@ -2545,15 +2588,15 @@ export function EditorShell({
                   skipTransitionRef={skipCanvasTransitionRef} words={displayWords}
                   captionStyle={captionStyle} captionTextCase={captionTextCase} showCaptions={showCaptions}
                   overlays={overlays.filter(o => !o.hidden)} activeOverlayId={activeOverlayId}
-                  onOverlayChange={(id, u) => { if (!isLocked({ kind: 'photo', id })) updateOverlay(id, u) }} onSelectOverlay={id => { const o = overlays.find(x => x.id === id); if (o?.type === 'image') pickPhoto(id); else setActiveOverlayId(id) }} onDeleteOverlay={askDeleteOverlay}
+                  onOverlayChange={(id, u) => { if (!blocked({ kind: 'photo', id })) updateOverlay(id, u) }} onSelectOverlay={id => { const o = overlays.find(x => x.id === id); if (o?.type === 'image') pickPhoto(id); else setActiveOverlayId(id) }} onDeleteOverlay={askDeleteOverlay}
                   textOverlays={textOverlays.filter(o => !o.hidden)} activeTextOverlayId={activeTextOverlayId}
-                  onTextOverlayChange={(id, u) => { if (!isLocked({ kind: 'text', id })) updateTextOverlay(id, u) }} onSelectTextOverlay={id => { if (id) pickText(id); else setActiveTextOverlayId(null) }} onDeleteTextOverlay={askDeleteTextOverlay}
+                  onTextOverlayChange={(id, u) => { if (!blocked({ kind: 'text', id })) updateTextOverlay(id, u) }} onSelectTextOverlay={id => { if (id) pickText(id); else setActiveTextOverlayId(null) }} onDeleteTextOverlay={askDeleteTextOverlay}
                   onCaptionPositionChange={y => updateCaptionStyle({ position_y: y })}
                   frameMedia={framePool}
                   onFrameLaneClick={focusLane}
                   activeFrameItemId={activeFrameItemId}
                   onFrameItemClick={selectFrameItem}
-                  onFrameItemChange={(id, patch) => { if (frameSeg) updateFrameItem(frameSeg.id, id, patch) }}
+                  onFrameItemChange={(id, patch) => { if (frameSeg && !sectionBlocked(frameSeg.id)) updateFrameItem(frameSeg.id, id, patch) }}
                   style={{ width: '100%', height: 'auto', display: 'block', borderRadius: 10, border: '1px solid rgb(var(--ed-fg) / 0.1)', boxShadow: '0 4px 24px rgba(0,0,0,0.6)' }}
                 />
               )}
@@ -2566,6 +2609,15 @@ export function EditorShell({
       </div>
 
       {confirmDialog}
+
+      {/* Why an edit didn't happen: something is locked */}
+      {lockNote && (
+        <div role="status" className="fixed left-1/2 bottom-6 -translate-x-1/2 flex items-center gap-2 px-3.5 h-9 rounded-full text-xs font-medium pointer-events-none"
+          style={{ zIndex: 130, background: 'var(--ed-popover)', color: 'var(--ed-text)', boxShadow: '0 0 0 1px rgba(200,255,0,0.35), 0 12px 32px -8px rgba(0,0,0,0.7)' }}>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#c8ff00" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="4" y="11" width="16" height="10" rx="2" /><path d="M8 11V7a4 4 0 018 0v4" /></svg>
+          {lockNote}
+        </div>
+      )}
 
       {/* The timeline's "+" menu: photos / videos into a frame slot (Dual, Trio…), B-roll, music, text */}
       {plusMenu && (() => {
@@ -2674,7 +2726,7 @@ function CtlButtons({ state, can, onToggle, size, what, inert }: {
       : (on ? <><rect x="4" y="11" width="16" height="10" rx="2" /><path d="M8 11V7a4 4 0 018 0v4" /></> : <><rect x="4" y="11" width="16" height="10" rx="2" /><path d="M8 11V7a4 4 0 017.6-1.7" /></>)
   const px = size === 'sm' ? 22 : 30, ic = size === 'sm' ? 12 : 16
   return (
-    <span className="shrink-0 flex items-center gap-0.5" onClick={e => e.stopPropagation()} onKeyDown={e => e.stopPropagation()}>
+    <span className={`shrink-0 flex items-center ${size === 'sm' ? 'gap-px' : 'gap-0.5'}`} onClick={e => e.stopPropagation()} onKeyDown={e => e.stopPropagation()}>
       {can.map(k => {
         const on = !!state?.[k]
         const tint = k === 'locked' ? 'var(--ed-accent-text)' : '#f87171'
@@ -2836,8 +2888,10 @@ function FormatSwitcher({ activeId, play, onPick }: {
       setBox(el ? { left: el.offsetLeft, width: el.offsetWidth } : null)
     }
     measure()
+    const ro = new ResizeObserver(measure)
+    for (const el of btns.current.values()) ro.observe(el)
     window.addEventListener('resize', measure)
-    return () => window.removeEventListener('resize', measure)
+    return () => { ro.disconnect(); window.removeEventListener('resize', measure) }
   }, [activeId])
 
   return (
@@ -2853,7 +2907,7 @@ function FormatSwitcher({ activeId, play, onPick }: {
             className="ed-press ed-dock-btn ed-dock-choice" data-on={on || undefined}>
             <LayoutGlyph key={play?.id === l.id ? play.n : 0} layout={l.id}
               color={on ? 'var(--ed-accent-text)' : 'rgb(var(--ed-fg) / 0.5)'} active={on} play={play?.id === l.id} />
-            {l.label}
+            <span className="ed-dock-label">{l.label}</span>
           </button>
         )
       })}

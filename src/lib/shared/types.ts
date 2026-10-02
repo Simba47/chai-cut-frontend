@@ -6,6 +6,7 @@ export type JobType = 'transcribe' | 'render'
 export type JobStatus = 'queued' | 'processing' | 'done' | 'failed'
 export type SourceType = 'upload' | 'link'
 export type FrameLayout = 'frame_single' | 'frame_video_photo' | 'frame_dual' | 'frame_dual_letterbox' | 'frame_triple'
+  | 'frame_title_caption' | 'frame_big_small' | 'frame_photo_story'
 export type LayoutType = 'vertical' | 'split' | 'trio' | 'spotlight' | 'centered' | 'horizontal' | FrameLayout
 /** How a photo slot moves over its format's duration */
 export type SlotMotion = 'none' | 'zoom_in' | 'zoom_out' | 'pan_left' | 'pan_right'
@@ -80,6 +81,8 @@ export interface FrameSettings {
   main_mutes?: Record<string, boolean>
   /** Rounded corners of the main video, per slot index */
   main_corners?: Record<string, CornerStyle>
+  /** The main video is heard under the frame though no slot shows it (Photo Story), at main_volume */
+  main_under?: boolean
   items?: FrameItem[]
 }
 export type AnimationType = 'karaoke' | 'fade' | 'none'
@@ -324,4 +327,7 @@ export const LAYOUT_SLOT_COUNT: Record<LayoutType, number> = {
   frame_dual: 2,
   frame_dual_letterbox: 2,
   frame_triple: 3,
+  frame_title_caption: 1,
+  frame_big_small: 2,
+  frame_photo_story: 2,
 }

@@ -298,7 +298,7 @@ export const useEditorStore = create<EditorState & EditorActions>()((set, get) =
       const byTime = [...s.segments].sort((a, b) => a.start_ms - b.start_ms)
       const kf = { ...s.keyframes }
       const joinable = (a: SegmentLocal, b: SegmentLocal) =>
-        a.layout === b.layout && !isFrameLayout(a.layout)
+        a.layout === b.layout && !isFrameLayout(a.layout) && !a.locked && !b.locked
         && Math.abs(b.start_ms - a.end_ms) <= 1
         && !transitionAfter?.has(a.id)
         && a.crop_boxes.length === b.crop_boxes.length

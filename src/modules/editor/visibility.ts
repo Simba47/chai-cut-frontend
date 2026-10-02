@@ -34,7 +34,8 @@ export function shownSegment(seg: SegmentLocal, mainVideoId: string | null | und
   }
   if (isFrameLayout(seg.layout)) {
     const items = seg.frame?.items
-    const shown = items?.some(i => i.hidden) ? { ...seg, frame: { ...seg.frame!, items: items.filter(i => !i.hidden) } } : seg
+    // Hidden items aren't drawn; a hidden video with its sound on stays (heard, not seen)
+    const shown = items?.some(i => i.hidden) ? { ...seg, frame: { ...seg.frame!, items: items.filter(i => !i.hidden || (i.kind === 'video' && !i.muted)) } } : seg
     // A frame's main video isn't hidden as a whole (its slots are the frame)
     return shown.hidden ? { ...shown, hidden: false } : shown
   }
