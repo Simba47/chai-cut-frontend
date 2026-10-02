@@ -3,26 +3,29 @@
 import { useState, useEffect, useLayoutEffect, useRef, useMemo, Fragment } from 'react'
 import type { Clip, Segment, CropBox, BoxKeyframe, CaptionStyle, TextOverlay, AudioTrack, Transition, TranscriptWord, LayoutType, Overlay } from '@chai-cut/shared'
 import { VideoPreview, OutputCanvas } from '@/components/editor/VideoPreview'
-import { computeCutRanges, removedMs } from '@/lib/cuts'
+import { computeCutRanges, reactionRanges, removedMs } from '@/lib/cuts'
 import { PostText, type PostTextValue } from '@/components/clips/PostText'
 import { BrollPanel, type StockResult } from '@/components/editor/BrollPanel'
 import { useBrollSources, useBorrowedSlots } from '@/modules/editor/brollSources'
-import { SegmentTimeline, TimelineZoom, LAYOUT_COLORS } from '@/components/editor/SegmentTimeline'
+import { SegmentTimeline, ZOOM_STEPS, LAYOUT_COLORS } from '@/components/editor/SegmentTimeline'
 import { TranscriptPanel } from '@/components/editor/TranscriptPanel'
 import { CaptionStyler } from '@/components/editor/CaptionStyler'
 import { TextOverlayPanel } from '@/components/editor/TextOverlayPanel'
+import { PhotoPanel } from '@/components/editor/PhotoPanel'
+import { AudioMixerPanel } from '@/components/editor/AudioMixerPanel'
 import { MediaPickerModal } from '@/components/editor/MediaPickerModal'
+import { shownSegment, addedVideoBox, STAND_IN_SUFFIX } from '@/modules/editor/visibility'
 import { AccountMenu } from '@/components/ui/account-menu'
 import { BrandLogo } from '@/components/ui/brand-logo'
 import { BrandLoader } from '@/components/ui/brand-loader'
-import { ShinyButton } from '@/components/ui/shiny-button'
+import { SpinningBorderButton } from '@/components/ui/spinning-border-button'
 import { FramesPanel } from '@/components/editor/FramesPanel'
 import { FrameTextPanel } from '@/components/editor/FrameTextPanel'
 import { useConfirm } from '@/components/editor/ConfirmDialog'
 import { EditorTour, hasSeenEditorTour } from '@/components/editor/EditorTour'
 import { FrameAddMenu, type AddChoice } from '@/components/editor/FrameAddMenu'
 import { createFrameMediaPool } from '@/modules/editor/frameMedia'
-import { FRAME_TEMPLATES, isFrameLayout, frameOf, frameLanes, frameSlotLabels, emptySlotStretches, slotOffers, DEFAULT_BAND } from '@/modules/editor/frames'
+import { FRAME_TEMPLATES, isFrameLayout, frameOf, frameLanes, frameSlotLabels, emptySlotStretches, slotOffers, DEFAULT_BAND, DEFAULT_CORNERS } from '@/modules/editor/frames'
 import { signOut } from 'next-auth/react'
 import { PlatformOverlay, PLATFORM_SAFE, type Platform } from '@/components/editor/PlatformOverlay'
 // ── Domain stores ──────────────────────────────────────────────────────────────
@@ -36,7 +39,7 @@ import { rowsToLocal, normalizeCoverage, uncoveredRanges, defaultCropForSlot, ms
 import { viewChanges } from '@/modules/editor/views'
 import type { SegmentLocal, FrameLayout, FrameLane, FrameItem } from '@chai-cut/shared'
 
-type Tool = 'format' | 'frames' | 'captions' | 'text' | 'broll' | 'cleanup' | 'post'
+type Tool = 'format' | 'frames' | 'captions' | 'text' | 'broll' | 'photos' | 'music' | 'cleanup' | 'post'
 type SaveState = 'idle' | 'saving' | 'saved' | 'error' | 'retrying'
 
 interface SegmentRow extends Omit<Segment, never> {
@@ -75,7 +78,7 @@ const ACCENT = '#c8ff00'
 const TOOLS: { id: Tool; label: string; title: string; hint: string; icon: React.ReactNode }[] = [
   {
     id: 'format', label: 'Format', title: 'Formats',
-    hint: 'Each format is a section of the clip with its own layout. Picking a layout changes the whole format under the playhead (use Split or S to cut one in two). Move the view at any moment to change it from there on — each change is a ◆ on the timeline.',
+    hint: 'Pick a layout and it starts at the playhead. Drag the view to reframe — each change is a ◆.',
     icon: <path d="M6 2v14a2 2 0 002 2h14M2 6h14a2 2 0 012 2v14" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" fill="none" />,
   },
   {
@@ -99,8 +102,18 @@ const TOOLS: { id: Tool; label: string; title: string; hint: string; icon: React
     icon: <><rect x="2.5" y="5" width="19" height="14" rx="2.5" stroke="currentColor" strokeWidth="1.8" fill="none" /><path d="M10 9.5v5l4.5-2.5z" fill="currentColor" /></>,
   },
   {
+    id: 'photos', label: 'Photos', title: 'Photos',
+    hint: 'Photos on top of the clip. Pick one here, on the Photos lane of the timeline or on the preview to change its size, place and timing.',
+    icon: <><rect x="3" y="3" width="18" height="18" rx="2.5" stroke="currentColor" strokeWidth="1.8" fill="none" /><circle cx="8.5" cy="8.5" r="1.6" stroke="currentColor" strokeWidth="1.6" fill="none" /><path d="M21 15l-5-5L5 21" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" fill="none" /></>,
+  },
+  {
+    id: 'music', label: 'Music', title: 'Music',
+    hint: 'Add background music under your clip and set how loud it is. It gets quieter by itself while someone is talking.',
+    icon: <><path d="M9 18V5l12-2v13" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" fill="none" /><circle cx="6" cy="18" r="3" stroke="currentColor" strokeWidth="1.8" fill="none" /><circle cx="18" cy="16" r="3" stroke="currentColor" strokeWidth="1.8" fill="none" /></>,
+  },
+  {
     id: 'cleanup', label: 'Cleanup', title: 'Remove pauses & filler words',
-    hint: 'Cuts long pauses and filler words (um, uh, matlab, ante…) out of the export. The preview plays the full clip.',
+    hint: 'Cuts long pauses and filler words (um, uh, matlab, ante…) out of the export. Laughs and reaction moments (splits, trios) are kept. The preview plays the full clip.',
     icon: <><circle cx="6" cy="6" r="2.6" stroke="currentColor" strokeWidth="1.8" fill="none" /><circle cx="6" cy="18" r="2.6" stroke="currentColor" strokeWidth="1.8" fill="none" /><path d="M8.2 7.6L20 17M8.2 16.4L20 7" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" fill="none" /></>,
   },
   {
@@ -127,7 +140,7 @@ export function EditorShell({
   const {
     segments, keyframes, activeSegmentId, activeBoxId,
     hydrate: hydrateEditor, updateSegment, removeSegment,
-    splitAtMs, updateBoxSource, insertBrollAtMs, applyLayout, setSegmentEdge, addFormat, moveJunction,
+    splitAtMs, updateBoxSource, insertBrollAtMs, applyLayout, setSegmentEdge, addFormat, moveJunction, absorbSection,
     neighbourFraming, joinSameLayoutNeighbours, setViewAt, recordMotionAt, removeViewChange, moveViewChange,
     placeBroll, removeBroll: removeBrollShot,
     upsertKeyframe, setBoxKeyframes, getPositionAt, updateFrameBand,
@@ -145,7 +158,7 @@ export function EditorShell({
 
   const {
     overlays, textOverlays, audioTracks, transitions, filters, activeOverlayId,
-    hydrate: hydrateMedia, setOverlays, setTextOverlays,
+    hydrate: hydrateMedia, setOverlays, setTextOverlays, setAudioTracks, setTransitions,
     setActiveOverlayId, updateOverlay, deleteOverlay,
     updateTextOverlay, deleteTextOverlay,
   } = useMediaStore()
@@ -171,7 +184,8 @@ export function EditorShell({
     // Captions on/off: the saved choice when the clip has a caption style; a clip without one yet
     // starts with captions on if it has words (a style saved before the on/off field counts as on)
     const savedStyle = initialCaptionStyles[0]
-    const showCaptions = savedStyle ? savedStyle.enabled !== false : initialWords.length > 0
+    // Off until switched on (captions cost money to make); a clip with a saved style keeps its choice
+    const showCaptions = savedStyle ? savedStyle.enabled !== false : false
     hydrateCaptions(initialWords, savedStyle ?? { color: '#FFE700' }, showCaptions)
 
     hydrateMedia({
@@ -211,6 +225,13 @@ export function EditorShell({
   }, [])
   const [editingTranscript, setEditingTranscript] = useState(false)
   const [pickerAtMs, setPickerAtMs] = useState<number | null>(null)
+  // The "+" menu opens the picker for one kind only (a video or a photo)
+  const [pickerOnly, setPickerOnly] = useState<'video' | 'photo' | null>(null)
+  // A text just added from the "+" menu: its box in the Text panel takes focus to type into
+  const [focusTextId, setFocusTextId] = useState<string | null>(null)
+  // Hidden file input for "+" → Music, and where that music goes
+  const musicInputRef = useRef<HTMLInputElement>(null)
+  const musicAtRef = useRef<number | 'end'>(0)
   // Frames: the selected lane item (or `main:<slot>`), the "+" menu, and the media picker filling a lane
   const [activeFrameItemId, setActiveFrameItemId] = useState<string | null>(null)
   const [laneHighlight, setLaneHighlight] = useState<{ lane: FrameLane; n: number; focusPlus?: boolean; openMenu?: boolean } | null>(null)
@@ -255,8 +276,123 @@ export function EditorShell({
   const [saveState, setSaveState] = useState<SaveState>('idle')
   const [motionMode, setMotionMode] = useState(false)
   const [timelineZoom, setTimelineZoom] = useState(1)
+  const [timelineHidden, setTimelineHidden] = useState(false)
+  // Cleanup: the list of cuts can be folded away
+  const [cutsOpen, setCutsOpen] = useState(true)
+  // Options panel: the tool's explanation is one line until expanded (remembered on this device)
+  const [hintOpen, setHintOpenState] = useState(false)
+  useEffect(() => { try { setHintOpenState(localStorage.getItem('shortcut.toolHintOpen') === '1') } catch { /* private mode */ } }, [])
+  const setHintOpen = (f: (v: boolean) => boolean) => setHintOpenState(v => {
+    const next = f(v)
+    try { localStorage.setItem('shortcut.toolHintOpen', next ? '1' : '0') } catch { /* private mode */ }
+    return next
+  })
+  // Lengths of music files added in this session (read from the file), so their timeline bars
+  // show the right length; tracks without one run to the clip's end
+  const [musicDurations, setMusicDurations] = useState<Record<string, number>>({})
+  // The main video's own sound (top of the Music panel). Applied to the preview here.
+  // TODO(backend): save originalVolume / originalMuted with the clip and mix them in at export
+  const [originalVolume, setOriginalVolume] = useState(1)
+  const [originalMuted, setOriginalMuted] = useState(false)
+  // A muted section (its own sound off): the video is silent while the playhead is in it
+  const [sectionMuted, setSectionMuted] = useState(false)
+  // The frame sound sync sets the main video's volume every frame, so the level goes through it
+  // (it multiplies each frame's own slot sound); mute is the element's own switch
+  useEffect(() => {
+    framePool.setMainGain(originalVolume)
+    const v = videoRef.current
+    if (!v) return
+    v.volume = Math.max(0, Math.min(1, originalVolume))
+    v.muted = originalMuted || sectionMuted
+  }, [originalVolume, originalMuted, sectionMuted]) // framePool never changes (made once), so it isn't a dependency
+  // Music heard in the preview: one <audio> per track added in this session, playing the picked
+  // file in step with the video (tracks loaded from a saved clip have no file here yet)
+  const musicEls = useRef(new Map<string, HTMLAudioElement>())
+  function addMusicTrack(f: File, at?: number | 'end') {
+    const id = crypto.randomUUID()
+    // The music starts where the playhead is (where you paused), not at the start of the clip —
+    // or where the "+" menu says: the start, or so that it ends with the clip
+    const startMs = typeof at === 'number' ? at : at === 'end' ? 0 : Math.max(0, Math.round(currentTimeMs))
+    // It plays until the section it starts in ends (the next section edge); drag its end on the
+    // timeline to carry it on into the next section. Added "at the end" it runs to the clip's end.
+    const lenMs = clip.end_ms - clip.start_ms
+    const edges = useEditorStore.getState().segments.flatMap(s => [s.start_ms, s.end_ms]).filter(t => t > startMs + 200 && t < lenMs)
+    const sectionEnd = at === 'end' ? undefined : Math.min(lenMs, ...edges)
+    setAudioTracks(prev => [...prev, { id, clip_id: clip.id, storage_path: f.name, start_ms: startMs, ...(sectionEnd !== undefined ? { end_ms: sectionEnd } : {}), volume: 0.5, duck_under_speech: true }])
+    const a = new Audio()
+    a.preload = 'auto'
+    a.onloadedmetadata = () => {
+      if (!isFinite(a.duration)) return
+      const lenMs = Math.round(a.duration * 1000)
+      setMusicDurations(d => ({ ...d, [id]: lenMs }))
+      if (at === 'end') {
+        const start = Math.max(0, clip.end_ms - clip.start_ms - lenMs)
+        setAudioTracks(prev => prev.map(t => t.id === id ? { ...t, start_ms: start } : t))
+      } else {
+        // A song shorter than its section stops where the song ends
+        setAudioTracks(prev => prev.map(t => t.id === id && t.end_ms != null && t.end_ms > t.start_ms + lenMs ? { ...t, end_ms: t.start_ms + lenMs } : t))
+      }
+    }
+    a.src = URL.createObjectURL(f)
+    musicEls.current.set(id, a)
+  }
+  // Keep every track's audio in step with the playhead: play while the playhead is inside it,
+  // re-sync if it drifts, pause otherwise; follow each track's volume
+  useEffect(() => {
+    for (const [id, el] of musicEls.current) {
+      const tr = audioTracks.find(t => t.id === id)
+      if (!tr) {
+        el.pause(); musicEls.current.delete(id)
+        if (![...musicEls.current.values()].some(o => o.src === el.src)) URL.revokeObjectURL(el.src)
+        continue
+      }
+      el.volume = tr.muted || (isMainAudio(tr) && sectionMuted) ? 0 : Math.max(0, Math.min(1, tr.volume ?? 0.5))
+      const local = (currentTimeMs - tr.start_ms + (tr.offset_ms ?? 0)) / 1000
+      const stop = tr.end_ms ?? Infinity
+      const inside = currentTimeMs >= tr.start_ms && currentTimeMs < stop && (!isFinite(el.duration) || local < el.duration)
+      if (playing && inside) {
+        if (el.paused || Math.abs(el.currentTime - local) > 0.6) el.currentTime = local
+        if (el.paused) el.play().catch(() => {})
+      } else if (!el.paused) {
+        el.pause()
+      }
+    }
+  }, [playing, currentTimeMs, audioTracks, sectionMuted])
+  useEffect(() => () => { for (const el of musicEls.current.values()) { el.pause(); URL.revokeObjectURL(el.src) } }, [])
+  // Format panel: sections whose "what's in it" list is open, the kind of item shown, and the list
+  const [openSections, setOpenSections] = useState<Set<string>>(() => new Set())
+  const [sectionFilter, setSectionFilter] = useState<'all' | SectionItemKind>('all')
+  const sectionListRef = useRef<HTMLDivElement>(null)
+  // Picking a photo, text or music (timeline, preview or its panel) opens its settings on the left
+  const openSettings = (t: Tool) => { setTool(t); toggleOptions(true) }
+  // (`open` false: select only — a single click on the timeline doesn't open the sidebar)
+  function pickPhoto(id: string, open = true) { setActiveOverlayId(id); setActiveTextOverlayId(null); if (open) openSettings('photos') }
+  function pickText(id: string, open = true) { setActiveTextOverlayId(id); setActiveOverlayId(null); if (open) openSettings('text') }
+  function pickMusicTrack(id: string, open = true) { pickMusic(id); if (open) openSettings('music') }
+  // Timeline clicks select; the same thing clicked again quickly (a double tap) opens its settings
+  const lastTapRef = useRef<{ key: string; at: number } | null>(null)
+  function doubleTap(key: string) {
+    const now = performance.now(), last = lastTapRef.current
+    lastTapRef.current = { key, at: now }
+    return !!last && last.key === key && now - last.at < 450
+  }
+  // "Locked" note: a short message when an edit is refused because something is locked
+  const [lockNote, setLockNote] = useState<string | null>(null)
+  const lockNoteTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  function notifyLocked(msg: string) {
+    setLockNote(msg)
+    if (lockNoteTimer.current) clearTimeout(lockNoteTimer.current)
+    lockNoteTimer.current = setTimeout(() => setLockNote(null), 2200)
+  }
+  // The timeline's "+" menu: where it was opened (start / end of the clip) and where to show it
+  const [plusMenu, setPlusMenu] = useState<{ atMs: number; anchor: DOMRect } | null>(null)
   // The section the user clicked (on the timeline strip or its card): the Delete buttons show only then
-  const [pickedSegId, setPickedSegId] = useState<string | null>(null)
+  const [pickedSegId, setPickedSegIdState] = useState<string | null>(null)
+  // Music track selected on the timeline (Trim / Delete act on it). Only one thing is selected:
+  // picking a video section clears the music, and the other way round
+  const [pickedMusicId, setPickedMusicId] = useState<string | null>(null)
+  const setPickedSegId = (id: string | null) => { setPickedSegIdState(id); setPickedMusicId(null) }
+  const pickMusic = (id: string) => { setPickedSegIdState(null); setPickedMusicId(id) }
   // Export press: the download animation plays first, then the render starts (see .ed-export in globals.css)
   const [exportPress, setExportPress] = useState(false)
   function pressExport() {
@@ -294,6 +430,9 @@ export function EditorShell({
       ?? byTime.find(s => s.end_ms >= clipLengthMs && currentTimeMs >= clipLengthMs && s.start_ms < clipLengthMs)
       ?? null
   }, [segments, currentTimeMs, clipLengthMs])
+  const playingAdded = playingSegment ? addedVideoBox(playingSegment, mainVideoId) : null
+  const brollSoundOn = !!playingAdded && playingAdded.muted === false
+  useEffect(() => { setSectionMuted(!!playingSegment?.muted || brollSoundOn) }, [playingSegment?.muted, brollSoundOn])
   // Uncovered stretch under the playhead, if any
   const currentGap = useMemo(
     () => playingSegment ? null : uncoveredRanges(segments, clipLengthMs).find(g => currentTimeMs >= g.start_ms && currentTimeMs <= g.end_ms) ?? null,
@@ -344,9 +483,12 @@ export function EditorShell({
     id: DEFAULT_SEG_ID, start_ms: currentGap.start_ms, end_ms: currentGap.end_ms, layout: 'vertical', sort_order: -1,
     crop_boxes: [{ id: DEFAULT_BOX_ID, slot_index: 0, source_video_id: null, source_offset_ms: currentGap.start_ms, keyframes: [] }],
   } : null, [currentGap])
-  const viewSegment = playingSegment ?? defaultFormat
+  // As the export shows it: a hidden added video gives way to the main video, hidden frame items
+  // aren't drawn, a hidden main video is black
+  const shownPlaying = useMemo(() => playingSegment ? shownSegment(playingSegment, mainVideoId, getVideoAR()) : null, [playingSegment, mainVideoId]) // eslint-disable-line react-hooks/exhaustive-deps
+  const viewSegment = shownPlaying ?? defaultFormat
   const viewGetPositionAt = useMemo(
-    () => (boxId: string, t: number) => boxId === DEFAULT_BOX_ID ? defaultCropForSlot('vertical', 0, getVideoAR()) : getPositionAt(boxId, t),
+    () => (boxId: string, t: number) => boxId === DEFAULT_BOX_ID || boxId.endsWith(STAND_IN_SUFFIX) ? defaultCropForSlot('vertical', 0, getVideoAR()) : getPositionAt(boxId, t),
     [getPositionAt], // eslint-disable-line react-hooks/exhaustive-deps
   )
 
@@ -566,6 +708,12 @@ export function EditorShell({
     setClipStatus('draft'); setOutputUrl(null); setRenderStuckSince(null); setRenderElapsed(0)
   }
 
+  /** Captions on: made now for this clip if it has none yet (nothing is captioned until asked) */
+  function turnCaptions(on: boolean) {
+    setShowCaptions(on)
+    if (on && !clipHasWords(words) && !transcribing && !retranscribing && !isFreePlan) handleRetranscribe('unknown')
+  }
+
   async function handleRetranscribe(languageCode: string) {
     setRetranscribing(true); setRetranscribeElapsed(0); setRetranscribeError(null)
     if (retranscribeTimerRef.current) clearInterval(retranscribeTimerRef.current)
@@ -611,26 +759,28 @@ export function EditorShell({
 
   // ── Editor actions ────────────────────────────────────────────────────────────
 
-  // Format buttons ('section'): the layout changes the WHOLE format under the playhead (or the whole
-  // uncovered stretch there). It starts from the view of the nearest format with that layout, and
-  // joins touching neighbours with the same layout — so Split → Vertical leaves no pieces behind.
-  // Cutting a format in two is its own action (Split, below).
-  // Frames ('fromPlayhead'): picking a frame mid-format starts a new frame at the playhead; what
-  // came before keeps its layout. At the very start of a format the whole format changes.
+  // Format buttons and Frames ('fromPlayhead'): picking a layout mid-section starts it at the
+  // playhead and it runs to the end of that section; what came before keeps its layout (e.g. Single
+  // 0:00–0:20, then pick Split at 0:20 → Split 0:20–1:00, no Split button needed). At the very start
+  // of a section the whole section changes. A new layout starts from the view of the nearest
+  // section with that layout, and joins a touching neighbour with the same layout so no pieces are
+  // left behind (frames never join: each keeps its own lanes).
+  // 'section': the layout changes the WHOLE section under the playhead.
   const LAYOUT_SNAP_MS = 300
   const transitionAfter = () => new Set(transitions.map(tr => tr.after_segment_id))
   function handleLayoutChange(layout: LayoutType, mode: 'section' | 'fromPlayhead' = 'section') {
     const t = currentTimeMs
     const ar = getVideoAR()
+    if (activeSegment && sectionBlocked(activeSegment.id)) return
     if (!activeSegment && currentGap) {
-      // No format here yet: create one over the uncovered stretch (frames: from the playhead)
+      // No format here yet: create one over the uncovered stretch (from the playhead, unless 'section')
       const start = mode === 'section' || t - currentGap.start_ms <= LAYOUT_SNAP_MS ? currentGap.start_ms : t
       if (currentGap.end_ms - start < 300) return
       pause()
       skipCanvasTransitionRef.current = true
       const id = addFormat(start, currentGap.end_ms, layout, ar, neighbourFraming(layout, start, currentGap.end_ms))
-      if (mode === 'section') joinSameLayoutNeighbours(id, transitionAfter())
-      else if (start !== t) seekToMs(start)
+      joinSameLayoutNeighbours(id, transitionAfter())
+      if (mode !== 'section' && start !== t) seekToMs(start)
       return
     }
     const seg = activeSegment
@@ -647,23 +797,62 @@ export function EditorShell({
     }
 
     if (t - seg.start_ms <= LAYOUT_SNAP_MS) {
-      applyLayout(seg.id, layout, getVideoAR())
+      applyLayout(seg.id, layout, ar, neighbourFraming(layout, seg.start_ms, seg.end_ms, seg.id))
+      joinSameLayoutNeighbours(seg.id, transitionAfter())
       return
     }
     if (seg.end_ms - t <= LAYOUT_SNAP_MS) {
       // Playhead is on the line into what follows: change the next format if it touches this one
       const next = [...segments].sort((a, b) => a.start_ms - b.start_ms).find(s => s.start_ms >= seg.end_ms - 1)
       if (next && next.start_ms - seg.end_ms < LAYOUT_SNAP_MS) {
-        if (next.layout !== layout) { applyLayout(next.id, layout, getVideoAR()); seekToMs(next.start_ms) }
+        if (next.layout !== layout && formatLayoutOf(next.layout) !== layout && !sectionBlocked(next.id)) {
+          applyLayout(next.id, layout, ar, neighbourFraming(layout, next.start_ms, next.end_ms, next.id))
+          seekToMs(joinSameLayoutNeighbours(next.id, transitionAfter()) === next.id ? next.start_ms : seg.end_ms)
+        }
         return
       }
       // Default framing follows: give that stretch the new format
       const gapEnd = next ? next.start_ms : clipLengthMs
-      if (gapEnd - seg.end_ms >= 300) { addFormat(seg.end_ms, gapEnd, layout, getVideoAR()); seekToMs(seg.end_ms) }
+      if (gapEnd - seg.end_ms >= 300) {
+        const id = addFormat(seg.end_ms, gapEnd, layout, ar, neighbourFraming(layout, seg.end_ms, gapEnd))
+        joinSameLayoutNeighbours(id, transitionAfter())
+        seekToMs(seg.end_ms)
+      }
       return
     }
     const newId = splitAtMs(seg.id, t, getPositionAt)
-    if (newId) applyLayout(newId, layout, getVideoAR())
+    if (newId) {
+      applyLayout(newId, layout, ar, neighbourFraming(layout, t, seg.end_ms, newId))
+      joinSameLayoutNeighbours(newId, transitionAfter())
+    }
+  }
+
+  /**
+   * A join dragged onto the next join: the section between goes and the section it was dragged
+   * from takes its time (keeping its own layout); then it joins a neighbour with the same layout.
+   * A frame with photos, videos or text in it asks first. One undo step.
+   */
+  function swallowSection(removeId: string, keepId: string) {
+    if (blocked({ kind: 'section', id: removeId }) || blocked({ kind: 'section', id: keepId })) return
+    const gone = segments.find(x => x.id === removeId)
+    if (!gone) return
+    const go = () => {
+      pause()
+      skipCanvasTransitionRef.current = true
+      absorbSection(removeId, keepId)
+      const kept = transitions.filter(tr => tr.after_segment_id !== removeId)
+      if (kept.length !== transitions.length) setTransitions(kept)
+      joinSameLayoutNeighbours(keepId, new Set(kept.map(tr => tr.after_segment_id)))
+      if (pickedSegId === removeId) setPickedSegId(null)
+    }
+    const n = isFrameLayout(gone.layout) ? (frameOf(gone).items ?? []).length : 0
+    if (n > 0) {
+      confirm({
+        title: `This frame has ${n} item${n === 1 ? '' : 's'}, remove it?`,
+        body: `${FRAME_TEMPLATES[gone.layout as FrameLayout]?.name ?? 'The frame'} ${msToLabel(gone.start_ms)}–${msToLabel(gone.end_ms)} goes, with the photos, videos and text in its slots. ${UNDO_NOTE}`,
+        confirmLabel: 'Remove',
+      }, go)
+    } else go()
   }
 
   // Split: cut the format under the playhead in two. Both halves keep its layout and views, so a
@@ -671,10 +860,93 @@ export function EditorShell({
   const canSplitHere = !!activeSegment && currentTimeMs > activeSegment.start_ms + 100 && currentTimeMs < activeSegment.end_ms - 100
   function splitHere() {
     const seg = activeSegment
-    if (!seg || !canSplitHere) return
+    if (!seg || !canSplitHere || sectionBlocked(seg.id)) return
     pause()
     skipCanvasTransitionRef.current = true
     splitAtMs(seg.id, currentTimeMs, getPositionAt)
+  }
+
+  const musicName = (t: { storage_path: string }) => isMainAudio(t) ? 'Original sound' : (t.storage_path.split('/').pop() ?? 'Music').replace(/\.[a-z0-9]+$/i, '')
+  /** Where a music track stops on the clip's timeline */
+  const musicEnd = (t: AudioTrack) => t.end_ms
+    ?? (musicDurations[t.id] != null ? t.start_ms + musicDurations[t.id] - (t.offset_ms ?? 0) : clipDurationMs)
+  const pickedMusic = audioTracks.find(t => t.id === pickedMusicId) ?? null
+  const canTrimMusic = !!pickedMusic && currentTimeMs > pickedMusic.start_ms + 200 && currentTimeMs < musicEnd(pickedMusic) - 200
+  /** Trim music: cut the selected track in two at the playhead (the right part plays on from the same moment of the song) */
+  function trimMusicAtPlayhead() {
+    const tr = pickedMusic
+    if (!tr || !canTrimMusic) return
+    pause()
+    const t = Math.round(currentTimeMs)
+    const id = crypto.randomUUID()
+    const right: AudioTrack = { ...tr, id, start_ms: t, offset_ms: (tr.offset_ms ?? 0) + (t - tr.start_ms) }
+    setAudioTracks(prev => prev.flatMap(x => x.id === tr.id ? [{ ...x, end_ms: t }, right] : [x]))
+    const el = musicEls.current.get(tr.id)
+    if (el) { const copy = new Audio(); copy.preload = 'auto'; copy.src = el.src; musicEls.current.set(id, copy) }
+    if (musicDurations[tr.id] != null) setMusicDurations(d => ({ ...d, [id]: d[tr.id] }))
+  }
+  /**
+   * A music bar's end dragged on the timeline. The start cuts into the song (the track's end stays
+   * where it was; never before the song's own start), the end shortens or lengthens the track
+   * (never past the song's end or the clip's).
+   */
+  function trimMusicEdge(id: string, edge: 'start' | 'end', ms: number) {
+    if (blocked({ kind: 'music', id })) return
+    setAudioTracks(prev => prev.map(t => {
+      if (t.id !== id) return t
+      const off = t.offset_ms ?? 0
+      const end = Math.min(clipLengthMs, musicEnd(t))
+      if (edge === 'end') {
+        const songEnd = musicDurations[t.id] != null ? t.start_ms + musicDurations[t.id] - off : clipLengthMs
+        return { ...t, end_ms: Math.round(Math.min(songEnd, clipLengthMs, Math.max(t.start_ms + 200, ms))) }
+      }
+      const s = Math.round(Math.max(0, t.start_ms - off, Math.min(end - 200, ms)))
+      return { ...t, start_ms: s, offset_ms: off + (s - t.start_ms), end_ms: end }
+    }))
+  }
+  /**
+   * Detach audio: the main video's sound becomes its own bar on the Music lane (trim it, move it,
+   * change its volume) and the video itself goes quiet. It plays from the main video's file, so it
+   * comes back after a reload too. Already detached: picks that bar.
+   */
+  function detachAudio() {
+    const existing = audioTracks.find(isMainAudio)
+    if (existing) { pickMusicTrack(existing.id, false); return }
+    pause()
+    const id = crypto.randomUUID()
+    setAudioTracks(prev => [...prev, {
+      id, clip_id: clip.id, storage_path: `${MAIN_AUDIO_PREFIX}${mainVideoId}`,
+      // Its "song" is the whole main video: this clip starts clip.start_ms into it
+      start_ms: 0, end_ms: clipLengthMs, offset_ms: clip.start_ms,
+      volume: originalMuted ? 1 : Math.min(1, originalVolume), duck_under_speech: false,
+    }])
+    pickMusicTrack(id, false)
+  }
+  // Each detached-sound track plays the main video's own file (so it also works after a reload / undo)
+  useEffect(() => {
+    // Saving keeps only a track's start, volume and ducking (not where in its file it starts), so a
+    // reloaded detached sound gets its place in the video back: in step with the clip
+    if (audioTracks.some(t => isMainAudio(t) && t.offset_ms == null)) {
+      setAudioTracks(prev => prev.map(t => isMainAudio(t) && t.offset_ms == null ? { ...t, offset_ms: clip.start_ms + t.start_ms } : t))
+      return
+    }
+    for (const t of audioTracks) {
+      if (!isMainAudio(t) || musicEls.current.has(t.id) || !videoUrl) continue
+      const a = new Audio()
+      a.preload = 'metadata'
+      a.onloadedmetadata = () => { if (isFinite(a.duration)) setMusicDurations(d => ({ ...d, [t.id]: Math.round(a.duration * 1000) })) }
+      a.src = videoUrl
+      musicEls.current.set(t.id, a)
+    }
+  }, [audioTracks, videoUrl])
+  // While the sound is detached the video itself is quiet (and comes back when that bar is deleted)
+  const hasMainAudio = audioTracks.some(isMainAudio)
+  useEffect(() => { setOriginalMuted(hasMainAudio) }, [hasMainAudio])
+
+  function deleteMusic(id: string) {
+    if (blocked({ kind: 'music', id })) return
+    setAudioTracks(prev => prev.filter(t => t.id !== id))
+    setPickedMusicId(null)
   }
 
   // Moving the view (the crop box):
@@ -706,25 +978,26 @@ export function EditorShell({
       return
     }
     const vid = videoRef.current
+    if (sectionBlocked(segments.find(s => s.crop_boxes.some(b => b.id === boxId))?.id)) return
     if (motionModeRef.current) {
       const t_ms = vid && !vid.paused ? Math.round(vid.currentTime * 1000) - clip.start_ms : currentTimeMs
       recordMotionAt(boxId, Math.max(0, t_ms), pos)
       return
     }
     const seg = segments.find(s => s.crop_boxes.some(b => b.id === boxId))
-    if (!seg) return
+    if (!seg || sectionBlocked(seg.id)) return
     // One drag = one view change at one moment: stop playback so the playhead can't run on
     if (vid && !vid.paused) pause()
     const t = Math.max(seg.start_ms, Math.min(seg.end_ms - 1, currentTimeMs))
     setViewAt(boxId, t, pos, seg.start_ms)
   }
 
-  // Frames work like the Format layouts: picking one mid-frame starts a new frame at the playhead
+  // Frames work like the Format layouts: picking one mid-section starts a new frame at the playhead
   // (e.g. Single 0:00–0:15, then Dual Video from 0:15), each with its own ◆ keys and lanes
   function handleApplyFrame(layout: FrameLayout) {
     handleLayoutChange(layout, 'fromPlayhead')
   }
-  // What a frame picked now will cover (see handleLayoutChange)
+  // What a layout or frame picked now will cover (see handleLayoutChange)
   const frameTarget = (() => {
     const t = currentTimeMs
     if (activeSegment) {
@@ -747,10 +1020,10 @@ export function EditorShell({
   }, [frameSeg?.id])
 
   // Text (band text, text cards, captions) is edited in the Text tool; photos, videos and the main video in Frames
-  function selectFrameItem(id: string | null, segId = frameSeg?.id) {
+  function selectFrameItem(id: string | null, segId = frameSeg?.id, open = true) {
     if (segId && segId !== frameSeg?.id) pendingFrameSelectRef.current = id
     else setActiveFrameItemId(id)
-    if (!id) return
+    if (!id || !open) return
     const seg = segments.find(x => x.id === segId)
     const it = seg ? frameOf(seg).items?.find(x => x.id === id) : undefined
     setTool(it?.kind === 'text' ? 'text' : 'frames')
@@ -771,7 +1044,7 @@ export function EditorShell({
   // Text on a frame's band: added straight away at the playhead, then typed in the Text tool
   function addBandText(segId: string, t: number) {
     const seg = segments.find(x => x.id === segId)
-    if (!seg) return
+    if (!seg || sectionBlocked(segId)) return
     pause()
     const band = { ...DEFAULT_BAND, ...seg.frame?.band }
     addToLane(segId, 'band', t, { kind: 'text', text: '', bg: band.bg, color: band.color, size: band.size })
@@ -781,6 +1054,7 @@ export function EditorShell({
     if (!addMenu) return
     const { segId, lane, t } = addMenu
     setAddMenu(null)
+    if (sectionBlocked(segId)) return
     const seg = segments.find(x => x.id === segId)
     if (!seg) return
     if (choice === 'photo' || choice === 'video') { setFramePicker({ segId, kind: choice, lane, t }); return }
@@ -808,7 +1082,7 @@ export function EditorShell({
     if (!videoLibraryRef.current[videoId]) loadVideoLibrary()
     if (!p) return
     if (p.replaceId) { updateFrameItem(p.segId, p.replaceId, { kind: 'video', source_video_id: videoId, source_offset_ms: 0, image_path: null, image_url: null }); return }
-    if (p.lane !== undefined) addToLane(p.segId, p.lane, p.t ?? currentTimeMs, { kind: 'video', source_video_id: videoId, source_offset_ms: 0, volume: 1, muted: false })
+    if (p.lane !== undefined) addToLane(p.segId, p.lane, p.t ?? currentTimeMs, { kind: 'video', source_video_id: videoId, source_offset_ms: 0, volume: 1, muted: false, corners: DEFAULT_CORNERS })
   }
 
   function handlePickedPhoto(storagePath: string, url: string) {
@@ -816,7 +1090,7 @@ export function EditorShell({
     setFramePicker(null)
     if (!p) return
     if (p.replaceId) { updateFrameItem(p.segId, p.replaceId, { kind: 'photo', image_path: storagePath, image_url: url || null, source_video_id: null }); return }
-    if (p.lane !== undefined) addToLane(p.segId, p.lane, p.t ?? currentTimeMs, { kind: 'photo', image_path: storagePath, image_url: url || null, motion: 'none' })
+    if (p.lane !== undefined) addToLane(p.segId, p.lane, p.t ?? currentTimeMs, { kind: 'photo', image_path: storagePath, image_url: url || null, motion: 'none', corners: DEFAULT_CORNERS })
   }
 
   // "+" in the preview (or an empty lane in the panel) points at the lane on the timeline.
@@ -874,6 +1148,11 @@ export function EditorShell({
     useCaptionStore.setState(st => ({
       captionStyle: { ...st.captionStyle, font: null, size: null, color: '#FFE700', position: null, position_y: null, animation: 'karaoke' },
     }))
+    // The video's own sound: full volume, not muted; and nothing stays selected
+    setOriginalVolume(1)
+    setOriginalMuted(false)
+    setPickedSegIdState(null)
+    setPickedMusicId(null)
   }
   useEffect(() => {
     if (!confirmResetAll) return
@@ -895,6 +1174,7 @@ export function EditorShell({
   function handleResetPositions() {
     const first = [...segments].sort((a, b) => a.start_ms - b.start_ms)[0]
     if (!first) return
+    if (segments.some(x => x.locked)) { notifyLocked('Some sections are locked — unlock them first'); return }
     segments.filter(s => s.id !== first.id).forEach(s => removeSegment(s.id))
     updateSegment(first.id, { start_ms: 0, end_ms: clipLengthMs })
     setActiveSegmentId(first.id)
@@ -914,6 +1194,7 @@ export function EditorShell({
   const UNDO_NOTE = 'You can undo this.'
 
   function askDeleteFormat(segId: string) {
+    if (blocked({ kind: 'section', id: segId })) return
     const i = cropPositions.findIndex(x => x.id === segId)
     const seg = cropPositions[i]
     if (!seg) return
@@ -927,6 +1208,7 @@ export function EditorShell({
   }
 
   function askRemoveFrame(segId: string) {
+    if (sectionBlocked(segId)) return
     confirm({ title: 'Remove this frame?', body: `This part goes back to Vertical, and the photos, videos and text in the frame are removed. ${UNDO_NOTE}`, confirmLabel: 'Remove' },
       () => removeFrame(segId))
   }
@@ -942,6 +1224,7 @@ export function EditorShell({
   }
 
   function askRemoveFrameItem(segId: string, id: string) {
+    if (sectionBlocked(segId)) return
     confirm({ title: `Remove ${frameItemName(segId, id)}?`, body: UNDO_NOTE, confirmLabel: 'Remove' }, () => {
       removeFrameItem(segId, id)
       setActiveFrameItemId(cur => cur === id ? null : cur)
@@ -949,6 +1232,7 @@ export function EditorShell({
   }
 
   function askRemoveMain(segId: string, slot: number) {
+    if (sectionBlocked(segId)) return
     const seg = segments.find(x => x.id === segId)
     if (!seg || !isFrameLayout(seg.layout)) return
     const label = frameLanes(seg.layout).find(l => l.lane === slot)?.label ?? ''
@@ -959,6 +1243,7 @@ export function EditorShell({
   }
 
   function askDeleteTextOverlay(id: string) {
+    if (blocked({ kind: 'text', id })) return
     const o = textOverlays.find(x => x.id === id)
     confirm({ title: o?.text?.trim() ? `Delete the text "${o.text.trim().slice(0, 40)}"?` : 'Delete this text?', body: UNDO_NOTE }, () => {
       deleteTextOverlay(id)
@@ -969,6 +1254,17 @@ export function EditorShell({
   // ── Export: warn about empty frame slots first ─────────────────────────────
   // If the user goes ahead, the time where a slot is empty becomes plain Vertical (the main
   // video) — visible on the timeline, and one Undo step — and then the export starts.
+  // Previous / next buttons in the timeline bar: jump to where a section starts (or the clip's ends)
+  function jumpPrevSection() {
+    const starts = [0, ...cropPositions.map(x => x.start_ms)].sort((a, b) => a - b)
+    const prev = [...starts].reverse().find(t => t < currentTimeMs - 300) ?? 0
+    seekToMs(prev)
+  }
+  function jumpNextSection() {
+    const starts = cropPositions.map(x => x.start_ms).sort((a, b) => a - b)
+    seekToMs(starts.find(t => t > currentTimeMs + 1) ?? clipDurationMs)
+  }
+
   function requestExport(retranscribe = false) {
     const frames = cropPositions.filter(x => isFrameLayout(x.layout))
     const found = frames.flatMap(seg => emptySlotStretches(seg).map(st => ({ seg, ...st })))
@@ -1022,6 +1318,7 @@ export function EditorShell({
   }
 
   function askDeleteOverlay(id: string) {
+    if (blocked({ kind: 'photo', id })) return
     const o = overlays.find(x => x.id === id)
     confirm({ title: `Delete this ${o?.type === 'video' ? 'video' : 'image'}?`, body: UNDO_NOTE }, () => {
       deleteOverlay(id)
@@ -1031,9 +1328,12 @@ export function EditorShell({
 
   function handleInsertBroll(videoId: string) {
     const atMs = pickerAtMs ?? pendingBrollMs ?? currentTimeMs
-    setPickerAtMs(null); setPendingBrollMs(null)
-    const newId = insertBrollAtMs(videoId, atMs, 5000, getPositionAt)
-    if (newId) { setActiveSegmentId(newId); seekToMs(atMs) }
+    setPickerAtMs(null); setPendingBrollMs(null); setPickerOnly(null)
+    // 5 s from here, across section edges if it gets there (it isn't cut off at the section's end)
+    const at = Math.max(0, Math.min(atMs, clipLengthMs - 500))
+    if (rangeBlocked(at, Math.min(clipLengthMs, at + 5000))) return
+    const newId = placeBroll(videoId, at, Math.min(clipLengthMs, at + 5000), getPositionAt)
+    setActiveSegmentId(newId); seekToMs(at)
   }
 
   // Borrowed reaction slots look ahead through the parts to start each one on time
@@ -1044,11 +1344,12 @@ export function EditorShell({
   const brollShots = useMemo(() => segments
     .filter(sg => !isFrameLayout(sg.layout) && sg.crop_boxes[0]?.source_video_id && sg.crop_boxes[0].source_video_id !== mainVideoId)
     .sort((a, b) => a.start_ms - b.start_ms)
-    .map(sg => ({ id: sg.id, start_ms: sg.start_ms, end_ms: sg.end_ms, title: (videoTitles[sg.crop_boxes[0].source_video_id!] ?? 'Stock video').replace(/^(Pixabay|Pexels): /, '') })),
+    .map(sg => ({ id: sg.id, start_ms: sg.start_ms, end_ms: sg.end_ms, title: (videoTitles[sg.crop_boxes[0].source_video_id!] ?? 'Video').replace(/^(Pixabay|Pexels): /, '') })),
   [segments, videoTitles])
 
   /** Save the stock video as the user's asset, then put it in at the playhead as a muted cutaway */
   async function addStockBroll(item: StockResult, lengthMs: number) {
+    { const at0 = Math.min(currentTimeMs, Math.max(0, clipLengthMs - 500)); if (rangeBlocked(at0, Math.min(clipLengthMs, at0 + lengthMs))) return }
     const res = await fetch('/api/stock/import', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ref: item.ref, url: item.url, title: item.title }),
@@ -1074,11 +1375,13 @@ export function EditorShell({
    * back in at the new place, as a new shot is. Same video, muted.
    */
   function retimeBroll(id: string, startMs: number, endMs: number) {
+    if (blocked({ kind: 'section', id })) return
     const { seg } = neighbours(id)
     const videoId = seg?.crop_boxes[0]?.source_video_id
     if (!seg || !videoId) return
     const start = Math.max(0, Math.min(clipLengthMs - 500, startMs))
     const end = Math.min(clipLengthMs, Math.max(start + 500, endMs))
+    if (rangeBlocked(start, end, id)) return
     removeBrollShot(id)
     setActiveSegmentId(placeBroll(videoId, start, end, getPositionAt))
   }
@@ -1086,7 +1389,7 @@ export function EditorShell({
   const resizeBroll = (id: string, delta: number) => { const { seg } = neighbours(id); if (seg) retimeBroll(id, seg.start_ms, seg.end_ms + delta) }
 
   /** Remove a shot: the framing before it (or after it, at the start) takes its time back */
-  const removeBroll = (id: string) => removeBrollShot(id)
+  const removeBroll = (id: string) => { if (!blocked({ kind: 'section', id })) removeBrollShot(id) }
 
   function handleInsertBrollAfterSeg(afterSegId: string) {
     const seg = segments.find(s => s.id === afterSegId)
@@ -1095,11 +1398,15 @@ export function EditorShell({
 
   function handleInsertImage(storagePath: string, previewUrl: string) {
     const atMs = pickerAtMs ?? currentTimeMs
-    setPickerAtMs(null)
+    const fromPlus = pickerOnly === 'photo'
+    setPickerAtMs(null); setPickerOnly(null)
     const seg = segments.find(s => atMs >= s.start_ms && atMs <= s.end_ms)
-    const endMs = seg ? seg.end_ms : atMs + 5000
+    // From the "+" menu a photo shows for 5 s (then drag its ends on the timeline)
+    const endMs = fromPlus ? Math.min(clipLengthMs, atMs + 5000) : seg ? seg.end_ms : atMs + 5000
+    const id = crypto.randomUUID()
+    if (fromPlus) { setActiveOverlayId(id); seekToMs(atMs); openSettings('photos') }
     setOverlays(prev => [...prev, {
-      id: crypto.randomUUID(), clip_id: clip.id, type: 'image' as const,
+      id, clip_id: clip.id, type: 'image' as const,
       storage_path: storagePath, preview_url: previewUrl || undefined,
       source_video_id: null, source_offset_ms: 0,
       x: 0, y: 0, w: 1, h: 1, start_ms: atMs, end_ms: endMs,
@@ -1184,7 +1491,8 @@ export function EditorShell({
   const rendering = clipStatus === 'rendering' || exporting
   const hasOutput = !!outputUrl && clipStatus === 'done'
   // What "Remove pauses and filler words" takes out of this clip, from the transcript
-  const fillerCuts = useMemo(() => computeCutRanges(words, clip.start_ms, clip.end_ms), [words, clip.start_ms, clip.end_ms])
+  // Reaction parts (splits, trios) are never cut; at export, pauses with a laugh in them are kept too
+  const fillerCuts = useMemo(() => computeCutRanges(words, clip.start_ms, clip.end_ms, reactionRanges(segments, clip.start_ms)), [words, clip.start_ms, clip.end_ms, segments])
   const fillerCutMs = useMemo(() => removedMs(fillerCuts), [fillerCuts])
   /** Each cut, clip-relative, with the words it takes out (none = a pause) */
   const fillerCutList = useMemo(() => fillerCuts.map(([a, b]) => ({
@@ -1193,19 +1501,26 @@ export function EditorShell({
     words: words.filter(w => (w.start_ms + w.end_ms) / 2 >= a && (w.start_ms + w.end_ms) / 2 < b).map(w => w.word),
   })), [fillerCuts, words, clip.start_ms])
   /** "Remove pauses & filler words": in the preview column and in the Captions panel, one setting */
+  // On / off switch (not a checkbox): the whole card toggles it; lime with a black knob when on
   const fillersToggle = (place: string) => words.length > 0 && (
-    <label className={`shrink-0 ${place} flex items-start gap-2.5 px-3 py-2.5 rounded-xl cursor-pointer`}
-      style={{ background: 'rgb(var(--ed-fg) / 0.04)', border: '1px solid rgb(var(--ed-fg) / 0.07)' }}>
-      <input type="checkbox" checked={removeFillers} onChange={e => setRemoveFillers(e.target.checked)}
-        className="mt-0.5" style={{ accentColor: '#c8ff00' }} />
-      <span className="flex flex-col gap-0.5">
+    <button type="button" role="switch" aria-checked={removeFillers} onClick={() => setRemoveFillers(!removeFillers)}
+      className={`shrink-0 ${place} w-full flex items-start gap-3 px-3 py-2.5 rounded-xl text-left transition-[background,box-shadow] duration-200`}
+      style={removeFillers
+        ? { background: 'rgba(200,255,0,0.06)', boxShadow: 'inset 0 0 0 1px rgba(200,255,0,0.4)' }
+        : { background: 'rgb(var(--ed-fg) / 0.04)', boxShadow: 'inset 0 0 0 1px rgb(var(--ed-fg) / 0.07)' }}>
+      <span className="flex-1 min-w-0 flex flex-col gap-0.5">
         <span className="text-xs font-semibold text-[var(--ed-text)]">Remove pauses &amp; filler words</span>
         <span className="text-[11px]" style={{ color: 'rgb(var(--ed-fg) / 0.5)' }}>
           {fillerCutMs >= 500 ? `Removes about ${Math.round(fillerCutMs / 1000)} s. ` : 'Nothing much to remove in this clip. '}
           Applied when you export; the preview plays the full clip.
         </span>
       </span>
-    </label>
+      <span aria-hidden="true" className="relative shrink-0 rounded-full transition-colors mt-0.5"
+        style={{ width: 36, height: 20, background: removeFillers ? '#c8ff00' : 'rgb(var(--ed-fg) / 0.15)' }}>
+        <span className="absolute rounded-full transition-all"
+          style={{ top: 3, left: removeFillers ? 19 : 3, width: 14, height: 14, background: removeFillers ? '#0a0a0a' : '#fff', boxShadow: '0 1px 3px rgba(0,0,0,0.3)' }} />
+      </span>
+    </button>
   )
 
   function setRemoveFillers(on: boolean) {
@@ -1216,6 +1531,143 @@ export function EditorShell({
     latestHandleSaveRef.current()
   }
   const activeTool = TOOLS.find(t => t.id === tool)!
+
+  /** A section picked: its card in the Format panel shows its contents (opened on a double tap on the timeline) */
+  function pickSection(id: string | null, open = true) {
+    setPickedSegId(id)
+    if (!id) return
+    setActiveSegmentId(id)
+    setOpenSections(prev => new Set(prev).add(id))
+    if (open) openSettings('format')
+  }
+  useEffect(() => {
+    if (tool !== 'format' || !pickedSegId) return
+    sectionListRef.current?.querySelector(`[data-section-id="${pickedSegId}"]`)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+  }, [tool, pickedSegId])
+
+  // ── Hide / mute / lock ──────────────────────────────────────────────────────
+  /** The hide / mute / lock state of a section, photo, text or music track */
+  function ctlState(t: CtlTarget): { hidden?: boolean; muted?: boolean; locked?: boolean } | undefined {
+    if (t.kind === 'section') return segments.find(x => x.id === t.id)
+    if (t.kind === 'broll') {
+      const seg = segments.find(x => x.id === t.id)
+      // Shown unless hidden; its own sound off unless switched on (then it plays instead of the main video's)
+      return seg && { hidden: seg.crop_boxes[0]?.hidden, locked: seg.locked, muted: seg.crop_boxes[0]?.muted !== false }
+    }
+    if (t.kind === 'frameItem') {
+      const it = frameOf(segments.find(x => x.id === t.segId) ?? ({} as SegmentLocal)).items?.find(x => x.id === t.id)
+      return it && { hidden: it.hidden, muted: it.muted }
+    }
+    if (t.kind === 'photo') return overlays.find(x => x.id === t.id)
+    if (t.kind === 'text') return textOverlays.find(x => x.id === t.id)
+    return audioTracks.find(x => x.id === t.id)
+  }
+  /** The locked section an item's time falls in, if any: everything inside a locked section is locked too */
+  function lockedSectionOver(startMs: number, endMs: number, exceptId?: string) {
+    return segments.find(x => x.locked && x.id !== exceptId && x.start_ms < endMs && x.end_ms > startMs) ?? null
+  }
+  /** A thing's own time (for the section lock) */
+  function spanOf(t: CtlTarget): [number, number] | null {
+    if (t.kind === 'photo') { const o = overlays.find(x => x.id === t.id); return o ? [o.start_ms, o.end_ms] : null }
+    if (t.kind === 'text') { const o = textOverlays.find(x => x.id === t.id); return o ? [o.start_ms, o.end_ms] : null }
+    if (t.kind === 'music') { const o = audioTracks.find(x => x.id === t.id); return o ? [o.start_ms, Math.min(clipLengthMs, musicEnd(o))] : null }
+    return null
+  }
+  /** Locked itself, or inside a locked section (a frame item: its frame's section) */
+  function isLocked(t: CtlTarget): boolean {
+    if (ctlState(t)?.locked) return true
+    if (t.kind === 'frameItem') return !!segments.find(x => x.id === t.segId)?.locked
+    const span = spanOf(t)
+    return !!span && !!lockedSectionOver(span[0], span[1])
+  }
+  /** Lock check for an edit: true (and a short note why) when the thing can't be changed */
+  function blocked(t: CtlTarget): boolean {
+    if (!isLocked(t)) return false
+    const own = !!ctlState(t)?.locked
+    notifyLocked(own ? 'This is locked — unlock it to change it' : 'Its section is locked — unlock the section to change it')
+    return true
+  }
+  /** A section by id (frames, layouts, views): blocked when it's locked */
+  function sectionBlocked(segId: string | null | undefined) { return !!segId && blocked({ kind: 'section', id: segId }) }
+  /** Something new put over this time (a video cuts the sections under it): blocked by a locked section there */
+  function rangeBlocked(startMs: number, endMs: number, exceptId?: string) {
+    const sec = lockedSectionOver(startMs, endMs, exceptId)
+    if (sec) notifyLocked(`The section ${msToLabel(sec.start_ms)}–${msToLabel(sec.end_ms)} is locked — unlock it first`)
+    return !!sec
+  }
+  /** Which controls a thing has: the main video mutes and locks, an added video hides, mutes and locks, photos and text hide and lock, music mutes and locks */
+  function canCtl(t: CtlTarget): CtlKey[] {
+    if (t.kind === 'section') return isFrameLayout(segments.find(x => x.id === t.id)?.layout ?? 'vertical') ? ['muted', 'locked'] : ['hidden', 'muted', 'locked']
+    if (t.kind === 'broll') return ['hidden', 'muted', 'locked']
+    if (t.kind === 'frameItem') {
+      const it = frameOf(segments.find(x => x.id === t.segId) ?? ({} as SegmentLocal)).items?.find(x => x.id === t.id)
+      return it?.kind === 'video' ? ['hidden', 'muted'] : ['hidden']
+    }
+    if (t.kind === 'photo') return overlays.find(o => o.id === t.id)?.type === 'video' ? ['hidden', 'muted', 'locked'] : ['hidden', 'locked']
+    return t.kind === 'music' ? ['muted', 'locked'] : ['hidden', 'locked']
+  }
+  function toggleCtl(t: CtlTarget, k: CtlKey) {
+    const patch = { [k]: !ctlState(t)?.[k] } as Partial<Record<CtlKey, boolean>>
+    if (t.kind === 'section') updateSegment(t.id, patch)
+    else if (t.kind === 'broll') {
+      const seg = segments.find(x => x.id === t.id)
+      if (!seg) return
+      if (k === 'locked') updateSegment(seg.id, patch)
+      else updateSegment(seg.id, { crop_boxes: seg.crop_boxes.map((b, i) => i === 0 ? { ...b, [k]: !!patch[k] } : b) })
+    }
+    else if (t.kind === 'frameItem') { if (t.segId) updateFrameItem(t.segId, t.id, patch) }
+    else if (t.kind === 'photo') updateOverlay(t.id, patch)
+    else if (t.kind === 'text') updateTextOverlay(t.id, patch)
+    else setAudioTracks(prev => prev.map(x => x.id === t.id ? { ...x, ...patch } : x))
+  }
+
+  /** Everything shown during a section — its video, photos, text and music — each one a click from its settings */
+  function sectionItems(seg: SegmentLocal): SectionItem[] {
+    const out: SectionItem[] = []
+    const inside = (s: number, e: number) => s < seg.end_ms && e > seg.start_ms
+    const from = (s: number) => Math.max(s, seg.start_ms)
+    const go = (s: number) => { pause(); seekToMs(from(s)) }
+    const box = seg.crop_boxes[0]
+    if (!isFrameLayout(seg.layout) && box?.source_video_id && box.source_video_id !== mainVideoId) {
+      out.push({ key: `broll-${seg.id}`, kind: 'video', name: (videoTitles[box.source_video_id] ?? 'Video').replace(/^(Pixabay|Pexels): /, ''), start: seg.start_ms, end: seg.end_ms,
+        focus: () => { go(seg.start_ms); setActiveSegmentId(seg.id); openSettings('broll') }, ctl: { kind: 'broll', id: seg.id } })
+    }
+    if (isFrameLayout(seg.layout)) {
+      for (const it of frameOf(seg).items ?? []) {
+        if (!inside(it.start_ms, it.end_ms)) continue
+        const kind: SectionItemKind = it.kind === 'video' ? 'video' : it.kind === 'photo' ? 'photo' : 'text'
+        const name = it.kind === 'video' ? (videoTitles[it.source_video_id ?? ''] ?? 'Video') : it.kind === 'photo' ? 'Photo in the frame' : it.captions ? 'Captions' : (it.text?.trim() || 'Text')
+        out.push({ key: it.id, kind, name, start: from(it.start_ms), end: Math.min(it.end_ms, seg.end_ms), thumb: it.kind === 'photo' ? it.image_url : null,
+          focus: () => { selectInFrame(seg.id, it.id, from(it.start_ms)); openSettings(kind === 'text' ? 'text' : 'frames') },
+          ctl: it.captions ? undefined : { kind: 'frameItem', id: it.id, segId: seg.id } })
+      }
+    }
+    for (const o of overlays) {
+      if (!inside(o.start_ms, o.end_ms)) continue
+      out.push({ key: o.id, kind: o.type === 'image' ? 'photo' : 'video', name: o.type === 'image' ? 'Photo' : 'Video on top', start: from(o.start_ms), end: Math.min(o.end_ms, seg.end_ms), thumb: o.type === 'image' ? o.preview_url : null,
+        focus: () => { go(o.start_ms); if (o.type === 'image') pickPhoto(o.id); else setActiveOverlayId(o.id) }, ctl: { kind: 'photo', id: o.id } })
+    }
+    for (const t of textOverlays) {
+      if (!inside(t.start_ms, t.end_ms)) continue
+      out.push({ key: t.id, kind: 'text', name: t.text.trim() || 'Text', start: from(t.start_ms), end: Math.min(t.end_ms, seg.end_ms),
+        focus: () => { go(t.start_ms); pickText(t.id) }, ctl: { kind: 'text', id: t.id } })
+    }
+    for (const t of audioTracks) {
+      const end = Math.min(clipLengthMs, t.end_ms ?? (musicDurations[t.id] != null ? t.start_ms + musicDurations[t.id] - (t.offset_ms ?? 0) : clipLengthMs))
+      if (!inside(t.start_ms, end)) continue
+      out.push({ key: t.id, kind: 'music', name: musicName(t), start: from(t.start_ms), end: Math.min(end, seg.end_ms),
+        focus: () => { go(t.start_ms); pickMusicTrack(t.id) }, ctl: { kind: 'music', id: t.id } })
+    }
+    const order: SectionItemKind[] = ['video', 'photo', 'text', 'music']
+    return out.sort((a, b) => order.indexOf(a.kind) - order.indexOf(b.kind) || a.start - b.start)
+  }
+  const itemsBySection = new Map(cropPositions.map(sg => [sg.id, sectionItems(sg)]))
+  // What the Hide / Mute / Lock buttons by Trim and Delete act on: the last thing picked
+  const selTarget: CtlTarget | null = pickedMusicId ? { kind: 'music', id: pickedMusicId }
+    : activeOverlayId && overlays.some(o => o.id === activeOverlayId) ? { kind: 'photo', id: activeOverlayId }
+      : activeTextOverlayId && textOverlays.some(o => o.id === activeTextOverlayId) ? { kind: 'text', id: activeTextOverlayId }
+        : pickedSegId && segments.some(x => x.id === pickedSegId)
+          ? { kind: brollShots.some(b => b.id === pickedSegId) ? 'broll' : 'section', id: pickedSegId } : null
 
   return (
     <div className="editor-theme h-screen flex flex-col overflow-hidden" style={{ background: 'var(--ed-app)', color: 'var(--ed-text)' }}>
@@ -1319,7 +1771,7 @@ export function EditorShell({
                   style={{ width: 280, zIndex: 71, background: 'var(--ed-panel)', border: '1px solid rgb(var(--ed-fg) / 0.12)', boxShadow: '0 12px 32px rgba(0,0,0,0.55)' }}>
                   <p id="reset-all-title" className="text-sm font-semibold text-[var(--ed-text)]">Reset all edits?</p>
                   <p id="reset-all-desc" className="text-xs leading-relaxed" style={{ color: 'rgb(var(--ed-fg) / 0.55)' }}>
-                    Formats, frames, text, media, music and the caption look go back to the start. Your captions stay. You can undo this.
+                    Formats, frames, text, media, music, the video’s sound and the caption look go back to the start. Your captions stay. You can undo this.
                   </p>
                   <div className="flex justify-end gap-2">
                     <button onClick={() => setConfirmResetAll(false)} autoFocus
@@ -1333,22 +1785,15 @@ export function EditorShell({
               </>
             )}
           </div>
-          <button onClick={() => toggleOptions(!optionsOpen)}
-            aria-label={optionsOpen ? 'Close options sidebar' : 'Open options sidebar'}
-            aria-expanded={optionsOpen} aria-controls="options-sidebar"
-            title={optionsOpen ? 'Close options sidebar' : 'Open options sidebar'}
-            className="flex items-center justify-center rounded-lg transition-colors hover:bg-[rgb(var(--ed-fg)/0.1)]"
-            style={{ width: 36, height: 36, color: 'rgb(var(--ed-fg) / 0.55)' }}>
-            <SidebarIcon open={optionsOpen} />
-          </button>
         </nav>
 
         {/* Options sidebar — settings for the selected tool only; collapsible */}
         <aside id="options-sidebar" aria-label={`${activeTool.title} options`} aria-hidden={!optionsOpen}
-          className="shrink-0 min-h-0 overflow-hidden transition-[width] duration-200 ease-out motion-reduce:transition-none"
-          style={{ width: optionsOpen ? OPTIONS_W : 0, background: 'var(--ed-panel)', borderRight: optionsOpen ? '1px solid rgb(var(--ed-fg) / 0.07)' : 'none' }}
+          className="ed-options shrink-0 min-h-0 overflow-hidden" data-open={optionsOpen || undefined}
+          style={{ width: optionsOpen ? OPTIONS_W : 0, background: 'var(--ed-panel)' }}
           {...(!optionsOpen ? { inert: true } : {})}>
-          <div className="h-full flex flex-col min-h-0" style={{ width: OPTIONS_W }}>
+          {/* Fixed width inside, so the panel slides and fades as one piece while the column opens */}
+          <div className="ed-options-inner h-full flex flex-col min-h-0" style={{ width: OPTIONS_W }}>
           <div className="shrink-0 pl-4 pr-2 pt-3 pb-3 flex items-start gap-2" style={{ borderBottom: '1px solid rgb(var(--ed-fg) / 0.06)' }}>
             <div className="flex-1 min-w-0 pt-1">
             {tool === 'captions' && editingTranscript ? (
@@ -1359,7 +1804,14 @@ export function EditorShell({
             ) : (
               <>
                 <h2 className="text-sm font-semibold text-[var(--ed-text)]">{activeTool.title}</h2>
-                <p className="text-xs mt-1 leading-relaxed" style={{ color: 'rgb(var(--ed-fg) / 0.45)' }}>{activeTool.hint}</p>
+                {/* The tool's explanation: one line until expanded with the chevron (remembered) */}
+                <button type="button" onClick={() => setHintOpen(v => !v)} aria-expanded={hintOpen}
+                  title={hintOpen ? 'Show less' : 'Show more'} className="ed-hint">
+                  <span className={hintOpen ? 'ed-hint-text' : 'ed-hint-text ed-hint-clamp'}>{activeTool.hint}</span>
+                  <span className="ed-collapse" data-open={hintOpen || undefined} aria-hidden="true">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M6 9l6 6 6-6" /></svg>
+                  </span>
+                </button>
               </>
             )}
             </div>
@@ -1370,10 +1822,11 @@ export function EditorShell({
             </button>
           </div>
 
-          <div className="flex-1 min-h-0 overflow-y-auto">
+          {/* Keyed by tool: switching tools fades the new panel in */}
+          <div key={tool} className="ed-options-body flex-1 min-h-0 overflow-y-auto">
             {tool === 'format' && (
               <div className="flex flex-col">
-                <div className="px-4 pt-4 pb-3 flex flex-col gap-1.5">
+                <div className="px-4 pt-3 pb-2 flex flex-col gap-1.5">
                 <div className="flex items-center gap-2">
                   <span className="text-sm font-semibold text-[var(--ed-text)]">Sections</span>
                   <span className="h-5 min-w-5 px-1.5 flex items-center justify-center rounded-full text-[11px] font-bold tabular-nums"
@@ -1400,11 +1853,27 @@ export function EditorShell({
                     </button>
                   )}
                 </div>
-                <p className="text-[11px] leading-relaxed" style={{ color: 'rgb(var(--ed-fg) / 0.42)' }}>
-                  Your clip is made of sections, each with its own layout. Click one to edit it.
-                </p>
+                {/* Show what's in the sections: everything, or one kind (sections without it fade) */}
+                <div role="radiogroup" aria-label="Show in the sections" className="flex gap-1 mt-1 overflow-x-auto no-scrollbar -mx-1 px-1">
+                  {(['all', ...SECTION_KINDS.map(k => k.id)] as const).map(id => {
+                    const on = sectionFilter === id
+                    const meta = SECTION_KINDS.find(k => k.id === id)
+                    const n = id === 'all' ? null : [...itemsBySection.values()].reduce((c, list) => c + list.filter(x => x.kind === id).length, 0)
+                    return (
+                      <button key={id} role="radio" aria-checked={on} onClick={() => setSectionFilter(id)}
+                        className="shrink-0 h-6 px-2 flex items-center gap-1 rounded-full text-[11px] font-medium transition-colors"
+                        style={on
+                          ? { background: meta ? `${meta.color}26` : 'rgb(var(--ed-fg) / 0.12)', color: 'var(--ed-text)', boxShadow: `inset 0 0 0 1px ${meta ? meta.color : 'rgb(var(--ed-fg) / 0.25)'}` }
+                          : { color: 'rgb(var(--ed-fg) / 0.55)', boxShadow: 'inset 0 0 0 1px rgb(var(--ed-fg) / 0.1)' }}>
+                        {meta && <span className="w-1.5 h-1.5 rounded-full" style={{ background: meta.color }} />}
+                        {meta ? meta.plural : 'All'}
+                        {n != null && <span className="tabular-nums" style={{ color: 'rgb(var(--ed-fg) / 0.4)' }}>{n}</span>}
+                      </button>
+                    )
+                  })}
                 </div>
-                <div className="px-3 pb-3 flex flex-col gap-1">
+                </div>
+                <div ref={sectionListRef} className="px-3 pb-3 flex flex-col gap-1.5">
                   {uncovered.filter(g => g.start_ms < (cropPositions[0]?.start_ms ?? Infinity)).map(g => (
                     <GapRow key={`gap-${g.start_ms}`} gap={g} active={currentGap?.start_ms === g.start_ms}
                       onSelect={() => seekToMs(g.start_ms)} onAdd={() => addFormatInGap(g)} />
@@ -1422,58 +1891,129 @@ export function EditorShell({
                     const isActiveSeg = seg.id === activeSegment?.id
                     const only = cropPositions.length === 1
                     const deleteLabel = only ? 'Reset this format to Vertical' : `Delete format ${i + 1} (its time goes back to default framing)`
-                    const name = broll ? 'B-roll' : LAYOUTS.find(l => l.id === shown)?.label ?? shown
+                    const name = broll ? 'Video' : LAYOUTS.find(l => l.id === shown)?.label ?? shown
+                    const all = itemsBySection.get(seg.id) ?? []
+                    const items = sectionFilter === 'all' ? all : all.filter(x => x.kind === sectionFilter)
+                    // Open when toggled open, or when a kind is picked and this section has some
+                    const open = openSections.has(seg.id) || (sectionFilter !== 'all' && items.length > 0)
+                    const faded = sectionFilter !== 'all' && items.length === 0
                     return (
                       <Fragment key={seg.id}>
                       <div
+                        data-section-id={seg.id}
                         role="button" tabIndex={0}
                         aria-current={isActiveSeg || undefined}
                         aria-label={`Section ${i + 1}: ${name}, ${msToLabel(seg.start_ms)} to ${msToLabel(seg.end_ms)}`}
-                        className="group relative flex flex-col px-2 py-1.5 rounded-lg cursor-pointer transition-[background,border-color,box-shadow] duration-200 hover:border-[rgb(var(--ed-fg)/0.18)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[rgba(200,255,0,0.6)]"
-                        style={isActiveSeg
-                          ? { background: 'linear-gradient(180deg, rgba(200,255,0,0.07), rgba(200,255,0,0.02))', border: '1px solid rgba(200,255,0,0.45)', boxShadow: '0 8px 24px -14px rgba(200,255,0,0.45)' }
-                          : { background: 'rgb(var(--ed-fg) / 0.03)', border: '1px solid rgb(var(--ed-fg) / 0.08)' }}
+                        className="group relative flex flex-col rounded-xl cursor-pointer overflow-hidden transition-[background,box-shadow,opacity] duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[rgba(200,255,0,0.6)]"
+                        style={{
+                          background: isActiveSeg ? 'linear-gradient(180deg, rgba(200,255,0,0.06), rgba(200,255,0,0.015))' : 'rgb(var(--ed-fg) / 0.03)',
+                          boxShadow: isActiveSeg ? 'inset 0 0 0 1px rgba(200,255,0,0.45), 0 8px 22px -16px rgba(200,255,0,0.5)' : 'inset 0 0 0 1px rgb(var(--ed-fg) / 0.07)',
+                          opacity: faded ? 0.45 : 1,
+                        }}
                         onClick={() => { setActiveSegmentId(seg.id); setPickedSegId(seg.id); seekToMs(seg.start_ms) }}
                         onKeyDown={e => { if (e.key === 'Enter') { setActiveSegmentId(seg.id); setPickedSegId(seg.id); seekToMs(seg.start_ms) } }}>
-                        <div className="flex items-center gap-2">
-                          {/* Layout icon on a tile tinted with the section's colour */}
-                          <span className="relative shrink-0 w-7 h-8 flex items-center justify-center rounded-md"
-                            style={{ background: `${col}1f`, boxShadow: `inset 0 0 0 1px ${col}55` }}>
+                        <div className="flex items-start gap-2.5 pl-2.5 pr-1.5 pt-2 pb-1.5">
+                          <span className="shrink-0 w-8 h-8 mt-px flex items-center justify-center rounded-lg"
+                            style={{ background: isActiveSeg ? 'rgba(200,255,0,0.1)' : 'rgb(var(--ed-fg) / 0.06)' }}>
                             {broll
-                              ? <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={col} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="2" y="5" width="15" height="14" rx="2" /><path d="M17 10l5-3v10l-5-3z" /></svg>
-                              : <LayoutGlyph layout={shown} color={col} active={isActiveSeg} />}
+                              ? <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke={isActiveSeg ? '#c8ff00' : 'currentColor'} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ color: 'rgb(var(--ed-fg) / 0.7)' }}><rect x="2" y="5" width="15" height="14" rx="2" /><path d="M17 10l5-3v10l-5-3z" /></svg>
+                              : <LayoutGlyph layout={shown} color={isActiveSeg ? '#c8ff00' : '#9ca3af'} active={isActiveSeg} />}
                           </span>
                           <div className="flex-1 min-w-0 flex flex-col">
-                            <span className="flex items-center gap-2 min-w-0">
-                              <span className="text-xs font-semibold truncate text-[var(--ed-text)]">{name}</span>
-                              {isActiveSeg && (
-                                <span className="shrink-0 px-1.5 py-px rounded text-[9px] font-bold uppercase tracking-wider"
-                                  style={{ background: 'rgba(200,255,0,0.14)', color: 'var(--ed-accent-text)' }}>Editing</span>
-                              )}
-                            </span>
-                            <span className="text-[10px] leading-tight tabular-nums" style={{ color: 'rgb(var(--ed-fg) / 0.45)' }}>
-                              {msToLabel(seg.start_ms)} → {msToLabel(seg.end_ms)}
-                              <span style={{ color: 'rgb(var(--ed-fg) / 0.25)' }}> · </span>
-                              {lengthLabel(seg.end_ms - seg.start_ms)}
-                            </span>
-                            {/* Where this section sits in the whole clip */}
-                            <div className="relative h-[3px] mt-1 rounded-full overflow-hidden" style={{ background: 'rgb(var(--ed-fg) / 0.07)' }}
-                              title={`${msToLabel(seg.start_ms)}–${msToLabel(seg.end_ms)} of ${msToLabel(clipDurationMs)}`}>
-                              <div className="absolute h-full rounded-full" style={{
-                                left: `${(seg.start_ms / clipDurationMs) * 100}%`,
-                                width: `max(3px, ${((seg.end_ms - seg.start_ms) / clipDurationMs) * 100}%)`,
-                                background: col,
-                                boxShadow: isActiveSeg ? `0 0 6px ${col}` : 'none',
-                              }} />
+                            {/* Line 1: name · time range · open */}
+                            <div className="flex items-center gap-2 min-w-0 h-6">
+                              <span className="text-[13px] font-semibold truncate text-[var(--ed-text)]">{name}</span>
+                              {isActiveSeg && <span className="shrink-0 w-1.5 h-1.5 rounded-full" style={{ background: '#c8ff00' }} title="Under the playhead" />}
+                              <span className="ml-auto shrink-0 whitespace-nowrap text-[11px] tabular-nums" style={{ color: 'rgb(var(--ed-fg) / 0.55)' }}>
+                                {msToLabel(seg.start_ms)} – {msToLabel(seg.end_ms)}
+                              </span>
+                            </div>
+                            {/* Line 2: length and what's in it · lock · delete */}
+                            <div className="flex items-center gap-1 min-w-0 h-6">
+                              <span className="flex-1 min-w-0 truncate text-[11px]" style={{ color: 'rgb(var(--ed-fg) / 0.42)' }}>
+                                {[lengthLabel(seg.end_ms - seg.start_ms), ...SECTION_KINDS.flatMap(k => {
+                                  const c = all.filter(x => x.kind === k.id).length
+                                  return c ? [`${c} ${(c === 1 ? k.one : k.plural).toLowerCase()}`] : []
+                                })].join(' · ')}
+                              </span>
+                              <span className={`shrink-0 flex items-center transition-opacity ${isActiveSeg || seg.locked ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 focus-within:opacity-100'}`}>
+                                <CtlButtons size="sm" state={seg} can={['locked']} onToggle={k => toggleCtl({ kind: 'section', id: seg.id }, k)}
+                                  what={name.toLowerCase() === 'video' ? 'this video section' : 'this section'} />
+                              </span>
+                              <button onClick={e => { e.stopPropagation(); askDeleteFormat(seg.id) }}
+                                aria-label={deleteLabel} title={`${deleteLabel} (Delete)`}
+                                className={`shrink-0 w-[22px] h-[22px] flex items-center justify-center rounded-md transition-[opacity,background,color] hover:bg-[rgba(239,68,68,0.12)] hover:text-[#f87171] ${isActiveSeg ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 focus:opacity-100'}`}
+                                style={{ color: 'rgb(var(--ed-fg) / 0.5)' }}>
+                                <TrashIcon />
+                              </button>
                             </div>
                           </div>
-                          <button onClick={e => { e.stopPropagation(); askDeleteFormat(seg.id) }}
-                            aria-label={deleteLabel} title={`${deleteLabel} (Delete)`}
-                            className={`shrink-0 w-6 h-6 flex items-center justify-center rounded-md transition-[opacity,background,color] hover:bg-[rgba(239,68,68,0.12)] hover:text-[#f87171] ${isActiveSeg ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 focus:opacity-100'}`}
-                            style={{ color: 'rgb(var(--ed-fg) / 0.5)' }}>
-                            <TrashIcon />
+                          {/* What's in this section: open / close its list */}
+                          <button onClick={e => { e.stopPropagation(); setOpenSections(prev => { const n = new Set(prev); if (n.has(seg.id)) n.delete(seg.id); else n.add(seg.id); return n }) }}
+                            aria-expanded={open} aria-label={`${open ? 'Hide' : 'Show'} what's in section ${i + 1}`} title={open ? 'Hide what\u2019s in it' : 'Show what\u2019s in it'}
+                            className="shrink-0 w-6 h-6 flex items-center justify-center rounded-md transition-colors hover:bg-[rgb(var(--ed-fg)/0.08)]"
+                            style={{ color: 'rgb(var(--ed-fg) / 0.55)' }}>
+                            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"
+                              style={{ transform: open ? 'rotate(180deg)' : 'none', transition: 'transform .2s' }}><path d="M6 9l6 6 6-6" /></svg>
                           </button>
                         </div>
+                        {open && (
+                          <div className="mx-2 mb-2 flex flex-col rounded-lg overflow-hidden" onClick={e => e.stopPropagation()}
+                            style={{ background: 'rgb(var(--ed-fg) / 0.035)', boxShadow: 'inset 0 0 0 1px rgb(var(--ed-fg) / 0.05)' }}>
+                            {/* The main video, in every section (under a video section its sound carries on) */}
+                            {sectionFilter === 'all' && (
+                              <div className="flex items-center gap-1 pr-1" style={{ opacity: seg.hidden ? 0.5 : 1 }}>
+                                <button onClick={() => { pause(); seekToMs(seg.start_ms); setActiveSegmentId(seg.id); setPickedSegId(seg.id) }}
+                                  title={`Main video · ${msToLabel(seg.start_ms)}–${msToLabel(seg.end_ms)}`}
+                                  className="flex-1 min-w-0 h-8 flex items-center gap-2 pl-2 pr-1 text-left transition-colors hover:bg-[rgb(var(--ed-fg)/0.05)]">
+                                  <span className="w-[18px] h-[18px] shrink-0 flex items-center justify-center rounded-[5px]" style={{ background: 'rgba(200,255,0,0.14)', color: 'var(--ed-accent-text)' }}>
+                                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                                      <rect x="3" y="4" width="18" height="16" rx="2" /><path d="M7 4v16M17 4v16M3 9h4M3 15h4M17 9h4M17 15h4" />
+                                    </svg>
+                                  </span>
+                                  <span className="flex-1 min-w-0 truncate text-[11.5px] font-medium text-[var(--ed-text)]">
+                                    Main video{broll ? <span style={{ color: 'rgb(var(--ed-fg) / 0.42)' }}> · under</span> : null}
+                                  </span>
+                                </button>
+                                <CtlButtons size="sm" state={seg} can={isFrameLayout(seg.layout) ? ['muted'] : ['hidden', 'muted']} onToggle={k => toggleCtl({ kind: 'section', id: seg.id }, k)} what="the main video here"
+                                  inert={(() => {
+                                    // The video on top covers the main video (shown), and replaces its sound (sound on)
+                                    const added = addedVideoBox(seg, mainVideoId)
+                                    if (!added) return undefined
+                                    const keys: CtlKey[] = []
+                                    if (!added.hidden) keys.push('hidden')
+                                    if (added.muted === false) keys.push('muted')
+                                    return keys.length ? keys : undefined
+                                  })()} />
+                              </div>
+                            )}
+                            {items.length === 0 ? (
+                              sectionFilter === 'all' ? null : (
+                                <span className="px-2.5 py-2 text-[11px]" style={{ color: 'rgb(var(--ed-fg) / 0.4)' }}>None of this kind here.</span>
+                              )
+                            ) : items.map(it => {
+                              const k = SECTION_KINDS.find(x => x.id === it.kind)!
+                              const st = it.ctl ? ctlState(it.ctl) : undefined
+                              return (
+                                <div key={it.key} className="flex items-center gap-1 pr-1" style={{ opacity: st?.hidden ? 0.5 : 1, borderTop: '1px solid rgb(var(--ed-fg) / 0.045)' }}>
+                                <button onClick={it.focus}
+                                  title={`${k.one} · ${msToLabel(it.start)}–${msToLabel(it.end)} · open its settings`}
+                                  className="group/row flex-1 min-w-0 h-8 flex items-center gap-2 pl-2 pr-1 text-left transition-colors hover:bg-[rgb(var(--ed-fg)/0.05)]">
+                                  {it.thumb
+                                    // eslint-disable-next-line @next/next/no-img-element
+                                    ? <img src={it.thumb} alt="" className="w-[18px] h-[18px] rounded-[5px] object-cover shrink-0" />
+                                    : <span className="w-[18px] h-[18px] shrink-0 flex items-center justify-center rounded-[5px]" style={{ background: `${k.color}24`, color: k.color }}>
+                                        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{k.icon}</svg>
+                                      </span>}
+                                  <span className="flex-1 min-w-0 truncate text-[11.5px] font-medium text-[var(--ed-text)]">{it.name}</span>
+                                  <span className="shrink-0 text-[10px] tabular-nums opacity-0 group-hover/row:opacity-100 transition-opacity" style={{ color: 'rgb(var(--ed-fg) / 0.42)' }}>{msToLabel(it.start)}–{msToLabel(it.end)}</span>
+                                </button>
+                                {it.ctl && <CtlButtons size="sm" state={st} can={it.ctl.kind === 'broll' ? ['hidden', 'muted'] : canCtl(it.ctl)} onToggle={key => toggleCtl(it.ctl!, key)} what={`this ${k.one.toLowerCase()}`} />}
+                                </div>
+                              )
+                            })}
+                          </div>
+                        )}
                       </div>
                       {gapRow}
                       </Fragment>
@@ -1498,10 +2038,14 @@ export function EditorShell({
                 onApply={handleApplyFrame}
                 onOpenFrame={openFrame}
                 onSelectItem={selectInFrame}
-                onUpdateItem={updateFrameItem}
+                onToggleLock={segId => toggleCtl({ kind: 'section', id: segId }, 'locked')}
+                onUpdateItem={(segId, id, patch) => {
+                  const switchOnly = Object.keys(patch).every(k => k === 'hidden' || k === 'muted')
+                  if (switchOnly || !sectionBlocked(segId)) updateFrameItem(segId, id, patch)
+                }}
                 onRemoveItem={askRemoveFrameItem}
-                onUpdateFrame={updateFrame}
-                onReplaceMedia={(segId, id, kind) => { pause(); setFramePicker({ segId, kind, replaceId: id }) }}
+                onUpdateFrame={(segId, patch) => { if (!sectionBlocked(segId)) updateFrame(segId, patch) }}
+                onReplaceMedia={(segId, id, kind) => { if (sectionBlocked(segId)) return; pause(); setFramePicker({ segId, kind, replaceId: id }) }}
                 onRemoveFrame={askRemoveFrame}
                 onRemoveMain={askRemoveMain}
               />
@@ -1525,46 +2069,64 @@ export function EditorShell({
                 <TranscriptPanel words={displayWords} clipStartMs={clip.start_ms} clipEndMs={clip.end_ms} currentTimeMs={currentTimeMs} onSeek={seekToMs} onWordChange={(id, text) => updateWord(id, text, romanize ? 'word_roman' : 'word')} />
               ) : (
                 <div className="flex flex-col">
-                  <div className="p-4 flex flex-col gap-3" style={{ borderBottom: '1px solid rgb(var(--ed-fg) / 0.06)' }}>
-                    <SwitchRow label="Show captions" checked={showCaptions} onChange={setShowCaptions} />
-                    {(transcribing || retranscribing) ? (
-                      <div className="flex items-center gap-2.5 px-3 py-2.5 rounded-lg" style={{ background: 'rgba(200,255,0,0.07)', border: '1px solid rgba(200,255,0,0.18)' }}>
-                        <span className="w-3.5 h-3.5 rounded-full border-2 border-t-transparent animate-spin shrink-0" style={{ borderColor: ACCENT, borderTopColor: 'transparent' }} />
-                        <p className="text-xs font-medium" style={{ color: 'var(--ed-accent-text)' }}>Generating captions… this can take a minute</p>
-                      </div>
-                    ) : words.length > 0 ? (
-                      <p className="text-xs" style={{ color: 'rgb(var(--ed-fg) / 0.45)' }}>
-                        <span style={{ color: '#4ade80' }}>✓</span> {words.length} words transcribed
-                      </p>
-                    ) : (
-                      <p className="text-xs" style={{ color: 'rgb(var(--ed-fg) / 0.45)' }}>No captions for this clip yet.</p>
-                    )}
-                    {showCaptions && words.length > 0 && (
-                      <div className="flex flex-col gap-1.5">
-                        <span className="text-xs font-medium" style={{ color: 'rgb(var(--ed-fg) / 0.5)' }}>Caption language</span>
-                        <div role="radiogroup" aria-label="Caption language" className="grid grid-cols-2 gap-1 p-0.5 rounded-lg" style={{ background: 'rgb(var(--ed-fg) / 0.05)' }}>
-                          {([[false, 'Auto language', 'As spoken, in its own script'], [true, 'English', hasRoman ? `In English letters (${scriptLabel})` : "English letters aren't available for these captions"]] as const).map(([v, label, title]) => {
-                            const on = romanize === v
-                            const disabled = v && !hasRoman
-                            return (
-                              <button key={label} role="radio" aria-checked={on} disabled={disabled} title={title}
-                                onClick={() => setRomanize(v)}
-                                className="h-8 rounded-md text-xs font-medium transition-colors disabled:opacity-40"
-                                style={on ? { background: 'rgb(var(--ed-fg) / 0.14)', color: 'var(--ed-text)' } : { color: 'rgb(var(--ed-fg) / 0.6)' }}>
-                                {label}
-                              </button>
-                            )
-                          })}
+                  {/* ── Captions: on/off with its status, the language, and editing the words ── */}
+                  <div className="p-4 flex flex-col gap-3">
+                    <div className="cap-card">
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="min-w-0 flex items-center gap-2.5">
+                          <span className="cap-card-icon" data-on={showCaptions || undefined} aria-hidden="true">
+                            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                              <rect x="3" y="5" width="18" height="14" rx="3" /><path d="M10 10.5a2 2 0 100 3M16 10.5a2 2 0 100 3" />
+                            </svg>
+                          </span>
+                          <div className="min-w-0">
+                            <p className="text-[13px] font-semibold text-[var(--ed-text)]">Show captions</p>
+                            {(transcribing || retranscribing) ? (
+                              <p className="flex items-center gap-1.5 text-[11px]" style={{ color: 'var(--ed-accent-text)' }}>
+                                <span className="w-2.5 h-2.5 rounded-full border-[1.5px] border-t-transparent animate-spin shrink-0" style={{ borderColor: ACCENT, borderTopColor: 'transparent' }} />
+                                Generating… this can take a minute
+                              </p>
+                            ) : words.length > 0 ? (
+                              <p className="text-[11px]" style={{ color: 'rgb(var(--ed-fg) / 0.45)' }}>
+                                <span style={{ color: '#4ade80' }}>●</span> {words.length} words ready
+                              </p>
+                            ) : (
+                              <p className="text-[11px]" style={{ color: 'rgb(var(--ed-fg) / 0.45)' }}>No captions for this clip yet</p>
+                            )}
+                          </div>
                         </div>
+                        <button role="switch" aria-checked={showCaptions} aria-label="Show captions" onClick={() => turnCaptions(!showCaptions)}
+                          className="relative shrink-0 rounded-full transition-colors"
+                          style={{ width: 40, height: 22, background: showCaptions ? ACCENT : 'rgb(var(--ed-fg) / 0.15)' }}>
+                          <span className="absolute rounded-full transition-all"
+                            style={{ top: 3, left: showCaptions ? 21 : 3, width: 16, height: 16, background: showCaptions ? '#0a0a0a' : '#fff', boxShadow: '0 1px 3px rgba(0,0,0,0.3)' }} />
+                        </button>
                       </div>
-                    )}
+                    </div>
+
                     {showCaptions && words.length > 0 && (
-                      <button onClick={() => setEditingTranscript(true)}
-                        className="flex items-center justify-center gap-2 w-full py-2 rounded-lg text-xs font-medium transition-colors hover:bg-[rgb(var(--ed-fg)/0.1)]"
-                        style={{ color: 'rgb(var(--ed-fg) / 0.85)', border: '1px solid rgb(var(--ed-fg) / 0.12)' }}>
-                        <svg width="12" height="12" viewBox="0 0 14 14" fill="none"><path d="M9.5 2L12 4.5M2 12l.7-2.8L10 1.5 12.5 4 4.8 11.3 2 12z" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/></svg>
-                        Edit caption text
-                      </button>
+                      <>
+                        <div className="cap-row">
+                          <span className="cap-label">Language</span>
+                          <div role="radiogroup" aria-label="Caption language" className="cap-seg">
+                            {([[false, 'Original', 'As spoken, in its own script'], [true, 'English letters', hasRoman ? `In English letters (${scriptLabel})` : "English letters aren't available for these captions"]] as const).map(([v, label, title]) => {
+                              const on = romanize === v
+                              const disabled = v && !hasRoman
+                              return (
+                                <button key={label} role="radio" aria-checked={on} disabled={disabled} title={title}
+                                  onClick={() => setRomanize(v)} className="cap-seg-btn" data-on={on || undefined}>
+                                  {label}
+                                </button>
+                              )
+                            })}
+                          </div>
+                        </div>
+                        <button onClick={() => setEditingTranscript(true)} className="cap-link">
+                          <svg width="13" height="13" viewBox="0 0 14 14" fill="none" aria-hidden="true"><path d="M9.5 2L12 4.5M2 12l.7-2.8L10 1.5 12.5 4 4.8 11.3 2 12z" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                          <span className="flex-1 text-left">Edit caption words</span>
+                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6" /></svg>
+                        </button>
+                      </>
                     )}
                   </div>
                   {showCaptions && (
@@ -1589,10 +2151,18 @@ export function EditorShell({
                 {fillersToggle('')}
                 {words.length === 0 && <p className="text-xs" style={{ color: 'rgb(var(--ed-fg) / 0.5)' }}>This needs the clip's captions (transcript) first.</p>}
                 {fillerCutList.length > 0 && (
-                  <div className="flex flex-col gap-1 min-h-0">
-                    <span className="text-xs font-medium" style={{ color: 'rgb(var(--ed-fg) / 0.5)' }}>
-                      {fillerCutList.length} cut{fillerCutList.length === 1 ? '' : 's'}{removeFillers ? '' : ' (when switched on)'}
-                    </span>
+                  <div className="flex flex-col gap-2 min-h-0">
+                    {/* The list of cuts folds away with the collapse / expand chevron */}
+                    <button type="button" onClick={() => setCutsOpen(v => !v)} aria-expanded={cutsOpen}
+                      title={cutsOpen ? 'Hide the list of cuts' : 'Show the list of cuts'} className="tx-fold">
+                      <span className="text-xs font-medium" style={{ color: 'rgb(var(--ed-fg) / 0.6)' }}>
+                        {fillerCutList.length} cut{fillerCutList.length === 1 ? '' : 's'}{removeFillers ? '' : ' (when switched on)'}
+                      </span>
+                      <span className="ed-collapse" data-open={cutsOpen || undefined} aria-hidden="true">
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M6 9l6 6 6-6" /></svg>
+                      </span>
+                    </button>
+                    {cutsOpen && (
                     <div className="flex flex-col gap-1 overflow-y-auto -mr-2 pr-2" style={{ maxHeight: 420 }}>
                       {fillerCutList.map(c => (
                         <button key={c.at} onClick={() => seekToMs(Math.max(0, c.at - 1000))} title="Play from just before this cut"
@@ -1606,6 +2176,7 @@ export function EditorShell({
                         </button>
                       ))}
                     </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -1617,15 +2188,77 @@ export function EditorShell({
               </div>
             )}
 
+            {/* Background music. The file isn't uploaded yet (same as the phone editor):
+                TODO(backend): upload the track so the export can mix it in */}
+            {tool === 'music' && (
+              <>
+              {/* The clip's own sound, always first: turn it down or off before adding music */}
+              <div className="mx-4 mt-4 p-3 flex flex-col gap-2.5 rounded-xl"
+                style={{ background: 'rgb(var(--ed-fg) / 0.04)', border: '1px solid rgb(var(--ed-fg) / 0.1)' }}>
+                <div className="flex items-center gap-2.5">
+                  <span className="shrink-0 w-8 h-8 flex items-center justify-center rounded-lg" style={{ background: 'rgba(200,255,0,0.12)', color: 'var(--ed-accent-text)' }}>
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                      <rect x="2" y="5" width="15" height="14" rx="2" /><path d="M17 10l5-3v10l-5-3z" />
+                    </svg>
+                  </span>
+                  <span className="flex-1 min-w-0 flex flex-col">
+                    <span className="text-[13px] font-semibold text-[var(--ed-text)]">Original video sound</span>
+                    <span className="text-[11px]" style={{ color: 'rgb(var(--ed-fg) / 0.45)' }}>
+                      {originalMuted ? 'Muted' : `${Math.round(originalVolume * 100)}%`}
+                    </span>
+                  </span>
+                  <button type="button" onClick={() => setOriginalMuted(m => !m)} aria-pressed={originalMuted}
+                    aria-label={originalMuted ? 'Turn the original sound back on' : 'Mute the original sound'}
+                    title={originalMuted ? 'Turn the original sound back on' : 'Mute the original sound'}
+                    className="shrink-0 w-8 h-8 flex items-center justify-center rounded-lg transition-colors"
+                    style={originalMuted
+                      ? { background: 'rgba(239,68,68,0.16)', color: '#fca5a5', boxShadow: 'inset 0 0 0 1px rgba(239,68,68,0.45)' }
+                      : { background: 'rgb(var(--ed-fg) / 0.06)', color: 'rgb(var(--ed-fg) / 0.8)' }}>
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                      <path d="M11 5L6 9H2v6h4l5 4V5z" />
+                      {originalMuted ? <path d="M22 9l-6 6M16 9l6 6" /> : <path d="M15.5 8.5a5 5 0 010 7M19 5a10 10 0 010 14" />}
+                    </svg>
+                  </button>
+                </div>
+                <input type="range" min={0} max={100} step={1} value={originalMuted ? 0 : Math.round(originalVolume * 100)}
+                  onChange={e => { const v = Number(e.target.value) / 100; setOriginalVolume(v); setOriginalMuted(v === 0) }}
+                  aria-label="Original video sound volume"
+                  className="ed-zoom-range w-full"
+                  style={{ '--p': `${originalMuted ? 0 : Math.round(originalVolume * 100)}%` } as React.CSSProperties} />
+              </div>
+              <AudioMixerPanel tracks={audioTracks} nameOf={musicName}
+                selectedId={pickedMusicId} onSelect={pickMusic}
+                currentTimeMs={currentTimeMs} clipLengthMs={clipLengthMs} durations={musicDurations}
+                onAddTrack={addMusicTrack}
+                onRemoveTrack={deleteMusic}
+                onUpdateTrack={(id, u) => { if (!blocked({ kind: 'music', id })) setAudioTracks(prev => prev.map(t => t.id === id ? { ...t, ...u } : t)) }} />
+              </>
+            )}
+
             {tool === 'broll' && (
               <BrollPanel
                 clipId={clip.id}
                 currentTimeMs={currentTimeMs}
                 shots={brollShots}
+                selectedId={activeSegment && brollShots.some(b => b.id === activeSegment.id) ? activeSegment.id : null}
                 onAdd={addStockBroll}
                 onMove={moveBroll}
                 onResize={resizeBroll}
                 onRemove={removeBroll}
+                onSeek={seekToMs}
+              />
+            )}
+
+            {tool === 'photos' && (
+              <PhotoPanel
+                photos={overlays.filter(o => o.type === 'image')}
+                selectedId={activeOverlayId}
+                currentTimeMs={currentTimeMs}
+                clipLengthMs={clipLengthMs}
+                onSelect={pickPhoto}
+                onAdd={() => { pause(); setPickerOnly('photo'); setPickerAtMs(Math.min(currentTimeMs, Math.max(0, clipLengthMs - 500))) }}
+                onUpdate={(id, patch) => { if (!blocked({ kind: 'photo', id })) updateOverlay(id, patch) }}
+                onRemove={askDeleteOverlay}
                 onSeek={seekToMs}
               />
             )}
@@ -1638,16 +2271,20 @@ export function EditorShell({
                 selectedId={activeFrameItemId}
                 onSelect={setActiveFrameItemId}
                 onAdd={lane => { if (frameSeg && lane === 'band') addBandText(frameSeg.id, currentTimeMs) }}
-                onUpdate={(id, patch) => { if (frameSeg) updateFrameItem(frameSeg.id, id, patch) }}
+                onUpdate={(id, patch) => { if (frameSeg && !sectionBlocked(frameSeg.id)) updateFrameItem(frameSeg.id, id, patch) }}
                 onRemove={id => { if (frameSeg) askRemoveFrameItem(frameSeg.id, id) }}
-                onUpdateBand={patch => { if (frameSeg) updateFrameBand(frameSeg.id, patch) }}
+                onUpdateBand={patch => { if (frameSeg && !sectionBlocked(frameSeg.id)) updateFrameBand(frameSeg.id, patch) }}
               />
               <TextOverlayPanel
                 overlays={textOverlays}
                 currentTimeMs={currentTimeMs}
                 clipDurationMs={clip.end_ms - clip.start_ms}
                 onAdd={o => setTextOverlays(prev => [...prev, { ...o, id: crypto.randomUUID(), clip_id: clip.id }])}
-                onUpdate={updateTextOverlay}
+                focusId={focusTextId}
+                onFocused={() => setFocusTextId(null)}
+                selectedId={activeTextOverlayId}
+                onSelect={pickText}
+                onUpdate={(id, patch) => { if (!blocked({ kind: 'text', id })) updateTextOverlay(id, patch) }}
                 onRemove={askDeleteTextOverlay}
               />
               </>
@@ -1661,29 +2298,22 @@ export function EditorShell({
         <main className="flex flex-col flex-1 min-w-0 min-h-0">
           {/* Canvas toolbar: two docks, centred — Layout (a segmented switch with a sliding lime
               highlight) and Tools (Split · Motion · Delete). Styles: .ed-dock* in globals.css */}
-          <div className="shrink-0 flex items-center justify-center gap-3 px-4" style={{ minHeight: 60, borderBottom: '1px solid rgb(var(--ed-fg) / 0.06)' }}>
+          <div className="ed-canvas-bar shrink-0 flex items-center justify-center gap-3 px-4" style={{ minHeight: 60, borderBottom: '1px solid rgb(var(--ed-fg) / 0.06)' }}>
             <FormatSwitcher
               activeId={activeSegment ? formatLayoutOf(activeSegment.layout) : null}
               play={formatPlay}
-              onPick={id => { setFormatPlay(p => ({ id, n: (p?.n ?? 0) + 1 })); handleLayoutChange(id) }}
+              onPick={id => { setFormatPlay(p => ({ id, n: (p?.n ?? 0) + 1 })); handleLayoutChange(id, 'fromPlayhead') }}
             />
+            {/* Where a layout picked now goes: from the playhead to the end of this section */}
+            {frameTarget && (
+              <span className="ed-applies flex flex-col leading-tight text-[10px] tabular-nums whitespace-nowrap" style={{ color: 'rgb(var(--ed-fg) / 0.45)' }}
+                title="Pick a layout: it starts here and runs to the end of this section">
+                <span className="uppercase tracking-wider font-semibold" style={{ color: 'rgb(var(--ed-fg) / 0.35)' }}>Applies</span>
+                {frameTarget}
+              </span>
+            )}
 
             <div className="ed-dock" role="toolbar" aria-label="Tools">
-              <button
-                onClick={() => { setSplitPlay(n => n + 1); splitHere() }}
-                disabled={!canSplitHere}
-                title={canSplitHere ? 'Split this format at the playhead (S), then pick a layout for either part' : 'Move the playhead inside a format to split it'}
-                className="ed-press ed-dock-btn"
-              >
-                <svg key={splitPlay} className={splitPlay ? 'ed-snip' : undefined} width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                  <circle cx="6" cy="6" r="3" /><circle cx="6" cy="18" r="3" /><path d="M20 4L8.1 15.9M14.5 14.5L20 20M8.1 8.1L12 12" />
-                </svg>
-                Split
-                <kbd className="ed-kbd">S</kbd>
-              </button>
-
-              <span className="ed-dock-sep" aria-hidden="true" />
-
               <button
                 onClick={() => setMotionMode(m => !m)}
                 aria-pressed={motionMode}
@@ -1696,25 +2326,8 @@ export function EditorShell({
                   display: 'inline-block', width: 8, height: 8, borderRadius: '50%',
                   background: motionMode ? '#ef4444' : 'rgb(var(--ed-fg) / 0.35)',
                 }} />
-                {motionMode ? 'Recording motion' : 'Motion'}
+                <span className="ed-dock-label">{motionMode ? 'Recording motion' : 'Motion'}</span>
               </button>
-
-              {/* Delete the clicked trimmed part — shows only after a section is clicked. Button only for now;
-                  the delete itself (cutting the part out of the video) is being built on the backend */}
-              {pickedSegId && segments.some(x => x.id === pickedSegId) && <>
-                <span className="ed-dock-sep" aria-hidden="true" />
-                <button
-                  onClick={() => { /* TODO(backend): delete the selected trimmed part */ }}
-                  title="Delete the selected section"
-                  aria-label="Delete the selected section"
-                  className="ed-press ed-dock-btn ed-dock-danger ed-dock-pop"
-                >
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                    <path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14M10 11v6M14 11v6" />
-                  </svg>
-                  Delete
-                </button>
-              </>}
             </div>
           </div>
 
@@ -1735,21 +2348,97 @@ export function EditorShell({
           </div>
 
           {/* Transport */}
-          {/* One control bar for the canvas and timeline: timecode · playback · timeline zoom */}
-          <div className="shrink-0 grid items-center px-4" style={{ gridTemplateColumns: '1fr auto 1fr', height: 56, borderTop: '1px solid rgb(var(--ed-fg) / 0.06)', background: 'var(--ed-panel)' }}>
-            <div className="justify-self-start flex items-baseline gap-1.5 tabular-nums"
-              aria-label={`${msToTenths(currentTimeMs)} of ${msToLabel(clipDurationMs)}`}>
-              <span className="text-[15px] font-semibold tracking-tight text-[var(--ed-text)]">{msToTenths(currentTimeMs)}</span>
-              <span className="text-xs font-medium" style={{ color: 'rgb(var(--ed-fg) / 0.38)' }}>/ {msToLabel(clipDurationMs)}</span>
-            </div>
-            <div className="flex items-center gap-3">
-              <button onClick={() => seekToMs(Math.max(0, currentTimeMs - 5000))} aria-label="Back 5 seconds" title="Back 5 seconds (Shift + ←)"
-                className="w-9 h-9 flex items-center justify-center rounded-full transition-colors hover:bg-[rgb(var(--ed-fg)/0.1)]" style={{ color: 'rgb(var(--ed-fg) / 0.75)' }}>
-                <SkipFiveIcon dir="back" />
+          {/* Timeline bar: [show/hide timeline · trim · delete] [previous section · play · next section · time]
+              [zoom slider]. Every button has a plain-words tooltip. */}
+          <div className="ed-transport shrink-0 grid items-center gap-2 px-3" style={{ gridTemplateColumns: 'minmax(0,1fr) auto minmax(0,1fr)', height: 52, borderTop: '1px solid rgb(var(--ed-fg) / 0.06)', background: 'var(--ed-panel)' }}>
+            {/* Left: timeline tools */}
+            <div className="ed-transport-tools justify-self-start min-w-0 flex items-center gap-1">
+              {/* Show / hide the timeline. The icon is the editor with its bottom panel (the timeline)
+                  and an arrow saying what a click does (down = tuck it away, up = bring it back); a
+                  label pops up instantly on hover (.ed-tip in globals.css) */}
+              <button onClick={() => setTimelineHidden(h => !h)} aria-expanded={!timelineHidden}
+                aria-label={timelineHidden ? 'Show the timeline' : 'Hide the timeline'}
+                data-tip={timelineHidden ? 'Show timeline' : 'Hide timeline'}
+                className="ed-tl-btn ed-tip" data-active={timelineHidden || undefined}>
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <rect x="3" y="3" width="18" height="18" rx="3" />
+                  <path d="M3 15h18" />
+                  <path d="M3.9 15h16.2v4.1a1.9 1.9 0 01-1.9 1.9H5.8a1.9 1.9 0 01-1.9-1.9z" fill="#c8ff00" fillOpacity={timelineHidden ? 0.15 : 0.45} stroke="none" />
+                  <path d={timelineHidden ? 'M9 10.5l3-3 3 3' : 'M9 7.5l3 3 3-3'} />
+                </svg>
               </button>
-              {/* Film-reel play button (styles: .ed-play in globals.css): a ring of sprocket holes turns
-                  like a reel while playing, a projector flash bursts out on play, and the icon snaps
-                  shut like a clapperboard on every press */}
+              <span className="ed-tl-sep" aria-hidden="true" />
+              {/* What's selected — Trim and Delete act on exactly this (click video or music on the timeline) */}
+              {(() => {
+                const seg = pickedSegId ? segments.find(x => x.id === pickedSegId) ?? null : null
+                const segName = seg ? (isFrameLayout(seg.layout) ? `Frame · ${FRAME_TEMPLATES[seg.layout].name}` : LAYOUTS.find(l => l.id === seg.layout)?.label ?? 'Section') : ''
+                const kind: 'music' | 'video' | null = pickedMusic ? 'music' : seg ? 'video' : null
+                const videoCanTrim = !!seg && canSplitHere && activeSegment?.id === seg.id
+                const trimOk = kind === 'music' ? canTrimMusic : kind === 'video' ? videoCanTrim : canSplitHere
+                const trimTitle = kind === 'music'
+                  ? (canTrimMusic ? 'Trim the selected music: cut it in two at the playhead (then delete the part you don\u2019t want)' : 'Move the playhead inside the selected music to trim it')
+                  : kind === 'video'
+                    ? (videoCanTrim ? 'Trim the selected video section: cut it in two at the playhead (S)' : 'Move the playhead inside the selected video section to trim it')
+                    : (canSplitHere ? 'Trim (S): cut the video section under the playhead in two' : 'Move the playhead inside a section to trim it')
+                return (
+                  <>
+                    <button
+                      onClick={() => {
+                        setSplitPlay(n => n + 1)
+                        if (kind === 'music') trimMusicAtPlayhead(); else splitHere()
+                      }}
+                      disabled={!trimOk}
+                      aria-label={kind === 'music' ? 'Trim the selected music at the playhead' : 'Trim the video at the playhead'}
+                      title={trimTitle}
+                      className="ed-tl-btn"
+                    >
+                      <svg key={splitPlay} className={splitPlay ? 'ed-snip' : undefined} width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                        <circle cx="6" cy="6" r="3" /><circle cx="6" cy="18" r="3" /><path d="M20 4L8.1 15.9M14.5 14.5L20 20M8.1 8.1L12 12" />
+                      </svg>
+                    </button>
+                    {/* Delete: removes the selected music. For a video section it's a button only for now —
+                        TODO(backend): delete the selected trimmed video part */}
+                    <button
+                      onClick={() => { if (kind === 'music' && pickedMusic) deleteMusic(pickedMusic.id) }}
+                      disabled={!kind}
+                      aria-label={kind === 'music' ? 'Delete the selected music' : 'Delete the selected video section'}
+                      title={kind === 'music' ? 'Delete the selected music' : kind === 'video' ? 'Delete the selected video section' : 'Click the video or the music on the timeline to delete it'}
+                      className="ed-tl-btn ed-tl-danger"
+                    >
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                        <path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14M10 11v6M14 11v6" />
+                      </svg>
+                    </button>
+                    {/* Detach audio: the main video's sound onto its own Music bar */}
+                    <button onClick={detachAudio}
+                      aria-label={hasMainAudio ? 'Select the detached original sound' : 'Detach the audio from the main video'}
+                      title={hasMainAudio ? 'The original sound is on the Music lane — click to select it' : 'Detach audio: the main video\u2019s sound becomes its own bar on the Music lane (trim, move or change its volume)'}
+                      className="ed-tl-btn" data-active={hasMainAudio || undefined}>
+                      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                        <path d="M9 17V5l10-2v6" /><circle cx="6.5" cy="17" r="2.5" />
+                        <path d="M15 14v7M12 18l3 3 3-3" stroke="#c084fc" />
+                      </svg>
+                    </button>
+                    {/* Hide / mute / lock what's picked (a section, photo, text or music) */}
+                    {selTarget && (
+                      <>
+                        <span className="ed-tl-sep" aria-hidden="true" />
+                        <CtlButtons size="md" state={ctlState(selTarget)} can={canCtl(selTarget)} onToggle={k => toggleCtl(selTarget, k)}
+                          what={selTarget.kind === 'section' ? 'the picked section' : `the picked ${selTarget.kind}`} />
+                      </>
+                    )}
+                  </>
+                )
+              })()}
+            </div>
+
+            {/* Centre: previous section · play · next section (the play button sits exactly in the middle) */}
+            <div className="flex items-center gap-1.5">
+              <button onClick={jumpPrevSection} aria-label="Go to the previous section" title="Previous section"
+                className="ed-tl-btn">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="5" y="5" width="2.4" height="14" rx="1" /><path d="M19 5.8v12.4a.8.8 0 01-1.2.7L9.5 12.7a.8.8 0 010-1.4l8.3-6.2a.8.8 0 011.2.7z" /></svg>
+              </button>
+              {/* Film-reel play button (styles: .ed-play in globals.css) */}
               <button onClick={togglePlay} aria-label={playing ? 'Pause' : 'Play'} title={`${playing ? 'Pause' : 'Play'} (Space)`}
                 data-playing={playing || undefined}
                 className="ed-play w-10 h-10 flex items-center justify-center rounded-full shrink-0 transition-opacity hover:opacity-90" style={{ background: ACCENT }}>
@@ -1760,19 +2449,44 @@ export function EditorShell({
                   }
                 </span>
               </button>
-              <button onClick={() => seekToMs(Math.min(clipDurationMs, currentTimeMs + 5000))} aria-label="Forward 5 seconds" title="Forward 5 seconds (Shift + →)"
-                className="w-9 h-9 flex items-center justify-center rounded-full transition-colors hover:bg-[rgb(var(--ed-fg)/0.1)]" style={{ color: 'rgb(var(--ed-fg) / 0.75)' }}>
-                <SkipFiveIcon dir="forward" />
+              <button onClick={jumpNextSection} aria-label="Go to the next section" title="Next section"
+                className="ed-tl-btn">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="16.6" y="5" width="2.4" height="14" rx="1" /><path d="M5 5.8v12.4a.8.8 0 001.2.7l8.3-6.2a.8.8 0 000-1.4L6.2 5.1A.8.8 0 005 5.8z" /></svg>
               </button>
             </div>
-            <div className="justify-self-end">
-              <TimelineZoom zoom={timelineZoom} onZoom={setTimelineZoom} />
+
+            {/* Right: the time (small) and the timeline zoom */}
+            <div className="min-w-0 flex items-center justify-between gap-2">
+              <span className="ed-transport-time shrink-0 whitespace-nowrap text-[11px] tabular-nums" aria-label={`${msToClock(currentTimeMs)} of ${msToClock(clipDurationMs)}`}>
+                <span className="font-semibold" style={{ color: 'rgb(var(--ed-fg) / 0.85)' }}>{msToTenths(currentTimeMs)}</span>
+                <span className="ed-transport-total" style={{ color: 'rgb(var(--ed-fg) / 0.38)' }}> / {msToLabel(clipDurationMs)}</span>
+              </span>
+              {/* Always at the far end of the bar, with or without the time beside it */}
+              <div className="ml-auto shrink-0"><ZoomSlider zoom={timelineZoom} onZoom={setTimelineZoom} /></div>
             </div>
           </div>
 
-          {/* Timeline */}
-          <div data-tour="timeline" className="shrink-0 overflow-y-auto px-4 pt-3 pb-4" style={{ maxHeight: '38vh', background: 'var(--ed-track)', borderTop: '1px solid rgb(var(--ed-fg) / 0.06)' }}>
+          {/* Timeline (hidden with "Hide timeline") */}
+          <div data-tour="timeline" hidden={timelineHidden} className="shrink-0 overflow-y-auto px-4 pt-3 pb-4" style={{ maxHeight: '38vh', background: 'var(--ed-track)', borderTop: '1px solid rgb(var(--ed-fg) / 0.06)' }}>
             <SegmentTimeline
+              selectedMusicId={pickedMusicId} onSelectMusic={id => pickMusicTrack(id, doubleTap(`m${id}`))}
+              photos={overlays.filter(o => o.type === 'image').map(o => ({ id: o.id, start_ms: o.start_ms, end_ms: o.end_ms, url: o.preview_url, hidden: o.hidden, locked: isLocked({ kind: 'photo', id: o.id }) }))}
+              activePhotoId={activeOverlayId} onSelectPhoto={id => pickPhoto(id, doubleTap(`p${id}`))}
+              onPhotoTimeChange={(id, t) => { if (!blocked({ kind: 'photo', id })) updateOverlay(id, t) }}
+              musicTracks={audioTracks.map(t => ({
+                id: t.id, start_ms: t.start_ms,
+                duration_ms: t.end_ms != null ? t.end_ms - t.start_ms
+                  : musicDurations[t.id] != null ? musicDurations[t.id] - (t.offset_ms ?? 0) : undefined,
+                name: musicName(t), original: isMainAudio(t), muted: t.muted, locked: isLocked({ kind: 'music', id: t.id }),
+              }))}
+              onMusicTrim={trimMusicEdge}
+              onMusicMove={(id, startMs) => !blocked({ kind: 'music', id }) && setAudioTracks(prev => prev.map(t => {
+                if (t.id !== id) return t
+                // A trimmed track keeps its length when moved
+                const len = t.end_ms != null ? t.end_ms - t.start_ms : null
+                return { ...t, start_ms: startMs, ...(len != null ? { end_ms: startMs + len } : {}) }
+              }))}
+              onAddHere={anchor => { pause(); setPlusMenu({ atMs: Math.round(currentTimeMs), anchor }) }}
               zoom={timelineZoom} onZoomChange={setTimelineZoom} showToolbar={false}
               segments={segments} clipStartMs={clip.start_ms} clipEndMs={clip.end_ms}
               currentTimeMs={currentTimeMs} activeSegmentId={activeSegment?.id ?? null}
@@ -1781,20 +2495,20 @@ export function EditorShell({
               onBrollChange={retimeBroll}
               videoUrls={videoUrls}
               onUpdateSegment={(id, updates) => updateSegment(id, updates)}
-              onSetEdge={(id, edge, t) => setSegmentEdge(id, edge, t, clipLengthMs)}
-              onMoveJunction={moveJunction}
+              onSetEdge={(id, edge, t) => { if (!blocked({ kind: 'section', id })) setSegmentEdge(id, edge, t, clipLengthMs) }}
+              onMoveJunction={(l, r, t) => { if (!blocked({ kind: 'section', id: l }) && !blocked({ kind: 'section', id: r })) moveJunction(l, r, t) }}
+              onSwallowSection={swallowSection}
               onInsertBrollAfter={handleInsertBrollAfterSeg}
-              onDeleteSegment={() => { /* TODO(backend): delete the selected trimmed part */ }}
-              pickedSegmentId={pickedSegId} onPickSegment={setPickedSegId}
-              textOverlays={textOverlays} activeTextOverlayId={activeTextOverlayId}
-              onSelectTextOverlay={id => { setActiveTextOverlayId(id); if (id) { setTool('text'); toggleOptions(true) } }}
-              onTextOverlayUpdate={updateTextOverlay}
+              pickedSegmentId={pickedSegId} onPickSegment={id => pickSection(id, !!id && doubleTap(`s${id}`))}
+              textOverlays={textOverlays.map(o => o.locked || !isLocked({ kind: 'text', id: o.id }) ? o : { ...o, locked: true })} activeTextOverlayId={activeTextOverlayId}
+              onSelectTextOverlay={id => { if (id) pickText(id, doubleTap(`t${id}`)); else setActiveTextOverlayId(null) }}
+              onTextOverlayUpdate={(id, u) => { if (!blocked({ kind: 'text', id })) updateTextOverlay(id, u) }}
               frameSeg={frameSeg}
               activeFrameItemId={activeFrameItemId}
               laneHighlight={laneHighlight}
               videoTitles={videoTitles}
-              onSelectFrameItem={selectFrameItem}
-              onUpdateFrameItem={(id, patch) => { if (frameSeg) updateFrameItem(frameSeg.id, id, patch) }}
+              onSelectFrameItem={id => selectFrameItem(id, undefined, !!id && doubleTap(`f${id}`))}
+              onUpdateFrameItem={(id, patch) => { if (frameSeg && !sectionBlocked(frameSeg.id)) updateFrameItem(frameSeg.id, id, patch) }}
               onJumpToFrameItem={(segId, itemId) => {
                 const sg = segments.find(x => x.id === segId)
                 const it = sg ? frameOf(sg).items?.find(x => x.id === itemId) : undefined
@@ -1815,7 +2529,7 @@ export function EditorShell({
                 seekToMs(t)
               }}
               onMoveView={(from, to) => {
-                if (!viewBox || !activeSegment) return
+                if (!viewBox || !activeSegment || sectionBlocked(activeSegment.id)) return
                 moveViewChange(viewBox.id, from, to, activeSegment.start_ms, activeSegment.end_ms)
                 const moved = viewChanges(useEditorStore.getState().keyframes[viewBox.id] ?? [])
                   .reduce((best, v) => Math.abs(v.t_ms - to) < Math.abs(best - to) ? v.t_ms : best, from)
@@ -1823,7 +2537,7 @@ export function EditorShell({
                 return moved
               }}
               onRemoveView={t => {
-                if (!viewBox || viewMarkers.length <= 1) return
+                if (!viewBox || viewMarkers.length <= 1 || (activeSegment && sectionBlocked(activeSegment.id))) return
                 removeViewChange(viewBox.id, t)
                 setSelectedView(null)
               }}
@@ -1837,10 +2551,15 @@ export function EditorShell({
             <span className="text-sm font-semibold text-[var(--ed-text)]">Preview</span>
             <div className="flex items-center gap-1.5">
               {rendering ? (
-                <span className="flex items-center gap-2 h-8 px-3 rounded-lg text-xs font-semibold"
-                  style={{ background: 'rgba(200,255,0,0.12)', color: 'var(--ed-accent-text)', boxShadow: 'inset 0 0 0 1px rgba(200,255,0,0.3)' }}>
-                  <span className="w-3 h-3 rounded-full border-2 border-t-transparent animate-spin" style={{ borderColor: 'var(--ed-accent-text)', borderTopColor: 'transparent' }} />
-                  {exporting ? 'Starting…' : `Rendering ${formatElapsed(renderElapsed)}`}
+                // While the reel renders, the Export button stays and keeps playing its download
+                // animation on a loop (.ed-export[data-busy] in globals.css) until it's done
+                <span className="sbb ed-export" data-busy role="status"
+                  aria-label={exporting ? 'Starting the export' : `Exporting, ${formatElapsed(renderElapsed)} so far`}
+                  title={exporting ? 'Starting…' : `Exporting · ${formatElapsed(renderElapsed)}`}>
+                  <span className="sbb-beam" aria-hidden="true" />
+                  <span className="sbb-surface gap-1.5 h-8 px-3.5 text-xs font-bold">
+                    <ExportIcon /> Exporting
+                  </span>
                 </span>
               ) : hasOutput ? (
                 <>
@@ -1859,13 +2578,16 @@ export function EditorShell({
                   </a>
                 </>
               ) : (
-                <ShinyButton onClick={pressExport}
+                // Lime button with a light spinning round its border on hover (SpinningBorderButton);
+                // clicking plays the download animation (.ed-export) before the render starts
+                <SpinningBorderButton onClick={pressExport}
                   title="Render the reel so you can download it"
                   aria-busy={exportPress || undefined}
                   data-pressed={exportPress || undefined}
-                  className="ed-export flex items-center gap-1.5 h-8 px-3.5 rounded-lg text-xs font-bold overflow-hidden">
+                  className="ed-export rounded-[10px]"
+                  surfaceClassName="gap-1.5 h-8 px-3.5 text-xs font-bold">
                   <ExportIcon /> Export
-                </ShinyButton>
+                </SpinningBorderButton>
               )}
             </div>
           </div>
@@ -1920,16 +2642,16 @@ export function EditorShell({
                   activeSegment={viewSegment} getPositionAt={viewGetPositionAt} sourceFor={brollSource} slotSourceFor={borrowed.slotSourceFor}
                   skipTransitionRef={skipCanvasTransitionRef} words={displayWords}
                   captionStyle={captionStyle} captionTextCase={captionTextCase} showCaptions={showCaptions}
-                  overlays={overlays} activeOverlayId={activeOverlayId}
-                  onOverlayChange={updateOverlay} onSelectOverlay={setActiveOverlayId} onDeleteOverlay={askDeleteOverlay}
-                  textOverlays={textOverlays} activeTextOverlayId={activeTextOverlayId}
-                  onTextOverlayChange={updateTextOverlay} onSelectTextOverlay={setActiveTextOverlayId} onDeleteTextOverlay={askDeleteTextOverlay}
+                  overlays={overlays.filter(o => !o.hidden)} activeOverlayId={activeOverlayId}
+                  onOverlayChange={(id, u) => { if (!blocked({ kind: 'photo', id })) updateOverlay(id, u) }} onSelectOverlay={id => { const o = overlays.find(x => x.id === id); if (o?.type === 'image') pickPhoto(id); else setActiveOverlayId(id) }} onDeleteOverlay={askDeleteOverlay}
+                  textOverlays={textOverlays.filter(o => !o.hidden)} activeTextOverlayId={activeTextOverlayId}
+                  onTextOverlayChange={(id, u) => { if (!blocked({ kind: 'text', id })) updateTextOverlay(id, u) }} onSelectTextOverlay={id => { if (id) pickText(id); else setActiveTextOverlayId(null) }} onDeleteTextOverlay={askDeleteTextOverlay}
                   onCaptionPositionChange={y => updateCaptionStyle({ position_y: y })}
                   frameMedia={framePool}
                   onFrameLaneClick={focusLane}
                   activeFrameItemId={activeFrameItemId}
                   onFrameItemClick={selectFrameItem}
-                  onFrameItemChange={(id, patch) => { if (frameSeg) updateFrameItem(frameSeg.id, id, patch) }}
+                  onFrameItemChange={(id, patch) => { if (frameSeg && !sectionBlocked(frameSeg.id)) updateFrameItem(frameSeg.id, id, patch) }}
                   style={{ width: '100%', height: 'auto', display: 'block', borderRadius: 10, border: '1px solid rgb(var(--ed-fg) / 0.1)', boxShadow: '0 4px 24px rgba(0,0,0,0.6)' }}
                 />
               )}
@@ -1942,6 +2664,51 @@ export function EditorShell({
       </div>
 
       {confirmDialog}
+
+      {/* Why an edit didn't happen: something is locked */}
+      {lockNote && (
+        <div role="status" className="fixed left-1/2 bottom-6 -translate-x-1/2 flex items-center gap-2 px-3.5 h-9 rounded-full text-xs font-medium pointer-events-none"
+          style={{ zIndex: 130, background: 'var(--ed-popover)', color: 'var(--ed-text)', boxShadow: '0 0 0 1px rgba(200,255,0,0.35), 0 12px 32px -8px rgba(0,0,0,0.7)' }}>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#c8ff00" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="4" y="11" width="16" height="10" rx="2" /><path d="M8 11V7a4 4 0 018 0v4" /></svg>
+          {lockNote}
+        </div>
+      )}
+
+      {/* The timeline's "+" menu: photos / videos into a frame slot (Dual, Trio…), B-roll, music, text */}
+      {plusMenu && (() => {
+        const t = Math.max(0, Math.min(plusMenu.atMs, clipLengthMs - 50))
+        const openTool = (id: Tool) => { setPlusMenu(null); setTool(id); toggleOptions(true) }
+        // Everything goes in at the playhead. A video or photo lasts 5 s (near the end, the clip's last 5 s)
+        const mediaAt = Math.max(0, Math.min(t, clipLengthMs - 5000))
+        const pick = (kind: 'video' | 'photo') => { setPlusMenu(null); setPickerOnly(kind); setPickerAtMs(mediaAt) }
+        const addText = () => {
+          const len = Math.min(3000, clipLengthMs)
+          const start = Math.max(0, Math.min(t, clipLengthMs - len))
+          const id = crypto.randomUUID()
+          setTextOverlays(prev => [...prev, {
+            id, clip_id: clip.id, text: 'Your text', start_ms: start, end_ms: start + len,
+            x: 0.1, y: 0.4, font: 'sans-serif', size: 72, color: '#ffffff',
+          }])
+          setActiveTextOverlayId(id); setFocusTextId(id)
+          seekToMs(start)
+          openTool('text')
+        }
+        const addMusic = () => {
+          setPlusMenu(null)
+          musicAtRef.current = t   // plays from here until this section ends (drag its end to carry on)
+          musicInputRef.current?.click()
+        }
+        return (
+          <TimelineAddMenu
+            atLabel={msToLabel(t)} anchor={plusMenu.anchor}
+            onVideo={() => pick('video')}
+            onPhoto={() => pick('photo')}
+            onMusic={addMusic}
+            onText={addText}
+            onClose={() => setPlusMenu(null)}
+          />
+        )
+      })()}
 
       {addMenu && (() => {
         const seg = segments.find(x => x.id === addMenu.segId)
@@ -1966,12 +2733,88 @@ export function EditorShell({
 
       {pickerAtMs !== null && (
         <MediaPickerModal clipId={clip.id} atMs={pickerAtMs}
+          only={pickerOnly ?? undefined}
+          initialTab={pickerOnly === 'photo' ? 'image' : pickerOnly === 'video' ? 'videos' : undefined}
           onInsertVideo={handleInsertBroll} onInsertImage={handleInsertImage}
-          onClose={() => setPickerAtMs(null)} />
+          onClose={() => { setPickerAtMs(null); setPickerOnly(null) }} />
       )}
+
+      {/* "+" → Music: pick an audio file; it goes in at the start, or so it ends with the clip */}
+      <input ref={musicInputRef} type="file" accept="audio/*" className="hidden" aria-hidden="true" tabIndex={-1}
+        onChange={e => {
+          const f = e.target.files?.[0]
+          e.target.value = ''
+          if (!f) return
+          addMusicTrack(f, musicAtRef.current)
+          setTool('music'); toggleOptions(true)
+        }} />
     </div>
   )
 }
+
+// ── Hide / mute / lock ─────────────────────────────────────────────────────────
+
+type CtlKey = 'hidden' | 'muted' | 'locked'
+// 'section' = the main video in a section (its sound, its lock); 'broll' = a video added over the
+// main video (shown or hidden, its own sound on or off — it IS its section, so its lock is the section's)
+// 'frameItem' = a photo, video or text in a frame (segId: its frame)
+type CtlTarget = { kind: 'section' | 'broll' | 'photo' | 'text' | 'music' | 'frameItem'; id: string; segId?: string }
+
+/** Eye / speaker / lock toggles. Lit (red for hide and mute, lime for lock) when that state is on. */
+function CtlButtons({ state, can, onToggle, size, what, inert }: {
+  state: { hidden?: boolean; muted?: boolean; locked?: boolean } | undefined
+  can: CtlKey[]
+  onToggle: (k: CtlKey) => void
+  size: 'sm' | 'md'
+  what: string
+  /** Switches that have no effect right now (e.g. the main video under a video on top): dimmed, with why */
+  inert?: CtlKey[]
+}) {
+  const label = (k: CtlKey, on: boolean) => k === 'hidden' ? (on ? `Show ${what} again` : `Hide ${what} (not shown or exported)`)
+    : k === 'muted' ? (on ? `Turn the sound of ${what} back on` : `Mute ${what}`)
+      : on ? `Unlock ${what}` : `Lock ${what} (it can't be moved, trimmed or deleted)`
+  const icon = (k: CtlKey, on: boolean) => k === 'hidden'
+    ? (on ? <><path d="M3 3l18 18" /><path d="M10.6 5.1A10 10 0 0112 5c5 0 9 5 9 7a11 11 0 01-2.2 3.2M6.6 6.6C4.4 8 3 10.4 3 12c0 2 4 7 9 7a9.6 9.6 0 004.4-1.1" /><path d="M9.9 9.9a3 3 0 004.2 4.2" /></>
+      : <><path d="M3 12c0-2 4-7 9-7s9 5 9 7-4 7-9 7-9-5-9-7z" /><circle cx="12" cy="12" r="3" /></>)
+    : k === 'muted'
+      ? (on ? <><path d="M11 5L6 9H2v6h4l5 4V5z" /><path d="M22 9l-6 6M16 9l6 6" /></> : <><path d="M11 5L6 9H2v6h4l5 4V5z" /><path d="M15.5 8.5a5 5 0 010 7M19 5a10 10 0 010 14" /></>)
+      : (on ? <><rect x="4" y="11" width="16" height="10" rx="2" /><path d="M8 11V7a4 4 0 018 0v4" /></> : <><rect x="4" y="11" width="16" height="10" rx="2" /><path d="M8 11V7a4 4 0 017.6-1.7" /></>)
+  const px = size === 'sm' ? 22 : 30, ic = size === 'sm' ? 12 : 16
+  return (
+    <span className={`shrink-0 flex items-center ${size === 'sm' ? 'gap-px' : 'gap-0.5'}`} onClick={e => e.stopPropagation()} onKeyDown={e => e.stopPropagation()}>
+      {can.map(k => {
+        const on = !!state?.[k]
+        const tint = k === 'locked' ? 'var(--ed-accent-text)' : '#f87171'
+        const why = inert?.includes(k)
+          ? (k === 'hidden' ? ' — no change yet: the video on top covers the main video here (hide that video to see this)'
+            : ' — no change yet: the video on top plays its own sound here (mute that video to hear this)')
+          : ''
+        return (
+          <button key={k} type="button" onClick={() => onToggle(k)} aria-pressed={on} aria-label={label(k, on) + why} title={label(k, on) + why}
+            className={size === 'md' ? 'ed-tl-btn' : 'flex items-center justify-center rounded-md transition-colors hover:bg-[rgb(var(--ed-fg)/0.1)]'}
+            style={{ width: px, height: px, color: on ? tint : 'rgb(var(--ed-fg) / 0.45)', background: on ? (k === 'locked' ? 'rgba(200,255,0,0.12)' : 'rgba(239,68,68,0.12)') : undefined, opacity: why ? 0.4 : 1 }}>
+            <svg width={ic} height={ic} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{icon(k, on)}</svg>
+          </button>
+        )
+      })}
+    </span>
+  )
+}
+
+// A music track that is the main video's own sound, detached onto the Music lane
+const MAIN_AUDIO_PREFIX = 'main-video:'
+const isMainAudio = (t: { storage_path: string }) => t.storage_path.startsWith(MAIN_AUDIO_PREFIX)
+
+// ── What's in a section (Format panel) ─────────────────────────────────────────
+
+type SectionItemKind = 'video' | 'photo' | 'text' | 'music'
+type SectionItem = { key: string; kind: SectionItemKind; name: string; start: number; end: number; thumb?: string | null; focus: () => void; ctl?: CtlTarget }
+const SECTION_KINDS: { id: SectionItemKind; one: string; plural: string; color: string; icon: React.ReactNode }[] = [
+  { id: 'video', one: 'Video', plural: 'Videos', color: '#f97316', icon: <><rect x="2" y="5" width="15" height="14" rx="2" /><path d="M17 10l5-3v10l-5-3z" /></> },
+  { id: 'photo', one: 'Photo', plural: 'Photos', color: '#60a5fa', icon: <><rect x="3" y="3" width="18" height="18" rx="2" /><circle cx="8.5" cy="8.5" r="1.5" /><path d="M21 15l-5-5L5 21" /></> },
+  { id: 'text', one: 'Text', plural: 'Text', color: '#f472b6', icon: <path d="M4 7V4h16v3M9 20h6M12 4v16" /> },
+  { id: 'music', one: 'Song', plural: 'Music', color: '#c084fc', icon: <><path d="M9 18V5l12-2v13" /><circle cx="6" cy="18" r="3" /><circle cx="18" cy="16" r="3" /></> },
+]
 
 // ── Small UI pieces ───────────────────────────────────────────────────────────
 
@@ -2023,6 +2866,67 @@ function SkipFiveIcon({ dir }: { dir: 'back' | 'forward' }) {
 
 /** Tiny 9:16 frame showing how a format divides the reel */
 /**
+ * Menu of the timeline's "+" buttons. In a frame (Dual, Trio…) it lists the frame's slots, so a
+ * photo or video goes straight into the right one (then drag its ends on the timeline to set
+ * when it shows). Outside a frame it explains the first step: pick a frame. A video, photo,
+ * music or text can always be added at that end of the clip.
+ */
+function TimelineAddMenu({ atLabel, anchor, onVideo, onPhoto, onMusic, onText, onClose }: {
+  /** The playhead time everything is added at, e.g. "0:18" */
+  atLabel: string
+  anchor: DOMRect
+  onVideo: () => void
+  onPhoto: () => void
+  onMusic: () => void
+  onText: () => void
+  onClose: () => void
+}) {
+  const ref = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const onDown = (e: PointerEvent) => { if (!ref.current?.contains(e.target as Node)) onClose() }
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.stopPropagation(); onClose() } }
+    window.addEventListener('pointerdown', onDown, true)
+    window.addEventListener('keydown', onKey, true)
+    ref.current?.querySelector<HTMLButtonElement>('button')?.focus()
+    return () => { window.removeEventListener('pointerdown', onDown, true); window.removeEventListener('keydown', onKey, true) }
+  }, [onClose])
+
+  const W = 268
+  // Centred over the "+" on the playhead, opening upwards
+  const left = Math.max(8, Math.min(window.innerWidth - W - 8, anchor.left + anchor.width / 2 - W / 2))
+  const bottom = window.innerHeight - anchor.top + 8
+  const row = 'w-full flex items-center gap-3 px-2.5 py-2 rounded-lg text-left transition-colors hover:bg-[rgb(var(--ed-fg)/0.07)] focus-visible:outline-none focus-visible:bg-[rgb(var(--ed-fg)/0.07)]'
+  const icon = (d: React.ReactNode, tint = 'rgb(var(--ed-fg) / 0.8)') => (
+    <span className="shrink-0 w-8 h-8 flex items-center justify-center rounded-lg" style={{ background: 'rgb(var(--ed-fg) / 0.06)', color: tint }}>
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{d}</svg>
+    </span>
+  )
+  return (
+    <div ref={ref} role="menu" aria-label={`Add at ${atLabel}`} className="fixed flex flex-col p-1.5 rounded-xl ed-tour-card"
+      style={{ left, bottom, width: W, zIndex: 120, background: 'var(--ed-popover)', border: '1px solid rgb(var(--ed-fg) / 0.12)', boxShadow: '0 18px 48px -12px rgba(0,0,0,0.8)' }}>
+      <p className="px-2.5 pt-1.5 pb-1 text-[11px] font-semibold uppercase tracking-wider" style={{ color: 'rgb(var(--ed-fg) / 0.4)' }}>
+        Add at {atLabel}
+      </p>
+
+      {([
+        ['Video', `Your videos or upload one · 5 s from ${atLabel}`, onVideo, <><rect x="2" y="5" width="15" height="14" rx="2" /><path d="M17 10l5-3v10l-5-3z" /></>, '#f97316'],
+        ['Photo', `Upload a photo · 5 s from ${atLabel}`, onPhoto, <><rect x="3" y="3" width="18" height="18" rx="2" /><circle cx="8.5" cy="8.5" r="1.5" /><path d="M21 15l-5-5L5 21" /></>, '#60a5fa'],
+        ['Music', 'Pick a song · plays until this section ends', onMusic, <><path d="M9 18V5l12-2v13" /><circle cx="6" cy="18" r="3" /><circle cx="18" cy="16" r="3" /></>, '#c084fc'],
+        ['Text', `A text box for 3 s from ${atLabel}`, onText, <path d="M4 7V4h16v3M9 20h6M12 4v16" />, '#f472b6'],
+      ] as const).map(([label, hint, act, d, tint]) => (
+        <button key={label} role="menuitem" className={row} onClick={act}>
+          {icon(d, tint)}
+          <span className="min-w-0 flex flex-col">
+            <span className="text-[13px] font-medium text-[var(--ed-text)]">{label}</span>
+            <span className="text-[11px]" style={{ color: 'rgb(var(--ed-fg) / 0.45)' }}>{hint}</span>
+          </span>
+        </button>
+      ))}
+    </div>
+  )
+}
+
+/**
  * Layout switch for the section under the playhead: a dock of the four formats with a lime highlight
  * that slides to the picked one (measured from the buttons, so it fits any label length or language).
  */
@@ -2039,8 +2943,10 @@ function FormatSwitcher({ activeId, play, onPick }: {
       setBox(el ? { left: el.offsetLeft, width: el.offsetWidth } : null)
     }
     measure()
+    const ro = new ResizeObserver(measure)
+    for (const el of btns.current.values()) ro.observe(el)
     window.addEventListener('resize', measure)
-    return () => window.removeEventListener('resize', measure)
+    return () => { ro.disconnect(); window.removeEventListener('resize', measure) }
   }, [activeId])
 
   return (
@@ -2056,7 +2962,7 @@ function FormatSwitcher({ activeId, play, onPick }: {
             className="ed-press ed-dock-btn ed-dock-choice" data-on={on || undefined}>
             <LayoutGlyph key={play?.id === l.id ? play.n : 0} layout={l.id}
               color={on ? 'var(--ed-accent-text)' : 'rgb(var(--ed-fg) / 0.5)'} active={on} play={play?.id === l.id} />
-            {l.label}
+            <span className="ed-dock-label">{l.label}</span>
           </button>
         )
       })}
@@ -2196,18 +3102,48 @@ function DownloadIcon() {
   return <svg width="14" height="14" viewBox="0 0 15 15" fill="none" aria-hidden="true"><path d="M7.5 2v8M4 7l3.5 3.5L11 7M2 13h11" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"/></svg>
 }
 
-/** Download arrow over a tray, drawn in two parts so the Export press can animate them */
+/** A clean up-right arrow (the reel going out); the Export press and the exporting loop animate it */
 function ExportIcon() {
   return (
-    <svg className="ed-export-icon" width="14" height="14" viewBox="0 0 15 15" fill="none" aria-hidden="true" style={{ overflow: 'visible' }}>
-      <g className="ed-export-arrow"><path d="M7.5 2v8M4 7l3.5 3.5L11 7" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" /></g>
-      <path className="ed-export-tray" d="M2 13h11" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
+    <svg className="ed-export-icon" width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true" style={{ overflow: 'visible' }}>
+      <g className="ed-export-arrow"><path d="M4.5 11.5l7-7M6 4.5h5.5V10" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /></g>
     </svg>
   )
 }
 
 function TrashIcon() {
   return <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M2 3h8M5 3V2h2v1M4.5 3v6M7.5 3v6M3 3l.5 7h5L9 3" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+}
+
+/** 00:26.10 — minutes, seconds and hundredths, like a video editor's timecode */
+function msToClock(ms: number) {
+  const cs = Math.floor(Math.max(0, ms) / 10)
+  const s = Math.floor(cs / 100)
+  return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}.${String(cs % 100).padStart(2, '0')}`
+}
+
+/** Timeline zoom as − 1x +: each press one step (1x → 1.25x → 1.5x → 2x → 3x → 4x); click the value for 1x */
+function ZoomSlider({ zoom, onZoom }: { zoom: number; onZoom: (z: number) => void }) {
+  const i = Math.max(0, ZOOM_STEPS.indexOf(zoom))
+  const last = ZOOM_STEPS.length - 1
+  const set = (k: number) => onZoom(ZOOM_STEPS[Math.max(0, Math.min(last, k))])
+  return (
+    <div className="flex items-center gap-1" role="group" aria-label="Timeline zoom">
+      <button onClick={() => set(i - 1)} disabled={i === 0} aria-label="Zoom out" title="Zoom out" className="ed-tl-btn">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="M8 11h6M20 20l-4-4" /></svg>
+      </button>
+      <button onClick={() => set(0)} disabled={i === 0} aria-live="polite" aria-label={`Zoom ${ZOOM_STEPS[i]}x${i ? ', back to 1x' : ''}`}
+        title={i ? 'Back to the whole clip (1x)' : 'Whole clip'}
+        className="h-7 min-w-[46px] px-2 rounded-md text-xs font-semibold tabular-nums transition-colors disabled:cursor-default"
+        style={i ? { background: 'rgba(200,255,0,0.14)', color: 'var(--ed-accent-text)', boxShadow: 'inset 0 0 0 1px rgba(200,255,0,0.35)' }
+          : { color: 'rgb(var(--ed-fg) / 0.7)', boxShadow: 'inset 0 0 0 1px rgb(var(--ed-fg) / 0.12)' }}>
+        {ZOOM_STEPS[i]}x
+      </button>
+      <button onClick={() => set(i + 1)} disabled={i === last} aria-label="Zoom in" title="Zoom in" className="ed-tl-btn">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="M8 11h6M11 8v6M20 20l-4-4" /></svg>
+      </button>
+    </div>
+  )
 }
 
 function msToTenths(ms: number) {

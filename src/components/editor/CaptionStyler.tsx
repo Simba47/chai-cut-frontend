@@ -243,51 +243,42 @@ export function CaptionStyler({
   const hl = style.highlight_color ?? '#FFE700'
 
   return (
-    <div className="flex flex-col gap-3 p-4">
+    <div className="flex flex-col gap-5 px-4 pb-5 pt-1">
       <style>{PRESET_CSS}</style>
-      {/* Style (animation preset) */}
-      <div className="flex flex-col gap-2">
-        <span className="text-xs font-medium" style={{ color: 'rgb(var(--ed-fg) / 0.5)' }}>Style</span>
-        <div className="grid grid-cols-2 gap-1.5">
-          {PRESETS.map(p => (
-            <button
-              key={p.id}
-              onClick={() => onChange({ animation: p.id })}
-              aria-pressed={animation === p.id}
-              className="flex flex-col items-center gap-1 py-2 rounded-lg transition-colors"
-              style={{
-                background: animation === p.id ? 'rgb(var(--ed-fg) / 0.12)' : 'rgb(var(--ed-fg) / 0.04)',
-                border: `1px solid ${animation === p.id ? '#c8ff00' : 'rgb(var(--ed-fg) / 0.06)'}`,
-              }}
-            >
-              <span className="text-[11px] font-bold h-4 flex items-center" style={{ color: 'var(--ed-text)' }}>
-                <PresetDemo id={p.id} hl={hl} />
-              </span>
-              <span className="text-[11px]" style={{ color: 'rgb(var(--ed-fg) / 0.55)' }}>{p.label}</span>
-            </button>
-          ))}
+      {/* ── Style: each tile is a little dark "screen" playing the animation, its name below ── */}
+      <section className="flex flex-col gap-2.5">
+        <h3 className="cap-heading">Style</h3>
+        <div className="grid grid-cols-2 gap-2">
+          {PRESETS.map(p => {
+            const on = animation === p.id
+            return (
+              <button key={p.id} onClick={() => onChange({ animation: p.id })} aria-pressed={on}
+                className="cap-tile" data-on={on || undefined}>
+                <span className="cap-tile-screen">
+                  <span className="text-[11px] font-bold flex items-center" style={{ color: '#fff' }}>
+                    <PresetDemo id={p.id} hl={hl} />
+                  </span>
+                </span>
+                <span className="cap-tile-name">{p.label}</span>
+              </button>
+            )
+          })}
         </div>
-      </div>
+      </section>
+
+      {/* ── Look: colours, font, size and capitals ── */}
+      <section className="flex flex-col gap-4">
+        <h3 className="cap-heading">Look</h3>
 
       {/* Highlight colour (animated presets) */}
       {ANIMATED.includes(animation) && (
         <div className="flex flex-col gap-2">
-          <span className="text-xs font-medium" style={{ color: 'rgb(var(--ed-fg) / 0.5)' }}>
-            {animation === 'highlight' ? 'Box color' : 'Highlight color'}
-          </span>
-          <div className="flex flex-wrap items-center gap-1.5">
+          <span className="cap-label">{animation === 'highlight' ? 'Box colour' : 'Highlight colour'}</span>
+          <div className="flex flex-wrap items-center gap-2">
             {HIGHLIGHT_COLORS.map(c => (
-              <button
-                key={c}
-                onClick={() => onChange({ highlight_color: c })}
-                aria-label={`Highlight color ${c}`}
-                aria-pressed={hl === c}
-                style={{
-                  width: 24, height: 24, borderRadius: '50%', background: c, flexShrink: 0,
-                  border: hl === c ? '2px solid #c8ff00' : '2px solid rgb(var(--ed-fg) / 0.1)',
-                  boxShadow: hl === c ? '0 0 0 3px rgba(200,255,0,0.25)' : 'none',
-                }}
-              />
+              <button key={c} onClick={() => onChange({ highlight_color: c })}
+                aria-label={`Highlight colour ${c}`} aria-pressed={hl === c}
+                className="cap-swatch" data-on={hl === c || undefined} style={{ background: c }} />
             ))}
           </div>
         </div>
@@ -298,35 +289,21 @@ export function CaptionStyler({
 
       {/* Color swatches */}
       <div className="flex flex-col gap-2">
-        <span className="text-xs font-medium" style={{ color: 'rgb(var(--ed-fg) / 0.5)' }}>Color</span>
-        <div className="flex flex-wrap items-center gap-1.5">
+        <span className="cap-label">Text colour</span>
+        <div className="flex flex-wrap items-center gap-2">
           {PRESET_COLORS.map(c => (
-            <button
-              key={c}
-              onClick={() => onChange({ color: c })}
-              aria-label={`Caption color ${c}`}
-              aria-pressed={color === c}
-              style={{
-                width: 28, height: 28, borderRadius: '50%', background: c, flexShrink: 0,
-                border: color === c ? '2px solid #c8ff00' : '2px solid rgb(var(--ed-fg) / 0.1)',
-                transform: color === c ? 'scale(1.15)' : 'scale(1)',
-                transition: 'transform 0.12s, border-color 0.12s',
-                boxShadow: color === c ? '0 0 0 3px rgba(200,255,0,0.25)' : 'none',
-              }}
-            />
+            <button key={c} onClick={() => onChange({ color: c })}
+              aria-label={`Caption colour ${c}`} aria-pressed={color === c}
+              className="cap-swatch" data-on={color === c || undefined} style={{ background: c }} />
           ))}
-          {/* Custom color */}
-          <label style={{ width: 28, height: 28, borderRadius: '50%', flexShrink: 0, position: 'relative', cursor: 'pointer' }}>
-            <div style={{
-              width: 28, height: 28, borderRadius: '50%',
-              background: 'conic-gradient(red 0deg, yellow 60deg, lime 120deg, cyan 180deg, blue 240deg, magenta 300deg, red 360deg)',
-              border: !isPreset ? '2px solid #c8ff00' : '2px solid rgb(var(--ed-fg) / 0.2)',
-              boxShadow: !isPreset ? '0 0 0 3px rgba(200,255,0,0.25)' : 'none',
-            }} />
+          {/* Custom colour */}
+          <label title="Pick any colour" className="cap-swatch" data-on={!isPreset || undefined}
+            style={{ position: 'relative', cursor: 'pointer', background: 'conic-gradient(red 0deg, yellow 60deg, lime 120deg, cyan 180deg, blue 240deg, magenta 300deg, red 360deg)' }}>
             <input
               type="color"
               value={color}
               onChange={e => onChange({ color: e.target.value })}
+              aria-label="Pick any caption colour"
               style={{ position: 'absolute', inset: 0, opacity: 0, cursor: 'pointer', width: '100%', height: '100%' }}
             />
           </label>
@@ -334,42 +311,32 @@ export function CaptionStyler({
       </div>
 
       {/* Size */}
-      <div className="flex flex-col gap-2">
+      <div className="flex flex-col gap-2.5">
         <div className="flex items-center justify-between">
-          <span className="text-xs font-medium" style={{ color: 'rgb(var(--ed-fg) / 0.5)' }}>Size</span>
-          <span className="text-xs font-semibold" style={{ color: 'rgb(var(--ed-fg) / 0.5)' }}>{style.size ?? 52}px</span>
+          <span className="cap-label">Size</span>
+          <span className="cap-value">{style.size ?? 52}</span>
         </div>
-        <input
-          type="range" min={20} max={100} step={2}
-          value={style.size ?? 52}
+        <input type="range" min={20} max={100} step={2} value={style.size ?? 52}
           onChange={e => onChange({ size: Number(e.target.value) })}
-          className="w-full accent-cyan-400"
-          style={{ height: 4, accentColor: '#c8ff00' }}
-        />
+          aria-label="Caption size"
+          className="ed-zoom-range w-full" style={{ '--p': `${(((style.size ?? 52) - 20) / 80) * 100}%` } as React.CSSProperties} />
       </div>
 
       {/* Case */}
-      <div className="flex flex-col gap-2">
-        <span className="text-xs font-medium" style={{ color: 'rgb(var(--ed-fg) / 0.5)' }}>Case</span>
-        <div className="flex gap-1.5">
-          {([['title', 'Aa'], ['upper', 'AA'], ['lower', 'aa']] as const).map(([c, label]) => (
-            <button
-              key={c}
+      <div className="cap-row">
+        <span className="cap-label">Capitals</span>
+        <div role="radiogroup" aria-label="Capitals" className="cap-seg">
+          {([['title', 'Aa', 'First letter capital'], ['upper', 'AA', 'ALL CAPITALS'], ['lower', 'aa', 'all small letters']] as const).map(([c, label, title]) => (
+            <button key={c} role="radio" aria-checked={textCase === c} title={title}
               // Capitals are saved with the style, so the export shows them too
               onClick={() => { onTextCaseChange(c); onChange({ uppercase: c === 'upper' }) }}
-              className="flex-1 py-2 text-sm font-semibold rounded-lg transition-colors"
-              style={{
-                background: textCase === c ? 'rgb(var(--ed-fg) / 0.12)' : 'rgb(var(--ed-fg) / 0.04)',
-                color: textCase === c ? 'var(--ed-text)' : 'rgb(var(--ed-fg) / 0.35)',
-                border: `1px solid ${textCase === c ? 'rgb(var(--ed-fg) / 0.18)' : 'rgb(var(--ed-fg) / 0.06)'}`,
-              }}
-            >
+              className="cap-seg-btn cap-seg-case" data-on={textCase === c || undefined}>
               {label}
             </button>
           ))}
         </div>
       </div>
-
+      </section>
 
     </div>
   )

@@ -67,7 +67,7 @@ export default async function EditorPage({
             'id', cb.id, 'segment_id', cb.segment_id, 'slot_index', cb.slot_index,
             'source_video_id', cb.source_video_id, 'source_offset_ms', cb.source_offset_ms,
             'image_path', cb.image_path, 'image_motion', cb.image_motion,
-            'volume', cb.volume, 'muted', cb.muted,
+            'volume', cb.volume, 'muted', cb.muted, 'hidden', (to_jsonb(cb)->>'hidden')::boolean,
             'box_keyframes', COALESCE(
               (SELECT json_agg(bk.* ORDER BY bk.t_ms) FROM box_keyframes bk WHERE bk.box_id = cb.id),
               '[]'

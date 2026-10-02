@@ -1,6 +1,6 @@
 'use client'
 
-import { Fragment, useEffect, useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { SegmentLocal, FrameLayout, FrameItem, FrameSettings, SlotMotion, CornerStyle } from '@chai-cut/shared'
 import { FRAME_TEMPLATES, FRAME_LAYOUTS, isFrameLayout, frameLanes, frameOf, cornerGeometry, CORNER_MAX, mainSlotSound } from '@/modules/editor/frames'
 import { frameItemColor, FRAME_ITEM_COLORS } from './SegmentTimeline'
@@ -17,6 +17,8 @@ interface Props {
   segment: SegmentLocal | null
   /** Range a frame picked in the gallery will cover (the format, or the Default area) */
   targetLabel: string | null
+  /** Lock / unlock a frame: nothing in it can be moved, changed or removed while locked */
+  onToggleLock?: (segId: string) => void
   currentTimeMs: number
   videoTitles: Record<string, string>
   /** Selected lane item id, or `main:<slot>` */
@@ -51,12 +53,17 @@ function msToLabel(ms: number) {
 function FrameThumb({ layout }: { layout: FrameLayout }) {
   const tints = ['#60a5fa', '#34d399', '#f472b6']
   return (
-    <div className="flex flex-col gap-[2px] p-[3px] rounded-md" style={{ width: 44, height: 78, background: '#050505', border: '1px solid rgb(var(--ed-fg) / 0.12)' }}>
+    <div className="flex flex-col gap-[2px] p-[3px] rounded-md" style={{ width: 40, height: 71, background: '#050505', border: '1px solid rgb(var(--ed-fg) / 0.12)' }}>
       {FRAME_TEMPLATES[layout].rows.map((r, i) => r.kind === 'band'
         ? (
           <div key={i} className="flex flex-col items-center justify-center gap-[2px]" style={{ flex: r.h }}>
             <span className="block rounded-full" style={{ width: '70%', height: 2, background: 'rgb(255 255 255 / 0.5)' }} />
             <span className="block rounded-full" style={{ width: '45%', height: 2, background: 'rgb(255 255 255 / 0.35)' }} />
+          </div>
+        ) : r.kind === 'caption' ? (
+          // Caption strip: one highlighted line, like a caption
+          <div key={i} className="flex items-center justify-center" style={{ flex: r.h }}>
+            <span className="block rounded-full" style={{ width: '60%', height: 3, background: '#facc15' }} />
           </div>
         ) : (
           <div key={i} className="rounded-[3px]" style={{ flex: r.h, background: `${tints[r.slot % tints.length]}cc` }} />
@@ -82,7 +89,7 @@ function Chevron({ open }: { open: boolean }) {
 }
 
 export function FramesPanel({
-  frames, segment, targetLabel, currentTimeMs, videoTitles, selected,
+  frames, segment, targetLabel, currentTimeMs, videoTitles, selected, onToggleLock,
   onApply, onOpenFrame, onSelectItem, onUpdateItem, onRemoveItem, onUpdateFrame, onReplaceMedia, onRemoveFrame, onRemoveMain,
 }: Props) {
   const current = segment && isFrameLayout(segment.layout) ? segment.layout : null
@@ -96,20 +103,21 @@ export function FramesPanel({
   return (
     <div className="flex flex-col">
       {/* Gallery */}
-      <div className="p-4 flex flex-col gap-2.5" style={{ borderBottom: '1px solid rgb(var(--ed-fg) / 0.06)' }}>
-        <p className="text-xs" style={{ color: 'rgb(var(--ed-fg) / 0.5)' }}>
-          {targetLabel ? <>Applies to <span className="tabular-nums" style={{ color: 'rgb(var(--ed-fg) / 0.8)' }}>{targetLabel}</span></> : 'Move the playhead onto a format first.'}
-        </p>
-        <div className="grid grid-cols-2 gap-2">
+      <div className="px-3 py-3 flex flex-col gap-2.5" style={{ borderBottom: '1px solid rgb(var(--ed-fg) / 0.06)' }}>
+        {!targetLabel && (
+          <p className="text-xs" style={{ color: 'rgb(var(--ed-fg) / 0.5)' }}>Move the playhead onto a format first.</p>
+        )}
+        {/* 4 across, 2 rows */}
+        <div className="grid grid-cols-4 gap-1.5">
           {FRAME_LAYOUTS.map(id => {
             const t = FRAME_TEMPLATES[id]
             const on = current === id
             return (
               <button key={id} onClick={() => onApply(id)} disabled={!targetLabel} aria-pressed={on} title={t.description}
-                className="flex flex-col items-center gap-1.5 p-2 rounded-lg text-center transition-colors disabled:opacity-40 hover:bg-[rgb(var(--ed-fg)/0.05)]"
+                className="min-w-0 flex flex-col items-center gap-1 px-0.5 py-1.5 rounded-lg text-center transition-colors disabled:opacity-40 hover:bg-[rgb(var(--ed-fg)/0.05)]"
                 style={{ background: on ? 'rgb(var(--ed-fg) / 0.08)' : 'rgb(var(--ed-fg) / 0.02)', boxShadow: `inset 0 0 0 ${on ? 1.5 : 1}px ${on ? ACCENT : 'rgb(var(--ed-fg) / 0.08)'}` }}>
                 <FrameThumb layout={id} />
-                <span className="text-[11px] font-semibold leading-tight" style={{ color: on ? 'var(--ed-text)' : 'rgb(var(--ed-fg) / 0.75)' }}>{t.name}</span>
+                <span className="w-full text-[9.5px] font-semibold leading-[1.15]" style={{ color: on ? 'var(--ed-text)' : 'rgb(var(--ed-fg) / 0.75)' }}>{t.name}</span>
               </button>
             )
           })}
@@ -122,45 +130,89 @@ export function FramesPanel({
           {frames.length === 0 ? 'No frames yet' : `${frames.length} frame${frames.length === 1 ? '' : 's'}`}
         </span>
       </div>
-      <div className="px-2 pb-3 flex flex-col gap-0.5">
+      {/* One card per frame, like the sections in Format */}
+      <div className="px-3 pb-3 flex flex-col gap-1.5">
         {frames.map((seg, i) => {
           const layout = seg.layout as FrameLayout
           const isActive = seg.id === segment?.id
           const isOpen = open.has(seg.id)
+          const f = frameOf(seg)
+          const inside = (f.items ?? []).filter(it => it.end_ms > seg.start_ms && it.start_ms < seg.end_ms)
+          const count = (kind: FrameItem['kind'], one: string, many: string) => {
+            const c = inside.filter(it => it.kind === kind).length
+            return c ? [`${c} ${c === 1 ? one : many}`] : []
+          }
+          const secs = Math.max(0, Math.round((seg.end_ms - seg.start_ms) / 1000))
+          const length = secs < 60 ? `${secs}s` : `${Math.floor(secs / 60)}m ${String(secs % 60).padStart(2, '0')}s`
+          const summary = [length, ...count('video', 'video', 'videos'), ...count('photo', 'photo', 'photos'), ...count('text', 'text', 'text')].join(' · ')
           return (
-            <Fragment key={seg.id}>
-              <div role="button" tabIndex={0} aria-expanded={isOpen} aria-current={isActive || undefined}
-                className="group flex items-center gap-2.5 px-2.5 py-2.5 rounded-lg cursor-pointer transition-colors hover:bg-[rgb(var(--ed-fg)/0.05)]"
-                style={{ background: isActive ? 'rgb(var(--ed-fg) / 0.07)' : undefined }}
-                onClick={() => { onOpenFrame(seg.id); if (!isOpen) toggle(seg.id) }}
-                onKeyDown={e => { if (e.key === 'Enter') { onOpenFrame(seg.id); toggle(seg.id) } }}>
-                <span className="w-5 text-[11px] font-semibold tabular-nums text-center shrink-0" style={{ color: 'rgb(var(--ed-fg) / 0.35)' }}>{i + 1}</span>
-                <span className="w-2 h-2 rounded-full shrink-0" style={{ background: FRAME_ITEM_COLORS.main }} />
-                <span className="text-xs font-medium tabular-nums" style={{ color: 'rgb(var(--ed-fg) / 0.85)' }}>{msToLabel(seg.start_ms)} – {msToLabel(seg.end_ms)}</span>
-                <span className="text-xs truncate flex-1" style={{ color: 'rgb(var(--ed-fg) / 0.4)' }}>{FRAME_TEMPLATES[layout].name}</span>
-                <button onClick={e => { e.stopPropagation(); onRemoveFrame(seg.id) }}
-                  aria-label={`Remove frame ${i + 1} (it goes back to Vertical)`} title="Remove frame (goes back to Vertical)"
-                  className={`shrink-0 w-7 h-7 flex items-center justify-center rounded-md transition-opacity hover:bg-[rgb(var(--ed-fg)/0.1)] ${isActive ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 focus:opacity-100'}`}
-                  style={{ color: 'rgb(var(--ed-fg) / 0.5)' }}>
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6" /></svg>
-                </button>
-                <button onClick={e => { e.stopPropagation(); toggle(seg.id) }} aria-label={isOpen ? 'Hide what\'s in this frame' : 'Show what\'s in this frame'}
-                  className="shrink-0 w-7 h-7 flex items-center justify-center rounded-md transition-colors hover:bg-[rgb(var(--ed-fg)/0.1)]"
+            <div key={seg.id} role="button" tabIndex={0} aria-expanded={isOpen} aria-current={isActive || undefined}
+              className="group relative flex flex-col rounded-xl cursor-pointer overflow-hidden transition-[background,box-shadow] duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[rgba(200,255,0,0.6)]"
+              style={{
+                background: isActive ? 'linear-gradient(180deg, rgba(200,255,0,0.06), rgba(200,255,0,0.015))' : 'rgb(var(--ed-fg) / 0.03)',
+                boxShadow: isActive ? 'inset 0 0 0 1px rgba(200,255,0,0.45), 0 8px 22px -16px rgba(200,255,0,0.5)' : 'inset 0 0 0 1px rgb(var(--ed-fg) / 0.07)',
+              }}
+              onClick={() => { onOpenFrame(seg.id); if (!isOpen) toggle(seg.id) }}
+              onKeyDown={e => { if (e.key === 'Enter' && e.target === e.currentTarget) { onOpenFrame(seg.id); toggle(seg.id) } }}>
+              <div className="flex items-start gap-2.5 pl-2.5 pr-1.5 pt-2 pb-1.5">
+                {/* A tiny diagram of the frame */}
+                <span className="shrink-0 w-8 h-8 mt-px flex items-center justify-center rounded-lg"
+                  style={{ background: isActive ? 'rgba(200,255,0,0.1)' : 'rgb(var(--ed-fg) / 0.06)' }}>
+                  <span className="flex flex-col gap-[1.5px]" style={{ width: 11, height: 18 }} aria-hidden="true">
+                    {FRAME_TEMPLATES[layout].rows.map((r, ri) => (
+                      <span key={ri} className="rounded-[1.5px]" style={{
+                        flex: r.h,
+                        background: r.kind === 'slot' ? (isActive ? '#c8ff00' : '#9ca3af') : 'transparent',
+                        boxShadow: r.kind === 'slot' ? undefined : `inset 0 0 0 1px ${isActive ? 'rgba(200,255,0,0.6)' : 'rgba(156,163,175,0.6)'}`,
+                      }} />
+                    ))}
+                  </span>
+                </span>
+                <div className="flex-1 min-w-0 flex flex-col">
+                  {/* Line 1: name · time range */}
+                  <div className="flex items-center gap-2 min-w-0 h-6">
+                    <span className="text-[13px] font-semibold truncate text-[var(--ed-text)]">{FRAME_TEMPLATES[layout].name}</span>
+                    {isActive && <span className="shrink-0 w-1.5 h-1.5 rounded-full" style={{ background: '#c8ff00' }} title="Under the playhead" />}
+                    <span className="ml-auto shrink-0 whitespace-nowrap text-[11px] tabular-nums" style={{ color: 'rgb(var(--ed-fg) / 0.55)' }}>
+                      {msToLabel(seg.start_ms)} – {msToLabel(seg.end_ms)}
+                    </span>
+                  </div>
+                  {/* Line 2: length and what's in it · remove */}
+                  <div className="flex items-center gap-1 min-w-0 h-6">
+                    <span className="flex-1 min-w-0 truncate text-[11px]" style={{ color: 'rgb(var(--ed-fg) / 0.42)' }}>{summary}</span>
+                    {onToggleLock && (
+                      <span className={`shrink-0 flex transition-opacity ${isActive || seg.locked ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 focus-within:opacity-100'}`}>
+                        <RowSwitch kind="lock" on={!!seg.locked} onClick={() => onToggleLock(seg.id)}
+                          label={seg.locked ? 'Unlock this frame' : 'Lock this frame (nothing in it can be moved, changed or removed)'} />
+                      </span>
+                    )}
+                    <button onClick={e => { e.stopPropagation(); onRemoveFrame(seg.id) }}
+                      aria-label={`Remove frame ${i + 1} (it goes back to Vertical)`} title="Remove frame (goes back to Vertical)"
+                      className={`shrink-0 w-[22px] h-[22px] flex items-center justify-center rounded-md transition-[opacity,background,color] hover:bg-[rgba(239,68,68,0.12)] hover:text-[#f87171] ${isActive ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 focus:opacity-100'}`}
+                      style={{ color: 'rgb(var(--ed-fg) / 0.5)' }}>
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6" /></svg>
+                    </button>
+                  </div>
+                </div>
+                <button onClick={e => { e.stopPropagation(); toggle(seg.id) }} aria-label={isOpen ? 'Hide what\u2019s in this frame' : 'Show what\u2019s in this frame'}
+                  className="shrink-0 w-6 h-6 flex items-center justify-center rounded-md transition-colors hover:bg-[rgb(var(--ed-fg)/0.08)]"
                   style={{ color: 'rgb(var(--ed-fg) / 0.55)' }}>
                   <Chevron open={isOpen} />
                 </button>
               </div>
               {isOpen && (
-                <FrameContents seg={seg} currentTimeMs={currentTimeMs} videoTitles={videoTitles}
-                  selected={isActive ? selected : null}
-                  onSelectItem={(id, atMs) => onSelectItem(seg.id, id, atMs)}
-                  onUpdateItem={(id, patch) => onUpdateItem(seg.id, id, patch)}
-                  onRemoveItem={id => onRemoveItem(seg.id, id)}
-                  onUpdateFrame={patch => onUpdateFrame(seg.id, patch)}
-                  onRemoveMain={slot => onRemoveMain(seg.id, slot)}
-                  onReplaceMedia={(id, kind) => onReplaceMedia(seg.id, id, kind)} />
+                <div onClick={e => e.stopPropagation()} onKeyDown={e => e.stopPropagation()} className="cursor-default">
+                  <FrameContents seg={seg} currentTimeMs={currentTimeMs} videoTitles={videoTitles}
+                    selected={isActive ? selected : null}
+                    onSelectItem={(id, atMs) => onSelectItem(seg.id, id, atMs)}
+                    onUpdateItem={(id, patch) => onUpdateItem(seg.id, id, patch)}
+                    onRemoveItem={id => onRemoveItem(seg.id, id)}
+                    onUpdateFrame={patch => onUpdateFrame(seg.id, patch)}
+                    onRemoveMain={slot => onRemoveMain(seg.id, slot)}
+                    onReplaceMedia={(id, kind) => onReplaceMedia(seg.id, id, kind)} />
+                </div>
               )}
-            </Fragment>
+            </div>
           )
         })}
       </div>
@@ -203,29 +255,51 @@ function FrameContents({ seg, currentTimeMs, videoTitles, selected, onSelectItem
   ].sort((a, b) => laneIndex(a.lane) - laneIndex(b.lane) || a.from - b.from || (a.item ? 1 : -1))
 
   return (
-    <div className="ml-7 mr-1 mb-1.5 flex flex-col gap-1 pl-2.5" style={{ borderLeft: '1px solid rgb(var(--ed-fg) / 0.1)' }}>
+    <div className="mx-2 mb-2 flex flex-col rounded-lg overflow-hidden" style={{ background: 'rgb(var(--ed-fg) / 0.035)', boxShadow: 'inset 0 0 0 1px rgb(var(--ed-fg) / 0.05)' }}>
       {rows.length === 0 && (
-        <p className="text-[11px] py-1.5" style={{ color: 'rgb(var(--ed-fg) / 0.4)' }}>Nothing here yet. Add with + on the timeline.</p>
+        <p className="text-[11px] px-2.5 py-2" style={{ color: 'rgb(var(--ed-fg) / 0.4)' }}>Nothing here yet. Add with + on the timeline.</p>
       )}
-      {rows.map(r => {
+      {rows.map((r, ri) => {
         const on = r.id === selected
         const isText = r.item?.kind === 'text'
         return (
-          <div key={r.id} className="flex flex-col rounded-lg overflow-hidden"
-            style={{ background: on ? 'rgb(var(--ed-fg) / 0.05)' : undefined, boxShadow: on ? `inset 0 0 0 1px ${r.color}88` : undefined }}>
+          <div key={r.id} className="flex flex-col"
+            style={{ background: on ? 'rgb(var(--ed-fg) / 0.05)' : undefined, boxShadow: on ? `inset 2px 0 0 ${r.color}` : undefined, borderTop: ri ? '1px solid rgb(var(--ed-fg) / 0.045)' : undefined }}>
+            <div className="flex items-center pr-1" style={{ opacity: r.item?.hidden ? 0.55 : 1 }}>
             <button onClick={() => onSelectItem(on && !isText ? null : r.id, r.from)}
               aria-expanded={isText ? undefined : on}
-              title={isText ? 'Edit in the Text tool' : undefined}
-              className="flex items-center gap-2 h-8 px-2 text-left rounded-lg transition-colors hover:bg-[rgb(var(--ed-fg)/0.05)]">
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={r.color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className="shrink-0">{KIND_ICON[r.icon]}</svg>
-              <span className="text-xs truncate flex-1" style={{ color: 'rgb(var(--ed-fg) / 0.85)' }}>{r.name}</span>
-              <span className="text-[11px] tabular-nums shrink-0" style={{ color: 'rgb(var(--ed-fg) / 0.45)' }}>
-                {laneName(r.lane)} · {msToLabel(r.from)}–{msToLabel(r.to)}
+              title={`${isText ? 'Edit in the Text tool · ' : ''}${laneName(r.lane)} · ${msToLabel(r.from)}–${msToLabel(r.to)}`}
+              className="flex-1 min-w-0 flex items-center gap-2 h-8 pl-2 pr-1 text-left transition-colors hover:bg-[rgb(var(--ed-fg)/0.05)]">
+              <span className="w-[18px] h-[18px] shrink-0 flex items-center justify-center rounded-[5px]" style={{ background: `${r.color}24` }}>
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke={r.color} strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{KIND_ICON[r.icon]}</svg>
               </span>
-              {isText
-                ? <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true" className="shrink-0" style={{ color: 'rgb(var(--ed-fg) / 0.4)' }}><path d="M4.5 3L7.5 6l-3 3" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="round" strokeLinejoin="round" /></svg>
-                : <span className="shrink-0" style={{ color: 'rgb(var(--ed-fg) / 0.4)' }}><Chevron open={on} /></span>}
+              <span className="text-[11.5px] font-medium truncate flex-1 text-[var(--ed-text)]">{r.name}</span>
+              <span className="text-[10px] shrink-0" style={{ color: 'rgb(var(--ed-fg) / 0.42)' }}>{laneName(r.lane)}</span>
             </button>
+              {/* Quick switches, as on the Format cards: show / hide, sound */}
+              {r.item && !r.item.captions && (
+                <RowSwitch kind="eye" on={!!r.item.hidden} onClick={() => onUpdateItem(r.id, { hidden: !r.item!.hidden })}
+                  label={r.item.hidden ? 'Show it again' : 'Hide it (not shown or exported)'} />
+              )}
+              {r.item?.kind === 'video' && (
+                <RowSwitch kind="sound" on={!!r.item.muted} onClick={() => onUpdateItem(r.id, { muted: !r.item!.muted })}
+                  label={r.item.muted ? 'Turn its sound back on' : 'Mute it'} />
+              )}
+              {!r.item && (() => {
+                const key = String(r.lane)
+                const snd = mainSlotSound(frame, r.lane as number)
+                return (
+                  <RowSwitch kind="sound" on={snd.muted} label={snd.muted ? 'Turn the main video\u2019s sound back on in this slot' : 'Mute the main video in this slot'}
+                    onClick={() => onUpdateFrame({ main_mutes: { ...frame.main_mutes, [key]: !snd.muted }, main_volumes: { ...frame.main_volumes, [key]: snd.volume } })} />
+                )
+              })()}
+              <button onClick={() => onSelectItem(on && !isText ? null : r.id, r.from)} aria-label={isText ? 'Edit in the Text tool' : on ? 'Close its settings' : 'Open its settings'}
+                className="shrink-0 w-[22px] h-[22px] flex items-center justify-center rounded-md transition-colors hover:bg-[rgb(var(--ed-fg)/0.1)]" style={{ color: 'rgb(var(--ed-fg) / 0.45)' }}>
+                {isText
+                  ? <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M4.5 3L7.5 6l-3 3" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="round" strokeLinejoin="round" /></svg>
+                  : <Chevron open={on} />}
+              </button>
+            </div>
 
             {on && !isText && (
               <div className="flex flex-col gap-3 px-2.5 pb-3 pt-1">
@@ -269,7 +343,7 @@ function FrameContents({ seg, currentTimeMs, videoTitles, selected, onSelectItem
                 ) : (
                   <>
                     <div className="flex flex-col gap-1.5">
-                      <span className="text-[11px] font-medium" style={{ color: 'rgb(var(--ed-fg) / 0.5)' }}>Sound</span>
+                      <span className="text-[11px] font-medium" style={{ color: 'rgb(var(--ed-fg) / 0.5)' }}>Volume</span>
                       {(() => {
                         // This slot's own sound — other slots showing the main video aren't affected
                         const key = String(r.lane)
@@ -299,44 +373,58 @@ function FrameContents({ seg, currentTimeMs, videoTitles, selected, onSelectItem
   )
 }
 
+/** Small switch on a card or row: show / hide, sound, lock. Lit when hidden / muted (red) or locked (lime). */
+function RowSwitch({ kind, on, onClick, label }: { kind: 'eye' | 'sound' | 'lock'; on: boolean; onClick: () => void; label: string }) {
+  const tint = kind === 'lock' ? 'var(--ed-accent-text)' : '#f87171'
+  return (
+    <button type="button" onClick={e => { e.stopPropagation(); onClick() }} aria-pressed={on} aria-label={label} title={label}
+      className="shrink-0 w-[22px] h-[22px] flex items-center justify-center rounded-md transition-colors hover:bg-[rgb(var(--ed-fg)/0.1)]"
+      style={{ color: on ? tint : 'rgb(var(--ed-fg) / 0.45)', background: on ? (kind === 'lock' ? 'rgba(200,255,0,0.12)' : 'rgba(239,68,68,0.12)') : undefined }}>
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        {kind === 'eye'
+          ? (on ? <><path d="M3 3l18 18" /><path d="M10.6 5.1A10 10 0 0112 5c5 0 9 5 9 7a11 11 0 01-2.2 3.2M6.6 6.6C4.4 8 3 10.4 3 12c0 2 4 7 9 7a9.6 9.6 0 004.4-1.1" /><path d="M9.9 9.9a3 3 0 004.2 4.2" /></>
+            : <><path d="M3 12c0-2 4-7 9-7s9 5 9 7-4 7-9 7-9-5-9-7z" /><circle cx="12" cy="12" r="3" /></>)
+          : kind === 'sound'
+            ? (on ? <><path d="M11 5L6 9H2v6h4l5 4V5z" /><path d="M22 9l-6 6M16 9l6 6" /></> : <><path d="M11 5L6 9H2v6h4l5 4V5z" /><path d="M15.5 8.5a5 5 0 010 7M19 5a10 10 0 010 14" /></>)
+            : (on ? <><rect x="4" y="11" width="16" height="10" rx="2" /><path d="M8 11V7a4 4 0 018 0v4" /></> : <><rect x="4" y="11" width="16" height="10" rx="2" /><path d="M8 11V7a4 4 0 017.6-1.7" /></>)}
+      </svg>
+    </button>
+  )
+}
+
+/** The editor's slim slider with a value on the right */
+function Slider({ value, max = 100, step = 1, disabled, label, text, onChange }: { value: number; max?: number; step?: number; disabled?: boolean; label: string; text: string; onChange: (v: number) => void }) {
+  return (
+    <div className="flex items-center gap-2.5">
+      <input type="range" min={0} max={max} step={step} value={value} disabled={disabled} aria-label={label}
+        onChange={e => onChange(Number(e.target.value))}
+        className="ed-zoom-range flex-1 min-w-0 disabled:opacity-40"
+        style={{ width: 'auto', '--p': `${(value / max) * 100}%` } as React.CSSProperties} />
+      <span className="w-8 shrink-0 text-right text-[11px] tabular-nums" style={{ color: 'rgb(var(--ed-fg) / 0.55)' }}>{text}</span>
+    </div>
+  )
+}
+
 /** Corners slider (0–100): rounder corners and a wider black border as it goes up; a tiny preview shows the look */
 function CornerPicker({ value, onChange }: { value: CornerStyle | string | undefined; onChange: (v: CornerStyle) => void }) {
   const g = cornerGeometry(value)
   const v = g ? Math.round((g.radius / CORNER_MAX.radius) * 100) : 0
   return (
     <div className="flex flex-col gap-1.5">
-      <span className="text-[11px] font-medium" style={{ color: 'rgb(var(--ed-fg) / 0.5)' }}>Corners</span>
-      <div className="flex items-center gap-2">
-        <span className="block shrink-0" aria-hidden="true" style={{ width: 28, height: 20, background: '#000', padding: (v / 100) * 4, borderRadius: 2 }}>
-          <span className="block w-full h-full" style={{ background: 'linear-gradient(135deg, #60a5fa, #2dd4bf)', borderRadius: (v / 100) * 8 }} />
+      <span className="flex items-center gap-2 text-[11px] font-medium" style={{ color: 'rgb(var(--ed-fg) / 0.5)' }}>
+        Corners
+        <span className="block shrink-0" aria-hidden="true" style={{ width: 22, height: 16, background: '#000', padding: (v / 100) * 3, borderRadius: 2, boxShadow: '0 0 0 1px rgb(var(--ed-fg) / 0.15)' }}>
+          <span className="block w-full h-full" style={{ background: 'rgb(var(--ed-fg) / 0.55)', borderRadius: (v / 100) * 6 }} />
         </span>
-        <input type="range" min={0} max={100} step={1} value={v} aria-label="Rounded corners"
-          onChange={e => onChange(Number(e.target.value))}
-          className="flex-1" style={{ accentColor: ACCENT }} />
-        <span className="w-8 text-right text-[11px] tabular-nums" style={{ color: 'rgb(var(--ed-fg) / 0.55)' }}>{v ? `${v}%` : 'Off'}</span>
-      </div>
+      </span>
+      <Slider value={v} label="Rounded corners" text={v ? `${v}%` : 'Off'} onChange={onChange} />
     </div>
   )
 }
 
-function Volume({ volume, muted, onVolume, onMuted }: { volume: number; muted: boolean; onVolume: (v: number) => void; onMuted: (m: boolean) => void }) {
-  return (
-    <div className="flex items-center gap-2">
-      <button onClick={() => onMuted(!muted)} aria-pressed={muted} aria-label={muted ? 'Unmute' : 'Mute'} title={muted ? 'Unmute' : 'Mute'}
-        className="w-7 h-7 shrink-0 flex items-center justify-center rounded-md transition-colors hover:bg-[rgb(var(--ed-fg)/0.1)]"
-        style={{ color: muted ? '#f87171' : 'rgb(var(--ed-fg) / 0.7)' }}>
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-          <path d="M11 5L6 9H2v6h4l5 4V5z" />
-          {muted ? <path d="M23 9l-6 6M17 9l6 6" /> : <path d="M15.5 8.5a5 5 0 010 7M19 5a10 10 0 010 14" />}
-        </svg>
-      </button>
-      <input type="range" min={0} max={100} step={5} aria-label="Volume"
-        value={Math.round(volume * 100)} disabled={muted}
-        onChange={e => onVolume(Number(e.target.value) / 100)}
-        className="flex-1 disabled:opacity-40" style={{ accentColor: ACCENT }} />
-      <span className="w-8 text-right text-[11px] tabular-nums" style={{ color: 'rgb(var(--ed-fg) / 0.55)' }}>{muted ? '0' : Math.round(volume * 100)}%</span>
-    </div>
-  )
+/** Volume slider (mute is the sound switch on the row) */
+function Volume({ volume, muted, onVolume }: { volume: number; muted: boolean; onVolume: (v: number) => void; onMuted?: (m: boolean) => void }) {
+  return <Slider value={muted ? 0 : Math.round(volume * 100)} step={5} disabled={muted} label="Volume" text={muted ? 'Muted' : `${Math.round(volume * 100)}%`} onChange={v => onVolume(v / 100)} />
 }
 
 function Chips<T extends string>({ title, options, value, onChange }: { title: string; options: { id: T; label: string }[]; value: T; onChange: (v: T) => void }) {

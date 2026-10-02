@@ -1,3 +1,4 @@
+import { shownSegment } from '@/modules/editor/visibility'
 import { GetObjectCommand } from '@aws-sdk/client-s3'
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 import type { CaptionStyle, SegmentLocal, TextOverlay, TranscriptWord } from '@chai-cut/shared'
@@ -41,7 +42,7 @@ export async function getClipPreview(userId: string, clipId: string): Promise<Cl
       SELECT s.*, COALESCE(json_agg(jsonb_build_object(
           'id', cb.id, 'segment_id', cb.segment_id, 'slot_index', cb.slot_index,
           'source_video_id', cb.source_video_id, 'source_offset_ms', cb.source_offset_ms,
-          'image_path', cb.image_path, 'image_motion', cb.image_motion, 'volume', cb.volume, 'muted', cb.muted,
+          'image_path', cb.image_path, 'image_motion', cb.image_motion, 'volume', cb.volume, 'muted', cb.muted, 'hidden', (to_jsonb(cb)->>'hidden')::boolean,
           'box_keyframes', COALESCE((SELECT json_agg(bk.* ORDER BY bk.t_ms) FROM box_keyframes bk WHERE bk.box_id = cb.id), '[]')
         ) ORDER BY cb.slot_index) FILTER (WHERE cb.id IS NOT NULL), '[]') AS crop_boxes
       FROM segments s LEFT JOIN crop_boxes cb ON cb.segment_id = s.id
@@ -51,10 +52,22 @@ export async function getClipPreview(userId: string, clipId: string): Promise<Cl
   ])
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const segments = rowsToLocal(segRows as any[])
+  // As the export shows it: a hidden added video gives way to the main video, hidden frame items go,
+  // a hidden main video is black
+  const segments = rowsToLocal(segRows as any[]).map(s => shownSegment(s, clip.video_id))
   // B-roll the clip shows (only the owner's own videos, as the export uses)
   // (the clip's own video, named by borrowed reaction slots, is played from the main URL)
-  const brollIds = [...new Set(segments.flatMap(s => s.crop_boxes.map(b => b.source_video_id)).filter((id): id is string => !!id && id !== clip.video_id))]
+  const brollIds = [...new Set(segments.flatMap(s => [
+    ...s.crop_boxes.map(b => b.source_video_id),
+    // Videos in frame slots
+    ...(s.frame?.items ?? []).map(it => it.kind === 'video' ? it.source_video_id : null),
+  ]).filter((id): id is string => !!id && id !== clip.video_id))]
+  // Photos in frame slots: signed, so the player can draw them
+  await Promise.all(segments.flatMap(s => (s.frame?.items ?? []).map(async it => {
+    if (it.kind === 'photo' && it.image_path) {
+      it.image_url = await getSignedUrl(r2, new GetObjectCommand({ Bucket: R2_BUCKET, Key: it.image_path }), { expiresIn: 43200 }).catch(() => null)
+    }
+  })))
   const brollRows = brollIds.length
     ? await sql`SELECT id, storage_path FROM videos WHERE id = ANY(${brollIds}) AND user_id = ${userId} AND storage_path IS NOT NULL`
     : []
@@ -66,7 +79,7 @@ export async function getClipPreview(userId: string, clipId: string): Promise<Cl
     segments,
     words: words as unknown as TranscriptWord[],
     captionStyle: (style as unknown as CaptionStyle) ?? null,
-    textOverlays: overlays as unknown as TextOverlay[],
+    textOverlays: (overlays as unknown as TextOverlay[]).filter(t => !t.hidden),
     stockUrls,
   }
 }

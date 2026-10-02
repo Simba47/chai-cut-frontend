@@ -6,6 +6,7 @@ export type JobType = 'transcribe' | 'render'
 export type JobStatus = 'queued' | 'processing' | 'done' | 'failed'
 export type SourceType = 'upload' | 'link'
 export type FrameLayout = 'frame_single' | 'frame_video_photo' | 'frame_dual' | 'frame_dual_letterbox' | 'frame_triple'
+  | 'frame_title_caption' | 'frame_big_small' | 'frame_photo_story'
 export type LayoutType = 'vertical' | 'split' | 'trio' | 'spotlight' | 'centered' | 'horizontal' | FrameLayout
 /** How a photo slot moves over its format's duration */
 export type SlotMotion = 'none' | 'zoom_in' | 'zoom_out' | 'pan_left' | 'pan_right'
@@ -44,6 +45,8 @@ export interface FrameItem {
   /** This video's share in the audio mix (0–1) */
   volume?: number
   muted?: boolean
+  /** Not shown (or heard) in the preview or the export */
+  hidden?: boolean
   // Photo
   image_path?: string | null
   /** Signed URL for image_path — preview only, never saved */
@@ -78,6 +81,8 @@ export interface FrameSettings {
   main_mutes?: Record<string, boolean>
   /** Rounded corners of the main video, per slot index */
   main_corners?: Record<string, CornerStyle>
+  /** The main video is heard under the frame though no slot shows it (Photo Story), at main_volume */
+  main_under?: boolean
   items?: FrameItem[]
 }
 export type AnimationType = 'karaoke' | 'fade' | 'none'
@@ -137,6 +142,10 @@ export interface Segment {
   sort_order: number
   /** Frame layouts only: letterbox band settings */
   frame?: FrameSettings | null
+  /** Editor controls: not shown or exported / silent / can't be moved, trimmed or deleted */
+  hidden?: boolean
+  muted?: boolean
+  locked?: boolean
 }
 
 export interface CropBox {
@@ -155,6 +164,8 @@ export interface CropBox {
   /** Frame slots: this video's share in the audio mix (0–1) */
   volume?: number
   muted?: boolean
+  /** An added video (B-roll) hidden: the main video shows there instead */
+  hidden?: boolean
 }
 
 export interface BoxKeyframe {
@@ -205,6 +216,40 @@ export interface TextOverlay {
   font: string | null
   size: number | null
   color: string | null
+  /** Editor controls: not shown or exported / can't be moved, trimmed or deleted */
+  hidden?: boolean
+  locked?: boolean
+  // ── Text styling (Text tool). All optional: older text keeps its look.
+  // TODO(backend): save these with the text and draw them in the export.
+  /** 400 regular · 700 bold · 900 black (default 700) */
+  weight?: number
+  italic?: boolean
+  /** Show the text in capitals */
+  uppercase?: boolean
+  /** Extra space between letters, px at 1080 wide (default 0) */
+  letter_spacing?: number
+  /** 0–1 (default 1) */
+  opacity?: number
+  /** Degrees, around the text's centre (default 0) */
+  rotation?: number
+  /** Outline round the letters (null/absent = none) */
+  stroke_color?: string | null
+  /** Outline thickness, px at 1080 wide */
+  stroke_width?: number
+  /** A box behind the text (null/absent = none) */
+  bg_color?: string | null
+  /** 0–1 */
+  bg_opacity?: number
+  /** Box corner roundness, px at 1080 wide */
+  bg_radius?: number
+  /** none · soft (blurred) · hard (solid offset) · glow (coloured halo) */
+  shadow?: 'none' | 'soft' | 'hard' | 'glow'
+  /** Colour of the hard shadow or the glow */
+  shadow_color?: string | null
+  /** How the text comes in ('slide' = slide up) */
+  animation?: 'none' | 'fade' | 'pop' | 'zoom-in' | 'zoom-out' | 'blur'
+    | 'slide' | 'slide-down' | 'slide-left' | 'slide-right' | 'drop' | 'bounce'
+    | 'typewriter' | 'wipe' | 'spin' | 'flicker' | 'glitch'
 }
 
 export interface AudioTrack {
@@ -214,6 +259,13 @@ export interface AudioTrack {
   start_ms: number
   volume: number
   duck_under_speech: boolean
+  /** Trimmed music: how far into the song this track starts playing (default 0) */
+  offset_ms?: number
+  /** Trimmed music: clip time where this track stops (default: when the song ends) */
+  end_ms?: number
+  /** Editor controls: silent / can't be moved, trimmed or deleted */
+  muted?: boolean
+  locked?: boolean
 }
 
 export interface Transition {
@@ -271,6 +323,10 @@ export interface Overlay {
   end_ms: number
   z_index: number
   created_at: string
+  /** Editor controls: not shown or exported / silent / can't be moved, trimmed or deleted */
+  hidden?: boolean
+  muted?: boolean
+  locked?: boolean
 }
 
 // ─── Editor state (client-only, not persisted as a single blob) ────────────────
@@ -284,6 +340,8 @@ export interface CropBoxLocal extends Omit<CropBox, 'segment_id'> {
 export interface SegmentLocal extends Omit<Segment, 'id' | 'clip_id'> {
   id: string
   crop_boxes: CropBoxLocal[]
+  /** Preview only (shownSegment): a hidden added video whose sound is on — heard, not seen */
+  sound_only?: { video_id: string; offset_ms: number; volume?: number }
 }
 
 // ─── Layout slot counts ────────────────────────────────────────────────────────
@@ -300,4 +358,7 @@ export const LAYOUT_SLOT_COUNT: Record<LayoutType, number> = {
   frame_dual: 2,
   frame_dual_letterbox: 2,
   frame_triple: 3,
+  frame_title_caption: 1,
+  frame_big_small: 2,
+  frame_photo_story: 2,
 }

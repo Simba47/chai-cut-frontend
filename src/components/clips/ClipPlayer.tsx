@@ -5,6 +5,7 @@ import type { CaptionStyle, SegmentLocal, TextOverlay, TranscriptWord } from '@c
 import { OutputCanvas } from '@/components/editor/VideoPreview'
 import { getBoxPositionAtLerp } from '@/lib/interpolation'
 import { BorrowedPool, isBorrowedSlot } from '@/modules/editor/brollSources'
+import { createFrameMediaPool } from '@/modules/editor/frameMedia'
 
 /**
  * A clip played in 9:16 without exporting it: the source video drawn through the clip's framing,
@@ -41,6 +42,11 @@ export function ClipPlayer({ videoUrl, mainVideoId, stockUrls = {}, startMs, end
     bySegmentTime.find(s => t >= s.start_ms && t < s.end_ms) ?? bySegmentTime[bySegmentTime.length - 1] ?? null,
   [bySegmentTime])
   const activeSegment = segmentAt(tMs)
+  // Frames: the other videos and photos in their slots (the canvas keeps them in step)
+  const stockUrlsRef = useRef(stockUrls)
+  stockUrlsRef.current = stockUrls
+  const framePool = useMemo(() => createFrameMediaPool(id => stockUrlsRef.current[id]), [])
+  useEffect(() => () => framePool.dispose(), [framePool])
 
   // B-roll: the stock videos, drawn in place of the source during their shots (muted: the
   // speaker keeps talking, as in the export)
@@ -147,7 +153,7 @@ export function ClipPlayer({ videoUrl, mainVideoId, stockUrls = {}, startMs, end
       <OutputCanvas
         videoRef={videoRef} currentTimeMs={tMs} clipStartMs={startMs}
         activeSegment={activeSegment} getPositionAt={getPositionAt}
-        segmentAt={segmentAt} hardCuts sourceFor={sourceFor} slotSourceFor={slotSourceFor}
+        segmentAt={segmentAt} hardCuts sourceFor={sourceFor} slotSourceFor={slotSourceFor} frameMedia={framePool}
         words={shownWords} captionStyle={captionStyle ?? {}} showCaptions={showCaptions}
         textOverlays={textOverlays}
         style={{ width: '100%', height: '100%', display: 'block' }}
