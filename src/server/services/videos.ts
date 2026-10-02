@@ -111,6 +111,17 @@ export async function deleteVideos(userId: string, videoIds: string[]) {
   return { deleted: ids.length }
 }
 
+/**
+ * Best moments and Ask AI read the whole video's words. Captions aren't made automatically any
+ * more, so the first use starts them and asks the user to come back (409).
+ */
+async function needWholeTranscript(videoId: string) {
+  const { ensureVideoTranscript } = await import('./transcribe')
+  if (await ensureVideoTranscript(videoId) === 'running') {
+    throw Object.assign(new Error('Reading your video first — this takes a few minutes for a long video. Try again shortly.'), { status: 409 })
+  }
+}
+
 export interface ClipSuggestion {
   id: string; title: string; start_ms: number; end_ms: number; summary: string
   /** Viral score 0–99 (AI suggestions only) */
@@ -129,6 +140,7 @@ export async function getVideoSuggestions(userId: string, videoId: string): Prom
     throw Object.assign(new Error('Not found'), { status: 404 })
   }
 
+  await needWholeTranscript(videoId)
   const [transcriptRow] = await sql`
     SELECT id FROM transcripts WHERE video_id = ${videoId} ORDER BY created_at DESC LIMIT 1
   `
@@ -241,6 +253,7 @@ export async function getVideoSuggestionsByCriteria(
     throw Object.assign(new Error('Not found'), { status: 404 })
   }
 
+  await needWholeTranscript(videoId)
   const [transcriptRow] = await sql`
     SELECT id FROM transcripts WHERE video_id = ${videoId} ORDER BY created_at DESC LIMIT 1
   `

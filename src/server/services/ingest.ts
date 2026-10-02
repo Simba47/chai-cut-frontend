@@ -51,10 +51,11 @@ export async function ingestLink(userId: string, rawUrl: string) {
   `
   if (!video) throw err('Failed to create video record', 500)
 
-  // Every link import needs this job: it downloads the file (on every plan). transcribe_full
-  // then captions the whole video in the background on plans with auto-captions.
+  // Every link import needs this job: it downloads the file (on every plan). Captions are not
+  // made here: they cost money, so they're made when someone asks (captions switched on in the
+  // editor, Make my clips, Best moments, Ask AI).
   // max_bytes: the worker stops downloads bigger than the plan allows.
-  const payload = { video_id: video.id, storage_path: '', link_source: source, max_bytes: plan.maxFileSizeBytes, transcribe_full: plan.autoCaption }
+  const payload = { video_id: video.id, storage_path: '', link_source: source, max_bytes: plan.maxFileSizeBytes, transcribe_full: false }
   await sql`INSERT INTO jobs (type, payload, status) VALUES ('transcribe', ${sql.json(payload)}, 'queued')`
 
   return { video_id: video.id }
@@ -162,11 +163,9 @@ export async function completeUpload(userId: string, storagePath: string, durati
   if (!video) throw err('Failed to create video record', 500)
 
   // Every upload gets a worker job: it fills in the length when the browser couldn't read it
-  // (e.g. MKV or iPhone HEVC files), and on plans with auto-captions it captions the whole video
-  // in the background, so clips made from it open with captions ready
-  const { getUserPlanConfig } = await import('./quota')
-  const plan = await getUserPlanConfig(userId)
-  const payload = { video_id: video.id, storage_path: storagePath, transcribe_full: plan.autoCaption }
+  // (e.g. MKV or iPhone HEVC files). No captions here: they're made when someone asks for them
+  // (captions switched on in the editor, Make my clips, Best moments, Ask AI)
+  const payload = { video_id: video.id, storage_path: storagePath, transcribe_full: false }
   await sql`INSERT INTO jobs (type, payload, status) VALUES ('transcribe', ${sql.json(payload)}, 'queued')`
   return { video_id: video.id }
 }

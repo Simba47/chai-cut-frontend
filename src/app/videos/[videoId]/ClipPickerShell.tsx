@@ -565,8 +565,8 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: P
           startMs={previewData.start_ms} endMs={previewData.end_ms}
           segments={previewSegments(previewData.segments, previewData.end_ms - previewData.start_ms, ratio)}
           words={previewData.words}
-          // No saved style yet: captions on, as the editor opens a new clip
-          captionStyle={previewData.captionStyle ?? (previewData.words.length ? { color: '#FFE700', enabled: true } : null)}
+          // No saved style yet: captions off, as the editor opens a new clip
+          captionStyle={previewData.captionStyle ?? null}
           textOverlays={previewData.textOverlays} />
       )}
     </div>

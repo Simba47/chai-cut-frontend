@@ -6,7 +6,7 @@ import type {
   AudioTrack, Transition, TranscriptWord, LayoutType, TransitionType, Overlay,
 } from '@chai-cut/shared'
 import { VideoPreview, OutputCanvas } from '@/components/editor/VideoPreview'
-import { computeCutRanges, removedMs } from '@/lib/cuts'
+import { computeCutRanges, reactionRanges, removedMs } from '@/lib/cuts'
 import { SegmentTimeline } from '@/components/editor/SegmentTimeline'
 import { CaptionStyler } from '@/components/editor/CaptionStyler'
 import { TextOverlayPanel } from '@/components/editor/TextOverlayPanel'
@@ -119,7 +119,7 @@ export function EditorShellMobile({
     // starts with captions on if it has words (a style saved before the on/off field counts as on)
     const savedStyle = initialCaptionStyles[0]
     const hasCaptions = savedStyle ? savedStyle.enabled !== false : initialWords.length > 0
-    hydrateCaptions(initialWords, savedStyle ?? { color: '#FFE700' }, hasCaptions)
+    hydrateCaptions(initialWords, savedStyle ?? { color: '#FFE700' }, savedStyle ? hasCaptions : false)
     hydrateMedia({
       overlays: initialOverlays,
       textOverlays: initialTextOverlays,
@@ -336,8 +336,8 @@ export function EditorShellMobile({
   }
   latestHandleSaveRef.current = handleSave
   const fillerCutMs = useMemo(
-    () => removedMs(computeCutRanges(words, clip.start_ms, clip.end_ms)),
-    [words, clip.start_ms, clip.end_ms],
+    () => removedMs(computeCutRanges(words, clip.start_ms, clip.end_ms, reactionRanges(segments, clip.start_ms))),
+    [words, clip.start_ms, clip.end_ms, segments],
   )
 
   // Back online: don't wait out the backoff
@@ -376,6 +376,13 @@ export function EditorShellMobile({
   async function handleReEdit() {
     await fetch(`/api/clips/${clip.id}/reedit`, { method: 'POST' })
     setClipStatus('draft'); setOutputUrl(null)
+  }
+
+  /** Captions on: made now for this clip if it has none yet (nothing is captioned until asked) */
+  function turnCaptions(on: boolean) {
+    setShowCaptions(on)
+    const has = words.some(w => w.start_ms >= clip.start_ms && w.start_ms < clip.end_ms)
+    if (on && !has && !transcribing && !retranscribing && !isFreePlan) handleRetranscribe('unknown')
   }
 
   async function handleRetranscribe(languageCode: string) {
@@ -693,7 +700,7 @@ export function EditorShellMobile({
           <>
             <div style={{ padding: '10px 12px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
               <span style={{ fontSize: 11, fontWeight: 600, color: showCaptions ? '#fff' : 'rgba(255,255,255,0.45)' }}>Auto-captions</span>
-              <div onClick={() => setShowCaptions(!showCaptions)} style={{ width: 36, height: 20, borderRadius: 10, display: 'flex', alignItems: 'center', paddingLeft: 2, cursor: 'pointer', background: showCaptions ? '#c8ff00' : 'rgba(255,255,255,0.1)', transition: 'background 0.2s' }}>
+              <div onClick={() => turnCaptions(!showCaptions)} style={{ width: 36, height: 20, borderRadius: 10, display: 'flex', alignItems: 'center', paddingLeft: 2, cursor: 'pointer', background: showCaptions ? '#c8ff00' : 'rgba(255,255,255,0.1)', transition: 'background 0.2s' }}>
                 <div style={{ width: 16, height: 16, borderRadius: 8, background: '#fff', transition: 'transform 0.2s', transform: showCaptions ? 'translateX(16px)' : 'translateX(0)' }} />
               </div>
             </div>
@@ -898,7 +905,7 @@ export function EditorShellMobile({
                   <>
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 14px', background: 'rgba(255,255,255,0.04)', borderRadius: 12, border: '1px solid rgba(255,255,255,0.07)' }}>
                       <span style={{ fontSize: 14, fontWeight: 600, color: showCaptions ? '#fff' : 'rgba(255,255,255,0.45)' }}>Auto-captions</span>
-                      <div onClick={() => setShowCaptions(!showCaptions)} style={{ width: 44, height: 24, borderRadius: 12, display: 'flex', alignItems: 'center', paddingLeft: 2, cursor: 'pointer', background: showCaptions ? '#c8ff00' : 'rgba(255,255,255,0.12)', transition: 'background 0.2s' }}>
+                      <div onClick={() => turnCaptions(!showCaptions)} style={{ width: 44, height: 24, borderRadius: 12, display: 'flex', alignItems: 'center', paddingLeft: 2, cursor: 'pointer', background: showCaptions ? '#c8ff00' : 'rgba(255,255,255,0.12)', transition: 'background 0.2s' }}>
                         <div style={{ width: 20, height: 20, borderRadius: 10, background: '#fff', transition: 'transform 0.2s', transform: showCaptions ? 'translateX(20px)' : 'translateX(0)' }} />
                       </div>
                     </div>

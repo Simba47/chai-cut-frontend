@@ -427,6 +427,13 @@ function paintSegment(
       if (own === false || (own && own.readyState < 2)) return
       const src = own ?? video
       const sW = own ? own.videoWidth || vW : vW, sH = own ? own.videoHeight || vH : vH
+      // A slot framing the whole picture (a related visual) shows it whole, fitted with bars,
+      // as the export does (render.py _is_full_frame)
+      if (p.x < 0.005 && p.y < 0.005 && p.w > 0.995 && p.h > 0.995) {
+        const k = Math.min(W / sW, slotH / sH)
+        ctx.drawImage(src, 0, 0, sW, sH, (W - sW * k) / 2, i * slotH + (slotH - sH * k) / 2, sW * k, sH * k)
+        return
+      }
       coverCrop(ctx, src, p.x * sW, p.y * sH, p.w * sW, p.h * sH, 0, i * slotH, W, slotH)
     })
   } else if (layout === 'horizontal') {

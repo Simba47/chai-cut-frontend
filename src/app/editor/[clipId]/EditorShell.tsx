@@ -3,7 +3,7 @@
 import { useState, useEffect, useLayoutEffect, useRef, useMemo, Fragment } from 'react'
 import type { Clip, Segment, CropBox, BoxKeyframe, CaptionStyle, TextOverlay, AudioTrack, Transition, TranscriptWord, LayoutType, Overlay } from '@chai-cut/shared'
 import { VideoPreview, OutputCanvas } from '@/components/editor/VideoPreview'
-import { computeCutRanges, removedMs } from '@/lib/cuts'
+import { computeCutRanges, reactionRanges, removedMs } from '@/lib/cuts'
 import { PostText, type PostTextValue } from '@/components/clips/PostText'
 import { BrollPanel, type StockResult } from '@/components/editor/BrollPanel'
 import { useBrollSources, useBorrowedSlots } from '@/modules/editor/brollSources'
@@ -106,7 +106,7 @@ const TOOLS: { id: Tool; label: string; title: string; hint: string; icon: React
   },
   {
     id: 'cleanup', label: 'Cleanup', title: 'Remove pauses & filler words',
-    hint: 'Cuts long pauses and filler words (um, uh, matlab, ante…) out of the export. The preview plays the full clip.',
+    hint: 'Cuts long pauses and filler words (um, uh, matlab, ante…) out of the export. Laughs and reaction moments (splits, trios) are kept. The preview plays the full clip.',
     icon: <><circle cx="6" cy="6" r="2.6" stroke="currentColor" strokeWidth="1.8" fill="none" /><circle cx="6" cy="18" r="2.6" stroke="currentColor" strokeWidth="1.8" fill="none" /><path d="M8.2 7.6L20 17M8.2 16.4L20 7" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" fill="none" /></>,
   },
   {
@@ -177,7 +177,8 @@ export function EditorShell({
     // Captions on/off: the saved choice when the clip has a caption style; a clip without one yet
     // starts with captions on if it has words (a style saved before the on/off field counts as on)
     const savedStyle = initialCaptionStyles[0]
-    const showCaptions = savedStyle ? savedStyle.enabled !== false : initialWords.length > 0
+    // Off until switched on (captions cost money to make); a clip with a saved style keeps its choice
+    const showCaptions = savedStyle ? savedStyle.enabled !== false : false
     hydrateCaptions(initialWords, savedStyle ?? { color: '#FFE700' }, showCaptions)
 
     hydrateMedia({
@@ -631,6 +632,12 @@ export function EditorShell({
   async function handleResetStuckRender() {
     await fetch(`/api/clips/${clip.id}/reedit`, { method: 'POST' })
     setClipStatus('draft'); setOutputUrl(null); setRenderStuckSince(null); setRenderElapsed(0)
+  }
+
+  /** Captions on: made now for this clip if it has none yet (nothing is captioned until asked) */
+  function turnCaptions(on: boolean) {
+    setShowCaptions(on)
+    if (on && !clipHasWords(words) && !transcribing && !retranscribing && !isFreePlan) handleRetranscribe('unknown')
   }
 
   async function handleRetranscribe(languageCode: string) {
@@ -1286,7 +1293,8 @@ export function EditorShell({
   const rendering = clipStatus === 'rendering' || exporting
   const hasOutput = !!outputUrl && clipStatus === 'done'
   // What "Remove pauses and filler words" takes out of this clip, from the transcript
-  const fillerCuts = useMemo(() => computeCutRanges(words, clip.start_ms, clip.end_ms), [words, clip.start_ms, clip.end_ms])
+  // Reaction parts (splits, trios) are never cut; at export, pauses with a laugh in them are kept too
+  const fillerCuts = useMemo(() => computeCutRanges(words, clip.start_ms, clip.end_ms, reactionRanges(segments, clip.start_ms)), [words, clip.start_ms, clip.end_ms, segments])
   const fillerCutMs = useMemo(() => removedMs(fillerCuts), [fillerCuts])
   /** Each cut, clip-relative, with the words it takes out (none = a pause) */
   const fillerCutList = useMemo(() => fillerCuts.map(([a, b]) => ({
@@ -1628,7 +1636,8 @@ export function EditorShell({
               ) : (
                 <div className="flex flex-col">
                   <div className="p-4 flex flex-col gap-3" style={{ borderBottom: '1px solid rgb(var(--ed-fg) / 0.06)' }}>
-                    <SwitchRow label="Show captions" checked={showCaptions} onChange={setShowCaptions} />
+                    <SwitchRow label="Show captions" description={!showCaptions && !clipHasWords(words) ? 'Turning them on makes captions for this clip' : undefined}
+                      checked={showCaptions} onChange={turnCaptions} />
                     {(transcribing || retranscribing) ? (
                       <div className="flex items-center gap-2.5 px-3 py-2.5 rounded-lg" style={{ background: 'rgba(200,255,0,0.07)', border: '1px solid rgba(200,255,0,0.18)' }}>
                         <span className="w-3.5 h-3.5 rounded-full border-2 border-t-transparent animate-spin shrink-0" style={{ borderColor: ACCENT, borderTopColor: 'transparent' }} />

@@ -11,7 +11,7 @@ export async function createClip(userId: string, input: CreateClipInput) {
   `
   if (!video) throw Object.assign(new Error('Video not found'), { status: 404 })
 
-  const { checkClipQuota, getUserPlanConfig } = await import('./quota')
+  const { checkClipQuota } = await import('./quota')
   await checkClipQuota(userId)
 
   const startMs = input.start_ms ?? 0
@@ -25,22 +25,8 @@ export async function createClip(userId: string, input: CreateClipInput) {
   `
   if (!clip) throw Object.assign(new Error('Failed to create clip'), { status: 500 })
 
-  const plan = await getUserPlanConfig(userId)
-  // The whole video is captioned in the background after upload. Skip the per-clip job
-  // when that transcript is done, or still running on a video short enough (≤ 20 min)
-  // that waiting for it is quicker than paying for a second transcription.
-  const [fullJob] = await sql`
-    SELECT status FROM jobs
-    WHERE type = 'transcribe' AND payload->>'video_id' = ${input.video_id}
-      AND payload->>'transcribe_full' = 'true' AND status <> 'failed'
-    ORDER BY created_at DESC LIMIT 1
-  `
-  const coveredByFullTranscript = !!fullJob &&
-    (fullJob.status === 'done' || (video.duration_ms ?? Infinity) <= 20 * 60 * 1000)
-  if (video.storage_path && plan.autoCaption && !coveredByFullTranscript) {
-    const payload = { video_id: input.video_id, storage_path: video.storage_path, clip_id: clip.id, clip_start_ms: startMs, clip_end_ms: endMs }
-    await sql`INSERT INTO jobs (type, status, payload) VALUES ('transcribe', 'queued', ${sql.json(payload)})`
-  }
+  // No captions yet: they cost money, so the clip opens with captions off and they're made when
+  // switched on in the editor (for this clip only)
 
   return { clip_id: clip.id, layout }
 }
