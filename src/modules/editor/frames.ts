@@ -162,8 +162,15 @@ export function defaultFrame(layout: FrameLayout, prev?: FrameSettings | null): 
     main_slots: prev?.main_slots ? prev.main_slots.filter(i => i < slots) : [0],
     main_volume: prev?.main_volume ?? 1,
     main_muted: prev?.main_muted ?? false,
-    // Items stay on lanes the new template still has
-    items: (prev?.items ?? []).filter(it => it.lane === 'band' ? band : it.lane < slots),
+    // Items stay on lanes the new template still has, and only if that slot can show them
+    // (e.g. a photo in Video + Photo's bottom slot doesn't carry into Dual Video, whose slots are
+    // video-only, so that slot comes up empty with its "+")
+    items: (prev?.items ?? []).filter(it => {
+      if (it.lane === 'band') return band
+      if (it.lane >= slots) return false
+      const offers = slotOffers(layout, it.lane)
+      return it.kind === 'photo' ? offers.photo : it.kind === 'video' ? offers.video : offers.text
+    }),
   }
 }
 

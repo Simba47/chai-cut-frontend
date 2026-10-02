@@ -467,3 +467,172 @@ body {
   .ed-dock-glider { transition: none; }
   .ed-dock-pop { animation: none; }
 }
+
+/* ── Clip board AI buttons (ClipPickerShell: Make my clips, Find) ──
+   Hover: the ✦ twinkles. Make my clips (click): three sparkles burst out of the ✦ and a light
+   sweeps across, like clips being cut from the video; while making, a shimmer keeps running.
+   Find (click): a scan beam sweeps across and a ring pings out of the ✦, like searching. */
+.ai-btn { position: relative; overflow: hidden; isolation: isolate; transition: transform .12s ease, filter .2s; }
+.ai-btn:not(:disabled):hover { filter: brightness(1.05); }
+.ai-btn:not(:disabled):active { transform: scale(.97); }
+.ai-spark, .ai-ping { position: relative; display: inline-block; line-height: 1; }
+.ai-btn:not(:disabled):hover .ai-spark,
+.ai-btn:not(:disabled):hover .ai-ping { animation: ai-twinkle .7s ease-in-out; }
+@keyframes ai-twinkle { 0%, 100% { transform: none; } 40% { transform: rotate(90deg) scale(1.35); } 70% { transform: rotate(140deg) scale(.9); } }
+
+/* Make my clips: sparkle burst */
+.ai-spark i { position: absolute; left: 50%; top: 50%; width: 4px; height: 4px; margin: -2px 0 0 -2px; border-radius: 50%; background: #000; opacity: 0; pointer-events: none; }
+.ai-spark.is-on { animation: ai-pop .5s cubic-bezier(.34,1.56,.64,1); }
+.ai-spark.is-on i { animation: ai-burst .6s ease-out forwards; }
+.ai-spark.is-on i:nth-child(1) { --bx: -12px; --by: -9px; }
+.ai-spark.is-on i:nth-child(2) { --bx: 12px;  --by: -9px; animation-delay: .04s; }
+.ai-spark.is-on i:nth-child(3) { --bx: 0px;   --by: 12px; animation-delay: .08s; }
+@keyframes ai-pop { 0% { transform: scale(.4) rotate(-90deg); } 100% { transform: none; } }
+@keyframes ai-burst { 0% { opacity: .9; transform: none; } 100% { opacity: 0; transform: translate(var(--bx), var(--by)) scale(.4); } }
+
+/* Light sweep (click) and the looping shimmer while clips are being made */
+.ai-fire { position: absolute; inset: 0; z-index: -1; pointer-events: none; }
+.ai-fire.is-on, .ai-make[data-busy] .ai-fire {
+  background: linear-gradient(105deg, transparent 30%, rgba(255,255,255,0.75) 50%, transparent 70%);
+  background-size: 250% 100%; background-position: 120% 0;
+}
+.ai-fire.is-on { animation: ai-sweep .8s cubic-bezier(.65,0,.35,1) forwards; }
+.ai-make[data-busy] .ai-fire { animation: ai-sweep 1.6s linear infinite; }
+@keyframes ai-sweep { to { background-position: -20% 0; } }
+
+/* Find: scan beam and ping ring */
+.ai-scan { position: absolute; top: 0; bottom: 0; left: -30%; width: 30%; z-index: -1; pointer-events: none; opacity: 0;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.8), transparent); }
+.ai-scan.is-on { animation: ai-scan .7s cubic-bezier(.65,0,.35,1); }
+.ai-find[data-busy] .ai-scan { animation: ai-scan 1.2s ease-in-out infinite; }
+@keyframes ai-scan { 0% { left: -30%; opacity: 1; } 100% { left: 100%; opacity: 1; } }
+.ai-ping.is-on::after {
+  content: ''; position: absolute; left: 50%; top: 50%; width: 12px; height: 12px; margin: -6px 0 0 -6px;
+  border-radius: 50%; border: 1.5px solid #000; pointer-events: none;
+  animation: ai-ping .6s ease-out forwards;
+}
+@keyframes ai-ping { from { transform: scale(.4); opacity: .8; } to { transform: scale(2.6); opacity: 0; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .ai-btn *, .ai-btn *::after { animation: none !important; }
+}
+
+/* Best moments ("Find best moments"): a spotlight. Hover: the big and small stars twinkle in turn,
+   the edge warms to lime and the stars turn lime. Click: a lime spotlight flashes out of the stars. */
+.ai-best { border: 1px solid rgba(255,255,255,0.12); transition: border-color .25s, background-color .25s, color .25s, transform .12s; }
+.ai-best:hover { border-color: rgba(200,255,0,0.45); background: rgba(200,255,0,0.06); color: #fff !important; }
+.ai-stars path { transform-box: fill-box; transform-origin: center; transition: color .25s; }
+.ai-best:hover .ai-stars { color: #c8ff00; }
+.ai-best:hover .ai-star-big   { animation: ai-star 1.2s ease-in-out infinite; }
+.ai-best:hover .ai-star-small { animation: ai-star 1.2s ease-in-out .6s infinite; }
+@keyframes ai-star { 0%, 100% { transform: scale(1) rotate(0); opacity: 1; } 50% { transform: scale(1.35) rotate(25deg); opacity: .75; } }
+.ai-spot { position: absolute; inset: 0; z-index: -1; pointer-events: none; }
+.ai-spot.is-on {
+  background: radial-gradient(circle at 35% 50%, rgba(200,255,0,0.5), rgba(200,255,0,0.12) 40%, transparent 70%);
+  animation: ai-spot .7s ease-out forwards;
+}
+@keyframes ai-spot { from { transform: scale(.3); opacity: 1; } to { transform: scale(1.6); opacity: 0; } }
+@media (prefers-reduced-motion: reduce) {
+  .ai-best:hover .ai-star-big, .ai-best:hover .ai-star-small, .ai-spot.is-on { animation: none; }
+}
+
+/* Ask AI typing hint (ClipPickerShell): example searches are typed out left → right with a
+   blinking caret. The line grows with the text; once it's wider than the box it sticks to the
+   right edge, so the newest letters stay in view, like real typing. */
+.ai-hint {
+  position: absolute; inset: 1px 13px; overflow: hidden; pointer-events: none;
+  display: flex; align-items: center; font-size: 14px; color: rgba(255,255,255,0.45);
+}
+.ai-hint-line { display: flex; justify-content: flex-end; max-width: calc(100% - 3px); overflow: hidden; }
+.ai-hint-text { white-space: pre; }
+.ai-hint-caret { flex-shrink: 0; width: 1.5px; height: 1.1em; margin-left: 1px; background: #c8ff00; border-radius: 1px; animation: ai-caret 1s steps(1) infinite; }
+@keyframes ai-caret { 50% { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .ai-hint-caret { animation: none; } }
+
+
+/* Clip count picker (clip board "Make my clips"): a highlight glides to the picked number
+   with a little overshoot, and the number pops as it's picked */
+.clip-count-glider {
+  position: absolute; top: 0; left: 0; width: 36px; height: 100%; pointer-events: none;
+  background: rgba(255,255,255,0.14); box-shadow: inset 0 0 0 1px rgba(255,255,255,0.08);
+  transition: transform .35s cubic-bezier(.34,1.45,.64,1);
+}
+.clip-count-pop { animation: clip-count-pop .35s cubic-bezier(.34,1.56,.64,1); }
+@keyframes clip-count-pop { 0% { transform: scale(.6); opacity: .4; } 100% { transform: none; opacity: 1; } }
+.clip-count button:not(:disabled):active { transform: scale(.92); }
+@media (prefers-reduced-motion: reduce) { .clip-count-glider { transition: none; } .clip-count-pop { animation: none; } }
+
+/* Video ⇄ Clip preview switch (clip board): a pill track with two equal halves and a lime knob
+   that slides to the picked side, stretching mid-way like a real switch */
+.view-switch {
+  position: relative; display: grid; grid-template-columns: 1fr 1fr; padding: 3px; border-radius: 999px;
+  background: rgba(255,255,255,0.06); box-shadow: inset 0 0 0 1px rgba(255,255,255,0.1), inset 0 1px 3px rgba(0,0,0,0.4);
+}
+.view-switch-knob {
+  position: absolute; top: 3px; bottom: 3px; left: 3px; width: calc(50% - 3px); border-radius: 999px; pointer-events: none;
+  background: linear-gradient(180deg, #d4ff3a, #c8ff00);
+  box-shadow: 0 2px 8px -1px rgba(200,255,0,0.55), inset 0 1px 0 rgba(255,255,255,0.45);
+  transition: transform .42s cubic-bezier(.34,1.3,.64,1);
+}
+.view-switch[data-side="right"] .view-switch-knob { transform: translateX(100%); }
+/* Stretch as it travels: each side uses its own (identical) keyframes, so switching replays it */
+.view-switch[data-side="left"]  .view-switch-knob { animation: view-switch-stretch-l .42s ease; }
+.view-switch[data-side="right"] .view-switch-knob { animation: view-switch-stretch-r .42s ease; }
+@keyframes view-switch-stretch-l { 0%, 100% { scale: 1 1; } 40% { scale: 1.12 .9; } }
+@keyframes view-switch-stretch-r { 0%, 100% { scale: 1 1; } 40% { scale: 1.12 .9; } }
+.view-switch-opt {
+  position: relative; z-index: 1; padding: 6px 14px; border-radius: 999px; white-space: nowrap;
+  font-size: 12px; font-weight: 600; color: rgba(255,255,255,0.65); transition: color .3s ease;
+}
+.view-switch-opt:hover:not([data-on]) { color: #fff; }
+.view-switch-opt[data-on] { color: #000; }
+.view-switch-opt:focus-visible { outline: 2px solid rgba(200,255,0,0.6); outline-offset: 1px; }
+@media (prefers-reduced-motion: reduce) { .view-switch-knob, .view-switch[data-side] .view-switch-knob { transition: none; animation: none; } }
+
+/* ── Editor timeline bar (EditorShell): quiet icon buttons, a thin divider, a zoom slider ── */
+.ed-tl-btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  min-width: 32px; height: 32px; padding: 0 6px; border-radius: 8px;
+  color: rgb(var(--ed-fg) / 0.75); transition: color .15s, background-color .15s, transform .12s;
+}
+.ed-tl-btn:hover:not(:disabled) { color: #fff; background: rgb(var(--ed-fg) / 0.08); }
+.ed-tl-btn:active:not(:disabled) { transform: scale(.92); }
+.ed-tl-btn:disabled { opacity: .35; cursor: default; }
+.ed-tl-btn:focus-visible { outline: 2px solid rgba(200,255,0,0.6); outline-offset: 1px; }
+.ed-tl-btn-text { padding: 0 10px 0 8px; font-size: 13px; font-weight: 500; }
+.ed-tl-danger:hover:not(:disabled) { color: #fca5a5; background: rgba(239,68,68,0.14); }
+.ed-tl-sep { width: 1px; height: 18px; margin: 0 4px; background: rgb(var(--ed-fg) / 0.12); }
+.ed-zoom-range {
+  -webkit-appearance: none; appearance: none; width: 120px; height: 4px; border-radius: 999px; cursor: pointer;
+  background: linear-gradient(90deg, rgb(var(--ed-fg) / 0.7) var(--p), rgb(var(--ed-fg) / 0.15) var(--p));
+}
+.ed-zoom-range::-webkit-slider-thumb {
+  -webkit-appearance: none; width: 14px; height: 14px; border-radius: 50%; background: #fff;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.5); transition: transform .15s;
+}
+.ed-zoom-range::-moz-range-thumb { width: 14px; height: 14px; border: 0; border-radius: 50%; background: #fff; box-shadow: 0 1px 4px rgba(0,0,0,0.5); }
+.ed-zoom-range:hover::-webkit-slider-thumb { transform: scale(1.15); }
+.ed-zoom-range:focus-visible { outline: 2px solid rgba(200,255,0,0.6); outline-offset: 4px; }
+
+/* "What's selected" label in the timeline bar: grey hint when nothing is picked, lime for a
+   video section (matches its lime trim frame), purple for music (matches its bar) */
+.ed-sel-chip {
+  display: inline-flex; align-items: center; gap: 6px; max-width: 220px; height: 26px; padding: 0 10px;
+  border-radius: 999px; font-size: 11.5px; font-weight: 600; white-space: nowrap;
+  color: rgb(var(--ed-fg) / 0.45); border: 1px dashed rgb(var(--ed-fg) / 0.18);
+  transition: color .2s, background-color .2s, border-color .2s;
+}
+.ed-sel-chip[data-kind="video"] { color: #c8ff00; background: rgba(200,255,0,0.1); border: 1px solid rgba(200,255,0,0.45); }
+.ed-sel-chip[data-kind="music"] { color: #e9d5ff; background: rgba(192,132,252,0.16); border: 1px solid rgba(192,132,252,0.6); }
+
+/* Instant tooltip for icon-only editor buttons: the button's data-tip shows in a small label
+   above it as soon as it's hovered or focused (no browser delay) */
+.ed-tip { position: relative; }
+.ed-tip::after {
+  content: attr(data-tip); position: absolute; left: 50%; bottom: calc(100% + 8px); translate: -50% 4px;
+  padding: 5px 9px; border-radius: 7px; white-space: nowrap; pointer-events: none; z-index: 80;
+  font-size: 11.5px; font-weight: 600; color: #0a0a0a; background: #f4f4f5;
+  box-shadow: 0 6px 18px -6px rgba(0,0,0,0.6); opacity: 0; transition: opacity .15s, translate .15s;
+}
+.ed-tip:hover::after, .ed-tip:focus-visible::after { opacity: 1; translate: -50% 0; }
+.ed-tl-btn[data-active] { color: #c8ff00; background: rgba(200,255,0,0.1); }

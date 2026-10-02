@@ -20,7 +20,7 @@ export const EDITOR_TOUR: TourStep[] = [
   {
     target: 'timeline',
     title: 'Trim on the timeline',
-    body: 'Click anywhere to jump. Drag the handles at the ends of a block to trim it, and press Split to use a different format for each part.',
+    body: 'Click anywhere to jump, or click a section to select it. Drag its ends to resize it, or press ✂ Trim (S) to cut it in two.',
   },
   {
     target: 'tools',
