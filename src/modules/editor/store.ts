@@ -78,6 +78,8 @@ interface EditorActions {
   setSegmentEdge: (segId: string, edge: 'start' | 'end', tMs: number, durationMs: number) => void
   /** Move the shared edge of two touching formats together (one grows, the other shrinks). */
   moveJunction: (leftId: string, rightId: string, tMs: number) => void
+  /** A join dragged onto the next one: `removeId` goes and the touching `keepId` takes its time */
+  absorbSection: (removeId: string, keepId: string) => void
   /** Create a format over [startMs, endMs] (an uncovered stretch). `pos` frames slot 0, or each slot when a list. Returns its id. */
   addFormat: (startMs: number, endMs: number, layout: LayoutType, videoAR?: number, pos?: BoxPosition | (BoxPosition | undefined)[]) => string
   updateBoxSource: (segId: string, boxId: string, source_video_id: string | null, source_offset_ms: number) => void
@@ -135,6 +137,15 @@ function withFrameEdges(prev: SegmentLocal, next: SegmentLocal): SegmentLocal {
     },
   }
 }
+
+/**
+ * What each video (B-roll) shot covered when it went in, so taking it out — or moving it, which
+ * takes it out and puts it in again — gives the sections under it back exactly as they were:
+ * their edges, and any section it covered whole. Without this a shot dragged across a section
+ * edge would move that edge, and a section it passed over would be lost.
+ * Kept for this session only: after a reload a removed shot gives its time to the section before it.
+ */
+const brollUnder = new Map<string, { covered: SegmentLocal[]; afterId: string | null }>()
 
 export const useEditorStore = create<EditorState & EditorActions>()((set, get) => ({
   segments: [],
@@ -198,6 +209,19 @@ export const useEditorStore = create<EditorState & EditorActions>()((set, get) =
     if (t === left.end_ms && t === right.start_ms) return s
     return {
       segments: s.segments.map(x => x.id === leftId ? withFrameEdges(x, { ...x, end_ms: t }) : x.id === rightId ? withFrameEdges(x, withStart(x, t)) : x),
+    }
+  }),
+
+  absorbSection: (removeId, keepId) => set(s => {
+    const gone = s.segments.find(x => x.id === removeId), keep = s.segments.find(x => x.id === keepId)
+    if (!gone || !keep) return s
+    const keepBefore = keep.end_ms <= gone.start_ms + 1
+    return {
+      segments: s.segments.filter(x => x.id !== removeId).map(x => x.id !== keepId ? x
+        // Before it: runs on to its end. After it: starts where it started (its video from there too)
+        : keepBefore ? withFrameEdges(x, { ...x, end_ms: gone.end_ms }) : withFrameEdges(x, withStart(x, gone.start_ms))),
+      activeSegmentId: s.activeSegmentId === removeId ? keepId : s.activeSegmentId,
+      activeBoxId: s.activeSegmentId === removeId ? null : s.activeBoxId,
     }
   }),
 
@@ -540,6 +564,8 @@ export const useEditorStore = create<EditorState & EditorActions>()((set, get) =
       } as CropBoxLocal
       const added: CropBoxLocal[] = [brollBox]
       const out: SegmentLocal[] = []
+      const covered = s.segments.filter(seg => !(seg.end_ms <= startMs || seg.start_ms >= endMs)).sort((a, b) => a.start_ms - b.start_ms)
+      let afterId: string | null = null
       for (const seg of s.segments) {
         if (seg.end_ms <= startMs || seg.start_ms >= endMs) { out.push(seg); continue }
         // The part before the shot keeps its framing as it was
@@ -556,10 +582,12 @@ export const useEditorStore = create<EditorState & EditorActions>()((set, get) =
             ],
           }))
           added.push(...boxes)
-          out.push({ ...seg, id: crypto.randomUUID(), start_ms: endMs, crop_boxes: boxes })
+          afterId = crypto.randomUUID()
+          out.push({ ...seg, id: afterId, start_ms: endMs, crop_boxes: boxes })
         }
       }
       out.push({ id, start_ms: startMs, end_ms: endMs, layout: 'vertical', sort_order: 0, crop_boxes: [brollBox] })
+      brollUnder.set(id, { covered, afterId })
       const segments = out.sort((a, b) => a.start_ms - b.start_ms).map((seg, i) => ({ ...seg, sort_order: i }))
       return { segments, keyframes: withBoxes(s.keyframes, added) }
     })
@@ -570,6 +598,49 @@ export const useEditorStore = create<EditorState & EditorActions>()((set, get) =
     const seg = s.segments.find(x => x.id === id)
     if (!seg) return s
     const rest = s.segments.filter(x => x.id !== id)
+    const clearSel = {
+      activeSegmentId: s.activeSegmentId === id ? null : s.activeSegmentId,
+      activeBoxId: s.activeSegmentId === id ? null : s.activeBoxId,
+    }
+
+    // Put back what the shot covered, if its neighbours are still the pieces it cut and nothing
+    // else was put in its time since
+    const rec = brollUnder.get(id)
+    brollUnder.delete(id)
+    if (rec && rec.covered.length) {
+      const first = rec.covered[0]
+      const last = rec.covered[rec.covered.length - 1]
+      const before = first.start_ms < seg.start_ms ? rest.find(x => x.id === first.id && Math.abs(x.end_ms - seg.start_ms) <= 1) : undefined
+      const after = rec.afterId ? rest.find(x => x.id === rec.afterId && Math.abs(x.start_ms - seg.end_ms) <= 1) : undefined
+      const free = !rest.some(x => x.start_ms < seg.end_ms - 1 && x.end_ms > seg.start_ms + 1)
+      if ((first.start_ms < seg.start_ms ? !!before : true) && (rec.afterId ? !!after : true) && free) {
+        const sameSection = first.id === last.id
+        const restored: SegmentLocal[] = []
+        for (const c of rec.covered) {
+          if (before && c.id === first.id) continue                     // extended below
+          if (c.id === last.id && after) {
+            if (sameSection && before) continue                          // the part before takes it back
+            // The section after the shot: its original framing, unless its layout was changed since
+            restored.push(after.layout === c.layout ? { ...c, end_ms: after.end_ms } : withStart(after, c.start_ms))
+            continue
+          }
+          restored.push(c)                                               // covered whole: back as it was
+        }
+        const segments = [
+          ...rest
+            .filter(x => x.id !== rec.afterId)
+            .map(x => before && x.id === before.id ? { ...x, end_ms: sameSection && after ? after.end_ms : first.end_ms } : x),
+          ...restored,
+        ].sort((a, b) => a.start_ms - b.start_ms).map((x, i) => ({ ...x, sort_order: i }))
+        // Boxes put back keep their keyframes (added again only if they were dropped)
+        const keyframes = { ...s.keyframes }
+        for (const box of restored.flatMap(x => x.crop_boxes)) {
+          if (!keyframes[box.id]) keyframes[box.id] = (box.keyframes ?? []).map(k => ({ id: crypto.randomUUID(), box_id: box.id, ...k })).sort((a, b) => a.t_ms - b.t_ms)
+        }
+        return { segments, keyframes, ...clearSel }
+      }
+    }
+
     const prev = rest.find(x => x.end_ms === seg.start_ms)
     const next = rest.find(x => x.start_ms === seg.end_ms)
     return {

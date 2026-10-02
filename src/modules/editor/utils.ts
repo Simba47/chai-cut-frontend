@@ -117,6 +117,9 @@ function toLocal(s: SegmentRow): SegmentLocal {
     layout: s.layout,
     sort_order: s.sort_order,
     frame: s.frame ?? null,
+    ...(s.hidden ? { hidden: true } : {}),
+    ...(s.muted ? { muted: true } : {}),
+    ...(s.locked ? { locked: true } : {}),
     crop_boxes: s.crop_boxes.map(b => ({
       id: b.id,
       slot_index: b.slot_index,
@@ -127,6 +130,7 @@ function toLocal(s: SegmentRow): SegmentLocal {
       image_motion: b.image_motion ?? null,
       volume: b.volume ?? 1,
       muted: b.muted ?? false,
+      ...(b.hidden ? { hidden: true } : {}),
       keyframes: b.box_keyframes,
     })),
   })

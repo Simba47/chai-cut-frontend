@@ -44,6 +44,8 @@ export interface FrameItem {
   /** This video's share in the audio mix (0–1) */
   volume?: number
   muted?: boolean
+  /** Not shown (or heard) in the preview or the export */
+  hidden?: boolean
   // Photo
   image_path?: string | null
   /** Signed URL for image_path — preview only, never saved */
@@ -137,6 +139,10 @@ export interface Segment {
   sort_order: number
   /** Frame layouts only: letterbox band settings */
   frame?: FrameSettings | null
+  /** Editor controls: not shown or exported / silent / can't be moved, trimmed or deleted */
+  hidden?: boolean
+  muted?: boolean
+  locked?: boolean
 }
 
 export interface CropBox {
@@ -155,6 +161,8 @@ export interface CropBox {
   /** Frame slots: this video's share in the audio mix (0–1) */
   volume?: number
   muted?: boolean
+  /** An added video (B-roll) hidden: the main video shows there instead */
+  hidden?: boolean
 }
 
 export interface BoxKeyframe {
@@ -205,6 +213,9 @@ export interface TextOverlay {
   font: string | null
   size: number | null
   color: string | null
+  /** Editor controls: not shown or exported / can't be moved, trimmed or deleted */
+  hidden?: boolean
+  locked?: boolean
 }
 
 export interface AudioTrack {
@@ -218,6 +229,9 @@ export interface AudioTrack {
   offset_ms?: number
   /** Trimmed music: clip time where this track stops (default: when the song ends) */
   end_ms?: number
+  /** Editor controls: silent / can't be moved, trimmed or deleted */
+  muted?: boolean
+  locked?: boolean
 }
 
 export interface Transition {
@@ -275,6 +289,10 @@ export interface Overlay {
   end_ms: number
   z_index: number
   created_at: string
+  /** Editor controls: not shown or exported / silent / can't be moved, trimmed or deleted */
+  hidden?: boolean
+  muted?: boolean
+  locked?: boolean
 }
 
 // ─── Editor state (client-only, not persisted as a single blob) ────────────────
@@ -288,6 +306,8 @@ export interface CropBoxLocal extends Omit<CropBox, 'segment_id'> {
 export interface SegmentLocal extends Omit<Segment, 'id' | 'clip_id'> {
   id: string
   crop_boxes: CropBoxLocal[]
+  /** Preview only (shownSegment): a hidden added video whose sound is on — heard, not seen */
+  sound_only?: { video_id: string; offset_ms: number; volume?: number }
 }
 
 // ─── Layout slot counts ────────────────────────────────────────────────────────

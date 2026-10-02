@@ -20,10 +20,12 @@ const muted = (a: number) => `rgb(var(--ed-fg) / ${a})`
  * start from, search, hover to preview, add at the playhead; the shots already in the clip can be
  * moved, lengthened or removed (or dragged on the timeline).
  */
-export function BrollPanel({ clipId, currentTimeMs, shots, onAdd, onMove, onResize, onRemove, onSeek }: {
+export function BrollPanel({ clipId, currentTimeMs, shots, selectedId = null, onAdd, onMove, onResize, onRemove, onSeek }: {
   clipId: string
   currentTimeMs: number
   shots: BrollShot[]
+  /** The shot picked on the timeline: highlighted and scrolled into view */
+  selectedId?: string | null
   onAdd: (item: StockResult, lengthMs: number) => Promise<void>
   onMove: (id: string, deltaMs: number) => void
   onResize: (id: string, deltaMs: number) => void
@@ -40,6 +42,10 @@ export function BrollPanel({ clipId, currentTimeMs, shots, onAdd, onMove, onResi
   const [lengthMs, setLengthMs] = useState(3000)
   const [adding, setAdding] = useState(false)
   const asked = useRef('')
+  const shotsRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (selectedId) shotsRef.current?.querySelector(`[data-shot-id="${selectedId}"]`)?.scrollIntoView({ block: 'nearest' })
+  }, [selectedId])
 
   // Ideas for this clip, once
   useEffect(() => {
@@ -147,10 +153,11 @@ export function BrollPanel({ clipId, currentTimeMs, shots, onAdd, onMove, onResi
 
       {/* Shots in this clip */}
       {shots.length > 0 && (
-        <div className="flex flex-col gap-1.5">
+        <div ref={shotsRef} className="flex flex-col gap-1.5">
           <span className="text-xs font-medium" style={{ color: muted(0.5) }}>In this clip</span>
           {shots.map(s => (
-            <div key={s.id} className="flex items-center gap-2 px-2 py-1.5 rounded-lg" style={{ background: muted(0.04), border: `1px solid ${muted(0.07)}` }}>
+            <div key={s.id} data-shot-id={s.id} className="flex items-center gap-2 px-2 py-1.5 rounded-lg"
+              style={{ background: muted(s.id === selectedId ? 0.08 : 0.04), border: `1px solid ${s.id === selectedId ? '#f97316' : muted(0.07)}` }}>
               <button onClick={() => onSeek(s.start_ms)} className="flex-1 min-w-0 text-left" title="Go to this shot">
                 <p className="text-xs truncate" style={{ color: 'var(--ed-text)' }}>{s.title}</p>
                 <p className="text-[10px] tabular-nums" style={{ color: muted(0.5) }}>{fmt(s.start_ms)} · {((s.end_ms - s.start_ms) / 1000).toFixed(1)}s</p>

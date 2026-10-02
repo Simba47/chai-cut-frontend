@@ -141,7 +141,7 @@ function msToLabel(ms: number): string {
   return `${m}:${String(s % 60).padStart(2, '0')}`
 }
 
-export const ZOOM_STEPS = [1, 1.5, 2, 3, 4, 6, 8]
+export const ZOOM_STEPS = [1, 1.25, 1.5, 2, 3, 4]
 
 /** Zoom out · Fit · Zoom in, for the timeline (inside it, or in the editor's control bar) */
 export function TimelineZoom({ zoom, onZoom }: { zoom: number; onZoom: (z: number) => void }) {
@@ -224,14 +224,23 @@ interface Props {
   pickedSegmentId?: string | null
   /** Clicking the strip picks the section under the pointer; clicking anywhere else clears it */
   onPickSegment?: (id: string | null) => void
+  /** A join dragged onto the next one: the section between goes, the one dragged from takes its time */
+  onSwallowSection?: (removeId: string, keepId: string) => void
   /** Background music, one bar per track on a Music lane (drag a bar to change when it starts) */
-  musicTracks?: { id: string; name: string; start_ms: number; duration_ms?: number }[]
+  musicTracks?: { id: string; name: string; start_ms: number; duration_ms?: number; /** the main video's own sound, detached: shown over the strip */ original?: boolean; muted?: boolean; locked?: boolean }[]
   onMusicMove?: (id: string, startMs: number) => void
+  /** A music bar's end dragged: the start cuts into the song (its end stays put), the end shortens or lengthens it */
+  onMusicTrim?: (id: string, edge: 'start' | 'end', ms: number) => void
   /** The music bar selected for Trim / Delete (it gets a white ring), and clicking a bar selects it */
   selectedMusicId?: string | null
   onSelectMusic?: (id: string) => void
-  /** "+" at the start / end of the strip: open the Add menu (photos, videos, music, text) there */
-  onAddAt?: (where: 'start' | 'end', anchor: DOMRect) => void
+  /** The "+" riding on the playhead over the strip: add a video, photo, music or text there */
+  onAddHere?: (anchor: DOMRect) => void
+  /** Photos over the clip, on their own lane: drag to move, drag the ends to trim, click to pick */
+  photos?: { id: string; start_ms: number; end_ms: number; url?: string; hidden?: boolean; locked?: boolean }[]
+  activePhotoId?: string | null
+  onSelectPhoto?: (id: string) => void
+  onPhotoTimeChange?: (id: string, updates: { start_ms: number; end_ms: number }) => void
   /** Controlled zoom (e.g. when the zoom buttons live in the editor's control bar) */
   zoom?: number
   onZoomChange?: (z: number) => void
@@ -252,9 +261,15 @@ export function SegmentTimeline({
   onUpdateSegment,
   onSetEdge,
   onMoveJunction,
+  onSwallowSection,
   textOverlays = [],
+  photos = [],
+  activePhotoId = null,
+  onSelectPhoto,
+  onPhotoTimeChange,
   musicTracks = [],
   onMusicMove,
+  onMusicTrim,
   selectedMusicId = null,
   onSelectMusic,
   activeTextOverlayId,
@@ -278,7 +293,7 @@ export function SegmentTimeline({
   zoom: zoomProp,
   onZoomChange,
   onDeleteSegment,
-  onAddAt,
+  onAddHere,
   pickedSegmentId = null,
   onPickSegment,
   showToolbar = true,
@@ -291,6 +306,8 @@ export function SegmentTimeline({
   const [viewW, setViewW] = useState(0)
   const [dragging, setDragging] = useState<string | null>(null)
   const [snapLine, setSnapLine] = useState<number | null>(null)
+  // A join dragged onto the next join: the section that goes when it's released
+  const [doomed, setDoomed] = useState<{ id: string; label: string; start: number; end: number } | null>(null)
   // A B-roll shot being dragged: where it would land
   const [brollGhost, setBrollGhost] = useState<{ id: string; start: number; end: number } | null>(null)
   // Lane pointed at from the preview: scroll to it, focus its "+", and pulse it for a moment
@@ -362,7 +379,8 @@ export function SegmentTimeline({
       const y = rect ? e.clientY - rect.top : -1
       const onStrip = y >= STRIP_TOP && y <= STRIP_TOP + STRIP_H
       const t = msFromClientX(e.clientX)
-      const hit = onStrip ? mains.find(m => t >= m.start_ms && t < m.end_ms) : undefined
+      // The strip under a video (B-roll) section picks that section too
+      const hit = onStrip ? mains.find(m => t >= m.start_ms && t < m.end_ms) ?? brolls.find(b => t >= b.start_ms && t < b.end_ms) : undefined
       onPickSegment(hit?.id ?? null)
     }
     onSeek(msFromClientX(e.clientX))
@@ -414,15 +432,36 @@ export function SegmentTimeline({
   function handleJunctionDown(e: React.PointerEvent, left: SegmentLocal, right: SegmentLocal) {
     e.stopPropagation()
     e.preventDefault()
+    if (left.locked || right.locked) { onSeek(left.end_ms); return }
     const sx = e.clientX
     let moved = false
     const now0 = nowRef.current
     const side = now0 >= left.start_ms && now0 < left.end_ms ? 'left' : now0 >= right.start_ms && now0 < right.end_ms ? 'right' : null
+    const orig = left.end_ms
+    // Dragged (nearly) onto the far edge of a section: that section would go. It stays as it was,
+    // in red, until release; pulling back makes it an ordinary drag again.
+    let doom: { removeId: string; keepId: string } | null = null
+    const DOOM_PX = 14
     setDragging(`join-${left.id}`)
     const move = (ev: PointerEvent) => {
       if (!moved && Math.abs(ev.clientX - sx) < 3) return
       moved = true
-      const t = clampJunction(left, right, snap(msFromClientX(ev.clientX), left, right))
+      const raw = msFromClientX(ev.clientX)
+      if (onSwallowSection) {
+        const rect = trackRef.current?.getBoundingClientRect()
+        const tol = rect ? (DOOM_PX / rect.width) * duration : 0
+        const gone = raw >= right.end_ms - MIN_FORMAT_MS - tol ? right : raw <= left.start_ms + MIN_FORMAT_MS + tol ? left : null
+        if (gone) {
+          if (!doom) moveJunction(left, right, orig)   // the edge goes back: the whole section shows as going
+          doom = { removeId: gone.id, keepId: (gone === right ? left : right).id }
+          setDoomed({ id: gone.id, start: gone.start_ms, end: gone.end_ms,
+            label: `Release to remove ${formatName(gone)} ${msToLabel(gone.start_ms)}–${msToLabel(gone.end_ms)}` })
+          setSnapLine(gone === right ? right.end_ms : left.start_ms)
+          return
+        }
+        if (doom) { doom = null; setDoomed(null) }
+      }
+      const t = clampJunction(left, right, snap(raw, left, right))
       // Keep the playhead in the format it was in, so the selection doesn't flip mid-drag
       if (side === 'left' && t <= nowRef.current) onSeek(Math.max(left.start_ms, t - 50))
       if (side === 'right' && t >= nowRef.current) onSeek(Math.min(right.end_ms - 50, t + 50))
@@ -434,6 +473,8 @@ export function SegmentTimeline({
       window.removeEventListener('pointerup', up)
       setDragging(null)
       setSnapLine(null)
+      setDoomed(null)
+      if (doom) { onSwallowSection?.(doom.removeId, doom.keepId); return }
       if (!moved) onSeek(left.end_ms)
     }
     window.addEventListener('pointermove', move)
@@ -445,6 +486,7 @@ export function SegmentTimeline({
     e.stopPropagation()
     e.preventDefault()
     onSelectSegment(seg.id)
+    if (seg.locked) { onSeek(edge === 'start' ? seg.start_ms : Math.max(seg.start_ms, seg.end_ms - 100)); return }
     const sx = e.clientX
     let moved = false
     // Only carry the playhead along if it started inside the format being trimmed
@@ -471,51 +513,151 @@ export function SegmentTimeline({
     window.addEventListener('pointerup', up)
   }
 
-  // Music bar: drag to move where the track starts (it keeps its length; never before the clip starts)
-  function handleMusicDrag(e: React.PointerEvent, id: string, origStart: number) {
-    if (e.button !== 0) return
-    e.stopPropagation(); e.preventDefault()
-    onSelectMusic?.(id)
+  /**
+   * Snapping for everything dragged on the lanes (video, photo, text, music): an edge close to a
+   * section edge (or the playhead, or the clip's ends) jumps onto it, so an item lines up with a
+   * section exactly. A guide line shows where. `ignoreId`: a section not to snap to (a video shot
+   * is a section itself).
+   */
+  const LANE_SNAP_PX = 10
+  // Alt held while dragging: no snapping, the item goes exactly where the pointer is
+  const noSnapRef = useRef(false)
+  function edgeSnap(t: number, ignoreId?: string): number | null {
+    if (noSnapRef.current) return null
     const rect = trackRef.current?.getBoundingClientRect()
-    if (!rect || duration <= 0) return
-    const sx = e.clientX
-    setDragging(`music-${id}`)
-    const move = (ev: PointerEvent) => {
-      const d = ((ev.clientX - sx) / rect.width) * duration
-      onMusicMove?.(id, Math.round(Math.max(0, Math.min(duration - 200, origStart + d))))
+    if (!rect || duration <= 0) return null
+    const tol = (LANE_SNAP_PX / rect.width) * duration
+    let best: number | null = null, bestD = tol
+    for (const x of [0, duration, nowRef.current, ...segments.filter(sg => sg.id !== ignoreId).flatMap(sg => [sg.start_ms, sg.end_ms])]) {
+      const d = Math.abs(x - t)
+      if (d < bestD) { best = x; bestD = d }
     }
-    const up = () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); setDragging(null) }
-    window.addEventListener('pointermove', move)
+    return best
+  }
+  /** One edge dragged: snapped (guide shown), or left where the pointer is */
+  function snapEdgeAt(t: number, ignoreId?: string): number {
+    const sn = edgeSnap(t, ignoreId)
+    setSnapLine(sn)
+    return sn ?? t
+  }
+  /** A whole item moved (length kept): whichever of its ends is closer to an edge snaps */
+  function snapSpanAt(st: number, len: number, ignoreId?: string): number {
+    const a = edgeSnap(st, ignoreId), b = edgeSnap(st + len, ignoreId)
+    const da = a === null ? Infinity : Math.abs(a - st), db = b === null ? Infinity : Math.abs(b - (st + len))
+    if (a !== null && da <= db) { setSnapLine(a); return a }
+    if (b !== null) { setSnapLine(b); return Math.max(0, b - len) }
+    setSnapLine(null)
+    return st
+  }
+  /** "Fits section 2" / "Fits sections 1–2" when an item lines up exactly with sections */
+  function fitLabel(startMs: number, endMs: number): string | null {
+    const sections = byTime.filter(x => x.end_ms - x.start_ms > 50)
+    const first = sections.findIndex(x => Math.abs(x.start_ms - startMs) <= 1)
+    const last = sections.findIndex(x => Math.abs(x.end_ms - endMs) <= 1)
+    if (first === -1 || last < first) return null
+    return first === last ? `Fits section ${first + 1}` : `Fits sections ${first + 1}–${last + 1}`
+  }
+  /** Drag that follows the pointer until it's released */
+  function follow(move: (ev: PointerEvent) => void, done?: () => void) {
+    const up = () => {
+      window.removeEventListener('pointermove', onMove); window.removeEventListener('pointerup', up)
+      setDragging(null); setSnapLine(null); done?.()
+    }
+    const onMove = (ev: PointerEvent) => { noSnapRef.current = ev.altKey; move(ev) }
+    window.addEventListener('pointermove', onMove)
     window.addEventListener('pointerup', up)
   }
+  const msPerPx = () => { const r = trackRef.current?.getBoundingClientRect(); return r && r.width > 0 ? duration / r.width : 0 }
 
+  // Music bar: drag to move where the track starts (it keeps its length; never before the clip starts)
+  function handleMusicDrag(e: React.PointerEvent, m: { id: string; start_ms: number; duration_ms?: number; locked?: boolean }) {
+    if (e.button !== 0) return
+    e.stopPropagation(); e.preventDefault()
+    onSelectMusic?.(m.id)
+    if (m.locked) return
+    const k = msPerPx()
+    if (!k) return
+    const sx = e.clientX
+    const len = musicEnd(m) - m.start_ms
+    setDragging(`music-${m.id}`)
+    follow(ev => {
+      const st = Math.max(0, Math.min(duration - 200, m.start_ms + (ev.clientX - sx) * k))
+      onMusicMove?.(m.id, Math.round(snapSpanAt(st, len)))
+    })
+  }
+
+  // Music bar ends: drag to trim; picks the track too
+  function handleMusicTrim(e: React.PointerEvent, m: { id: string; start_ms: number; duration_ms?: number; locked?: boolean }, edge: 'start' | 'end') {
+    if (e.button !== 0) return
+    e.stopPropagation(); e.preventDefault()
+    onSelectMusic?.(m.id)
+    if (m.locked) return
+    const k = msPerPx()
+    if (!k) return
+    const sx = e.clientX
+    const orig = edge === 'start' ? m.start_ms : musicEnd(m)
+    setDragging(`music-${m.id}`)
+    follow(ev => onMusicTrim?.(m.id, edge, Math.round(snapEdgeAt(orig + (ev.clientX - sx) * k))))
+  }
+
+  // Photo bar: the body moves it, the ends trim it (at least 0.2 s, inside the clip); picks it too
+  function handlePhotoDrag(e: React.PointerEvent, ph: { id: string; start_ms: number; end_ms: number; locked?: boolean }, part: 'body' | 'start' | 'end') {
+    if (e.button !== 0) return
+    e.stopPropagation(); e.preventDefault()
+    onSelectPhoto?.(ph.id)
+    if (ph.locked) return
+    const k = msPerPx()
+    if (!k) return
+    const sx = e.clientX
+    const len = ph.end_ms - ph.start_ms
+    setDragging(`photo-${ph.id}`)
+    follow(ev => {
+      const d = (ev.clientX - sx) * k
+      if (part === 'body') {
+        const st = Math.round(snapSpanAt(Math.max(0, Math.min(duration - len, ph.start_ms + d)), len))
+        onPhotoTimeChange?.(ph.id, { start_ms: st, end_ms: Math.min(duration, st + len) })
+      } else if (part === 'start') {
+        onPhotoTimeChange?.(ph.id, { start_ms: Math.round(Math.max(0, Math.min(ph.end_ms - 200, snapEdgeAt(ph.start_ms + d)))), end_ms: ph.end_ms })
+      } else {
+        onPhotoTimeChange?.(ph.id, { start_ms: ph.start_ms, end_ms: Math.round(Math.min(duration, Math.max(ph.start_ms + 200, snapEdgeAt(ph.end_ms + d)))) })
+      }
+    })
+  }
+
+  // Text bar: the body moves it, the ends trim it (at least 0.2 s, inside the clip)
   function handleTextOverlayBodyDrag(e: React.PointerEvent, id: string, origStart: number, origEnd: number) {
     e.stopPropagation()
-    const rect = trackRef.current?.getBoundingClientRect()
-    if (!rect) return
+    if (textOverlays.find(t => t.id === id)?.locked) return
+    const k = msPerPx()
+    if (!k) return
     const sx = e.clientX
-    const dur = origEnd - origStart
-    function move(ev: PointerEvent) {
-      const dMs = ((ev.clientX - sx) / rect!.width) * duration
-      const newStart = Math.round(Math.max(0, Math.min(duration - dur, origStart + dMs)))
-      onTextOverlayUpdate?.(id, { start_ms: newStart, end_ms: newStart + dur })
-    }
-    function up() { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up) }
-    window.addEventListener('pointermove', move)
-    window.addEventListener('pointerup', up)
+    const len = origEnd - origStart
+    setDragging(`text-${id}`)
+    follow(ev => {
+      const st = Math.round(snapSpanAt(Math.max(0, Math.min(duration - len, origStart + (ev.clientX - sx) * k)), len))
+      onTextOverlayUpdate?.(id, { start_ms: st, end_ms: Math.min(duration, st + len) })
+    })
   }
 
   function handleTextOverlayEdgeDrag(e: React.PointerEvent, id: string, origStart: number, origEnd: number, side: 'left' | 'right') {
     e.stopPropagation()
-    function move(ev: PointerEvent) {
-      const ms = Math.round(msFromClientX(ev.clientX))
-      if (side === 'right') onTextOverlayUpdate?.(id, { end_ms: Math.max(ms, origStart + 200) })
-      else onTextOverlayUpdate?.(id, { start_ms: Math.min(ms, origEnd - 200) })
-    }
-    function up() { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up) }
-    window.addEventListener('pointermove', move)
-    window.addEventListener('pointerup', up)
+    if (textOverlays.find(t => t.id === id)?.locked) return
+    setDragging(`text-${id}`)
+    follow(ev => {
+      const ms = Math.round(snapEdgeAt(msFromClientX(ev.clientX)))
+      if (side === 'right') onTextOverlayUpdate?.(id, { end_ms: Math.min(duration, Math.max(ms, origStart + 200)) })
+      else onTextOverlayUpdate?.(id, { start_ms: Math.max(0, Math.min(ms, origEnd - 200)) })
+    })
   }
+
+  /** Dashed guide through a lane while one of its items sits on an edge */
+  const laneGuide = (prefix: string) => snapLine !== null && dragging?.startsWith(prefix) ? (
+    <div className="absolute top-0 bottom-0 pointer-events-none" style={{ left: `calc(${pct(snapLine)}% - 0.5px)`, width: 0, borderLeft: `1.5px dashed ${ACCENT}`, zIndex: 20 }} />
+  ) : null
+  /** The lime tag on a bar that lines up with sections */
+  const fitTag = (label: string | null) => label ? (
+    <span className="relative shrink-0 px-1.5 rounded-full text-[9px] font-bold whitespace-nowrap pointer-events-none" style={{ background: ACCENT, color: '#000' }}>{label}</span>
+  ) : null
 
   // Frame lane items: drag the body to move, the ends to trim. Items stay inside their format
   // and never cover a neighbour on the same lane.
@@ -603,6 +745,9 @@ export function SegmentTimeline({
 
   const pct = (ms: number) => (duration > 0 ? (ms / duration) * 100 : 0)
   const playheadPct = pct(currentTimeMs)
+  // The "+" on the playhead's time label: the Add menu there (or, without it, a single frame's slot)
+  const showPlus = !!onAddHere || (!!frameSeg && isFrameLayout(frameSeg.layout) && !visibleLanes(frameSeg).some(r => r.lane === 0)
+    && currentTimeMs >= frameSeg.start_ms && currentTimeMs < frameSeg.end_ms)
   const byTime = [...segments].sort((a, b) => a.start_ms - b.start_ms)
 
   // Ruler: pick the smallest spacing that keeps labels readable at this zoom
@@ -618,11 +763,14 @@ export function SegmentTimeline({
   const brolls = byTime.filter(sg => isBroll(sg) && !isFrameLayout(sg.layout))
   const mains = byTime.filter(sg => !brolls.includes(sg))
   // One lane over the strip holds the joins between touching formats and the B-roll shots
-  const RULER_H = 30, LANE_H = brolls.length ? 42 : 22, STRIP_H = 52
+  const RULER_H = 30, LANE_H = 22, STRIP_H = 52
   /** The format a B-roll shot sits over (the one before it, else after): the strip keeps its colour there */
   const underBroll = (seg: SegmentLocal) =>
     [...mains].reverse().find(m => m.end_ms <= seg.start_ms + 1) ?? mains.find(m => m.start_ms >= seg.end_ms - 1)
-  const STRIP_TOP = RULER_H + LANE_H
+  // The main video's own sound, when detached, sits in a row right over the strip
+  const originals = musicTracks.filter(m => m.original)
+  const ORIG_H = originals.length ? 24 : 0
+  const STRIP_TOP = RULER_H + LANE_H + ORIG_H
 
   // Places where one format ends exactly where the next begins
   const junctions: { left: SegmentLocal; right: SegmentLocal }[] = []
@@ -637,6 +785,7 @@ export function SegmentTimeline({
   function handleBrollDown(e: React.PointerEvent, seg: SegmentLocal, part: 'body' | 'start' | 'end') {
     e.stopPropagation(); e.preventDefault()
     onSelectSegment(seg.id)
+    if (seg.locked) { onSeek(seg.start_ms); onPickSegment?.(seg.id); return }
     const sx = e.clientX
     const grab = msFromClientX(e.clientX) - seg.start_ms
     const len = seg.end_ms - seg.start_ms
@@ -646,10 +795,11 @@ export function SegmentTimeline({
     const move = (ev: PointerEvent) => {
       if (!moved && Math.abs(ev.clientX - sx) < 3) return
       moved = true
+      noSnapRef.current = ev.altKey
       const t = msFromClientX(ev.clientX)
-      if (part === 'body') { const st = Math.max(0, Math.min(duration - len, t - grab)); next = { start: st, end: st + len } }
-      else if (part === 'start') next = { start: Math.max(0, Math.min(seg.end_ms - 500, t)), end: seg.end_ms }
-      else next = { start: seg.start_ms, end: Math.min(duration, Math.max(seg.start_ms + 500, t)) }
+      if (part === 'body') { const st = snapSpanAt(Math.max(0, Math.min(duration - len, t - grab)), len, seg.id); next = { start: st, end: Math.min(duration, st + len) } }
+      else if (part === 'start') next = { start: Math.max(0, Math.min(seg.end_ms - 500, snapEdgeAt(t, seg.id))), end: seg.end_ms }
+      else next = { start: seg.start_ms, end: Math.min(duration, Math.max(seg.start_ms + 500, snapEdgeAt(t, seg.id))) }
       setBrollGhost({ id: seg.id, ...next })
     }
     const up = () => {
@@ -657,7 +807,8 @@ export function SegmentTimeline({
       window.removeEventListener('pointerup', up)
       setDragging(null)
       setBrollGhost(null)
-      if (!moved) { onSeek(seg.start_ms); return }
+      setSnapLine(null)
+      if (!moved) { onSeek(seg.start_ms); onPickSegment?.(seg.id); return }
       onBrollChange?.(seg.id, Math.round(next.start), Math.round(next.end))
     }
     window.addEventListener('pointermove', move)
@@ -670,11 +821,23 @@ export function SegmentTimeline({
   const musicRows: (typeof musicTracks)[] = []
   {
     const ends: number[] = []
-    for (const m of [...musicTracks].sort((a, b) => a.start_ms - b.start_ms)) {
+    for (const m of musicTracks.filter(x => !x.original).sort((a, b) => a.start_ms - b.start_ms)) {
       let r = ends.findIndex(e => e <= m.start_ms + 1)
       if (r === -1) { r = ends.length; ends.push(0); musicRows.push([]) }
       musicRows[r].push(m)
       ends[r] = musicEnd(m)
+    }
+  }
+
+  // Photo rows: photos that overlap in time go on separate rows
+  const photoRows: (typeof photos)[] = []
+  {
+    const ends: number[] = []
+    for (const ph of [...photos].sort((a, b) => a.start_ms - b.start_ms)) {
+      let r = ends.findIndex(e => e <= ph.start_ms + 1)
+      if (r === -1) { r = ends.length; ends.push(0); photoRows.push([]) }
+      photoRows[r].push(ph)
+      ends[r] = ph.end_ms
     }
   }
 
@@ -689,6 +852,40 @@ export function SegmentTimeline({
     if (duration - cursor >= 50) gaps.push({ start_ms: cursor, end_ms: duration })
   }
 
+  // Text rows: texts that don't overlap in time share a row
+  const textRows: (typeof textOverlays)[] = []
+  {
+    const ends: number[] = []
+    for (const o of [...textOverlays].sort((a, b) => a.start_ms - b.start_ms)) {
+      let r = ends.findIndex(e => e <= o.start_ms + 1)
+      if (r === -1) { r = ends.length; ends.push(0); textRows.push([]) }
+      textRows[r].push(o)
+      ends[r] = o.end_ms
+    }
+  }
+  // Like a frame's lanes: media in the section under the playhead shows full size; the rest shrinks
+  // to a thin line in its colour (still there to click or drag — picked or dragged, it's full size)
+  const focusSec = byTime.find(x => currentTimeMs >= x.start_ms && currentTimeMs < x.end_ms)
+    ?? gaps.find(g => currentTimeMs >= g.start_ms && currentTimeMs < g.end_ms)
+  const inFocus = (startMs: number, endMs: number) => !focusSec || (startMs < focusSec.end_ms && endMs > focusSec.start_ms)
+  const THIN_ROW_H = 6
+  /** A thin media line (outside the section under the playhead) */
+  const thinBar = (color: string, startMs: number, endMs: number): React.CSSProperties => ({
+    left: `${pct(startMs)}%`, width: `max(6px, ${pct(endMs - startMs)}%)`, top: '50%', height: 4, transform: 'translateY(-50%)',
+    borderRadius: 2, backgroundColor: `${color}b3`, cursor: 'pointer', touchAction: 'none',
+  })
+  /** A media bar on its row: tinted with its kind's colour, a solid edge on the left; picked = white ring */
+  const mediaBar = (color: string, startMs: number, endMs: number, sel: boolean, on: boolean, fits: boolean, st?: { hidden?: boolean; locked?: boolean }): React.CSSProperties => ({
+    left: `${pct(startMs)}%`, width: `max(12px, ${pct(endMs - startMs)}%)`, borderRadius: 5, paddingRight: 8,
+    backgroundColor: `${color}${sel || on ? '55' : '30'}`,
+    boxShadow: fits && on ? `inset 0 0 0 1.5px ${ACCENT}, 0 0 10px rgba(200,255,0,0.35)`
+      : sel ? `inset 0 0 0 1.5px #fff, 0 0 8px ${color}88`
+        : `inset 0 0 0 1px ${color}80`,
+    cursor: on ? 'grabbing' : 'grab', touchAction: 'none',
+    ...(st?.hidden ? { opacity: 0.45, backgroundImage: 'repeating-linear-gradient(135deg, rgba(0,0,0,0.35) 0 4px, transparent 4px 8px)' } : {}),
+    ...(st?.locked ? { cursor: 'pointer' } : {}),
+  })
+
   return (
     <div className="flex flex-col select-none" style={{ gap: 6 }}>
       {/* ── Toolbar: zoom (hidden when the editor's control bar holds the zoom buttons) ── */}
@@ -700,7 +897,6 @@ export function SegmentTimeline({
 
       {/* "+" on the left of the strip (lined up with it) opens the Add menu */}
       <div className="flex items-start gap-2">
-      {onAddAt && <AddEndButton where="start" top={STRIP_TOP + 1} height={STRIP_H} onAdd={onAddAt} />}
       {/* No visible scrollbar: when zoomed in, the wheel scrolls sideways and the view follows the playhead */}
       <div ref={scrollRef} className="relative flex-1 min-w-0 overflow-x-auto overflow-y-hidden rounded-2xl no-scrollbar"
         style={{
@@ -711,7 +907,7 @@ export function SegmentTimeline({
         }}>
         {/* Side padding keeps the handles at the very ends of the clip clear of the rounded border */}
         <div className="relative" style={{ width: `${zoom * 100}%`, minWidth: '100%', padding: '0 14px' }}>
-          <div ref={trackRef} className="relative" style={{ cursor: 'pointer', paddingBottom: 10 }} onPointerDown={handleTrackDrag}>
+          <div ref={trackRef} className="relative" style={{ cursor: 'pointer', paddingBottom: 4 }} onPointerDown={handleTrackDrag}>
 
             {/* ── Ruler ─────────────────────────────────────────────── */}
             <div className="relative" style={{ height: RULER_H }}>
@@ -733,48 +929,14 @@ export function SegmentTimeline({
             </div>
 
 
-            {/* ── Overlay lane: B-roll shots, and a handle wherever two formats touch ── */}
+            {/* ── Joins lane: a handle wherever two sections touch ── */}
             <div className="relative" style={{ height: LANE_H }}>
-              {junctions.length === 0 && brolls.length === 0 && (
+              {junctions.length === 0 && (
                 <span className="absolute left-0 top-1/2 -translate-y-1/2 flex items-center gap-1.5 text-[10px] pointer-events-none" style={{ color: 'rgb(var(--ed-fg) / 0.24)' }}>
-                  <span className="w-1 h-1 rounded-full" style={{ background: '#f97316', boxShadow: '0 0 6px #f97316' }} />
-                  B-roll and joins between formats show up here
+                  <span className="w-1 h-1 rounded-full" style={{ background: '#c8ff00', boxShadow: '0 0 6px #c8ff00' }} />
+                  Joins between sections show up here — drag one to move both
                 </span>
               )}
-                {brolls.map(seg => {
-                  const active = seg.id === activeSegmentId
-                  const at = brollGhost?.id === seg.id ? { start_ms: brollGhost.start, end_ms: brollGhost.end } : seg
-                  const box = seg.crop_boxes[0]
-                  const name = (videoTitles[box?.source_video_id ?? ''] ?? 'B-roll').replace(/^(Pixabay|Pexels): /, '').split(',')[0]
-                  const url = videoUrls[box?.source_video_id ?? '']
-                  return (
-                    <div key={seg.id} onPointerDown={e => handleBrollDown(e, seg, 'body')}
-                      title={`B-roll · ${name} · ${msToLabel(seg.start_ms)}–${msToLabel(seg.end_ms)} · drag to move, drag the ends to trim`}
-                      className="absolute overflow-hidden"
-                      style={{
-                        left: `${pct(at.start_ms)}%`, width: `${pct(at.end_ms - at.start_ms)}%`, top: 4, bottom: 4,
-                        borderRadius: 6, background: '#1a1a1a',
-                        boxShadow: active ? '0 0 0 2px #fff, 0 2px 6px rgba(0,0,0,0.6)' : '0 0 0 1.5px #f97316, 0 2px 6px rgba(0,0,0,0.5)',
-                        cursor: dragging === `broll-body-${seg.id}` ? 'grabbing' : 'grab', touchAction: 'none', zIndex: 33,
-                      }}>
-                      {/* The shot itself: frames of the stock clip */}
-                      {url && <VideoThumbnails videoUrl={url} startMs={box?.source_offset_ms ?? 0} durationMs={seg.end_ms - seg.start_ms} count={4} radius={6} dim={false} />}
-                      <span className="absolute left-1.5 bottom-1 max-w-[calc(100%-12px)] px-1 rounded text-[9px] font-semibold truncate pointer-events-none"
-                        style={{ background: 'rgba(0,0,0,0.65)', color: '#fff' }}>
-                        B-roll · {name}
-                      </span>
-                      {/* Trim grips */}
-                      <span onPointerDown={e => handleBrollDown(e, seg, 'start')} aria-label="Trim start"
-                        className="absolute left-0 inset-y-0 flex items-center justify-center" style={{ width: 7, cursor: 'ew-resize', background: '#f97316' }}>
-                        <span style={{ width: 1.5, height: 12, background: 'rgba(0,0,0,0.5)', borderRadius: 1 }} />
-                      </span>
-                      <span onPointerDown={e => handleBrollDown(e, seg, 'end')} aria-label="Trim end"
-                        className="absolute right-0 inset-y-0 flex items-center justify-center" style={{ width: 7, cursor: 'ew-resize', background: '#f97316' }}>
-                        <span style={{ width: 1.5, height: 12, background: 'rgba(0,0,0,0.5)', borderRadius: 1 }} />
-                      </span>
-                    </div>
-                  )
-                })}
               {junctions.map(({ left, right }) => {
                 const key = `join-${left.id}`
                 const active = dragging === key
@@ -808,6 +970,34 @@ export function SegmentTimeline({
               })}
             </div>
 
+            {/* ── Original sound (the main video's sound, detached): right over the video it comes from ── */}
+            {originals.length > 0 && (
+              <div className="relative" style={{ height: ORIG_H, paddingBottom: 4 }}>
+                <div className="relative h-full">
+                  {originals.map(m => {
+                    const end = musicEnd(m)
+                    const on = dragging === `music-${m.id}`
+                    const sel = selectedMusicId === m.id
+                    return (
+                      <div key={m.id} onPointerDown={e => handleMusicDrag(e, m)}
+                        title={`Original sound · ${msToLabel(m.start_ms)}–${msToLabel(end)} · click to change it, drag to move, drag the ends to trim`}
+                        className="absolute inset-y-0 flex items-center gap-1.5 overflow-hidden"
+                        style={{ ...mediaBar(MEDIA_COLORS.music, m.start_ms, end, sel, on, false, m), zIndex: 33 }}>
+                        {/* A faint sound wave so it reads as audio at a glance */}
+                        <span className="absolute inset-0 pointer-events-none opacity-30" aria-hidden="true"
+                          style={{ background: 'repeating-linear-gradient(90deg, transparent 0 3px, rgba(255,255,255,0.35) 3px 4px)', WebkitMaskImage: 'linear-gradient(180deg, transparent 25%, #000 50%, transparent 75%)', maskImage: 'linear-gradient(180deg, transparent 25%, #000 50%, transparent 75%)' }} />
+                        {onMusicTrim && <MediaGrip onPointerDown={e => handleMusicTrim(e, m, 'start')} side="left" label="Trim the start of the original sound" />}
+                        <MediaIcon kind="music" />
+                        <span className="relative truncate text-[10px] font-semibold pointer-events-none" style={{ color: '#f3e8ff' }}>{m.name}</span>
+                        <StateBadges st={m} />
+                        {onMusicTrim && <MediaGrip onPointerDown={e => handleMusicTrim(e, m, 'end')} side="right" label="Trim the end of the original sound" />}
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            )}
+
             {/* ── Film strip: tinted per format, hatched where no format is set ── */}
             <div className="relative overflow-hidden" style={{ height: STRIP_H, borderRadius: 12, boxShadow: '0 0 0 1px rgb(var(--ed-fg) / 0.1), 0 10px 24px -12px rgba(0,0,0,0.9)' }}>
               {videoUrl
@@ -830,9 +1020,14 @@ export function SegmentTimeline({
                 const under = underBroll(seg)
                 if (!under) return null
                 const color = colorOf(under)
+                const picked = seg.id === pickedSegmentId
                 return (
                   <div key={`under-${seg.id}`} className="absolute inset-y-0 pointer-events-none"
-                    style={{ left: `${pct(seg.start_ms)}%`, width: `${pct(seg.end_ms - seg.start_ms)}%`, background: `${color}2a`, borderTop: `3px solid ${color}aa` }} />
+                    style={{
+                      left: `${pct(seg.start_ms)}%`, width: `${pct(seg.end_ms - seg.start_ms)}%`, background: `${color}2a`, borderTop: `3px solid ${color}aa`,
+                      // Picked: the same lime frame a format gets
+                      ...(picked ? { boxShadow: `inset 0 2px 0 ${ACCENT}, inset 0 -2px 0 ${ACCENT}, inset 2px 0 0 ${ACCENT}, inset -2px 0 0 ${ACCENT}`, borderRadius: 12 } : {}),
+                    }} />
                 )
               })}
               {/* Each format: the selected one stays bright inside a lime trim frame (its handles are the
@@ -853,13 +1048,29 @@ export function SegmentTimeline({
                       borderRadius: 12,
                       transition: 'box-shadow .25s, background .25s',
                     }}>
+                    <StateBadges st={seg} corner />
                   </div>
                 )
               })}
             </div>
 
+            {/* A section about to go (its join dragged onto the next one): red, with what releasing does */}
+            {doomed && (
+              <>
+                <div className="absolute pointer-events-none" style={{
+                  left: `${pct(doomed.start)}%`, width: `${pct(doomed.end - doomed.start)}%`, top: STRIP_TOP, height: STRIP_H, zIndex: 31,
+                  borderRadius: 12, background: 'repeating-linear-gradient(135deg, rgba(239,68,68,0.55) 0 8px, rgba(239,68,68,0.38) 8px 16px)',
+                  boxShadow: 'inset 0 0 0 2px #ef4444',
+                }} />
+                <span className="absolute pointer-events-none px-2 py-0.5 rounded-full text-[10px] font-bold whitespace-nowrap"
+                  style={{ left: `${pct((doomed.start + doomed.end) / 2)}%`, top: RULER_H + LANE_H / 2, transform: 'translate(-50%, -50%)', zIndex: 45, background: '#ef4444', color: '#fff', boxShadow: '0 4px 12px rgba(0,0,0,0.5)' }}>
+                  {doomed.label}
+                </span>
+              </>
+            )}
+
             {/* ── Views: one ◆ per view change of the format under the playhead ── */}
-            <div className="relative" style={{ height: 24, marginTop: 6 }}>
+            <div className="relative" style={{ height: 20, marginTop: 4 }}>
               {/* Faint guide the markers sit on */}
               <div className="absolute inset-x-0 top-1/2 pointer-events-none" style={{ height: 1, background: 'rgb(var(--ed-fg) / 0.06)' }} />
               {viewMarkers.length === 0 && (
@@ -950,25 +1161,6 @@ export function SegmentTimeline({
               })
             })}
 
-            {/* Single frame: its slot is the main video on this strip, so its "+" sits here */}
-            {frameSeg && isFrameLayout(frameSeg.layout) && !visibleLanes(frameSeg).some(r => r.lane === 0)
-              && currentTimeMs >= frameSeg.start_ms && currentTimeMs < frameSeg.end_ms && (
-              <button
-                ref={el => { if (el) plusRefs.current.set('0', el); else plusRefs.current.delete('0') }}
-                onPointerDown={e => e.stopPropagation()}
-                onClick={e => { e.stopPropagation(); onAddFrameItem?.(0, e.currentTarget.getBoundingClientRect()) }}
-                aria-label={`Add to this frame at ${msToLabel(currentTimeMs)}`}
-                title="Add text, or a video on top of the main video"
-                className="absolute flex items-center justify-center rounded-full transition-transform hover:scale-110 focus-visible:outline-none"
-                style={{
-                  left: `${playheadPct}%`, top: STRIP_TOP + STRIP_H / 2, transform: 'translate(-50%, -50%)', width: 20, height: 20, zIndex: 41,
-                  background: '#c8ff00', color: '#000', border: '1.5px solid rgba(0,0,0,0.7)',
-                  boxShadow: pulseLane === 0 ? '0 0 0 4px rgba(200,255,0,0.35), 0 0 12px rgba(200,255,0,0.8)' : '0 1px 4px rgba(0,0,0,0.6)',
-                }}>
-                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3.5" strokeLinecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
-              </button>
-            )}
-
             {/* Snap guide while trimming */}
             {snapLine !== null && (
               <div className="absolute top-0 bottom-0 pointer-events-none z-20" style={{ left: `${pct(snapLine)}%`, width: 1, background: 'rgb(var(--ed-fg) / 0.6)' }} />
@@ -984,6 +1176,28 @@ export function SegmentTimeline({
                 <span className="block px-2 rounded-full text-[10px] font-bold tabular-nums leading-[16px]" style={{ background: '#fff', color: '#0a0a0a', boxShadow: '0 4px 12px rgba(0,0,0,0.5)' }}>
                   {msToLabel(currentTimeMs)}
                 </span>
+                {/* "+" beside the time: add a video, photo, music or text at the playhead. Up here it
+                    moves with the playhead but never sits on the strip (so clicks there stay clicks) */}
+                {showPlus && (
+                  <button
+                    ref={el => { if (el) plusRefs.current.set('0', el); else plusRefs.current.delete('0') }}
+                    onPointerDown={e => e.stopPropagation()}
+                    onClick={e => {
+                      e.stopPropagation()
+                      const r = e.currentTarget.getBoundingClientRect()
+                      if (onAddHere) onAddHere(r); else onAddFrameItem?.(0, r)
+                    }}
+                    aria-label={`Add a video, photo, music or text at ${msToLabel(currentTimeMs)}`}
+                    title={`Add a video, photo, music or text at ${msToLabel(currentTimeMs)}`}
+                    className="pointer-events-auto absolute top-0 flex items-center justify-center rounded-full transition-transform hover:scale-110 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white"
+                    style={{
+                      ...(playheadPct > 90 ? { right: 'calc(100% + 4px)' } : { left: 'calc(100% + 4px)' }),
+                      width: 16, height: 16, background: '#c8ff00', color: '#000',
+                      boxShadow: pulseLane === 0 ? '0 0 0 4px rgba(200,255,0,0.35), 0 0 12px rgba(200,255,0,0.8)' : '0 4px 12px rgba(0,0,0,0.5)',
+                    }}>
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="4" strokeLinecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+                  </button>
+                )}
               </div>
             </div>
           </div>
@@ -1129,66 +1343,134 @@ export function SegmentTimeline({
             )
           })()}
 
-          {/* ── Music lane: one purple bar per background track, from where it starts to where it ends
-              (or the clip's end when its length isn't known). Drag a bar to move it. ── */}
-          {musicTracks.length > 0 && (
-            <div className="relative flex flex-col pb-1.5" style={{ gap: 4, paddingTop: 6, borderTop: '1px solid rgb(var(--ed-fg) / 0.05)' }}>
-              {musicRows.map((row, ri) => (
-                <div key={ri} className="relative" style={{ height: 26 }}>
-              {row.map(m => {
-                const end = musicEnd(m)
-                const on = dragging === `music-${m.id}`
-                const sel = selectedMusicId === m.id
-                return (
-                  <Fragment key={m.id}>
-                    <div onPointerDown={e => handleMusicDrag(e, m.id, m.start_ms)}
-                      title={`Music · ${m.name} · starts at ${msToLabel(m.start_ms)} · drag to move`}
-                      className="absolute inset-y-0 flex items-center gap-1.5 px-2 overflow-hidden"
-                      style={{
-                        left: `${pct(m.start_ms)}%`, width: `max(24px, ${pct(end - m.start_ms)}%)`, borderRadius: 7,
-                        background: on || sel ? 'rgba(192,132,252,0.42)' : 'rgba(192,132,252,0.24)',
-                        // Selected: a white ring and glow, matching the "Music selected" label in the bar above
-                        boxShadow: sel ? 'inset 0 0 0 2px #fff, 0 0 14px rgba(192,132,252,0.7)' : on ? 'inset 0 0 0 1.5px #c084fc, 0 0 12px rgba(192,132,252,0.5)' : 'inset 0 0 0 1px rgba(192,132,252,0.55)',
-                        cursor: on ? 'grabbing' : 'grab', touchAction: 'none',
-                      }}>
-                      {/* A little sound-wave pattern so it reads as audio at a glance */}
-                      <span className="absolute inset-0 pointer-events-none opacity-40" aria-hidden="true"
-                        style={{ background: 'repeating-linear-gradient(90deg, transparent 0 3px, rgba(255,255,255,0.35) 3px 4px)', WebkitMaskImage: 'linear-gradient(180deg, transparent 20%, #000 50%, transparent 80%)', maskImage: 'linear-gradient(180deg, transparent 20%, #000 50%, transparent 80%)' }} />
-                      <svg className="relative shrink-0" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#e9d5ff" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                        <path d="M9 18V5l12-2v13" /><circle cx="6" cy="18" r="3" /><circle cx="18" cy="16" r="3" />
-                      </svg>
-                      <span className="relative truncate text-[10px] font-semibold" style={{ color: '#f3e8ff' }}>{m.name}</span>
-                    </div>
-                  </Fragment>
-                )
-              })}
-                  <div className="absolute inset-y-0 w-px pointer-events-none" style={{ left: `${playheadPct}%`, background: 'rgba(255,255,255,0.6)' }} />
+          {/* ── Media lanes under the main video: everything added from outside it — videos, photos,
+              music, text. Slim rows, one colour per kind; items that don't overlap share a row ── */}
+          {(brolls.length > 0 || photos.length > 0 || musicRows.length > 0 || textOverlays.length > 0) && (
+            <div className="relative flex flex-col" style={{ gap: MEDIA_GAP, paddingTop: 6, paddingBottom: 4, borderTop: '1px solid rgb(var(--ed-fg) / 0.05)' }}>
+              {laneGuide('broll-') ?? laneGuide('photo-') ?? laneGuide('music-') ?? laneGuide('text-')}
+              {/* Playhead through all the media rows */}
+              <div className="absolute top-0 bottom-0 w-px pointer-events-none" style={{ left: `${playheadPct}%`, background: 'rgba(255,255,255,0.55)', zIndex: 15 }} />
+
+              {/* Videos (B-roll and inserted videos): they play instead of the main video for their time */}
+              {brolls.length > 0 && (
+                <div className="relative" style={{ height: brolls.some(sg => sg.id === activeSegmentId || sg.id === pickedSegmentId || (dragging?.startsWith('broll-') && dragging.endsWith(sg.id)) || inFocus(sg.start_ms, sg.end_ms)) ? MEDIA_ROW_H : THIN_ROW_H, transition: 'height .2s' }}>
+                  {brolls.map(seg => {
+                    const sel = seg.id === activeSegmentId || seg.id === pickedSegmentId
+                    const on = !!dragging?.startsWith('broll-') && dragging.endsWith(seg.id)
+                    const at = brollGhost?.id === seg.id ? { start_ms: brollGhost.start, end_ms: brollGhost.end } : seg
+                    const box = seg.crop_boxes[0]
+                    const name = (videoTitles[box?.source_video_id ?? ''] ?? 'Video').replace(/^(Pixabay|Pexels): /, '').split(',')[0]
+                    const url = videoUrls[box?.source_video_id ?? '']
+                    if (!sel && !on && !inFocus(seg.start_ms, seg.end_ms)) return (
+                      <div key={seg.id} onPointerDown={e => handleBrollDown(e, seg, 'body')} className="absolute"
+                        title={`Video · ${name} · ${msToLabel(seg.start_ms)}–${msToLabel(seg.end_ms)}`}
+                        style={thinBar(MEDIA_COLORS.video, at.start_ms, at.end_ms)} />
+                    )
+                    return (
+                      <div key={seg.id} onPointerDown={e => handleBrollDown(e, seg, 'body')}
+                        title={`Video · ${name} · ${msToLabel(seg.start_ms)}–${msToLabel(seg.end_ms)} · click to pick it, drag to move, drag the ends to trim`}
+                        className="absolute inset-y-0 flex items-center gap-1.5 overflow-hidden"
+                        style={mediaBar(MEDIA_COLORS.video, at.start_ms, at.end_ms, sel, on, false, { hidden: seg.crop_boxes[0]?.hidden, locked: seg.locked })}>
+                        {/* Frames of the video, faint behind its name */}
+                        {url && <span className="absolute inset-0 pointer-events-none opacity-40"><VideoThumbnails videoUrl={url} startMs={box?.source_offset_ms ?? 0} durationMs={seg.end_ms - seg.start_ms} count={4} radius={5} dim={false} /></span>}
+                        <MediaGrip onPointerDown={e => handleBrollDown(e, seg, 'start')} side="left" label="Trim the start of the video" />
+                        <MediaIcon kind="video" />
+                        <span className="relative truncate text-[10px] font-semibold pointer-events-none" style={{ color: '#fff7ed' }}>{name}</span>
+                        <StateBadges st={{ hidden: seg.crop_boxes[0]?.hidden, locked: seg.locked }} />
+                        <MediaGrip onPointerDown={e => handleBrollDown(e, seg, 'end')} side="right" label="Trim the end of the video" />
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+
+              {photoRows.map((row, ri) => (
+                <div key={`p${ri}`} className="relative" style={{ height: row.some(ph => inFocus(ph.start_ms, ph.end_ms) || ph.id === activePhotoId || dragging === `photo-${ph.id}`) ? MEDIA_ROW_H : THIN_ROW_H, transition: 'height .2s' }}>
+                  {row.map(ph => {
+                    const sel = ph.id === activePhotoId
+                    const on = dragging === `photo-${ph.id}`
+                    const fits = fitLabel(ph.start_ms, ph.end_ms)
+                    if (!sel && !on && !inFocus(ph.start_ms, ph.end_ms)) return (
+                      <div key={ph.id} onPointerDown={e => handlePhotoDrag(e, ph, 'body')} className="absolute"
+                        title={`Photo · ${msToLabel(ph.start_ms)}–${msToLabel(ph.end_ms)}`} style={thinBar(MEDIA_COLORS.photo, ph.start_ms, ph.end_ms)} />
+                    )
+                    return (
+                      <div key={ph.id} onPointerDown={e => handlePhotoDrag(e, ph, 'body')}
+                        title={`Photo · ${msToLabel(ph.start_ms)}–${msToLabel(ph.end_ms)} · click to change it, drag to move, drag the ends to trim`}
+                        className="absolute inset-y-0 flex items-center gap-1.5 overflow-hidden"
+                        style={mediaBar(MEDIA_COLORS.photo, ph.start_ms, ph.end_ms, sel, on, !!fits, ph)}>
+                        <MediaGrip onPointerDown={e => handlePhotoDrag(e, ph, 'start')} side="left" label="Trim the start of the photo" />
+                        {ph.url
+                          // eslint-disable-next-line @next/next/no-img-element
+                          ? <img src={ph.url} alt="" className="shrink-0 rounded-[3px] object-cover pointer-events-none" style={{ width: 22, height: MEDIA_ROW_H - 6, marginLeft: 8 }} />
+                          : <MediaIcon kind="photo" />}
+                        <StateBadges st={ph} />
+                        {(sel || on) && fitTag(fits)}
+                        <MediaGrip onPointerDown={e => handlePhotoDrag(e, ph, 'end')} side="right" label="Trim the end of the photo" />
+                      </div>
+                    )
+                  })}
                 </div>
               ))}
-            </div>
-          )}
 
-          {/* ── Text overlay rows ─────────────────────────────────── */}
-          {textOverlays.length > 0 && (
-            <div className="flex flex-col pb-1.5" style={{ gap: 2, paddingTop: 4, borderTop: '1px solid rgb(var(--ed-fg) / 0.05)' }}>
-              {textOverlays.map(o => {
-                const isActive = o.id === activeTextOverlayId
-                return (
-                  <div key={o.id} className="relative" style={{ height: 24 }}>
-                    <div className="absolute inset-y-0.5 flex items-center overflow-hidden"
-                      style={{ left: `${pct(o.start_ms)}%`, width: `${Math.max(pct(o.end_ms - o.start_ms), 1)}%`, borderRadius: 5, background: isActive ? 'rgba(200,255,0,0.22)' : 'rgb(var(--ed-fg) / 0.12)', border: `1.5px solid ${isActive ? '#c8ff00' : 'rgb(var(--ed-fg) / 0.22)'}`, cursor: 'grab', minWidth: 6, touchAction: 'none' }}
-                      onPointerDown={e => handleTextOverlayBodyDrag(e, o.id, o.start_ms, o.end_ms)}
-                      onClick={e => { e.stopPropagation(); onSelectTextOverlay?.(o.id) }}>
-                      <div className="absolute left-0 inset-y-0 w-2.5 cursor-col-resize z-10" style={{ background: 'rgba(0,0,0,0.25)' }}
-                        onPointerDown={e => handleTextOverlayEdgeDrag(e, o.id, o.start_ms, o.end_ms, 'left')} />
-                      <span className="px-3.5 truncate pointer-events-none" style={{ fontSize: 10, fontWeight: 600, color: 'rgb(var(--ed-fg) / 0.92)' }}>T · {o.text}</span>
-                      <div className="absolute right-0 inset-y-0 w-2.5 cursor-col-resize z-10" style={{ background: 'rgba(0,0,0,0.25)' }}
-                        onPointerDown={e => handleTextOverlayEdgeDrag(e, o.id, o.start_ms, o.end_ms, 'right')} />
-                    </div>
-                    <div className="absolute inset-y-0 w-px pointer-events-none" style={{ left: `${playheadPct}%`, background: 'rgba(200,255,0,0.4)' }} />
-                  </div>
-                )
-              })}
+              {musicRows.map((row, ri) => (
+                <div key={`m${ri}`} className="relative" style={{ height: row.some(m => inFocus(m.start_ms, musicEnd(m)) || selectedMusicId === m.id || dragging === `music-${m.id}`) ? MEDIA_ROW_H : THIN_ROW_H, transition: 'height .2s' }}>
+                  {row.map(m => {
+                    const end = musicEnd(m)
+                    const on = dragging === `music-${m.id}`
+                    const sel = selectedMusicId === m.id
+                    const fits = fitLabel(m.start_ms, end)
+                    if (!sel && !on && !inFocus(m.start_ms, end)) return (
+                      <div key={m.id} onPointerDown={e => handleMusicDrag(e, m)} className="absolute"
+                        title={`Music · ${m.name} · ${msToLabel(m.start_ms)}–${msToLabel(end)}`} style={thinBar(MEDIA_COLORS.music, m.start_ms, end)} />
+                    )
+                    return (
+                      <div key={m.id} onPointerDown={e => handleMusicDrag(e, m)}
+                        title={`Music · ${m.name} · ${msToLabel(m.start_ms)}–${msToLabel(end)} · click to change it, drag to move, drag the ends to trim`}
+                        className="absolute inset-y-0 flex items-center gap-1.5 overflow-hidden"
+                        style={mediaBar(MEDIA_COLORS.music, m.start_ms, end, sel, on, !!fits, m)}>
+                        {/* A faint sound wave so it reads as audio at a glance */}
+                        <span className="absolute inset-0 pointer-events-none opacity-30" aria-hidden="true"
+                          style={{ background: 'repeating-linear-gradient(90deg, transparent 0 3px, rgba(255,255,255,0.35) 3px 4px)', WebkitMaskImage: 'linear-gradient(180deg, transparent 25%, #000 50%, transparent 75%)', maskImage: 'linear-gradient(180deg, transparent 25%, #000 50%, transparent 75%)' }} />
+                        {onMusicTrim && <MediaGrip onPointerDown={e => handleMusicTrim(e, m, 'start')} side="left" label="Trim the start of the music" />}
+                        <MediaIcon kind="music" />
+                        <span className="relative truncate text-[10px] font-semibold pointer-events-none" style={{ color: '#f3e8ff' }}>{m.name}</span>
+                        <StateBadges st={m} />
+                        {(sel || on) && fitTag(fits)}
+                        {onMusicTrim && <MediaGrip onPointerDown={e => handleMusicTrim(e, m, 'end')} side="right" label="Trim the end of the music" />}
+                      </div>
+                    )
+                  })}
+                </div>
+              ))}
+
+              {textRows.map((row, ri) => (
+                <div key={`t${ri}`} className="relative" style={{ height: row.some(o => inFocus(o.start_ms, o.end_ms) || o.id === activeTextOverlayId || dragging === `text-${o.id}`) ? MEDIA_ROW_H : THIN_ROW_H, transition: 'height .2s' }}>
+                  {row.map(o => {
+                    const sel = o.id === activeTextOverlayId
+                    const on = dragging === `text-${o.id}`
+                    const fits = fitLabel(o.start_ms, o.end_ms)
+                    if (!sel && !on && !inFocus(o.start_ms, o.end_ms)) return (
+                      <div key={o.id} onPointerDown={e => { onSelectTextOverlay?.(o.id); handleTextOverlayBodyDrag(e, o.id, o.start_ms, o.end_ms) }} className="absolute"
+                        title={`Text · “${o.text}” · ${msToLabel(o.start_ms)}–${msToLabel(o.end_ms)}`} style={thinBar(MEDIA_COLORS.text, o.start_ms, o.end_ms)} />
+                    )
+                    return (
+                      <div key={o.id}
+                        onPointerDown={e => { onSelectTextOverlay?.(o.id); handleTextOverlayBodyDrag(e, o.id, o.start_ms, o.end_ms) }}
+                        title={`Text · “${o.text}” · ${msToLabel(o.start_ms)}–${msToLabel(o.end_ms)} · click to change it, drag to move, drag the ends to trim`}
+                        className="absolute inset-y-0 flex items-center gap-1.5 overflow-hidden"
+                        style={mediaBar(MEDIA_COLORS.text, o.start_ms, o.end_ms, sel, on, !!fits, o)}>
+                        <MediaGrip onPointerDown={e => { onSelectTextOverlay?.(o.id); handleTextOverlayEdgeDrag(e, o.id, o.start_ms, o.end_ms, 'left') }} side="left" label="Trim the start of the text" />
+                        <MediaIcon kind="text" />
+                        <span className="truncate text-[10px] font-semibold pointer-events-none" style={{ color: '#fdf2f8' }}>{o.text}</span>
+                        <StateBadges st={o} />
+                        {(sel || on) && fitTag(fits)}
+                        <MediaGrip onPointerDown={e => { onSelectTextOverlay?.(o.id); handleTextOverlayEdgeDrag(e, o.id, o.start_ms, o.end_ms, 'right') }} side="right" label="Trim the end of the text" />
+                      </div>
+                    )
+                  })}
+                </div>
+              ))}
             </div>
           )}
         </div>
@@ -1198,18 +1480,48 @@ export function SegmentTimeline({
   )
 }
 
-/** The big "+" beside the strip: adds photos, videos, music or text at the clip's start or end */
-function AddEndButton({ where, top, height, onAdd }: {
-  where: 'start' | 'end'; top: number; height: number
-  onAdd: (where: 'start' | 'end', anchor: DOMRect) => void
-}) {
+// Media rows under the strip: one colour per kind (video is the orange bar over the strip)
+const MEDIA_COLORS = { video: '#f97316', photo: '#60a5fa', text: '#f472b6', music: '#c084fc' } as const
+const MEDIA_ROW_H = 20
+const MEDIA_GAP = 3
+
+/** Little marks on a bar (or a section's corner on the strip): hidden, muted, locked */
+function StateBadges({ st, corner }: { st?: { hidden?: boolean; muted?: boolean; locked?: boolean }; corner?: boolean }) {
+  if (!st || !(st.hidden || st.muted || st.locked)) return null
+  const mark = (key: string, title: string, d: React.ReactNode) => (
+    <span key={key} title={title} className="flex items-center justify-center rounded-full" style={{ width: 14, height: 14, background: 'rgba(0,0,0,0.7)', color: '#fff' }}>
+      <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{d}</svg>
+    </span>
+  )
   return (
-    <button type="button" onClick={e => onAdd(where, e.currentTarget.getBoundingClientRect())}
-      aria-label={`Add photos, videos, music or text at the ${where} of the clip`}
-      title={`Add at the ${where}: photos, videos, music or text`}
-      className="shrink-0 w-12 flex items-center justify-center rounded-xl transition-colors hover:bg-[rgb(var(--ed-fg)/0.08)] hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[rgba(200,255,0,0.6)]"
-      style={{ marginTop: top, height, color: 'rgb(var(--ed-fg) / 0.7)', background: 'rgb(var(--ed-fg) / 0.04)', border: '1px dashed rgb(var(--ed-fg) / 0.2)' }}>
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
-    </button>
+    <span className={corner ? 'absolute left-2 top-1.5 flex gap-0.5 pointer-events-none' : 'relative shrink-0 flex items-center gap-0.5 pointer-events-none'} style={{ zIndex: 2 }}>
+      {st.hidden && mark('h', 'Hidden: not shown or exported', <><path d="M3 3l18 18" /><path d="M10.6 5.1A10 10 0 0112 5c5 0 9 5 9 7a11 11 0 01-2.2 3.2M6.6 6.6C4.4 8 3 10.4 3 12c0 2 4 7 9 7a9.6 9.6 0 004.4-1.1" /></>)}
+      {st.muted && mark('m', 'Muted', <><path d="M11 5L6 9H2v6h4l5 4V5z" /><path d="M22 9l-6 6M16 9l6 6" /></>)}
+      {st.locked && mark('l', 'Locked: can\u2019t be moved, trimmed or deleted', <><rect x="4" y="11" width="16" height="10" rx="2" /><path d="M8 11V7a4 4 0 018 0v4" /></>)}
+    </span>
   )
 }
+
+/** Small icon in its kind's colour at the start of a media bar */
+function MediaIcon({ kind }: { kind: 'video' | 'photo' | 'text' | 'music' }) {
+  return (
+    <svg className="relative shrink-0 pointer-events-none" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke={MEDIA_COLORS[kind]} strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"
+      style={{ marginLeft: 8 }}>
+      {kind === 'video' ? <><rect x="2" y="5" width="15" height="14" rx="2" /><path d="M17 10l5-3v10l-5-3z" /></>
+        : kind === 'photo' ? <><rect x="3" y="3" width="18" height="18" rx="2" /><circle cx="8.5" cy="8.5" r="1.5" /><path d="M21 15l-5-5L5 21" /></>
+        : kind === 'music' ? <><path d="M9 18V5l12-2v13" /><circle cx="6" cy="18" r="3" /><circle cx="18" cy="16" r="3" /></>
+          : <path d="M4 7V4h16v3M9 20h6M12 4v16" />}
+    </svg>
+  )
+}
+
+/** Trim handle at one end of a media bar: a thin strip, with a small grip line */
+function MediaGrip({ side, label, onPointerDown }: { side: 'left' | 'right'; label: string; onPointerDown: (e: React.PointerEvent) => void }) {
+  return (
+    <span onPointerDown={onPointerDown} aria-label={label}
+      className={`group/grip absolute inset-y-0 ${side === 'left' ? 'left-0' : 'right-0'} w-1.5 flex items-center justify-center cursor-col-resize z-10`}>
+      <span className="w-[2px] h-2.5 rounded-full transition-colors bg-[rgba(255,255,255,0.35)] group-hover/grip:bg-white" />
+    </span>
+  )
+}
+

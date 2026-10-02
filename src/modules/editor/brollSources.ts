@@ -12,8 +12,8 @@ export function isBorrowedSlot(seg: SegmentLocal | null | undefined, box: CropBo
 
 /**
  * The B-roll videos the preview draws in place of the main video (OutputCanvas sourceFor): one
- * muted element per video, kept in step with the main player on every frame. The speaker keeps
- * talking under the shot, as in the export.
+ * element per video, kept in step with the main player on every frame. Muted (the default) the
+ * speaker keeps talking under the shot; with its sound on it plays instead — as in the export.
  */
 export function useBrollSources(
   videoRef: RefObject<HTMLVideoElement | null>,
@@ -29,11 +29,14 @@ export function useBrollSources(
 
   return useCallback((seg: SegmentLocal | null) => {
     const box = seg && !isFrameLayout(seg.layout) ? seg.crop_boxes[0] : undefined
-    const id = box?.source_video_id && box.source_video_id !== mainVideoId ? box.source_video_id : null
+    const pictureId = box?.source_video_id && box.source_video_id !== mainVideoId ? box.source_video_id : null
+    // A hidden added video with its sound on: played for its sound only (the main video is the picture)
+    const sound = !pictureId ? seg?.sound_only ?? null : null
+    const id = pictureId ?? sound?.video_id ?? null
     if (active.current && active.current !== id) els.current.get(active.current)?.pause()
     active.current = id
     const main = videoRef.current
-    if (!seg || !box || !id || !main) return null
+    if (!seg || !id || !main) return null
     let el = els.current.get(id)
     if (!el) {
       const url = getUrlRef.current(id)
@@ -46,12 +49,15 @@ export function useBrollSources(
       el.src = url
       els.current.set(id, el)
     }
+    // Its own sound when switched on (the main video is quiet under it then, as in the export)
+    el.muted = sound ? false : box?.muted !== false
+    el.volume = Math.max(0, Math.min(1, (sound ? sound.volume : box?.volume) ?? 1))
     const rel = main.currentTime * 1000 - clipStartMs
-    const want = ((box.source_offset_ms ?? 0) + rel - seg.start_ms) / 1000
+    const want = ((sound ? sound.offset_ms : box?.source_offset_ms ?? 0) + rel - seg.start_ms) / 1000
     if (Math.abs(el.currentTime - want) > 0.3) el.currentTime = Math.max(0, want)
     if (main.paused && !el.paused) el.pause()
     if (!main.paused && el.paused) el.play().catch(() => {})
-    return el
+    return sound ? null : el
   }, [videoRef, clipStartMs, mainVideoId])
 }
 

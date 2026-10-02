@@ -1030,7 +1030,11 @@ export function OutputCanvas({
           frameMediaRef.current?.sync(seg, clipRelativeMs, !video.paused, video)
           // A B-roll shot whose video is still seeking keeps the last frame (never flashes the main video)
           const other = sourceForRef.current?.(seg)
-          if (!other || other.readyState >= 2) {
+          if (seg?.hidden) {
+            // The main video hidden here (shownSegment): black, as in the export; captions and text still go on top
+            ctx.fillStyle = '#000'
+            ctx.fillRect(0, 0, canvas.width, canvas.height)
+          } else if (!other || other.readyState >= 2) {
             paintSegment(ctx, other ?? video, seg, clipRelativeMs, getPositionAtRef.current, frameMediaRef.current,
               slotSourceForRef.current ? (sg, box) => slotSourceForRef.current!(sg, box) : null)
           }
