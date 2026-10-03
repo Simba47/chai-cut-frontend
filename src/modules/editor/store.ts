@@ -68,7 +68,7 @@ interface EditorActions {
   /** Frame layouts: change the letterbox band's look */
   updateFrameBand: (segId: string, patch: Partial<FrameBand>) => void
   /** Frame layouts: main video's slots and sound */
-  updateFrame: (segId: string, patch: Partial<Pick<FrameSettings, 'main_slots' | 'main_volume' | 'main_muted' | 'main_volumes' | 'main_mutes' | 'main_corners'>>) => void
+  updateFrame: (segId: string, patch: Partial<Pick<FrameSettings, 'main_slots' | 'main_volume' | 'main_muted' | 'main_volumes' | 'main_mutes' | 'main_corners' | 'row_h' | 'main_rects'>>) => void
   /** Put something on a frame lane at time t (see placeNewItem). Returns its id, or null if there's no room. */
   addFrameItem: (segId: string, lane: FrameLane, t: number, item: Omit<FrameItem, 'id' | 'lane' | 'start_ms' | 'end_ms'>) => string | null
   updateFrameItem: (segId: string, itemId: string, patch: Partial<Omit<FrameItem, 'id'>>) => void

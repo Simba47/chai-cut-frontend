@@ -2571,7 +2571,7 @@ export function EditorShell({
                       <path d="M20 11a8 8 0 10-2.3 5.7M20 4v7h-7" />
                     </svg>
                   </button>
-                  <a href={outputUrl!} download="export.mp4" target="_blank" rel="noopener noreferrer"
+                  <a href={`/api/clips/${clip.id}/download`} download
                     className="flex items-center gap-1.5 h-8 px-3 rounded-lg text-xs font-bold transition-opacity hover:opacity-90"
                     style={{ background: ACCENT, color: '#000' }}>
                     <DownloadIcon /> Download
@@ -2652,6 +2652,13 @@ export function EditorShell({
                   activeFrameItemId={activeFrameItemId}
                   onFrameItemClick={selectFrameItem}
                   onFrameItemChange={(id, patch) => { if (frameSeg && !sectionBlocked(frameSeg.id)) updateFrameItem(frameSeg.id, id, patch) }}
+                  onFrameRowsChange={heights => { if (frameSeg && !sectionBlocked(frameSeg.id)) updateFrame(frameSeg.id, { row_h: heights }) }}
+                  onFrameMainRectChange={(slot, rect) => {
+                    if (!frameSeg || sectionBlocked(frameSeg.id)) return
+                    const rects = { ...frameOf(frameSeg).main_rects }
+                    if (rect) rects[String(slot)] = rect; else delete rects[String(slot)]
+                    updateFrame(frameSeg.id, { main_rects: rects })
+                  }}
                   style={{ width: '100%', height: 'auto', display: 'block', borderRadius: 10, border: '1px solid rgb(var(--ed-fg) / 0.1)', boxShadow: '0 4px 24px rgba(0,0,0,0.6)' }}
                 />
               )}
