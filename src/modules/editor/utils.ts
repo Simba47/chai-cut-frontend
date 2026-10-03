@@ -13,8 +13,8 @@ const OUT_H = 1920
 const DEFAULT_SOURCE_AR = 16 / 9
 
 /** Pixel aspect (w/h) of one output slot, or null when the slot takes the whole frame letterboxed. */
-export function slotPixelAspect(layout: LayoutType, frameBand = false, slot = 0): number | null {
-  if (isFrameLayout(layout)) return OUT_W / (OUT_H * frameSlotHeight(layout, frameBand, slot))
+export function slotPixelAspect(layout: LayoutType, frameBand = false, slot = 0, rowH?: number[] | null): number | null {
+  if (isFrameLayout(layout)) return OUT_W / (OUT_H * frameSlotHeight(layout, frameBand, slot, rowH))
   switch (layout) {
     case 'horizontal': return null
     case 'split': return OUT_W / (OUT_H / 2)   // 9:8
@@ -24,8 +24,8 @@ export function slotPixelAspect(layout: LayoutType, frameBand = false, slot = 0)
 }
 
 /** Slot aspect expressed in normalised source units (box.w / box.h), or null if unlocked. */
-export function normalizedSlotAspect(layout: LayoutType, videoAR = DEFAULT_SOURCE_AR, frameBand = false, slot = 0): number | null {
-  const a = slotPixelAspect(layout, frameBand, slot)
+export function normalizedSlotAspect(layout: LayoutType, videoAR = DEFAULT_SOURCE_AR, frameBand = false, slot = 0, rowH?: number[] | null): number | null {
+  const a = slotPixelAspect(layout, frameBand, slot, rowH)
   return a === null ? null : a / (videoAR || DEFAULT_SOURCE_AR)
 }
 
