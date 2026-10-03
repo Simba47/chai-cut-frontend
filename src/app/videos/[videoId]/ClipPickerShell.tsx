@@ -1226,7 +1226,7 @@ function ClipCard({ id, focused, number, origin, title, startMs, endMs, status, 
               </button>
               <span className="flex-1" />
               {outputUrl && status === 'done' && (
-                <a href={outputUrl} download target="_blank" rel="noopener noreferrer" className="cc-primary cc-dl" title="Download the exported reel">
+                <a href={`/api/clips/${id}/download`} download className="cc-primary cc-dl" title="Download the exported reel">
                   <svg width="13" height="13" viewBox="0 0 14 14" fill="none" aria-hidden="true" style={{ overflow: 'visible' }}>
                     <g className="cc-dl-arrow"><path d="M7 2v7M4 7l3 3 3-3" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/></g>
                     <path className="cc-dl-tray" d="M2 11.5h10" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/>

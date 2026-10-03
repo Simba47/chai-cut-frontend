@@ -47,6 +47,8 @@ export interface FrameItem {
   muted?: boolean
   /** Not shown (or heard) in the preview or the export */
   hidden?: boolean
+  /** Video / photo: its box inside its slot when resized / moved (shares of the slot; absent = the whole slot) */
+  rect?: { x: number; y: number; w: number; h: number } | null
   // Photo
   image_path?: string | null
   /** Signed URL for image_path — preview only, never saved */
@@ -83,6 +85,10 @@ export interface FrameSettings {
   main_corners?: Record<string, CornerStyle>
   /** The main video is heard under the frame though no slot shows it (Photo Story), at main_volume */
   main_under?: boolean
+  /** Heights of the frame's rows (top to bottom, shares of the frame) when resized; absent = the template's */
+  row_h?: number[] | null
+  /** The main video's box inside its slot when resized / moved, per slot index: shares of the slot (absent = the whole slot) */
+  main_rects?: Record<string, { x: number; y: number; w: number; h: number }>
   items?: FrameItem[]
 }
 export type AnimationType = 'karaoke' | 'fade' | 'none'

@@ -71,16 +71,44 @@ export function isFrameLayout(layout: LayoutType | string | null | undefined): l
  * Rows of a frame with their top edge, as shares of the frame height. The text band only exists
  * once the frame has text on it (`showBand`); without it the slots share the whole height.
  */
-export function frameRows(layout: FrameLayout, showBand = true): (FrameRow & { y: number })[] {
-  const rows = FRAME_TEMPLATES[layout].rows.filter(r => showBand || r.kind !== 'band')
+export function frameRows(layout: FrameLayout, showBand = true, custom?: number[] | null): (FrameRow & { y: number })[] {
+  const hs = validRowHeights(layout, custom)
+  const rows = FRAME_TEMPLATES[layout].rows.map((r, i) => hs ? { ...r, h: hs[i] } : r).filter(r => showBand || r.kind !== 'band')
   const total = rows.reduce((a, r) => a + r.h, 0) || 1
   let y = 0
   return rows.map(r => { const h = r.h / total, row = { ...r, h, y }; y += h; return row })
 }
 
+/** The smallest the main video's box can be made (share of its slot, each way) */
+export const MIN_BOX = 0.15
+
+/** The main video's box inside a slot (shares of the slot), kept inside it; null = the whole slot. render.py mirrors this. */
+export function mainRect(frame: FrameSettings, slot: number): { x: number; y: number; w: number; h: number } | null {
+  return boxRect(frame.main_rects?.[String(slot)])
+}
+
+/** A media box inside its slot (shares of the slot), kept inside it; null = the whole slot */
+export function boxRect(r: { x: number; y: number; w: number; h: number } | null | undefined): { x: number; y: number; w: number; h: number } | null {
+  if (!r || ![r.x, r.y, r.w, r.h].every(v => typeof v === 'number' && isFinite(v))) return null
+  const w = Math.max(MIN_BOX, Math.min(1, r.w)), h = Math.max(MIN_BOX, Math.min(1, r.h))
+  const x = Math.max(0, Math.min(1 - w, r.x)), y = Math.max(0, Math.min(1 - h, r.y))
+  return w > 0.999 && h > 0.999 ? null : { x, y, w, h }
+}
+
+/** The smallest a row can be dragged to (share of the frame) */
+export const MIN_ROW_H = 0.08
+
+/** A frame's resized row heights if they fit its template (one per row, none too small); else null. render.py (frames.py) mirrors this. */
+export function validRowHeights(layout: FrameLayout, custom?: number[] | null): number[] | null {
+  const n = FRAME_TEMPLATES[layout].rows.length
+  if (!Array.isArray(custom) || custom.length !== n || !custom.every(h => typeof h === 'number' && isFinite(h) && h >= 0.03)) return null
+  const total = custom.reduce((a, h) => a + h, 0)
+  return custom.map(h => h / total)
+}
+
 /** Height (share of the frame) of one media slot (slots differ in Big + Small) */
-export function frameSlotHeight(layout: FrameLayout, showBand = true, slot = 0): number {
-  const rows = frameRows(layout, showBand)
+export function frameSlotHeight(layout: FrameLayout, showBand = true, slot = 0, custom?: number[] | null): number {
+  const rows = frameRows(layout, showBand, custom)
   return (rows.find(r => r.kind === 'slot' && r.slot === slot) ?? rows.find(r => r.kind === 'slot'))?.h ?? 1
 }
 
@@ -106,9 +134,9 @@ export function frameSlotLabels(layout: FrameLayout): string[] {
 export interface FrameLaneInfo { lane: FrameLane; label: string; y: number; h: number }
 
 /** A frame's lanes, top to bottom, the same order as the preview */
-export function frameLanes(layout: FrameLayout, showBand = true): FrameLaneInfo[] {
+export function frameLanes(layout: FrameLayout, showBand = true, custom?: number[] | null): FrameLaneInfo[] {
   const names = frameSlotLabels(layout)
-  return frameRows(layout, showBand).flatMap((r): FrameLaneInfo[] => r.kind === 'band'
+  return frameRows(layout, showBand, custom).flatMap((r): FrameLaneInfo[] => r.kind === 'band'
     ? [{ lane: 'band' as const, label: 'Text', y: r.y, h: r.h }]
     : r.kind === 'slot' ? [{ lane: r.slot, label: names[r.slot] ?? `Slot ${r.slot + 1}`, y: r.y, h: r.h }]
       : [])   // the caption strip isn't a lane: the captions go there by themselves
@@ -180,7 +208,7 @@ export function frameBandShown(seg: Pick<SegmentLocal, 'layout'>): boolean {
 
 /** The lanes a frame has, top to bottom (the same rows as the preview) */
 export function frameLanesFor(seg: SegmentLocal): FrameLaneInfo[] {
-  return frameLanes(seg.layout as FrameLayout, frameBandShown(seg))
+  return frameLanes(seg.layout as FrameLayout, frameBandShown(seg), seg.frame?.row_h)
 }
 
 export function defaultFrame(layout: FrameLayout, prev?: FrameSettings | null): FrameSettings {
@@ -294,7 +322,7 @@ export function itemBounds(frame: FrameSettings, item: FrameItem, seg: { start_m
 /** Frame text-band item showing live captions at t, if any */
 export function captionBandAt(seg: SegmentLocal | null, t: number): { y: number; h: number } | null {
   if (!seg || !isFrameLayout(seg.layout)) return null
-  const rows = frameRows(seg.layout)
+  const rows = frameRows(seg.layout, true, seg.frame?.row_h)
   const it = frameHasBand(seg.layout) ? itemAt(frameOf(seg), 'band', t, seg) : null
   if (it?.captions && !it.hidden) { const row = rows.find(r => r.kind === 'band')!; return { y: row.y, h: row.h } }
   // A frame with a caption strip: the captions sit there
