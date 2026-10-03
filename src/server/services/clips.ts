@@ -326,6 +326,13 @@ const num = (v: unknown, lo: number, hi: number) => typeof v === 'number' && isF
 // Keep only what a frame needs from the client: known fields, sane values, and never the
 // preview-only signed image URLs (they expire; the editor signs fresh ones on load)
 function cleanFrame(frame: FrameSettings): FrameSettings {
+  // A media box inside its slot (resized / moved), or nothing when it fills the slot
+  const rectOf = (r: unknown) => {
+    const q = r as { x?: unknown; y?: unknown; w?: unknown; h?: unknown } | null | undefined
+    const x = num(q?.x, 0, 1), y = num(q?.y, 0, 1), w = num(q?.w, 0.05, 1), h = num(q?.h, 0.05, 1)
+    const r3 = (v: number) => Math.round(v * 1000) / 1000
+    return x !== undefined && y !== undefined && w !== undefined && h !== undefined ? { rect: { x: r3(x), y: r3(y), w: r3(w), h: r3(h) } } : {}
+  }
   const items: FrameItem[] = (frame.items ?? []).slice(0, 300).flatMap((it): FrameItem[] => {
     if (!it || typeof it.id !== 'string' || !['video', 'photo', 'text'].includes(it.kind)) return []
     const lane = it.lane === 'band' ? 'band' as const : num(it.lane, 0, 2)
@@ -334,11 +341,11 @@ function cleanFrame(frame: FrameSettings): FrameSettings {
     const base: FrameItem = { id: it.id.slice(0, 64), lane: lane === 'band' ? lane : Math.round(lane), kind: it.kind, start_ms: Math.round(start), end_ms: Math.round(end), ...(it.hidden ? { hidden: true } : {}) }
     if (it.kind === 'video') {
       if (typeof it.source_video_id !== 'string') return []
-      return [{ ...base, source_video_id: it.source_video_id, source_offset_ms: Math.round(num(it.source_offset_ms, 0, 1e9) ?? 0), volume: num(it.volume, 0, 1) ?? 1, muted: !!it.muted, corners: corner(it.corners) }]
+      return [{ ...base, source_video_id: it.source_video_id, source_offset_ms: Math.round(num(it.source_offset_ms, 0, 1e9) ?? 0), volume: num(it.volume, 0, 1) ?? 1, muted: !!it.muted, corners: corner(it.corners), ...rectOf(it.rect) }]
     }
     if (it.kind === 'photo') {
       if (typeof it.image_path !== 'string') return []
-      return [{ ...base, image_path: it.image_path, motion: it.motion && motions.includes(it.motion) ? it.motion : 'none', corners: corner(it.corners) }]
+      return [{ ...base, image_path: it.image_path, motion: it.motion && motions.includes(it.motion) ? it.motion : 'none', corners: corner(it.corners), ...rectOf(it.rect) }]
     }
     return [{
       ...base, text: typeof it.text === 'string' ? it.text.slice(0, 500) : '', captions: !!it.captions,
@@ -355,6 +362,17 @@ function cleanFrame(frame: FrameSettings): FrameSettings {
     main_volume: num(frame.main_volume, 0, 1),
     main_muted: frame.main_muted === undefined ? undefined : !!frame.main_muted,
     main_under: frame.main_under ? true : undefined,
+    // The main video's box in its slot, when resized / moved
+    main_rects: frame.main_rects && typeof frame.main_rects === 'object'
+      ? Object.fromEntries(Object.entries(frame.main_rects).flatMap(([k, r]) => {
+          const x = num(r?.x, 0, 1), y = num(r?.y, 0, 1), w = num(r?.w, 0.05, 1), h = num(r?.h, 0.05, 1)
+          return /^[0-2]$/.test(k) && x !== undefined && y !== undefined && w !== undefined && h !== undefined
+            ? [[k, { x: Math.round(x * 1000) / 1000, y: Math.round(y * 1000) / 1000, w: Math.round(w * 1000) / 1000, h: Math.round(h * 1000) / 1000 }]] : []
+        }))
+      : undefined,
+    // Resized rows (at most 4 in a template); the export checks they fit the frame's template
+    row_h: Array.isArray(frame.row_h) && frame.row_h.length >= 2 && frame.row_h.length <= 4 && frame.row_h.every(h => typeof h === 'number' && h >= 0.03 && h <= 1)
+      ? frame.row_h.map(h => Math.round(h * 1000) / 1000) : undefined,
     main_volumes: slotMap(frame.main_volumes, v => num(v, 0, 1)),
     main_mutes: slotMap(frame.main_mutes, v => typeof v === 'boolean' ? v : undefined),
     main_corners: frame.main_corners && typeof frame.main_corners === 'object'

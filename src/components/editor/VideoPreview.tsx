@@ -1,6 +1,6 @@
 'use client'
 
-import { useRef, useEffect, useCallback, useState, useMemo, useId } from 'react'
+import { useRef, useEffect, useCallback, useState, useMemo, useId, createContext, useContext } from 'react'
 import type { RefObject } from 'react'
 import type { SegmentLocal, Overlay, TextOverlay as TextOverlayType, CaptionStyle, TranscriptWord, FrameItem, FrameLane, CornerStyle } from '@chai-cut/shared'
 import { BG_PAD, shownText, textCss, textReplayElapsed, withAlpha } from '@/modules/editor/textStyle'
@@ -8,7 +8,7 @@ import type { BoxPosition } from '@/lib/interpolation'
 import type { TextCase } from './CaptionStyler'
 import { applyCase } from './CaptionStyler'
 import { normalizedSlotAspect, fitToAspect } from '@/modules/editor/utils'
-import { isFrameLayout, frameSlotLabels, frameLanesFor, frameBandShown, frameOf, itemAt, captionBandAt, cornerGeometry, frameRows } from '@/modules/editor/frames'
+import { isFrameLayout, frameSlotLabels, frameLanesFor, frameBandShown, frameOf, itemAt, captionBandAt, cornerGeometry, frameRows, MIN_ROW_H, mainRect, boxRect, MIN_BOX as MIN_MAIN_BOX } from '@/modules/editor/frames'
 import type { FrameMediaPool } from '@/modules/editor/frameMedia'
 
 const BOX_COLORS = ['#22c55e', '#3b82f6', '#f59e0b']
@@ -91,7 +91,10 @@ export function VideoPreview({
             .filter(box => !mainSlots || mainSlots.includes(box.slot_index))
             .map(box => {
               // Slots can differ in shape (Big + Small): each box is locked to its own slot's
-              const a = frame ? normalizedSlotAspect(layout, videoAR ?? undefined, frameBandShown(activeSegment), box.slot_index) : aspect
+              const slotA = frame ? normalizedSlotAspect(layout, videoAR ?? undefined, frameBandShown(activeSegment), box.slot_index, activeSegment.frame?.row_h) : aspect
+              // A resized video box changes the shape that's cut from the source
+              const mr = frame ? mainRect(frameOf(activeSegment), box.slot_index) : null
+              const a = slotA && mr ? slotA * (mr.w / mr.h) : slotA
               return { box, aspect: a, label: labels?.[box.slot_index] ?? String(box.slot_index + 1), pos: fitToAspect(getPositionAt(box.id, currentTimeMs), a) }
             })
           return (
@@ -265,6 +268,7 @@ function FrameTextBox({ row, item, selected, onSelect, onChange }: {
   onChange: (patch: Partial<Pick<FrameItem, 'x' | 'y' | 'size'>>) => void
 }) {
   const ref = useRef<HTMLDivElement>(null)
+  const setGuides = useContext(GuideContext)
   const size = item.size ?? 64
   const empty = !item.text?.trim()
   const block = frameTextBlock(item.text ?? '', size)
@@ -283,10 +287,16 @@ function FrameTextBox({ row, item, selected, onSelect, onChange }: {
     const sx = e.clientX, sy = e.clientY, x0 = cx, y0 = clampY(y), size0 = size, w0 = block.w * rect.width
     const move = (ev: PointerEvent) => {
       const dx = (ev.clientX - sx) / rect.width, dy = (ev.clientY - sy) / rect.height
-      if (mode === 'move') onChange({ x: clampX(x0 + dx), y: clampY(y0 + dy / row.h) })
+      if (mode === 'move') {
+        // Centre guides: the frame's middle left-to-right, its row's middle top-to-bottom
+        const [nx, onV] = snapTo(clampX(x0 + dx), 0.5)
+        const [ny, onH] = snapTo(clampY(y0 + dy / row.h), 0.5, GUIDE_SNAP / row.h)
+        setGuides(onV || onH ? { ...(onV ? { v: 0.5 } : {}), ...(onH ? { h: row.y + row.h / 2 } : {}) } : null)
+        onChange({ x: nx, y: ny })
+      }
       else onChange({ size: Math.round(Math.max(24, Math.min(200, size0 * (w0 + 2 * (ev.clientX - sx)) / w0))) })
     }
-    const up = () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up) }
+    const up = () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); setGuides(null) }
     window.addEventListener('pointermove', move)
     window.addEventListener('pointerup', up)
   }
@@ -318,18 +328,21 @@ function FrameTextBox({ row, item, selected, onSelect, onChange }: {
  * rounded box (the same look render.py builds with its corner mask); without, it fills the row.
  */
 function inSlot(ctx: CanvasRenderingContext2D, corners: CornerStyle | undefined, y: number, h: number,
-  draw: (dx: number, dy: number, dw: number, dh: number) => void) {
+  draw: (dx: number, dy: number, dw: number, dh: number) => void,
+  /** The media's box inside the slot (shares of the slot) when it was resized / moved; absent = the whole slot */
+  rect?: { x: number; y: number; w: number; h: number } | null) {
   const W = ctx.canvas.width
   const g = cornerGeometry(corners)
-  if (!g) { draw(0, y, W, h); return }
-  const k = W / 1080, m = g.inset * k, r = g.radius * k
+  if (!g && !rect) { draw(0, y, W, h); return }
+  const k = W / 1080, m = g ? g.inset * k : 0, r = g ? g.radius * k : 0
+  const bx = (rect?.x ?? 0) * W, by = y + (rect?.y ?? 0) * h, bw = (rect?.w ?? 1) * W, bh = (rect?.h ?? 1) * h
   ctx.fillStyle = '#000'
   ctx.fillRect(0, y, W, h)
   ctx.save()
   ctx.beginPath()
-  ctx.roundRect(m, y + m, W - 2 * m, h - 2 * m, r)
+  ctx.roundRect(bx + m, by + m, Math.max(1, bw - 2 * m), Math.max(1, bh - 2 * m), r)
   ctx.clip()
-  draw(m, y + m, W - 2 * m, h - 2 * m)
+  draw(bx + m, by + m, Math.max(1, bw - 2 * m), Math.max(1, bh - 2 * m))
   ctx.restore()
 }
 
@@ -347,7 +360,7 @@ function paintFrame(
   const main = new Set(frame.main_slots ?? [0])
   const bandBg = frame.band?.bg || '#000000'
   // Caption strip (no lane): a plain band the captions are drawn on
-  for (const r of frameRows(seg.layout as Parameters<typeof frameRows>[0])) {
+  for (const r of frameRows(seg.layout as Parameters<typeof frameRows>[0], true, seg.frame?.row_h)) {
     if (r.kind !== 'caption') continue
     ctx.fillStyle = bandBg
     ctx.fillRect(0, Math.round(r.y * H), W, Math.round((r.y + r.h) * H) - Math.round(r.y * H))
@@ -372,7 +385,8 @@ function paintFrame(
       if (box) {
         const p = getPositionAt(box.id, tMs)
         inSlot(ctx, frame.main_corners?.[String(row.lane)], y, h,
-          (dx, dy, dw, dh) => coverCrop(ctx, video, p.x * vW, p.y * vH, p.w * vW, p.h * vH, dx, dy, dw, dh))
+          (dx, dy, dw, dh) => coverCrop(ctx, video, p.x * vW, p.y * vH, p.w * vW, p.h * vH, dx, dy, dw, dh),
+          mainRect(frame, row.lane as number))
       }
     }
     if (!it) continue
@@ -382,12 +396,12 @@ function paintFrame(
       if (img && img.complete && img.naturalWidth) {
         const from = Math.max(it.start_ms, seg.start_ms), to = Math.min(it.end_ms, seg.end_ms)
         const m = photoMotion(it.motion, (tMs - from) / Math.max(1, to - from))
-        inSlot(ctx, it.corners, y, h, (dx, dy, dw, dh) => coverSource(ctx, img, img.naturalWidth, img.naturalHeight, dx, dy, dw, dh, m.zoom, m.panX))
+        inSlot(ctx, it.corners, y, h, (dx, dy, dw, dh) => coverSource(ctx, img, img.naturalWidth, img.naturalHeight, dx, dy, dw, dh, m.zoom, m.panX), boxRect(it.rect))
       }
       continue
     }
     const v = pool?.video(it)
-    if (v && v.readyState >= 2) inSlot(ctx, it.corners, y, h, (dx, dy, dw, dh) => coverSource(ctx, v, v.videoWidth, v.videoHeight, dx, dy, dw, dh))
+    if (v && v.readyState >= 2) inSlot(ctx, it.corners, y, h, (dx, dy, dw, dh) => coverSource(ctx, v, v.videoWidth, v.videoHeight, dx, dy, dw, dh), boxRect(it.rect))
   }
 }
 
@@ -1050,7 +1064,11 @@ interface OutputCanvasProps {
   onFrameItemClick?: (id: string) => void
   activeFrameItemId?: string | null
   /** A frame text dragged or resized in the preview */
-  onFrameItemChange?: (id: string, patch: Partial<Pick<FrameItem, 'x' | 'y' | 'size'>>) => void
+  onFrameItemChange?: (id: string, patch: Partial<Pick<FrameItem, 'x' | 'y' | 'size' | 'rect'>>) => void
+  /** The line between two rows of a resizable frame dragged: the frame's new row heights (null = back to the template's) */
+  onFrameRowsChange?: (heights: number[] | null) => void
+  /** The main video's box in a slot resized or moved (shares of the slot; null = fill the slot again) */
+  onFrameMainRectChange?: (slot: number, rect: { x: number; y: number; w: number; h: number } | null) => void
 }
 
 export function OutputCanvas({
@@ -1059,9 +1077,11 @@ export function OutputCanvas({
   className, style, skipTransitionRef,
   words, captionStyle, captionTextCase = 'title', showCaptions = false,
   textOverlays = [], activeTextOverlayId, onTextOverlayChange, onSelectTextOverlay, onDeleteTextOverlay,
-  onCaptionPositionChange, frameMedia, onFrameLaneClick, onFrameItemClick, activeFrameItemId, onFrameItemChange,
+  onCaptionPositionChange, frameMedia, onFrameLaneClick, onFrameItemClick, activeFrameItemId, onFrameItemChange, onFrameRowsChange, onFrameMainRectChange,
 }: OutputCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
+  // Centre guides shown while something is dragged (see GuideContext)
+  const [guides, setGuides] = useState<Guides>(null)
   const frameMediaRef = useRef(frameMedia)
   frameMediaRef.current = frameMedia
 
@@ -1224,7 +1244,14 @@ export function OutputCanvas({
   }, [activeSegment, currentTimeMs, onFrameItemClick])
 
   return (
+    <GuideContext.Provider value={setGuides}>
     <div className={className} style={{ ...style, position: 'relative', containerType: 'inline-size' }} onClick={() => onSelectTextOverlay?.(null)}>
+      {guides?.v !== undefined && (
+        <div className="absolute top-0 bottom-0 pointer-events-none" style={{ left: `calc(${guides.v * 100}% - 0.5px)`, width: 1, background: '#c8ff00', boxShadow: '0 0 6px rgba(200,255,0,0.8)', zIndex: 60 }} />
+      )}
+      {guides?.h !== undefined && (
+        <div className="absolute left-0 right-0 pointer-events-none" style={{ top: `calc(${guides.h * 100}% - 0.5px)`, height: 1, background: '#c8ff00', boxShadow: '0 0 6px rgba(200,255,0,0.8)', zIndex: 60 }} />
+      )}
       <canvas
         ref={canvasRef}
         width={540}
@@ -1260,6 +1287,26 @@ export function OutputCanvas({
           </span>
         </button>
       ))}
+      {/* Resizable frame: the main video's box in its slot — drag it to move, its corners to resize */}
+      {onFrameMainRectChange && activeSegment && isFrameLayout(activeSegment.layout) && (() => {
+        const frame = frameOf(activeSegment)
+        const main = frame.main_slots ?? [0]
+        return frameLanesFor(activeSegment)
+          .filter(r => typeof r.lane === 'number' && main.includes(r.lane) && !itemAt(frame, r.lane, currentTimeMs, activeSegment))
+          .map(r => (
+            <FrameMainBox key={`main-${r.lane}`} row={r} rect={mainRect(frame, r.lane as number)}
+              onChange={rect => onFrameMainRectChange(r.lane as number, rect)} />
+          ))
+      })()}
+      {/* Resizable frame: drag the line between two rows to make one bigger and the other smaller */}
+      {/* The same box for a video or photo put in a slot (clicking it also selects it) */}
+      {onFrameItemChange && itemRows.filter(r => (r.item.kind === 'video' || r.item.kind === 'photo') && !r.item.hidden).map(r => (
+        <FrameMainBox key={`box-${r.item.id}`} row={r} rect={boxRect(r.item.rect)}
+          selected={r.item.id === activeFrameItemId} onSelect={() => onFrameItemClick?.(r.item.id)}
+          onChange={rect => onFrameItemChange(r.item.id, { rect })} />
+      ))}
+      {onFrameRowsChange && activeSegment && isFrameLayout(activeSegment.layout)
+        && <FrameRowHandles seg={activeSegment} onChange={onFrameRowsChange} />}
       {/* Image overlay boxes */}
       {activeOverlays.map(ov => (
         <OverlayBox
@@ -1290,6 +1337,153 @@ export function OutputCanvas({
         />
       )}
     </div>
+    </GuideContext.Provider>
+  )
+}
+
+// ── Centre guides (as in Instagram): while something is dragged in the preview, a line shows when
+// it's centred left-to-right (a vertical line) or top-to-bottom (a horizontal one), and it snaps on.
+type Guides = { v?: number; h?: number } | null
+const GuideContext = createContext<(g: Guides) => void>(() => {})
+/** How close (share of the preview) a centre must be to snap */
+const GUIDE_SNAP = 0.012
+/** `centre` snapped onto `target` when close: [value, snapped?] */
+function snapTo(centre: number, target: number, tol = GUIDE_SNAP): [number, boolean] {
+  return Math.abs(centre - target) <= tol ? [target, true] : [centre, false]
+}
+
+/**
+ * The main video's box inside its slot: drag it to move, a corner to resize (the picture is cut
+ * from the source to the box's new shape). Double-click fills the slot again.
+ */
+function FrameMainBox({ row, rect, onChange, selected, onSelect }: {
+  row: { y: number; h: number }
+  rect: { x: number; y: number; w: number; h: number } | null
+  onChange: (rect: { x: number; y: number; w: number; h: number } | null) => void
+  /** A video / photo item: picked when pressed, outlined while it is */
+  selected?: boolean
+  onSelect?: () => void
+}) {
+  const [active, setActive] = useState(false)
+  const setGuides = useContext(GuideContext)
+  const r = rect ?? { x: 0, y: 0, w: 1, h: 1 }
+  function start(e: React.PointerEvent, mode: 'move' | 'nw' | 'ne' | 'sw' | 'se') {
+    if (e.button !== 0) return
+    e.stopPropagation(); e.preventDefault()
+    onSelect?.()
+    const wrap = (e.currentTarget.closest('[data-frame-main]') as HTMLElement).parentElement!.getBoundingClientRect()
+    const sw = wrap.width, sh = wrap.height * row.h          // the slot in px
+    const x0 = e.clientX, y0 = e.clientY
+    setActive(true)
+    const move = (ev: PointerEvent) => {
+      const dx = (ev.clientX - x0) / sw, dy = (ev.clientY - y0) / sh
+      let { x, y, w, h } = r
+      if (mode === 'move') {
+        x = Math.max(0, Math.min(1 - w, r.x + dx)); y = Math.max(0, Math.min(1 - h, r.y + dy))
+        // Centre guides: the middle of its area, each way
+        const [cx, onV] = snapTo(x + w / 2, 0.5), [cy, onH] = snapTo(y + h / 2, 0.5, GUIDE_SNAP / row.h)
+        if (onV) x = cx - w / 2
+        if (onH) y = cy - h / 2
+        setGuides(onV || onH ? { ...(onV ? { v: 0.5 } : {}), ...(onH ? { h: row.y + row.h / 2 } : {}) } : null)
+      } else {
+        const right = r.x + r.w, bottom = r.y + r.h
+        if (mode === 'nw' || mode === 'sw') { x = Math.max(0, Math.min(right - MIN_MAIN_BOX, r.x + dx)); w = right - x }
+        else w = Math.max(MIN_MAIN_BOX, Math.min(1 - r.x, r.w + dx))
+        if (mode === 'nw' || mode === 'ne') { y = Math.max(0, Math.min(bottom - MIN_MAIN_BOX, r.y + dy)); h = bottom - y }
+        else h = Math.max(MIN_MAIN_BOX, Math.min(1 - r.y, r.h + dy))
+      }
+      const q = (v: number) => Math.round(v * 1000) / 1000
+      onChange({ x: q(x), y: q(y), w: q(w), h: q(h) })
+    }
+    const up = () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); setActive(false); setGuides(null) }
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', up)
+  }
+  const corner = (mode: 'nw' | 'ne' | 'sw' | 'se') => (
+    <span key={mode} onPointerDown={e => start(e, mode)} aria-hidden="true"
+      className="absolute rounded-full opacity-0 group-hover:opacity-100 transition-opacity"
+      style={{
+        width: 12, height: 12, background: '#c8ff00', boxShadow: '0 0 0 2px rgba(0,0,0,0.7)', touchAction: 'none',
+        cursor: mode === 'nw' || mode === 'se' ? 'nwse-resize' : 'nesw-resize',
+        ...(mode[0] === 'n' ? { top: -6 } : { bottom: -6 }), ...(mode[1] === 'w' ? { left: -6 } : { right: -6 }),
+        ...(active ? { opacity: 1 } : {}),
+      }} />
+  )
+  return (
+    <div data-frame-main className="group absolute"
+      title="Drag to move the video · drag a corner to resize · double-click to fill the area"
+      onPointerDown={e => start(e, 'move')}
+      onDoubleClick={e => { e.stopPropagation(); onChange(null) }}
+      style={{
+        left: `${r.x * 100}%`, top: `${(row.y + r.y * row.h) * 100}%`, width: `${r.w * 100}%`, height: `${r.h * row.h * 100}%`,
+        cursor: active ? 'grabbing' : 'move', touchAction: 'none', zIndex: 18,
+        boxShadow: active || selected ? 'inset 0 0 0 2px #c8ff00' : undefined,
+      }}
+      onClick={e => e.stopPropagation()}>
+      <span className="absolute inset-0 pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity" style={{ boxShadow: 'inset 0 0 0 1.5px rgba(200,255,0,0.8)' }} />
+      {(['nw', 'ne', 'sw', 'se'] as const).map(corner)}
+    </div>
+  )
+}
+
+/**
+ * Handles on the lines between a frame's rows (e.g. the text band and the video): drag one up or
+ * down to resize the two rows it sits between. Double-click puts the template's sizes back.
+ */
+function FrameRowHandles({ seg, onChange }: { seg: SegmentLocal; onChange: (heights: number[] | null) => void }) {
+  const layout = seg.layout as Parameters<typeof frameRows>[0]
+  const rows = frameRows(layout, true, seg.frame?.row_h)
+  const [dragging, setDragging] = useState<number | null>(null)
+  function down(e: React.PointerEvent, i: number) {
+    if (e.button !== 0) return
+    e.stopPropagation(); e.preventDefault()
+    const box = (e.currentTarget.parentElement as HTMLElement).getBoundingClientRect()
+    const y0 = e.clientY
+    const hs = rows.map(r => r.h)
+    const pair = hs[i] + hs[i + 1]
+    setDragging(i)
+    const move = (ev: PointerEvent) => {
+      const a = Math.max(MIN_ROW_H, Math.min(pair - MIN_ROW_H, hs[i] + (ev.clientY - y0) / box.height))
+      const next = [...hs]
+      next[i] = Math.round(a * 1000) / 1000
+      next[i + 1] = Math.round((pair - a) * 1000) / 1000
+      onChange(next)
+    }
+    const up = () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); setDragging(null) }
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', up)
+  }
+  return (
+    <>
+      {rows.slice(0, -1).map((r, i) => {
+        const on = dragging === i
+        return (
+          <div key={i} role="separator" aria-orientation="horizontal" tabIndex={0}
+            aria-label="Drag to resize the areas above and below. Double-click to reset."
+            title="Drag to resize · double-click to reset"
+            onPointerDown={e => down(e, i)}
+            onDoubleClick={e => { e.stopPropagation(); onChange(null) }}
+            onClick={e => e.stopPropagation()}
+            onKeyDown={e => {
+              if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return
+              e.preventDefault(); e.stopPropagation()
+              const hs = rows.map(x => x.h), pair = hs[i] + hs[i + 1]
+              const a = Math.max(MIN_ROW_H, Math.min(pair - MIN_ROW_H, hs[i] + (e.key === 'ArrowDown' ? 0.01 : -0.01)))
+              hs[i] = a; hs[i + 1] = pair - a
+              onChange(hs)
+            }}
+            className="group absolute left-0 right-0 flex items-center justify-center focus-visible:outline-none"
+            style={{ top: `calc(${(r.y + r.h) * 100}% - 9px)`, height: 18, cursor: 'row-resize', touchAction: 'none', zIndex: 25 }}>
+            <span className="absolute left-0 right-0 transition-opacity opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100"
+              style={{ top: 8, height: 2, background: '#c8ff00', opacity: on ? 1 : undefined }} />
+            <span className="relative flex items-center justify-center rounded-full transition-transform group-hover:scale-110"
+              style={{ width: 34, height: 12, background: on ? '#c8ff00' : 'rgba(20,20,20,0.85)', boxShadow: `0 0 0 1.5px ${on ? '#c8ff00' : 'rgba(255,255,255,0.55)'}, 0 2px 8px rgba(0,0,0,0.6)` }}>
+              <span style={{ width: 14, height: 2, borderRadius: 2, background: on ? '#000' : '#fff', boxShadow: `0 3px 0 ${on ? '#000' : '#fff'}`, transform: 'translateY(-1.5px)' }} />
+            </span>
+          </div>
+        )
+      })}
+    </>
   )
 }
 
@@ -1305,6 +1499,7 @@ interface OverlayBoxProps {
 
 function OverlayBox({ overlay, isActive, onChange, onSelect, onDelete }: OverlayBoxProps) {
   const ref = useRef<HTMLDivElement>(null)
+  const setGuides = useContext(GuideContext)
 
   function cRect() {
     const r = ref.current?.parentElement?.getBoundingClientRect()
@@ -1321,12 +1516,16 @@ function OverlayBox({ overlay, isActive, onChange, onSelect, onDelete }: Overlay
     function move(ev: MouseEvent) {
       moved = true
       const { w, h } = cRect()
-      onChange({
-        x: Math.max(0, Math.min(1 - overlay.w, start.x + (ev.clientX - sx) / w)),
-        y: Math.max(0, Math.min(1 - overlay.h, start.y + (ev.clientY - sy) / h)),
-      })
+      let x = Math.max(0, Math.min(1 - overlay.w, start.x + (ev.clientX - sx) / w))
+      let y = Math.max(0, Math.min(1 - overlay.h, start.y + (ev.clientY - sy) / h))
+      // Centre guides: snap its middle onto the frame's middle
+      const [cx, onV] = snapTo(x + overlay.w / 2, 0.5), [cy, onH] = snapTo(y + overlay.h / 2, 0.5)
+      if (onV) x = cx - overlay.w / 2
+      if (onH) y = cy - overlay.h / 2
+      setGuides(onV || onH ? { ...(onV ? { v: 0.5 } : {}), ...(onH ? { h: 0.5 } : {}) } : null)
+      onChange({ x, y })
     }
-    function up() { window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up) }
+    function up() { window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up); setGuides(null) }
     window.addEventListener('mousemove', move)
     window.addEventListener('mouseup', up)
   }
@@ -1465,6 +1664,7 @@ interface TextOverlayBoxProps {
 
 function TextOverlayBox({ overlay, isActive, onChange, onSelect, onDelete }: TextOverlayBoxProps) {
   const ref = useRef<HTMLDivElement>(null)
+  const setGuides = useContext(GuideContext)
 
   function cRect() {
     const r = ref.current?.parentElement?.getBoundingClientRect()
@@ -1481,14 +1681,21 @@ function TextOverlayBox({ overlay, isActive, onChange, onSelect, onDelete }: Tex
       return el && parent ? el.getBoundingClientRect().left / 1 - parent.getBoundingClientRect().left : 0
     }
     const ox = overlay.x ?? (centredX() / cRect().w), oy = overlay.y ?? 0.4
+    // The text's own size (shares of the preview), to find its middle
+    const box = ref.current?.getBoundingClientRect()
+    const ew = box ? box.width / cRect().w : 0, eh = box ? box.height / cRect().h : 0
     function move(ev: MouseEvent) {
       const { w, h } = cRect()
-      onChange({
-        x: Math.max(0, Math.min(0.92, ox + (ev.clientX - sx) / w)),
-        y: Math.max(0, Math.min(0.92, oy + (ev.clientY - sy) / h)),
-      })
+      let x = Math.max(0, Math.min(0.92, ox + (ev.clientX - sx) / w))
+      let y = Math.max(0, Math.min(0.92, oy + (ev.clientY - sy) / h))
+      // Centre guides: snap its middle onto the frame's middle
+      const [cx, onV] = snapTo(x + ew / 2, 0.5), [cy, onH] = snapTo(y + eh / 2, 0.5)
+      if (onV) x = cx - ew / 2
+      if (onH) y = cy - eh / 2
+      setGuides(onV || onH ? { ...(onV ? { v: 0.5 } : {}), ...(onH ? { h: 0.5 } : {}) } : null)
+      onChange({ x, y })
     }
-    function up() { window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up) }
+    function up() { window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up); setGuides(null) }
     window.addEventListener('mousemove', move)
     window.addEventListener('mouseup', up)
   }

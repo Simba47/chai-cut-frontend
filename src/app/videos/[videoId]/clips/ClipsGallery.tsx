@@ -196,7 +196,7 @@ export function ClipsGallery({ video, videoUrl, stockUrls, job, clips: initial }
                       Edit
                     </button>
                     {c.output_url ? (
-                      <a href={c.output_url} download target="_blank" rel="noreferrer" className="ag-btn ag-btn-dark">
+                      <a href={`/api/clips/${c.id}/download`} download className="ag-btn ag-btn-dark">
                         <svg width="13" height="13" viewBox="0 0 14 14" fill="none" aria-hidden="true"><path d="M7 2v7M4 7l3 3 3-3M2 11.5h10" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /></svg>
                         Download
                       </a>
