@@ -187,7 +187,12 @@ const PRESET_CSS = `
 @keyframes cc-word1 { 0%,32% { opacity: 1 } 33%,100% { opacity: 0 } }
 @keyframes cc-fade { 0% { opacity: 0 } 25%,100% { opacity: 1 } }
 .cc-demo span { display: inline-block; border-radius: 3px; padding: 0 2px }
+@keyframes cc-spin { from { transform: rotate(0deg) } to { transform: rotate(360deg) } }
 `
+
+function formatElapsed(sec: number) {
+  return `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`
+}
 
 function PresetDemo({ id, hl }: { id: AnimationType; hl: string }) {
   const words = ['Hey', 'there', 'friend']
@@ -245,6 +250,26 @@ export function CaptionStyler({
   return (
     <div className="flex flex-col gap-5 px-4 pb-5 pt-1">
       <style>{PRESET_CSS}</style>
+
+      {/* ── Rerender: re-run AI transcription on this clip's audio, keeping style/edits as-is ── */}
+      {hasWords && (
+        <section className="flex flex-col gap-1.5">
+          <button onClick={() => onRetranscribe('unknown')} disabled={retranscribing}
+            className="cap-link" aria-busy={retranscribing || undefined}>
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"
+              style={retranscribing ? { animation: 'cc-spin 1s linear infinite' } : undefined}>
+              <path d="M20 11a8 8 0 10-2.3 5.7M20 4v7h-7" />
+            </svg>
+            <span className="flex-1 text-left">
+              {retranscribing ? `Regenerating captions… ${formatElapsed(retranscribeElapsed)}` : 'Regenerate captions'}
+            </span>
+          </button>
+          {retranscribeError && (
+            <p className="text-[11px]" style={{ color: '#f87171' }}>{retranscribeError}</p>
+          )}
+        </section>
+      )}
+
       {/* ── Style: each tile is a little dark "screen" playing the animation, its name below ── */}
       <section className="flex flex-col gap-2.5">
         <h3 className="cap-heading">Style</h3>
