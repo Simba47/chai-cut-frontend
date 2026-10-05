@@ -1,6 +1,6 @@
 'use client'
 
-import { useRef, useState, useEffect, Fragment } from 'react'
+import { useRef, useState, useEffect, useLayoutEffect, Fragment } from 'react'
 import type { SegmentLocal, LayoutType, TextOverlay, FrameItem, FrameLane, FrameLayout } from '@chai-cut/shared'
 import { isFrameLayout, FRAME_TEMPLATES, frameLanesFor, frameOf, laneItems, itemBounds, MIN_ITEM_MS } from '@/modules/editor/frames'
 
@@ -237,8 +237,8 @@ interface Props {
   /** The music bar selected for Trim / Delete (it gets a white ring), and clicking a bar selects it */
   selectedMusicId?: string | null
   onSelectMusic?: (id: string) => void
-  /** The "+" riding on the playhead over the strip: add a video, photo, music or text there */
-  onAddHere?: (anchor: DOMRect) => void
+  /** A sub timeline's icon (or its empty row): add that kind of media at the playhead */
+  onAddKind?: (kind: 'video' | 'photo' | 'music' | 'text') => void
   /** Photos over the clip, on their own lane: drag to move, drag the ends to trim, click to pick */
   photos?: { id: string; start_ms: number; end_ms: number; url?: string; hidden?: boolean; locked?: boolean }[]
   activePhotoId?: string | null
@@ -296,12 +296,35 @@ export function SegmentTimeline({
   zoom: zoomProp,
   onZoomChange,
   onDeleteSegment,
-  onAddHere,
+  onAddKind,
   pickedSegmentId = null,
   onPickSegment,
   showToolbar = true,
 }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null)
+  // The icon column on the left: where each kind of lane sits (top / height, px within the timeline)
+  const [laneSpans, setLaneSpans] = useState<{ kind: string; top: number; h: number }[]>([])
+  const measureLanes = () => {
+    const box = scrollRef.current
+    if (!box) return
+    const base = box.getBoundingClientRect().top
+    const by = new Map<string, { top: number; bottom: number }>()
+    box.querySelectorAll<HTMLElement>('[data-lane]').forEach(el => {
+      const r = el.getBoundingClientRect(), k = el.dataset.lane!
+      const cur = by.get(k)
+      by.set(k, { top: Math.min(cur?.top ?? Infinity, r.top - base), bottom: Math.max(cur?.bottom ?? -Infinity, r.bottom - base) })
+    })
+    const next = [...by].map(([kind, v]) => ({ kind, top: Math.round(v.top), h: Math.round(v.bottom - v.top) }))
+    setLaneSpans(prev => JSON.stringify(prev) === JSON.stringify(next) ? prev : next)
+  }
+  useLayoutEffect(measureLanes)
+  useEffect(() => {
+    const box = scrollRef.current?.firstElementChild
+    if (!box) return
+    const ro = new ResizeObserver(() => measureLanes())
+    ro.observe(box)
+    return () => ro.disconnect()
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
   const trackRef = useRef<HTMLDivElement>(null)
   const [zoomState, setZoomState] = useState(1)
   const zoom = zoomProp ?? zoomState
@@ -653,6 +676,16 @@ export function SegmentTimeline({
     })
   }
 
+  /** An empty media lane: a faint row that adds that kind at the playhead (as in CapCut) */
+  const emptyLane = (kind: 'video' | 'photo' | 'music' | 'text', hint: string) => onAddKind ? (
+    <div data-lane={kind} className="relative" style={{ height: MEDIA_ROW_H }}>
+      <button type="button" onPointerDown={e => e.stopPropagation()} onClick={() => onAddKind(kind)}
+        className="lane-empty absolute inset-0 flex items-center px-2.5 rounded-[5px] text-[10.5px] font-medium">
+        {hint}
+      </button>
+    </div>
+  ) : null
+
   /** Dashed guide through a lane while one of its items sits on an edge */
   const laneGuide = (prefix: string) => snapLine !== null && dragging?.startsWith(prefix) ? (
     <div className="absolute top-0 bottom-0 pointer-events-none" style={{ left: `calc(${pct(snapLine)}% - 0.5px)`, width: 0, borderLeft: `1.5px dashed ${ACCENT}`, zIndex: 20 }} />
@@ -749,9 +782,6 @@ export function SegmentTimeline({
 
   const pct = (ms: number) => (duration > 0 ? (ms / duration) * 100 : 0)
   const playheadPct = pct(currentTimeMs)
-  // The "+" on the playhead's time label: the Add menu there (or, without it, a single frame's slot)
-  const showPlus = !!onAddHere || (!!frameSeg && isFrameLayout(frameSeg.layout) && !visibleLanes(frameSeg).some(r => r.lane === 0)
-    && currentTimeMs >= frameSeg.start_ms && currentTimeMs < frameSeg.end_ms)
   const byTime = [...segments].sort((a, b) => a.start_ms - b.start_ms)
 
   // Ruler: pick the smallest spacing that keeps labels readable at this zoom
@@ -767,7 +797,9 @@ export function SegmentTimeline({
   const brolls = byTime.filter(sg => isBroll(sg) && !isFrameLayout(sg.layout))
   const mains = byTime.filter(sg => !brolls.includes(sg))
   // One lane over the strip holds the joins between touching formats and the B-roll shots
-  const RULER_H = 30, LANE_H = 22, STRIP_H = 52
+  // The joins lane: just tall enough for its handles, and a thin gap when there are none
+  const RULER_H = 30, STRIP_H = 52
+  const LANE_H = mains.some((m, i) => i + 1 < mains.length && Math.abs(mains[i + 1].start_ms - m.end_ms) <= 1) ? 18 : 6
   /** The format a B-roll shot sits over (the one before it, else after): the strip keeps its colour there */
   const underBroll = (seg: SegmentLocal) =>
     [...mains].reverse().find(m => m.end_ms <= seg.start_ms + 1) ?? mains.find(m => m.start_ms >= seg.end_ms - 1)
@@ -867,11 +899,8 @@ export function SegmentTimeline({
       ends[r] = o.end_ms
     }
   }
-  // Like a frame's lanes: media in the section under the playhead shows full size; the rest shrinks
-  // to a thin line in its colour (still there to click or drag — picked or dragged, it's full size)
-  const focusSec = byTime.find(x => currentTimeMs >= x.start_ms && currentTimeMs < x.end_ms)
-    ?? gaps.find(g => currentTimeMs >= g.start_ms && currentTimeMs < g.end_ms)
-  const inFocus = (startMs: number, endMs: number) => !focusSec || (startMs < focusSec.end_ms && endMs > focusSec.start_ms)
+  // Media bars always show at full size, wherever the playhead is
+  const inFocus = (_startMs: number, _endMs: number) => true
   const THIN_ROW_H = 6
   /** A thin media line (outside the section under the playhead) */
   const thinBar = (color: string, startMs: number, endMs: number): React.CSSProperties => ({
@@ -899,7 +928,31 @@ export function SegmentTimeline({
         </div>
       )}
 
-      <div className="flex items-start gap-2">
+      <div className="flex items-start gap-3">
+      {/* Lane icons, lined up with their rows: what each sub-timeline is. Media icons add that kind at the playhead. */}
+      <div className="relative shrink-0 self-stretch" style={{ width: 40 }} aria-label="Timeline lanes">
+        {laneSpans.map(sp => {
+          const meta = LANE_META[sp.kind]
+          if (!meta) return null
+          // Room around each icon: it's a little smaller than its lane
+          const size = Math.max(14, Math.min(26, sp.h - 2))
+          const add = meta.add && onAddKind ? () => onAddKind(meta.add!) : undefined
+          return (
+            <button key={sp.kind} type="button" onClick={add} disabled={!add}
+              title={add ? `${meta.label} — click to add at the playhead` : meta.label}
+              aria-label={add ? `Add ${meta.label.toLowerCase()} at the playhead` : meta.label}
+              className="lane-ico group absolute left-0 flex items-center justify-center rounded-lg"
+              style={{ top: sp.top + sp.h / 2 - size / 2, left: 4, width: 32, height: size, cursor: add ? 'pointer' : 'default', '--lane-c': meta.color } as React.CSSProperties}>
+              <svg width={Math.min(15, size - 4)} height={Math.min(15, size - 4)} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{meta.icon}</svg>
+              {add && size >= 16 && (
+                <svg className="absolute pointer-events-none" style={{ right: 3, bottom: size >= 22 ? 1 : -1 }} width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="5" strokeLinecap="round" aria-hidden="true">
+                  <path d="M12 5v14M5 12h14" />
+                </svg>
+              )}
+            </button>
+          )
+        })}
+      </div>
       {/* No visible scrollbar: when zoomed in, the wheel scrolls sideways and the view follows the playhead */}
       <div ref={scrollRef} className="relative flex-1 min-w-0 overflow-x-auto overflow-y-hidden rounded-2xl no-scrollbar"
         style={{
@@ -934,12 +987,6 @@ export function SegmentTimeline({
 
             {/* ── Joins lane: a handle wherever two sections touch ── */}
             <div className="relative" style={{ height: LANE_H }}>
-              {junctions.length === 0 && (
-                <span className="absolute left-0 top-1/2 -translate-y-1/2 flex items-center gap-1.5 text-[10px] pointer-events-none" style={{ color: 'rgb(var(--ed-fg) / 0.24)' }}>
-                  <span className="w-1 h-1 rounded-full" style={{ background: '#c8ff00', boxShadow: '0 0 6px #c8ff00' }} />
-                  Joins between sections show up here — drag one to move both
-                </span>
-              )}
               {junctions.map(({ left, right }) => {
                 const key = `join-${left.id}`
                 const active = dragging === key
@@ -975,7 +1022,7 @@ export function SegmentTimeline({
 
             {/* ── Original sound (the main video's sound, detached): right over the video it comes from ── */}
             {originals.length > 0 && (
-              <div className="relative" style={{ height: ORIG_H, paddingBottom: 4 }}>
+              <div data-lane="original" className="relative" style={{ height: ORIG_H, paddingBottom: 4 }}>
                 <div className="relative h-full">
                   {originals.map(m => {
                     const end = musicEnd(m)
@@ -1002,7 +1049,7 @@ export function SegmentTimeline({
             )}
 
             {/* ── Film strip: tinted per format, hatched where no format is set ── */}
-            <div className="relative overflow-hidden" style={{ height: STRIP_H, borderRadius: 12, boxShadow: '0 0 0 1px rgb(var(--ed-fg) / 0.1), 0 10px 24px -12px rgba(0,0,0,0.9)' }}>
+            <div data-lane="main" className="relative overflow-hidden" style={{ height: STRIP_H, borderRadius: 12, boxShadow: '0 0 0 1px rgb(var(--ed-fg) / 0.1), 0 10px 24px -12px rgba(0,0,0,0.9)' }}>
               {videoUrl
                 ? <VideoThumbnails videoUrl={videoUrl} startMs={clipStartMs} durationMs={duration} radius={12} dim={false} />
                 : <div className="absolute inset-0" style={{ background: 'var(--ed-raise)' }} />}
@@ -1179,29 +1226,7 @@ export function SegmentTimeline({
                 <span className="block px-2 rounded-full text-[10px] font-bold tabular-nums leading-[16px]" style={{ background: '#fff', color: '#0a0a0a', boxShadow: '0 4px 12px rgba(0,0,0,0.5)' }}>
                   {msToLabel(currentTimeMs)}
                 </span>
-                {/* "+" beside the time: add a video, photo, music or text at the playhead. Up here it
-                    moves with the playhead but never sits on the strip (so clicks there stay clicks) */}
-                {showPlus && (
-                  <button
-                    ref={el => { if (el) plusRefs.current.set('0', el); else plusRefs.current.delete('0') }}
-                    onPointerDown={e => e.stopPropagation()}
-                    onClick={e => {
-                      e.stopPropagation()
-                      const r = e.currentTarget.getBoundingClientRect()
-                      if (onAddHere) onAddHere(r); else onAddFrameItem?.(0, r)
-                    }}
-                    aria-label={`Add a video, photo, music or text at ${msToLabel(currentTimeMs)}`}
-                    title={`Add a video, photo, music or text at ${msToLabel(currentTimeMs)}`}
-                    className="pointer-events-auto absolute top-0 flex items-center justify-center rounded-full transition-transform hover:scale-110 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white"
-                    style={{
-                      ...(playheadPct > 90 ? { right: 'calc(100% + 4px)' } : { left: 'calc(100% + 4px)' }),
-                      width: 16, height: 16, background: '#c8ff00', color: '#000',
-                      boxShadow: pulseLane === 0 ? '0 0 0 4px rgba(200,255,0,0.35), 0 0 12px rgba(200,255,0,0.8)' : '0 4px 12px rgba(0,0,0,0.5)',
-                    }}>
-                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="4" strokeLinecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
-                  </button>
-                )}
-              </div>
+                              </div>
             </div>
           </div>
 
@@ -1219,7 +1244,7 @@ export function SegmentTimeline({
             const inSection = !!seg && currentTimeMs >= seg.start_ms && currentTimeMs < seg.end_ms
             const plusAt = seg ? (inSection ? currentTimeMs : seg.start_ms) : 0
             return (
-              <div ref={lanesRef} className="relative flex flex-col pb-1.5"
+              <div ref={lanesRef} data-lane="frame" className="relative flex flex-col pb-1.5"
                 style={{ gap: 2, paddingTop: 4, borderTop: '1px solid rgb(var(--ed-fg) / 0.05)', minHeight: 4 + thinRows * (THIN_H + THIN_GAP) + 6 }}>
                 {/* Other frames: the same lanes as thin lines (blue video, green photo, pink text) */}
                 {others.flatMap(o => {
@@ -1348,15 +1373,16 @@ export function SegmentTimeline({
 
           {/* ── Media lanes under the main video: everything added from outside it — videos, photos,
               music, text. Slim rows, one colour per kind; items that don't overlap share a row ── */}
-          {(brolls.length > 0 || photos.length > 0 || musicRows.length > 0 || textOverlays.length > 0) && (
+          {(onAddKind || brolls.length > 0 || photos.length > 0 || musicRows.length > 0 || textOverlays.length > 0) && (
             <div className="relative flex flex-col" style={{ gap: MEDIA_GAP, paddingTop: 6, paddingBottom: 4, borderTop: '1px solid rgb(var(--ed-fg) / 0.05)' }}>
               {laneGuide('broll-') ?? laneGuide('photo-') ?? laneGuide('music-') ?? laneGuide('text-')}
               {/* Playhead through all the media rows */}
               <div className="absolute top-0 bottom-0 w-px pointer-events-none" style={{ left: `${playheadPct}%`, background: 'rgba(255,255,255,0.55)', zIndex: 15 }} />
 
               {/* Videos (B-roll and inserted videos): they play instead of the main video for their time */}
+              {brolls.length === 0 && emptyLane('video', 'Tap to add a video')}
               {brolls.length > 0 && (
-                <div className="relative" style={{ height: brolls.some(sg => sg.id === activeSegmentId || sg.id === pickedSegmentId || (dragging?.startsWith('broll-') && dragging.endsWith(sg.id)) || inFocus(sg.start_ms, sg.end_ms)) ? MEDIA_ROW_H : THIN_ROW_H, transition: 'height .2s' }}>
+                <div data-lane="video" className="lane-track relative" style={{ height: brolls.some(sg => sg.id === activeSegmentId || sg.id === pickedSegmentId || (dragging?.startsWith('broll-') && dragging.endsWith(sg.id)) || inFocus(sg.start_ms, sg.end_ms)) ? MEDIA_ROW_H : THIN_ROW_H, transition: 'height .2s' }}>
                   {brolls.map(seg => {
                     const sel = seg.id === activeSegmentId || seg.id === pickedSegmentId
                     const on = !!dragging?.startsWith('broll-') && dragging.endsWith(seg.id)
@@ -1387,8 +1413,9 @@ export function SegmentTimeline({
                 </div>
               )}
 
+              {photoRows.length === 0 && emptyLane('photo', 'Tap to add a photo')}
               {photoRows.map((row, ri) => (
-                <div key={`p${ri}`} className="relative" style={{ height: row.some(ph => inFocus(ph.start_ms, ph.end_ms) || ph.id === activePhotoId || dragging === `photo-${ph.id}`) ? MEDIA_ROW_H : THIN_ROW_H, transition: 'height .2s' }}>
+                <div key={`p${ri}`} data-lane="photo" className="lane-track relative" style={{ height: row.some(ph => inFocus(ph.start_ms, ph.end_ms) || ph.id === activePhotoId || dragging === `photo-${ph.id}`) ? MEDIA_ROW_H : THIN_ROW_H, transition: 'height .2s' }}>
                   {row.map(ph => {
                     const sel = ph.id === activePhotoId
                     const on = dragging === `photo-${ph.id}`
@@ -1416,8 +1443,9 @@ export function SegmentTimeline({
                 </div>
               ))}
 
+              {musicRows.length === 0 && emptyLane('music', 'Tap to add music')}
               {musicRows.map((row, ri) => (
-                <div key={`m${ri}`} className="relative" style={{ height: row.some(m => inFocus(m.start_ms, musicEnd(m)) || selectedMusicId === m.id || dragging === `music-${m.id}`) ? MEDIA_ROW_H : THIN_ROW_H, transition: 'height .2s' }}>
+                <div key={`m${ri}`} data-lane="music" className="lane-track relative" style={{ height: row.some(m => inFocus(m.start_ms, musicEnd(m)) || selectedMusicId === m.id || dragging === `music-${m.id}`) ? MEDIA_ROW_H : THIN_ROW_H, transition: 'height .2s' }}>
                   {row.map(m => {
                     const end = musicEnd(m)
                     const on = dragging === `music-${m.id}`
@@ -1447,8 +1475,9 @@ export function SegmentTimeline({
                 </div>
               ))}
 
+              {textRows.length === 0 && emptyLane('text', 'Tap to add text')}
               {textRows.map((row, ri) => (
-                <div key={`t${ri}`} className="relative" style={{ height: row.some(o => inFocus(o.start_ms, o.end_ms) || o.id === activeTextOverlayId || dragging === `text-${o.id}`) ? MEDIA_ROW_H : THIN_ROW_H, transition: 'height .2s' }}>
+                <div key={`t${ri}`} data-lane="text" className="lane-track relative" style={{ height: row.some(o => inFocus(o.start_ms, o.end_ms) || o.id === activeTextOverlayId || dragging === `text-${o.id}`) ? MEDIA_ROW_H : THIN_ROW_H, transition: 'height .2s' }}>
                   {row.map(o => {
                     const sel = o.id === activeTextOverlayId
                     const on = dragging === `text-${o.id}`
@@ -1483,10 +1512,22 @@ export function SegmentTimeline({
   )
 }
 
+// The icon column next to the timeline: one per kind of lane
+type LaneMeta = { label: string; color: string; icon: React.ReactNode; add?: 'video' | 'photo' | 'music' | 'text' }
+const LANE_META: Record<string, LaneMeta> = {
+  original: { label: 'Original sound', color: '#c084fc', icon: <><path d="M11 5L6 9H2v6h4l5 4V5z" /><path d="M15.5 8.5a5 5 0 010 7" /></> },
+  main: { label: 'Main video', color: 'rgb(var(--ed-fg) / 0.75)', icon: <><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M7 4v16M17 4v16M3 9h4M3 15h4M17 9h4M17 15h4" /></> },
+  frame: { label: 'Frame slots', color: '#2dd4bf', icon: <><rect x="6" y="2.5" width="12" height="19" rx="2" /><path d="M6 9.5h12M6 14.5h12" /></> },
+  video: { label: 'Videos', color: '#f97316', add: 'video' as const, icon: <><rect x="2" y="5" width="15" height="14" rx="2" /><path d="M17 10l5-3v10l-5-3z" /></> },
+  photo: { label: 'Photos', color: '#60a5fa', add: 'photo' as const, icon: <><rect x="3" y="3" width="18" height="18" rx="2" /><circle cx="8.5" cy="8.5" r="1.5" /><path d="M21 15l-5-5L5 21" /></> },
+  music: { label: 'Music', color: '#c084fc', add: 'music' as const, icon: <><path d="M9 18V5l12-2v13" /><circle cx="6" cy="18" r="3" /><circle cx="18" cy="16" r="3" /></> },
+  text: { label: 'Text', color: '#f472b6', add: 'text' as const, icon: <path d="M4 7V4h16v3M9 20h6M12 4v16" /> },
+}
+
 // Media rows under the strip: one colour per kind (video is the orange bar over the strip)
 const MEDIA_COLORS = { video: '#f97316', photo: '#60a5fa', text: '#f472b6', music: '#c084fc' } as const
-const MEDIA_ROW_H = 20
-const MEDIA_GAP = 3
+const MEDIA_ROW_H = 24
+const MEDIA_GAP = 8
 
 /** Little marks on a bar (or a section's corner on the strip): hidden, muted, locked */
 function StateBadges({ st, corner }: { st?: { hidden?: boolean; muted?: boolean; locked?: boolean }; corner?: boolean }) {

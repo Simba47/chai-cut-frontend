@@ -1,5 +1,6 @@
 'use client'
 
+import { InfoTip } from '@/components/ui/info-tip'
 import { useEffect, useRef, useState } from 'react'
 import type { TextOverlay } from '@chai-cut/shared'
 import { FontPicker, loadVideoFonts } from './CaptionStyler'
@@ -87,8 +88,9 @@ export function TextOverlayPanel({ overlays, currentTimeMs, clipDurationMs, onAd
             Add
           </button>
         </div>
-        <p className="text-[11px] leading-relaxed" style={{ color: 'rgb(var(--ed-fg) / 0.45)' }}>
-          It appears at the playhead for 3 seconds. Drag it on the video to move it; drag its bar on the timeline to change when it shows.
+        <p className="flex items-center gap-1.5 text-[11px]" style={{ color: 'rgb(var(--ed-fg) / 0.45)' }}>
+          How it works
+          <InfoTip label="How text works" size={12}>It appears at the playhead for 3 seconds. Drag it on the video to move it; drag its bar on the timeline to change when it shows.</InfoTip>
         </p>
       </div>
 
