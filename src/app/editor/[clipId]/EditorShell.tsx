@@ -1,5 +1,6 @@
 'use client'
 
+import { InfoTip } from '@/components/ui/info-tip'
 import { useState, useEffect, useLayoutEffect, useRef, useMemo, Fragment } from 'react'
 import type { Clip, Segment, CropBox, BoxKeyframe, CaptionStyle, TextOverlay, AudioTrack, Transition, TranscriptWord, LayoutType, Overlay } from '@chai-cut/shared'
 import { VideoPreview, OutputCanvas } from '@/components/editor/VideoPreview'
@@ -71,6 +72,10 @@ const PLATFORM_OPTIONS: { id: Platform; label: string; icon: React.ReactNode }[]
 ]
 // Options sidebar width (px)
 const OPTIONS_W = 272
+const PREVIEW_W = 360
+// How wide the side columns can be dragged
+const OPTIONS_RANGE: [number, number] = [220, 520]
+const PREVIEW_RANGE: [number, number] = [260, 620]
 const DEFAULT_SEG_ID = '__default-format'
 const DEFAULT_BOX_ID = '__default-box'
 const ACCENT = '#c8ff00'
@@ -216,6 +221,74 @@ export function EditorShell({
   const [isFreePlan, setIsFreePlan] = useState(false)
   const [tool, setTool] = useState<Tool>('format')
   const [optionsOpen, setOptionsOpen] = useState(true)
+  // The Preview column on the right: closed for more room to edit (remembered per browser)
+  const [previewOpen, setPreviewOpen] = useState(true)
+  // Widths of the two side columns, dragged at their inner edge (remembered per browser)
+  const [optionsW, setOptionsW] = useState(OPTIONS_W)
+  const [previewW, setPreviewW] = useState(PREVIEW_W)
+  const [resizing, setResizing] = useState<'options' | 'preview' | 'timeline' | null>(null)
+  // The timeline's height, dragged at the line above the play bar (null = its usual size); remembered per browser
+  const [timelineH, setTimelineH] = useState<number | null>(null)
+  const timelineRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    try { const h = Number(localStorage.getItem('editor.timelineH')); if (h) setTimelineH(h) } catch { /* storage blocked */ }
+  }, [])
+  /** Drag the line between the video and the play bar: up makes the timeline taller, down the video bigger */
+  function startTimelineResize(e: React.PointerEvent) {
+    if (e.button !== 0) return
+    e.preventDefault(); e.stopPropagation()
+    const y0 = e.clientY
+    const h0 = timelineRef.current?.offsetHeight ?? 220
+    const max = Math.round(window.innerHeight * 0.7)
+    let h = h0
+    setResizing('timeline')
+    const move = (ev: PointerEvent) => { h = Math.round(Math.max(90, Math.min(max, h0 + (y0 - ev.clientY)))); setTimelineH(h) }
+    const up = () => {
+      window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up)
+      setResizing(null)
+      try { localStorage.setItem('editor.timelineH', String(h)) } catch { /* storage blocked */ }
+    }
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', up)
+  }
+  function resetTimelineHeight() {
+    setTimelineH(null)
+    try { localStorage.removeItem('editor.timelineH') } catch { /* storage blocked */ }
+  }
+  useEffect(() => {
+    try {
+      const o = Number(localStorage.getItem('editor.optionsW')), pv = Number(localStorage.getItem('editor.previewW'))
+      if (o) setOptionsW(Math.max(OPTIONS_RANGE[0], Math.min(OPTIONS_RANGE[1], o)))
+      if (pv) setPreviewW(Math.max(PREVIEW_RANGE[0], Math.min(PREVIEW_RANGE[1], pv)))
+    } catch { /* storage blocked */ }
+  }, [])
+  /** Drag a side column's inner edge to resize it; double-click puts its usual width back */
+  function startColumnResize(e: React.PointerEvent, which: 'options' | 'preview') {
+    if (e.button !== 0) return
+    e.preventDefault(); e.stopPropagation()
+    const x0 = e.clientX
+    const w0 = which === 'options' ? optionsW : previewW
+    const [lo, hi] = which === 'options' ? OPTIONS_RANGE : PREVIEW_RANGE
+    let w = w0
+    setResizing(which)
+    const move = (ev: PointerEvent) => {
+      // The options column grows to the right, the preview column to the left
+      const d = which === 'options' ? ev.clientX - x0 : x0 - ev.clientX
+      w = Math.round(Math.max(lo, Math.min(hi, w0 + d)))
+      if (which === 'options') setOptionsW(w); else setPreviewW(w)
+    }
+    const up = () => {
+      window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up)
+      setResizing(null)
+      try { localStorage.setItem(which === 'options' ? 'editor.optionsW' : 'editor.previewW', String(w)) } catch { /* storage blocked */ }
+    }
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', up)
+  }
+  function resetColumn(which: 'options' | 'preview') {
+    if (which === 'options') setOptionsW(OPTIONS_W); else setPreviewW(PREVIEW_W)
+    try { localStorage.removeItem(which === 'options' ? 'editor.optionsW' : 'editor.previewW') } catch { /* storage blocked */ }
+  }
   // First-time tour: opens once the page has settled; the header's "?" replays it
   const [tourOpen, setTourOpen] = useState(false)
   useEffect(() => {
@@ -279,14 +352,6 @@ export function EditorShell({
   const [timelineHidden, setTimelineHidden] = useState(false)
   // Cleanup: the list of cuts can be folded away
   const [cutsOpen, setCutsOpen] = useState(true)
-  // Options panel: the tool's explanation is one line until expanded (remembered on this device)
-  const [hintOpen, setHintOpenState] = useState(false)
-  useEffect(() => { try { setHintOpenState(localStorage.getItem('shortcut.toolHintOpen') === '1') } catch { /* private mode */ } }, [])
-  const setHintOpen = (f: (v: boolean) => boolean) => setHintOpenState(v => {
-    const next = f(v)
-    try { localStorage.setItem('shortcut.toolHintOpen', next ? '1' : '0') } catch { /* private mode */ }
-    return next
-  })
   // Lengths of music files added in this session (read from the file), so their timeline bars
   // show the right length; tracks without one run to the clip's end
   const [musicDurations, setMusicDurations] = useState<Record<string, number>>({})
@@ -366,8 +431,8 @@ export function EditorShell({
   // Picking a photo, text or music (timeline, preview or its panel) opens its settings on the left
   const openSettings = (t: Tool) => { setTool(t); toggleOptions(true) }
   // (`open` false: select only — a single click on the timeline doesn't open the sidebar)
-  function pickPhoto(id: string, open = true) { setActiveOverlayId(id); setActiveTextOverlayId(null); if (open) openSettings('photos') }
-  function pickText(id: string, open = true) { setActiveTextOverlayId(id); setActiveOverlayId(null); if (open) openSettings('text') }
+  function pickPhoto(id: string, open = true) { setActiveOverlayId(id); setActiveTextOverlayId(null); setLastPick('overlay'); if (open) openSettings('photos') }
+  function pickText(id: string, open = true) { setActiveTextOverlayId(id); setActiveOverlayId(null); setLastPick('text'); if (open) openSettings('text') }
   function pickMusicTrack(id: string, open = true) { pickMusic(id); if (open) openSettings('music') }
   // Timeline clicks select; the same thing clicked again quickly (a double tap) opens its settings
   const lastTapRef = useRef<{ key: string; at: number } | null>(null)
@@ -384,15 +449,15 @@ export function EditorShell({
     if (lockNoteTimer.current) clearTimeout(lockNoteTimer.current)
     lockNoteTimer.current = setTimeout(() => setLockNote(null), 2200)
   }
-  // The timeline's "+" menu: where it was opened (start / end of the clip) and where to show it
-  const [plusMenu, setPlusMenu] = useState<{ atMs: number; anchor: DOMRect } | null>(null)
   // The section the user clicked (on the timeline strip or its card): the Delete buttons show only then
   const [pickedSegId, setPickedSegIdState] = useState<string | null>(null)
   // Music track selected on the timeline (Trim / Delete act on it). Only one thing is selected:
   // picking a video section clears the music, and the other way round
   const [pickedMusicId, setPickedMusicId] = useState<string | null>(null)
-  const setPickedSegId = (id: string | null) => { setPickedSegIdState(id); setPickedMusicId(null) }
-  const pickMusic = (id: string) => { setPickedSegIdState(null); setPickedMusicId(id) }
+  const setPickedSegId = (id: string | null) => { setPickedSegIdState(id); setPickedMusicId(null); if (id) setLastPick('section') }
+  const pickMusic = (id: string) => { setPickedSegIdState(null); setPickedMusicId(id); setLastPick('music') }
+  // What was picked last (on the timeline, the preview or a panel): the Delete button and key act on it
+  const [lastPick, setLastPick] = useState<'music' | 'overlay' | 'text' | 'section' | 'frameItem' | null>(null)
   // Export press: the download animation plays first, then the render starts (see .ed-export in globals.css)
   const [exportPress, setExportPress] = useState(false)
   function pressExport() {
@@ -575,6 +640,7 @@ export function EditorShell({
   useEffect(() => {
     try {
       if (localStorage.getItem('editor.optionsOpen') === 'false') setOptionsOpen(false)
+      if (localStorage.getItem('editor.previewOpen') === 'false') setPreviewOpen(false)
       const p = localStorage.getItem('editor.platformPreview')
       if (p === 'instagram' || p === 'youtube') setPlatformState(p)
     } catch { /* storage blocked */ }
@@ -582,6 +648,38 @@ export function EditorShell({
   function setPlatform(p: Platform) {
     setPlatformState(p)
     try { localStorage.setItem('editor.platformPreview', p) } catch { /* storage blocked */ }
+  }
+  /**
+   * Add a video, photo, song or text at a time (the playhead): from a sub timeline (its icon or its
+   * empty row). A video or photo lasts 5 s, text 3 s (moved back to fit before the clip's end);
+   * music plays until the section ends.
+   */
+  function addMediaAt(kind: 'video' | 'photo' | 'music' | 'text', atMs: number) {
+    pause()
+    const t = Math.max(0, Math.min(atMs, clipLengthMs - 50))
+    if (kind === 'video' || kind === 'photo') {
+      setPickerOnly(kind); setPickerAtMs(Math.max(0, Math.min(t, clipLengthMs - 5000)))
+      return
+    }
+    if (kind === 'music') {
+      musicAtRef.current = t
+      musicInputRef.current?.click()
+      return
+    }
+    const len = Math.min(3000, clipLengthMs)
+    const start = Math.max(0, Math.min(t, clipLengthMs - len))
+    const id = crypto.randomUUID()
+    setTextOverlays(prev => [...prev, {
+      id, clip_id: clip.id, text: 'Your text', start_ms: start, end_ms: start + len,
+      x: 0.1, y: 0.4, font: 'sans-serif', size: 72, color: '#ffffff',
+    }])
+    setActiveTextOverlayId(id); setFocusTextId(id)
+    seekToMs(start)
+    setTool('text'); toggleOptions(true)
+  }
+  function togglePreview(open: boolean) {
+    setPreviewOpen(open)
+    try { localStorage.setItem('editor.previewOpen', String(open)) } catch { /* storage blocked */ }
   }
   function toggleOptions(open: boolean) {
     setOptionsOpen(open)
@@ -1023,6 +1121,7 @@ export function EditorShell({
   function selectFrameItem(id: string | null, segId = frameSeg?.id, open = true) {
     if (segId && segId !== frameSeg?.id) pendingFrameSelectRef.current = id
     else setActiveFrameItemId(id)
+    if (id) setLastPick('frameItem')
     if (!id || !open) return
     const seg = segments.find(x => x.id === segId)
     const it = seg ? frameOf(seg).items?.find(x => x.id === id) : undefined
@@ -1415,6 +1514,33 @@ export function EditorShell({
   }
 
   // ── Keyboard shortcuts: Space play/pause · S split · [ ] trim · Delete · ←/→ 1 s (Shift: 5 s) ──
+  /**
+   * What the Delete button / key removes: the thing picked last — a song, a photo or video on top,
+   * a text, something in a frame, an added video, or a section — if it's still there; otherwise
+   * whatever is still picked, most specific first. Each asks first (except music) and can be undone.
+   */
+  function deleteTarget(): { label: string; run: () => void } | null {
+    const music = pickedMusicId ? audioTracks.find(t => t.id === pickedMusicId) : undefined
+    const overlay = activeOverlayId ? overlays.find(o => o.id === activeOverlayId) : undefined
+    const text = activeTextOverlayId ? textOverlays.find(o => o.id === activeTextOverlayId) : undefined
+    const fItem = frameSeg && activeFrameItemId ? activeFrameItemId : null
+    const seg = pickedSegId ? segments.find(x => x.id === pickedSegId) : undefined
+    const options = {
+      music: music && { label: 'the selected music', run: () => deleteMusic(music.id) },
+      overlay: overlay && { label: overlay.type === 'video' ? 'the selected video' : 'the selected photo', run: () => askDeleteOverlay(overlay.id) },
+      text: text && { label: 'the selected text', run: () => askDeleteTextOverlay(text.id) },
+      frameItem: fItem && frameSeg && {
+        label: fItem.startsWith('main:') ? 'the main video in this slot' : 'the selected item in the frame',
+        run: () => fItem.startsWith('main:') ? askRemoveMain(frameSeg.id, Number(fItem.slice(5))) : askRemoveFrameItem(frameSeg.id, fItem),
+      },
+      section: seg && (brollShots.some(b => b.id === seg.id)
+        ? { label: 'the selected video', run: () => confirm({ title: 'Delete this video?', body: `The main video shows here again. ${UNDO_NOTE}` }, () => removeBroll(seg.id)) }
+        : { label: 'the selected section', run: () => askDeleteFormat(seg.id) }),
+    }
+    if (lastPick && options[lastPick]) return options[lastPick] || null
+    return options.frameItem || options.music || options.overlay || options.text || options.section || null
+  }
+
   const shortcutsRef = useRef({ togglePlay, seekToMs, currentTimeMs, clipDurationMs, trimSelectedTo, splitHere, deleteSelected: () => {} })
   shortcutsRef.current = {
     togglePlay, seekToMs, currentTimeMs, clipDurationMs, trimSelectedTo, splitHere,
@@ -1427,6 +1553,9 @@ export function EditorShell({
         setSelectedView(null)
         return
       }
+      // What was picked (the same as the Delete button)
+      const target = deleteTarget()
+      if (target) { target.run(); return }
       const onScreen = (o: { start_ms: number; end_ms: number }) => currentTimeMs >= o.start_ms && currentTimeMs < o.end_ms
       const text = textOverlays.find(o => o.id === activeTextOverlayId && onScreen(o))
       if (text) { askDeleteTextOverlay(text.id); return }
@@ -1700,7 +1829,6 @@ export function EditorShell({
           <span aria-current="page" className="font-semibold text-[var(--ed-text)] shrink-0" title={clipTitle}>Editing board</span>
         </nav>
 
-        <UndoRedo />
         <SaveIndicator state={leaving ? 'saving' : saveState} leaving={leaving} onRetry={handleSave} />
 
         <div className="flex-1" />
@@ -1789,11 +1917,17 @@ export function EditorShell({
 
         {/* Options sidebar — settings for the selected tool only; collapsible */}
         <aside id="options-sidebar" aria-label={`${activeTool.title} options`} aria-hidden={!optionsOpen}
-          className="ed-options shrink-0 min-h-0 overflow-hidden" data-open={optionsOpen || undefined}
-          style={{ width: optionsOpen ? OPTIONS_W : 0, background: 'var(--ed-panel)' }}
+          className="ed-options relative shrink-0 min-h-0 overflow-hidden" data-open={optionsOpen || undefined} data-resizing={resizing === 'options' || undefined}
+          style={{ width: optionsOpen ? optionsW : 0, background: 'var(--ed-panel)' }}
           {...(!optionsOpen ? { inert: true } : {})}>
+          {/* Its right edge: drag to make the column wider or narrower */}
+          {optionsOpen && (
+            <div role="separator" aria-orientation="vertical" aria-label="Drag to resize the options panel. Double-click to reset."
+              title="Drag to resize · double-click to reset" className="ed-col-handle" style={{ right: 0 }} data-on={resizing === 'options' || undefined}
+              onPointerDown={e => startColumnResize(e, 'options')} onDoubleClick={() => resetColumn('options')} />
+          )}
           {/* Fixed width inside, so the panel slides and fades as one piece while the column opens */}
-          <div className="ed-options-inner h-full flex flex-col min-h-0" style={{ width: OPTIONS_W }}>
+          <div className="ed-options-inner h-full flex flex-col min-h-0" style={{ width: optionsW }}>
           <div className="shrink-0 pl-4 pr-2 pt-3 pb-3 flex items-start gap-2" style={{ borderBottom: '1px solid rgb(var(--ed-fg) / 0.06)' }}>
             <div className="flex-1 min-w-0 pt-1">
             {tool === 'captions' && editingTranscript ? (
@@ -1803,15 +1937,11 @@ export function EditorShell({
               </button>
             ) : (
               <>
-                <h2 className="text-sm font-semibold text-[var(--ed-text)]">{activeTool.title}</h2>
-                {/* The tool's explanation: one line until expanded with the chevron (remembered) */}
-                <button type="button" onClick={() => setHintOpen(v => !v)} aria-expanded={hintOpen}
-                  title={hintOpen ? 'Show less' : 'Show more'} className="ed-hint">
-                  <span className={hintOpen ? 'ed-hint-text' : 'ed-hint-text ed-hint-clamp'}>{activeTool.hint}</span>
-                  <span className="ed-collapse" data-open={hintOpen || undefined} aria-hidden="true">
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M6 9l6 6 6-6" /></svg>
-                  </span>
-                </button>
+                {/* The tool's explanation sits behind the ⓘ */}
+                <h2 className="flex items-center gap-1.5 text-sm font-semibold text-[var(--ed-text)]">
+                  {activeTool.title}
+                  <InfoTip label={`About ${activeTool.title}`}>{activeTool.hint}</InfoTip>
+                </h2>
               </>
             )}
             </div>
@@ -2347,6 +2477,14 @@ export function EditorShell({
             </div>
           </div>
 
+          {/* The line between the video and the play bar: drag to resize (double-click resets) */}
+          {!timelineHidden && (
+            <div className="relative shrink-0" style={{ height: 0, zIndex: 30 }}>
+              <div role="separator" aria-orientation="horizontal" aria-label="Drag to resize the video and the timeline. Double-click to reset."
+                title="Drag to resize · double-click to reset" className="ed-row-handle" data-on={resizing === 'timeline' || undefined}
+                onPointerDown={startTimelineResize} onDoubleClick={resetTimelineHeight} />
+            </div>
+          )}
           {/* Transport */}
           {/* Timeline bar: [show/hide timeline · trim · delete] [previous section · play · next section · time]
               [zoom slider]. Every button has a plain-words tooltip. */}
@@ -2396,19 +2534,23 @@ export function EditorShell({
                         <circle cx="6" cy="6" r="3" /><circle cx="6" cy="18" r="3" /><path d="M20 4L8.1 15.9M14.5 14.5L20 20M8.1 8.1L12 12" />
                       </svg>
                     </button>
-                    {/* Delete: removes the selected music. For a video section it's a button only for now —
-                        TODO(backend): delete the selected trimmed video part */}
+                    {/* Delete: whatever is selected — a song, photo, video, text, frame item or section */}
+                    {(() => {
+                      const del = deleteTarget()
+                      return (
                     <button
-                      onClick={() => { if (kind === 'music' && pickedMusic) deleteMusic(pickedMusic.id) }}
-                      disabled={!kind}
-                      aria-label={kind === 'music' ? 'Delete the selected music' : 'Delete the selected video section'}
-                      title={kind === 'music' ? 'Delete the selected music' : kind === 'video' ? 'Delete the selected video section' : 'Click the video or the music on the timeline to delete it'}
+                      onClick={() => del?.run()}
+                      disabled={!del}
+                      aria-label={del ? `Delete ${del.label}` : 'Delete'}
+                      title={del ? `Delete ${del.label} (Delete key)` : 'Select a video, photo, song, text or section to delete it'}
                       className="ed-tl-btn ed-tl-danger"
                     >
                       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                         <path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14M10 11v6M14 11v6" />
                       </svg>
                     </button>
+                      )
+                    })()}
                     {/* Detach audio: the main video's sound onto its own Music bar */}
                     <button onClick={detachAudio}
                       aria-label={hasMainAudio ? 'Select the detached original sound' : 'Detach the audio from the main video'}
@@ -2461,13 +2603,18 @@ export function EditorShell({
                 <span className="font-semibold" style={{ color: 'rgb(var(--ed-fg) / 0.85)' }}>{msToTenths(currentTimeMs)}</span>
                 <span className="ed-transport-total" style={{ color: 'rgb(var(--ed-fg) / 0.38)' }}> / {msToLabel(clipDurationMs)}</span>
               </span>
-              {/* Always at the far end of the bar, with or without the time beside it */}
-              <div className="ml-auto shrink-0"><ZoomSlider zoom={timelineZoom} onZoom={setTimelineZoom} /></div>
+              {/* Always at the far end of the bar, with or without the time beside it: undo / redo, then zoom */}
+              <div className="ml-auto shrink-0 flex items-center gap-1">
+                <UndoRedo />
+                <span className="ed-tl-sep" aria-hidden="true" />
+                <ZoomSlider zoom={timelineZoom} onZoom={setTimelineZoom} />
+              </div>
             </div>
           </div>
 
           {/* Timeline (hidden with "Hide timeline") */}
-          <div data-tour="timeline" hidden={timelineHidden} className="shrink-0 overflow-y-auto px-4 pt-3 pb-4" style={{ maxHeight: '38vh', background: 'var(--ed-track)', borderTop: '1px solid rgb(var(--ed-fg) / 0.06)' }}>
+          <div ref={timelineRef} data-tour="timeline" hidden={timelineHidden} className="shrink-0 overflow-y-auto px-4 pt-3 pb-4"
+            style={{ ...(timelineH ? { height: timelineH } : { maxHeight: '38vh' }), background: 'var(--ed-track)', borderTop: '1px solid rgb(var(--ed-fg) / 0.06)' }}>
             <SegmentTimeline
               selectedMusicId={pickedMusicId} onSelectMusic={id => pickMusicTrack(id, doubleTap(`m${id}`))}
               photos={overlays.filter(o => o.type === 'image').map(o => ({ id: o.id, start_ms: o.start_ms, end_ms: o.end_ms, url: o.preview_url, hidden: o.hidden, locked: isLocked({ kind: 'photo', id: o.id }) }))}
@@ -2486,7 +2633,7 @@ export function EditorShell({
                 const len = t.end_ms != null ? t.end_ms - t.start_ms : null
                 return { ...t, start_ms: startMs, ...(len != null ? { end_ms: startMs + len } : {}) }
               }))}
-              onAddHere={anchor => { pause(); setPlusMenu({ atMs: Math.round(currentTimeMs), anchor }) }}
+              onAddKind={kind => addMediaAt(kind, Math.round(currentTimeMs))}
               zoom={timelineZoom} onZoomChange={setTimelineZoom} showToolbar={false}
               segments={segments} clipStartMs={clip.start_ms} clipEndMs={clip.end_ms}
               currentTimeMs={currentTimeMs} activeSegmentId={activeSegment?.id ?? null}
@@ -2546,9 +2693,40 @@ export function EditorShell({
         </main>
 
         {/* Right column: 9:16 output preview, always visible */}
-        <aside data-tour="export" className="shrink-0 flex flex-col min-h-0" style={{ width: 360, background: 'var(--ed-panel)', borderLeft: '1px solid rgb(var(--ed-fg) / 0.07)' }}>
+        {/* Closed: a slim rail to bring the Preview back */}
+        {!previewOpen && (
+          <div className="ed-preview-rail shrink-0 flex flex-col items-center gap-2 py-3" style={{ width: 52, background: 'var(--ed-panel)', borderLeft: '1px solid rgb(var(--ed-fg) / 0.07)' }}>
+            <button onClick={() => togglePreview(true)} aria-label="Open the preview" title="Open the preview"
+              className="w-9 h-9 flex items-center justify-center rounded-lg transition-colors hover:bg-[rgb(var(--ed-fg)/0.1)]"
+              style={{ color: 'rgb(var(--ed-fg) / 0.7)' }}>
+              <span style={{ display: 'inline-flex', transform: 'scaleX(-1)' }}><SidebarIcon open={false} /></span>
+            </button>
+            <button onClick={() => togglePreview(true)} title="Open the preview to watch and export"
+              className="text-[11px] font-semibold tracking-wide transition-colors hover:text-[var(--ed-text)]"
+              style={{ writingMode: 'vertical-rl', transform: 'rotate(180deg)', color: 'rgb(var(--ed-fg) / 0.5)' }}>
+              Preview · Export
+            </button>
+          </div>
+        )}
+        <aside data-tour="export" aria-hidden={!previewOpen} className="ed-preview-col relative shrink-0 flex flex-col min-h-0 overflow-hidden" data-open={previewOpen || undefined} data-resizing={resizing === 'preview' || undefined}
+          style={{ width: previewOpen ? previewW : 0, background: 'var(--ed-panel)' }}
+          {...(!previewOpen ? { inert: true } : {})}>
+          {/* Its left edge: drag to make the preview wider or narrower */}
+          {previewOpen && (
+            <div role="separator" aria-orientation="vertical" aria-label="Drag to resize the preview. Double-click to reset."
+              title="Drag to resize · double-click to reset" className="ed-col-handle" style={{ left: 0 }} data-on={resizing === 'preview' || undefined}
+              onPointerDown={e => startColumnResize(e, 'preview')} onDoubleClick={() => resetColumn('preview')} />
+          )}
+          <div className="ed-preview-inner flex flex-col min-h-0 h-full" style={{ width: previewW }}>
           <div className="shrink-0 px-4 flex items-center justify-between" style={{ height: 48, borderBottom: '1px solid rgb(var(--ed-fg) / 0.06)' }}>
-            <span className="text-sm font-semibold text-[var(--ed-text)]">Preview</span>
+            <span className="flex items-center gap-1">
+              <button onClick={() => togglePreview(false)} aria-label="Close the preview" title="Close the preview (more room to edit)"
+                className="-ml-1.5 w-8 h-8 flex items-center justify-center rounded-lg transition-colors hover:bg-[rgb(var(--ed-fg)/0.1)]"
+                style={{ color: 'rgb(var(--ed-fg) / 0.55)' }}>
+                <span style={{ display: 'inline-flex', transform: 'scaleX(-1)' }}><SidebarIcon open /></span>
+              </button>
+              <span className="text-sm font-semibold text-[var(--ed-text)]">Preview</span>
+            </span>
             <div className="flex items-center gap-1.5">
               {rendering ? (
                 // While the reel renders, the Export button stays and keeps playing its download
@@ -2643,7 +2821,7 @@ export function EditorShell({
                   skipTransitionRef={skipCanvasTransitionRef} words={displayWords}
                   captionStyle={captionStyle} captionTextCase={captionTextCase} showCaptions={showCaptions}
                   overlays={overlays.filter(o => !o.hidden)} activeOverlayId={activeOverlayId}
-                  onOverlayChange={(id, u) => { if (!blocked({ kind: 'photo', id })) updateOverlay(id, u) }} onSelectOverlay={id => { const o = overlays.find(x => x.id === id); if (o?.type === 'image') pickPhoto(id); else setActiveOverlayId(id) }} onDeleteOverlay={askDeleteOverlay}
+                  onOverlayChange={(id, u) => { if (!blocked({ kind: 'photo', id })) updateOverlay(id, u) }} onSelectOverlay={id => { const o = overlays.find(x => x.id === id); if (o?.type === 'image') pickPhoto(id); else { setActiveOverlayId(id); setLastPick('overlay') } }} onDeleteOverlay={askDeleteOverlay}
                   textOverlays={textOverlays.filter(o => !o.hidden)} activeTextOverlayId={activeTextOverlayId}
                   onTextOverlayChange={(id, u) => { if (!blocked({ kind: 'text', id })) updateTextOverlay(id, u) }} onSelectTextOverlay={id => { if (id) pickText(id); else setActiveTextOverlayId(null) }} onDeleteTextOverlay={askDeleteTextOverlay}
                   onCaptionPositionChange={y => updateCaptionStyle({ position_y: y })}
@@ -2667,6 +2845,7 @@ export function EditorShell({
             </div>
           </div>
 
+          </div>
         </aside>
       </div>
 
@@ -2682,41 +2861,6 @@ export function EditorShell({
       )}
 
       {/* The timeline's "+" menu: photos / videos into a frame slot (Dual, Trio…), B-roll, music, text */}
-      {plusMenu && (() => {
-        const t = Math.max(0, Math.min(plusMenu.atMs, clipLengthMs - 50))
-        const openTool = (id: Tool) => { setPlusMenu(null); setTool(id); toggleOptions(true) }
-        // Everything goes in at the playhead. A video or photo lasts 5 s (near the end, the clip's last 5 s)
-        const mediaAt = Math.max(0, Math.min(t, clipLengthMs - 5000))
-        const pick = (kind: 'video' | 'photo') => { setPlusMenu(null); setPickerOnly(kind); setPickerAtMs(mediaAt) }
-        const addText = () => {
-          const len = Math.min(3000, clipLengthMs)
-          const start = Math.max(0, Math.min(t, clipLengthMs - len))
-          const id = crypto.randomUUID()
-          setTextOverlays(prev => [...prev, {
-            id, clip_id: clip.id, text: 'Your text', start_ms: start, end_ms: start + len,
-            x: 0.1, y: 0.4, font: 'sans-serif', size: 72, color: '#ffffff',
-          }])
-          setActiveTextOverlayId(id); setFocusTextId(id)
-          seekToMs(start)
-          openTool('text')
-        }
-        const addMusic = () => {
-          setPlusMenu(null)
-          musicAtRef.current = t   // plays from here until this section ends (drag its end to carry on)
-          musicInputRef.current?.click()
-        }
-        return (
-          <TimelineAddMenu
-            atLabel={msToLabel(t)} anchor={plusMenu.anchor}
-            onVideo={() => pick('video')}
-            onPhoto={() => pick('photo')}
-            onMusic={addMusic}
-            onText={addText}
-            onClose={() => setPlusMenu(null)}
-          />
-        )
-      })()}
-
       {addMenu && (() => {
         const seg = segments.find(x => x.id === addMenu.segId)
         if (!seg || !isFrameLayout(seg.layout)) return null
@@ -2873,67 +3017,6 @@ function SkipFiveIcon({ dir }: { dir: 'back' | 'forward' }) {
 
 /** Tiny 9:16 frame showing how a format divides the reel */
 /**
- * Menu of the timeline's "+" buttons. In a frame (Dual, Trio…) it lists the frame's slots, so a
- * photo or video goes straight into the right one (then drag its ends on the timeline to set
- * when it shows). Outside a frame it explains the first step: pick a frame. A video, photo,
- * music or text can always be added at that end of the clip.
- */
-function TimelineAddMenu({ atLabel, anchor, onVideo, onPhoto, onMusic, onText, onClose }: {
-  /** The playhead time everything is added at, e.g. "0:18" */
-  atLabel: string
-  anchor: DOMRect
-  onVideo: () => void
-  onPhoto: () => void
-  onMusic: () => void
-  onText: () => void
-  onClose: () => void
-}) {
-  const ref = useRef<HTMLDivElement>(null)
-  useEffect(() => {
-    const onDown = (e: PointerEvent) => { if (!ref.current?.contains(e.target as Node)) onClose() }
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.stopPropagation(); onClose() } }
-    window.addEventListener('pointerdown', onDown, true)
-    window.addEventListener('keydown', onKey, true)
-    ref.current?.querySelector<HTMLButtonElement>('button')?.focus()
-    return () => { window.removeEventListener('pointerdown', onDown, true); window.removeEventListener('keydown', onKey, true) }
-  }, [onClose])
-
-  const W = 268
-  // Centred over the "+" on the playhead, opening upwards
-  const left = Math.max(8, Math.min(window.innerWidth - W - 8, anchor.left + anchor.width / 2 - W / 2))
-  const bottom = window.innerHeight - anchor.top + 8
-  const row = 'w-full flex items-center gap-3 px-2.5 py-2 rounded-lg text-left transition-colors hover:bg-[rgb(var(--ed-fg)/0.07)] focus-visible:outline-none focus-visible:bg-[rgb(var(--ed-fg)/0.07)]'
-  const icon = (d: React.ReactNode, tint = 'rgb(var(--ed-fg) / 0.8)') => (
-    <span className="shrink-0 w-8 h-8 flex items-center justify-center rounded-lg" style={{ background: 'rgb(var(--ed-fg) / 0.06)', color: tint }}>
-      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{d}</svg>
-    </span>
-  )
-  return (
-    <div ref={ref} role="menu" aria-label={`Add at ${atLabel}`} className="fixed flex flex-col p-1.5 rounded-xl ed-tour-card"
-      style={{ left, bottom, width: W, zIndex: 120, background: 'var(--ed-popover)', border: '1px solid rgb(var(--ed-fg) / 0.12)', boxShadow: '0 18px 48px -12px rgba(0,0,0,0.8)' }}>
-      <p className="px-2.5 pt-1.5 pb-1 text-[11px] font-semibold uppercase tracking-wider" style={{ color: 'rgb(var(--ed-fg) / 0.4)' }}>
-        Add at {atLabel}
-      </p>
-
-      {([
-        ['Video', `Your videos or upload one · 5 s from ${atLabel}`, onVideo, <><rect x="2" y="5" width="15" height="14" rx="2" /><path d="M17 10l5-3v10l-5-3z" /></>, '#f97316'],
-        ['Photo', `Upload a photo · 5 s from ${atLabel}`, onPhoto, <><rect x="3" y="3" width="18" height="18" rx="2" /><circle cx="8.5" cy="8.5" r="1.5" /><path d="M21 15l-5-5L5 21" /></>, '#60a5fa'],
-        ['Music', 'Pick a song · plays until this section ends', onMusic, <><path d="M9 18V5l12-2v13" /><circle cx="6" cy="18" r="3" /><circle cx="18" cy="16" r="3" /></>, '#c084fc'],
-        ['Text', `A text box for 3 s from ${atLabel}`, onText, <path d="M4 7V4h16v3M9 20h6M12 4v16" />, '#f472b6'],
-      ] as const).map(([label, hint, act, d, tint]) => (
-        <button key={label} role="menuitem" className={row} onClick={act}>
-          {icon(d, tint)}
-          <span className="min-w-0 flex flex-col">
-            <span className="text-[13px] font-medium text-[var(--ed-text)]">{label}</span>
-            <span className="text-[11px]" style={{ color: 'rgb(var(--ed-fg) / 0.45)' }}>{hint}</span>
-          </span>
-        </button>
-      ))}
-    </div>
-  )
-}
-
-/**
  * Layout switch for the section under the playhead: a dock of the four formats with a lime highlight
  * that slides to the picked one (measured from the buttons, so it fits any label length or language).
  */
@@ -3018,14 +3101,14 @@ function isTextEntry(el: Element | null | undefined): boolean {
   return ['text', 'number', 'search', 'email', 'url', 'tel', 'password', ''].includes((el as HTMLInputElement).type)
 }
 
-// Header undo/redo buttons (shortcuts: Ctrl/⌘+Z, Ctrl/⌘+Shift+Z)
+// Undo / redo, in the play bar next to the zoom (shortcuts: Ctrl/⌘+Z, Ctrl/⌘+Shift+Z)
 function UndoRedo() {
   const { canUndo, canRedo } = useHistory()
   const mac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform)
   const mod = mac ? '⌘' : 'Ctrl+'
-  const btn = 'w-8 h-8 flex items-center justify-center rounded-lg transition-colors hover:bg-[rgb(var(--ed-fg)/0.1)] disabled:opacity-30 disabled:hover:bg-transparent'
+  const btn = 'ed-tl-btn'
   return (
-    <div className="flex items-center gap-0.5 shrink-0 pl-3" style={{ borderLeft: '1px solid rgb(var(--ed-fg) / 0.1)', color: 'rgb(var(--ed-fg) / 0.75)' }}>
+    <div className="flex items-center gap-0.5 shrink-0" role="group" aria-label="Undo and redo">
       <button onClick={undo} disabled={!canUndo} aria-label="Undo" title={`Undo (${mod}Z)`} className={btn}>
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M9 14L4 9l5-5" /><path d="M4 9h10.5a5.5 5.5 0 010 11H11" /></svg>
       </button>

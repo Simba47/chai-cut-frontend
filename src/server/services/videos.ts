@@ -132,7 +132,7 @@ export interface ClipSuggestion {
 }
 type Word = { word: string; start_ms: number; end_ms: number }
 
-export async function getVideoSuggestions(userId: string, videoId: string): Promise<{ suggestions: ClipSuggestion[]; model?: string }> {
+export async function getVideoSuggestions(userId: string, videoId: string, extraExclude: Array<[number, number]> = []): Promise<{ suggestions: ClipSuggestion[]; model?: string }> {
   const [video] = await sql`
     SELECT id, user_id, duration_ms, status FROM videos WHERE id = ${videoId}
   `
@@ -157,7 +157,8 @@ export async function getVideoSuggestions(userId: string, videoId: string): Prom
   const geminiKey = process.env.GEMINI_API_KEY
   if (!anthropicKey && !geminiKey) return { suggestions: makeWordChunks(words, durationMs) }
 
-  const exclude = await clippedRanges(videoId, durationMs)
+  // Skip what's already a clip, and moments already listed (so "View more" finds new ones)
+  const exclude = [...await clippedRanges(videoId, durationMs), ...extraExclude]
   const model = anthropicKey ? BEST_MOMENTS_MODEL : BEST_MOMENTS_FALLBACK_MODEL
   try {
     const suggestions = anthropicKey
