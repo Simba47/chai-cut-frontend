@@ -1,5 +1,6 @@
 'use client'
 
+import { InfoTip } from '@/components/ui/info-tip'
 import type { SegmentLocal, FrameItem, FrameLane, FrameBand } from '@chai-cut/shared'
 import { isFrameLayout, frameHasBand, frameLanes, frameOf, DEFAULT_BAND } from '@/modules/editor/frames'
 import { FRAME_ITEM_COLORS, frameItemColor } from './SegmentTimeline'
@@ -77,8 +78,9 @@ export function FrameTextPanel({ segment, currentTimeMs, selectedId, onSelect, o
               <div className="flex flex-col gap-3 px-3 pb-3 pt-1">
                 {it.captions ? (
                   <>
-                    <p className="text-[11px] leading-relaxed" style={{ color: 'rgb(var(--ed-fg) / 0.5)' }}>
-                      Your captions show inside the band here instead of their usual spot. Style them in Captions.
+                    <p className="flex items-center gap-1.5 text-[11px]" style={{ color: 'rgb(var(--ed-fg) / 0.5)' }}>
+                      Captions in this band
+                      <InfoTip label="About captions in the band" size={12}>Your captions show inside the band here instead of their usual spot. Style them in Captions.</InfoTip>
                     </p>
                     <button onClick={() => onUpdate(it.id, { captions: false, text: '' })}
                       className="self-start text-[11px] font-medium hover:underline" style={{ color: 'var(--ed-accent-text)' }}>Use your own text instead</button>

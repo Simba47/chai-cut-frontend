@@ -1645,7 +1645,9 @@ function CaptionDragHandle({ position_y, onChange }: { position_y: number; onCha
         height: 40,
         cursor: 'ns-resize',
         userSelect: 'none',
-        zIndex: 10,
+        // Above frame layout's own draggable boxes (main video: 18, row divider: 25) so their
+        // drag handlers don't steal clicks meant for repositioning captions
+        zIndex: 30,
         background: 'transparent',
       }}
     />

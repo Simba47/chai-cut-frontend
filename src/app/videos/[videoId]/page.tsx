@@ -36,13 +36,16 @@ export default async function VideoPickerPage({
     id: string; title: string | null; start_ms: number; end_ms: number
     status: string; output_storage_path: string | null; created_at: string
     layout: string | null; auto: boolean
+    favorite?: boolean | null; reason?: string | null
   }
 
   const clipsRaw = await sql<RawClip[]>`
     SELECT c.id, c.title, c.start_ms, c.end_ms, c.status, c.output_storage_path, c.created_at,
       (SELECT layout FROM segments WHERE clip_id = c.id ORDER BY sort_order LIMIT 1) AS layout,
       -- Made by "Make my clips" (read through to_jsonb so this works before the worker adds the column)
-      (to_jsonb(c)->>'ai_edit_job_id') IS NOT NULL AS auto
+      (to_jsonb(c)->>'ai_edit_job_id') IS NOT NULL AS auto,
+      COALESCE((to_jsonb(c)->>'favorite')::boolean, false) AS favorite,
+      to_jsonb(c)->>'ai_reason' AS reason
     FROM clips c
     WHERE c.video_id = ${videoId}
     ORDER BY c.created_at ASC
@@ -70,6 +73,7 @@ export default async function VideoPickerPage({
       : null,
     created_at: c.created_at,
     layout: c.layout ?? null, index: idx + 1, origin: originOf(c),
+    favorite: !!c.favorite, reason: c.reason ?? null,
   })))
 
   return (
