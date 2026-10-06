@@ -232,7 +232,7 @@ export async function saveClip(userId: string, clipId: string, body: SaveClipInp
  * export afterwards), nothing is deleted.
  */
 export async function deleteClips(userId: string, clipIds: unknown) {
-  const { cleanIds, deleteR2Keys, MAX_BULK_DELETE } = await import('./videos')
+  const { cleanIds, deleteR2Keys, MAX_BULK_DELETE, uploadsOnlyUsedBy, deleteUploads } = await import('./videos')
   const ids = cleanIds(clipIds)
   if (ids.length === 0) throw Object.assign(new Error('No clips selected'), { status: 400 })
   if (ids.length > MAX_BULK_DELETE) throw Object.assign(new Error(`You can delete up to ${MAX_BULK_DELETE} clips at a time`), { status: 400 })
@@ -254,7 +254,10 @@ export async function deleteClips(userId: string, clipIds: unknown) {
   // Before the rows go (it reads them); it never throws
   const { logClipEvents } = await import('./suggestionEvents')
   await logClipEvents(userId, ids, 'deleted')
+  // B-roll uploaded into these clips that no other clip uses goes with them (read before the rows go)
+  const uploads = await uploadsOnlyUsedBy(userId, ids)
   await sql`DELETE FROM clips WHERE id = ANY(${ids})`
+  await deleteUploads(uploads)
   return { deleted: ids.length }
 }
 

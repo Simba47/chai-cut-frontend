@@ -41,7 +41,8 @@ async function readDurationMs(file: File): Promise<number | undefined> {
   }
 }
 
-export function useVideoUpload(onDone: (videoId: string) => void) {
+/** `asset`: B-roll uploaded in the editor (kept off the dashboard, not counted as a video) */
+export function useVideoUpload(onDone: (videoId: string) => void, { asset = false }: { asset?: boolean } = {}) {
   const [state, setState] = useState<UploadState>(IDLE)
   const uppyRef = useRef<Uppy | null>(null)
   const fileRef = useRef<File | null>(null)
@@ -63,7 +64,7 @@ export function useVideoUpload(onDone: (videoId: string) => void) {
         const res = await fetch('/api/ingest/sign', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ...request, file: f ? { name: f.name, size: f.size, type: f.type } : undefined }),
+          body: JSON.stringify({ ...request, file: f ? { name: f.name, size: f.size, type: f.type } : undefined, ...(asset ? { asset: true } : {}) }),
         })
         const data = await res.json().catch(() => ({}))
         // 4xx = we refused it (plan limit, file type…): show why, and don't offer Retry
@@ -95,7 +96,7 @@ export function useVideoUpload(onDone: (videoId: string) => void) {
     const res = await fetch('/api/ingest/complete', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ storage_path: key, title: file.name.replace(/\.[^.]+$/, ''), ...(durationMs ? { duration_ms: durationMs } : {}) }),
+      body: JSON.stringify({ storage_path: key, title: file.name.replace(/\.[^.]+$/, ''), ...(durationMs ? { duration_ms: durationMs } : {}), ...(asset ? { asset: true } : {}) }),
     })
     const data = await res.json().catch(() => ({}))
     if (!res.ok) throw Object.assign(new Error(data.error ?? 'Upload failed'), { userFacing: true, final: res.status < 500 })

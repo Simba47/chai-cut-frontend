@@ -22,6 +22,8 @@ function logShown(userId: string, videoId: string, source: SuggestionSource, mod
 export async function listVideos(userId: string, includeAssets = false) {
   return sql`
     SELECT id, title, status, download_progress, duration_ms, created_at, storage_path, source_url, source_type,
+      -- Assets: B-roll the user uploaded in the editor (no stock_ref) or a saved stock clip
+      role = 'asset' AS is_asset, (role = 'asset' AND stock_ref IS NULL) AS is_upload_asset,
       -- Why processing failed (e.g. a link that isn't shared publicly). Read through to_jsonb so
       -- this works before the worker has added the column.
       to_jsonb(videos)->>'error' AS error,
@@ -83,6 +85,39 @@ export async function deleteVideo(userId: string, videoId: string) {
  * upload, its cached audio and each clip's export). All or nothing: if any id isn't one of the
  * user's videos, nothing is deleted.
  */
+/**
+ * B-roll the user uploaded in the editor (an asset, not a stock clip) that only these clips use
+ * — in a section, a frame or as a video overlay. Read before the clips are deleted; stock clips
+ * are kept for reuse, and an upload another clip still uses stays.
+ */
+export async function uploadsOnlyUsedBy(userId: string, clipIds: string[]): Promise<Array<{ id: string; storage_path: string | null }>> {
+  if (!clipIds.length) return []
+  return sql<Array<{ id: string; storage_path: string | null }>>`
+    WITH refs AS (
+      SELECT cb.source_video_id AS vid, s.clip_id FROM crop_boxes cb JOIN segments s ON s.id = cb.segment_id
+        WHERE cb.source_video_id IS NOT NULL
+      UNION ALL
+      SELECT o.source_video_id, o.clip_id FROM overlays o WHERE o.source_video_id IS NOT NULL
+      UNION ALL
+      SELECT (it->>'source_video_id')::uuid, s.clip_id FROM segments s
+        CROSS JOIN LATERAL jsonb_array_elements(
+          CASE WHEN jsonb_typeof(s.frame->'items') = 'array' THEN s.frame->'items' ELSE '[]'::jsonb END) it
+        WHERE it->>'kind' = 'video' AND (it->>'source_video_id') ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+    )
+    SELECT v.id, v.storage_path FROM videos v
+    WHERE v.user_id = ${userId} AND v.role = 'asset' AND v.stock_ref IS NULL
+      AND v.id IN (SELECT vid FROM refs WHERE clip_id = ANY(${clipIds}))
+      AND NOT EXISTS (SELECT 1 FROM refs WHERE refs.vid = v.id AND NOT (refs.clip_id = ANY(${clipIds})))
+  `
+}
+
+/** Deletes the uploads found by uploadsOnlyUsedBy: their files, then their rows */
+export async function deleteUploads(uploads: Array<{ id: string; storage_path: string | null }>) {
+  if (!uploads.length) return
+  await deleteR2Keys(uploads.flatMap(u => u.storage_path ? [u.storage_path, u.storage_path.replace(/\.[^.]+$/, '_audio.flac')] : []))
+  await sql`DELETE FROM videos WHERE id = ANY(${uploads.map(u => u.id)}) AND role = 'asset' AND stock_ref IS NULL`
+}
+
 export async function deleteVideos(userId: string, videoIds: string[]) {
   const ids = cleanIds(videoIds)
   if (ids.length === 0) throw Object.assign(new Error('No videos selected'), { status: 400 })
@@ -104,10 +139,14 @@ export async function deleteVideos(userId: string, videoIds: string[]) {
     WHERE video_id = ANY(${ids}) AND output_storage_path IS NOT NULL
   `
   for (const row of clipOutputs) keysToDelete.push(row.output_storage_path as string)
+  // B-roll uploaded into these videos' clips and used nowhere else goes too
+  const clipIds = (await sql<{ id: string }[]>`SELECT id FROM clips WHERE video_id = ANY(${ids})`).map(r => r.id)
+  const uploads = (await uploadsOnlyUsedBy(userId, clipIds)).filter(u => !ids.includes(u.id))
 
   await deleteR2Keys(keysToDelete)
   // Clips, formats, captions, overlays… go with their video (foreign keys cascade)
   await sql`DELETE FROM videos WHERE id = ANY(${ids}) AND user_id = ${userId}`
+  await deleteUploads(uploads)
   return { deleted: ids.length }
 }
 
