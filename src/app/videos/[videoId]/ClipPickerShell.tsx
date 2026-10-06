@@ -98,6 +98,16 @@ function writeSaved(key: string, data: unknown) {
 }
 const searchKey = (q: string) => q.trim().toLowerCase().replace(/\s+/g, ' ')
 
+// Make my clips: what AI adds to each clip (all on by default; remembered per browser)
+type AutoOption = 'captions' | 'title' | 'motion' | 'layouts'
+const AUTO_OPTIONS: Array<{ id: AutoOption; label: string; tip: string }> = [
+  { id: 'captions', label: 'Captions', tip: 'Word-by-word captions at the bottom' },
+  { id: 'title', label: 'Title', tip: 'A short hook as a title over the first 3 seconds' },
+  { id: 'motion', label: 'Motion', tip: 'The frame follows people as they move. Off: it holds still in each shot' },
+  { id: 'layouts', label: 'Cuts (split, trio)', tip: 'Split and trio when 2 or more people are in the shot. Off: always vertical, on one person' },
+]
+const AUTO_OPTIONS_KEY = 'clipboard.makeOptions'
+
 // Make my clips: how many clips one run can make (the server allows 1 to 10)
 const AUTO_MAX = 10
 
@@ -232,6 +242,20 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: P
   const [autoCount, setAutoCount] = useState<number>(5)
   // What's typed in the count box (may be empty or too big while typing; settles on blur)
   const [countText, setCountText] = useState('5')
+  const [autoOpts, setAutoOpts] = useState<Record<AutoOption, boolean>>({ captions: true, title: true, motion: true, layouts: true })
+  useEffect(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem(AUTO_OPTIONS_KEY) ?? 'null') as Partial<Record<AutoOption, boolean>> | null
+      if (saved) setAutoOpts(o => ({ ...o, ...saved }))
+    } catch { /* storage blocked */ }
+  }, [])
+  function toggleAutoOpt(id: AutoOption) {
+    setAutoOpts(o => {
+      const next = { ...o, [id]: !o[id] }
+      try { localStorage.setItem(AUTO_OPTIONS_KEY, JSON.stringify(next)) } catch { /* storage blocked */ }
+      return next
+    })
+  }
   const countOver = Number(countText) > AUTO_MAX
   function setCount(n: number) {
     const c = Math.min(AUTO_MAX, Math.max(1, Math.round(n) || 1))
@@ -571,7 +595,7 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: P
       const res = await fetch(`/api/videos/${video.id}/auto-clips`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ clip_count: count, add_broll: autoBroll }),
+        body: JSON.stringify({ clip_count: count, add_broll: autoBroll, ...autoOpts }),
       })
       if (!res.ok) throw new Error((await res.json()).error ?? 'Could not start making clips')
       await loadAutoClips()
@@ -939,7 +963,7 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: P
           </span>
           <h2 className="flex-1 min-w-0 flex items-center gap-1.5 text-sm font-semibold text-white">
             Make my clips
-            <InfoTip label="About Make my clips">AI picks the best moments, frames them vertically and adds captions. Type or step how many clips you want (1 to {AUTO_MAX}).</InfoTip>
+            <InfoTip label="About Make my clips">AI picks the best moments, frames them vertically and adds captions. Type or step how many clips you want (1 to {AUTO_MAX}), and tick what AI should add: captions, a title, motion (the frame follows people) and cuts (split / trio for 2+ people).</InfoTip>
           </h2>
         </div>
 
@@ -977,6 +1001,20 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: P
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" aria-hidden><path d="M12 5v14M5 12h14" /></svg>
             </button>
           </div>
+        </div>
+
+        {/* What AI adds: four checkboxes (styles: .mmc-opt in globals.css) */}
+        <div className="grid grid-cols-2 gap-1.5" role="group" aria-label="What AI adds to each clip">
+          {AUTO_OPTIONS.map(o => (
+            <label key={o.id} title={o.tip} className="mmc-opt" data-on={autoOpts[o.id] || undefined} data-off={autoRunning || undefined}>
+              <input type="checkbox" className="sr-only" checked={autoOpts[o.id]} disabled={autoRunning}
+                onChange={() => toggleAutoOpt(o.id)} />
+              <span className="mmc-opt-box" aria-hidden="true">
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3.4" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5" /></svg>
+              </span>
+              <span className="min-w-0 truncate">{o.label}</span>
+            </label>
+          ))}
         </div>
 
         {autoError && <p className="text-xs" style={{ color: '#f87171' }}>{autoError}</p>}

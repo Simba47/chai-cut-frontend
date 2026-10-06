@@ -382,7 +382,10 @@ function makeTimeChunks(durationMs: number): ClipSuggestion[] {
 
 export const AUTO_CLIP_COUNTS = [3, 5, 10] as const
 
-export async function createAutoClips(userId: string, videoId: string, clipCount = 5, addBroll = false) {
+/** The Make my clips checkboxes (each on unless false) */
+export interface AutoClipOptions { captions?: boolean; title?: boolean; motion?: boolean; layouts?: boolean }
+
+export async function createAutoClips(userId: string, videoId: string, clipCount = 5, addBroll = false, options: AutoClipOptions = {}) {
   const count = Math.round(Number(clipCount))
   if (!Number.isFinite(count) || count < 1 || count > 10) {
     throw Object.assign(new Error('Choose between 1 and 10 clips'), { status: 400 })
@@ -419,7 +422,11 @@ export async function createAutoClips(userId: string, videoId: string, clipCount
   const [aiJob] = await sql`
     INSERT INTO ai_edit_jobs (video_id, clip_count, status) VALUES (${videoId}, ${count}, 'queued') RETURNING id
   `
-  const payload = { ai_edit_job_id: aiJob.id, video_id: videoId, clip_count: count, add_broll: addBroll }
+  const payload = {
+    ai_edit_job_id: aiJob.id, video_id: videoId, clip_count: count, add_broll: addBroll,
+    captions: options.captions !== false, title: options.title !== false,
+    motion: options.motion !== false, layouts: options.layouts !== false,
+  }
   await sql`INSERT INTO jobs (type, payload, status) VALUES ('ai_edit', ${sql.json(payload)}, 'queued')`
   return { ai_edit_job_id: aiJob.id as string }
 }
