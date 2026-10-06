@@ -1,6 +1,7 @@
 'use client'
 
 import { useMemo, useState, useRef } from 'react'
+import { EmojiButton, insertAtCursor } from './EmojiPicker'
 import type { TranscriptWord } from '@chai-cut/shared'
 
 interface Props {
@@ -74,8 +75,8 @@ export function TranscriptPanel({ words, clipStartMs, clipEndMs, currentTimeMs, 
 
               if (editingId === w.id) {
                 return (
+                  <span key={w.id} className="inline-flex items-center gap-1">
                   <input
-                    key={w.id}
                     ref={inputRef}
                     value={editingText}
                     onChange={e => setEditingText(e.target.value)}
@@ -93,6 +94,10 @@ export function TranscriptPanel({ words, clipStartMs, clipEndMs, currentTimeMs, 
                       minWidth: 32,
                     }}
                   />
+                  {/* Keeps the word in edit mode (doesn't take the focus) */}
+                  <EmojiButton keepFocus label="Add an emoji to this word"
+                    onPick={e => setEditingText(insertAtCursor(inputRef.current, editingText, e))} />
+                  </span>
                 )
               }
 

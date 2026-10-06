@@ -1,6 +1,7 @@
 'use client'
 
 import { useRef, useEffect, useCallback, useState, useMemo, useId, createContext, useContext } from 'react'
+import { emojiFamily, captionEmojiFamily } from '@/modules/editor/emojiFont'
 import type { RefObject } from 'react'
 import type { SegmentLocal, Overlay, TextOverlay as TextOverlayType, CaptionStyle, TranscriptWord, FrameItem, FrameLane, CornerStyle } from '@chai-cut/shared'
 import { BG_PAD, shownText, textCss, textReplayElapsed, withAlpha } from '@/modules/editor/textStyle'
@@ -233,7 +234,7 @@ function paintFrameText(ctx: CanvasRenderingContext2D, it: FrameItem, fallbackBg
   const lh = size * 1.2
   ctx.save()
   ctx.beginPath(); ctx.rect(0, y, W, h); ctx.clip()
-  ctx.font = `700 ${size}px Montserrat, ${it.font || 'sans-serif'}`
+  ctx.font = `700 ${size}px ${emojiFamily()}, Montserrat, ${it.font || 'sans-serif'}`
   ctx.fillStyle = it.color || '#ffffff'
   ctx.textAlign = 'center'
   ctx.textBaseline = 'middle'
@@ -249,7 +250,7 @@ function frameTextBlock(text: string, size1080: number): { lines: string[]; w: n
   if (!measureCtx && typeof document !== 'undefined') measureCtx = document.createElement('canvas').getContext('2d')
   let widest = 0
   if (measureCtx) {
-    measureCtx.font = `700 ${size1080}px Montserrat, sans-serif`
+    measureCtx.font = `700 ${size1080}px ${emojiFamily()}, Montserrat, sans-serif`
     for (const ln of lines) widest = Math.max(widest, measureCtx.measureText(ln).width)
   } else widest = Math.max(...lines.map(l => l.length)) * size1080 * 0.56
   const pad = size1080 * 0.4
@@ -652,7 +653,7 @@ function drawPresetCaptions(
   // The Noto Indic fonts have no Latin letters: Roman-letter captions use Roboto (as render.py)
   const font = exportFont(style.language === 'roman' ? 'roboto' : style.font)
   const fontPx = (style.size ?? 52) * k * font.em
-  const fontFamily = `"${font.family}", sans-serif`
+  const fontFamily = `${captionEmojiFamily(font.em)}, "${font.family}", sans-serif`
   const lineStart = chunk[0].start_ms
   const lineEnd = chunk[chunk.length - 1].end_ms
 
@@ -772,7 +773,7 @@ function drawCaptions(
   const lineHeight = Math.round(fontSize * 1.4)
   const PAD_X      = Math.round(W * 0.05)
   const maxLineW   = W - PAD_X * 2
-  const fontFamily = `"${font.family}", sans-serif`
+  const fontFamily = `${captionEmojiFamily(font.em)}, "${font.family}", sans-serif`
 
   ctx.save()
   ctx.font         = `400 ${fontSize}px ${fontFamily}`
@@ -879,7 +880,7 @@ function drawStyledText(ctx: CanvasRenderingContext2D, o: TextOverlayType, elaps
   const fontSize = Math.max(8, Math.round((o.size ?? 72) * k))
   // A bundled font id (e.g. 'roboto') draws with the export's own file, as drawtext does
   const bundled = EXPORT_FONTS[o.font ?? ''] ? exportFont(o.font) : null
-  const fontFamily = bundled ? `"${bundled.family}", sans-serif` : (o.font ?? 'sans-serif')
+  const fontFamily = `${emojiFamily()}, ${bundled ? `"${bundled.family}", sans-serif` : (o.font ?? 'sans-serif')}`
   const weight = o.weight ?? (bundled ? 400 : 700)
   const full = shownText(o)
 
@@ -996,7 +997,7 @@ function drawStyledText(ctx: CanvasRenderingContext2D, o: TextOverlayType, elaps
 function drawCenteredText(ctx: CanvasRenderingContext2D, o: TextOverlayType) {
   const W = ctx.canvas.width, H = ctx.canvas.height
   const font = EXPORT_FONTS[o.font ?? ''] ? exportFont(o.font) : null
-  const family = font ? `"${font.family}", sans-serif` : (o.font ?? 'sans-serif')
+  const family = `${emojiFamily()}, ${font ? `"${font.family}", sans-serif` : (o.font ?? 'sans-serif')}`
   const weight = font ? 400 : 700                      // drawtext uses the font file as it is
   let px = (o.size ?? 48) * W / 1080
   ctx.save()
