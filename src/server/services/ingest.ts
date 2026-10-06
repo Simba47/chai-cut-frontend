@@ -72,6 +72,8 @@ export interface SignUploadRequest {
   partNumber?: number
   /** The file being uploaded — needed to start an upload */
   file?: { name: string; size: number; type?: string }
+  /** B-roll uploaded in the editor: saved as an asset (not on the dashboard, not counted as a video) */
+  asset?: boolean
 }
 
 const UPLOAD_URL_TTL_S = 3600
@@ -89,9 +91,13 @@ export async function signUploadRequest(userId: string, r: SignUploadRequest): P
   if (startsUpload) {
     if (!r.file?.name || !(r.file.size > 0)) throw err('File details missing', 400)
     const ext = uploadExtension(r.file.name)
-    const { checkVideoQuota, checkFileSizeQuota } = await import('./quota')
-    await checkVideoQuota(userId)
-    await checkFileSizeQuota(userId, r.file.size)
+    const { checkVideoQuota, checkFileSizeQuota, checkBrollSize } = await import('./quota')
+    if (r.asset === true) {
+      await checkBrollSize(userId, r.file.size)
+    } else {
+      await checkVideoQuota(userId)
+      await checkFileSizeQuota(userId, r.file.size)
+    }
     const key = `raw/${userId}/${Date.now()}-${crypto.randomUUID().slice(0, 8)}${ext}`
     const contentType = r.file.type || 'video/mp4'
     const command = r.method === 'POST'
@@ -129,7 +135,8 @@ export async function signUploadRequest(userId: string, r: SignUploadRequest): P
 // server memory, and /api/ingest/signed-url, a single PUT capped at 5 GB). Both were replaced by
 // the resumable upload above (useVideoUpload + signUploadRequest) and removed.
 
-export async function completeUpload(userId: string, storagePath: string, durationMs?: number, title?: string) {
+/** `asset`: B-roll uploaded in the editor — kept off the dashboard and out of the plan's video count */
+export async function completeUpload(userId: string, storagePath: string, durationMs?: number, title?: string, asset = false) {
   // Only a file this user uploaded (it could otherwise claim someone else's upload)
   if (!storagePath.startsWith(`raw/${userId}/`) || storagePath.includes('..')) throw err('Not your upload', 403)
   // Already turned into a video (e.g. the reply was lost and the browser asked again): answer
@@ -146,18 +153,23 @@ export async function completeUpload(userId: string, storagePath: string, durati
 
   // Check the file as it actually arrived (the size the browser reported could be wrong), and the
   // video count again (it was checked when the upload started, which may be a while ago)
-  const { checkVideoQuota, checkFileSizeQuota } = await import('./quota')
+  const { checkVideoQuota, checkFileSizeQuota, checkBrollSize } = await import('./quota')
   try {
-    await checkFileSizeQuota(userId, size)
-    await checkVideoQuota(userId)
+    if (asset) {
+      await checkBrollSize(userId, size)
+    } else {
+      await checkFileSizeQuota(userId, size)
+      await checkVideoQuota(userId)
+    }
   } catch (e) {
     await r2.send(new DeleteObjectCommand({ Bucket: R2_BUCKET, Key: storagePath })).catch(() => {})
     throw e
   }
 
   const [video] = await sql`
-    INSERT INTO videos (user_id, source_type, storage_path, status, duration_ms, title)
-    VALUES (${userId}, 'upload', ${storagePath}, 'ready', ${durationMs ?? null}, ${title?.trim().slice(0, 120) || null})
+    INSERT INTO videos (user_id, source_type, storage_path, status, duration_ms, title, role)
+    VALUES (${userId}, 'upload', ${storagePath}, 'ready', ${durationMs ?? null}, ${title?.trim().slice(0, 120) || null},
+      ${asset ? 'asset' : 'project'})
     RETURNING id
   `
   if (!video) throw err('Failed to create video record', 500)
