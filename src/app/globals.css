@@ -553,6 +553,24 @@ body {
 
 /* Clip count picker (clip board "Make my clips"): a highlight glides to the picked number
    with a little overshoot, and the number pops as it's picked */
+/* Make my clips: what AI adds — tick tiles (lime tick box when on) */
+.mmc-opt {
+  display: flex; align-items: center; gap: 8px; height: 34px; padding: 0 10px; border-radius: 10px; cursor: pointer;
+  font-size: 12px; font-weight: 600; color: rgba(255,255,255,0.55); user-select: none;
+  background: rgba(255,255,255,0.03); box-shadow: inset 0 0 0 1px rgba(255,255,255,0.08);
+  transition: color .15s, background-color .15s, box-shadow .15s;
+}
+.mmc-opt:hover { color: rgba(255,255,255,0.85); }
+.mmc-opt[data-on] { color: #fff; background: rgba(200,255,0,0.05); box-shadow: inset 0 0 0 1px rgba(200,255,0,0.3); }
+.mmc-opt[data-off] { opacity: .45; cursor: not-allowed; }
+.mmc-opt:focus-within { outline: 2px solid rgba(200,255,0,0.6); outline-offset: 1px; }
+.mmc-opt-box {
+  flex-shrink: 0; width: 16px; height: 16px; border-radius: 5px; display: grid; place-items: center; color: transparent;
+  box-shadow: inset 0 0 0 1.5px rgba(255,255,255,0.35); transition: background-color .15s, color .15s, box-shadow .15s, transform .15s;
+}
+.mmc-opt[data-on] .mmc-opt-box { background: #c8ff00; color: #000; box-shadow: none; }
+.mmc-opt:active .mmc-opt-box { transform: scale(.88); }
+
 /* Make my clips: the count box ( − 5 + ) — a dark pill whose border turns lime while typing */
 .mmc-count {
   background: rgba(0,0,0,0.35); box-shadow: inset 0 0 0 1px rgba(255,255,255,0.12);

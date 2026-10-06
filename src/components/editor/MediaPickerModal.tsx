@@ -27,13 +27,15 @@ function msToLabel(ms: number) {
 
 export function MediaPickerModal({ clipId, atMs, onInsertVideo, onInsertImage, onClose, initialTab, only }: Props) {
   const [tab, setTab] = useState<Tab>(initialTab ?? 'videos')
-  const [videos, setVideos] = useState<Video[]>([])
+  // Your uploads (B-roll added from this computer before) first, then your videos
+  const [videos, setVideos] = useState<Array<Video & { is_upload_asset?: boolean; is_asset?: boolean }>>([])
   const [loadingVideos, setLoadingVideos] = useState(true)
 
   // Upload video from device: the same resumable upload as the dashboard (plan limits checked,
   // straight to storage), then the new video goes into the slot
   const [videoFile, setVideoFile] = useState<File | null>(null)
-  const upload = useVideoUpload(videoId => onInsertVideo(videoId))
+  // An upload here is B-roll: saved as an asset, so it stays off the dashboard and the plan's video count
+  const upload = useVideoUpload(videoId => onInsertVideo(videoId), { asset: true })
   const videoUploading = upload.state.phase === 'uploading' || upload.state.phase === 'finishing'
   const videoProgress = upload.state.progress
   const videoError = upload.state.phase === 'failed' ? upload.state.error : null
@@ -51,12 +53,16 @@ export function MediaPickerModal({ clipId, atMs, onInsertVideo, onInsertImage, o
   const backdropRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
-    fetch('/api/videos')
+    fetch('/api/videos?assets=1')
       .then(r => r.json())
       .then(({ videos }) => {
-        setVideos(((videos ?? []) as Video[]).filter((v: Video) => v.status === 'ready'))
+        // Stock clips (also assets) are picked from Stock, not here
+        const all = ((videos ?? []) as Array<Video & { is_upload_asset?: boolean; is_asset?: boolean }>)
+          .filter(v => v.status === 'ready')
+        setVideos([...all.filter(v => v.is_upload_asset), ...all.filter(v => !v.is_asset)])
         setLoadingVideos(false)
       })
+      .catch(() => setLoadingVideos(false))
   }, [])
 
   // ── Upload video from device ─────────────────────────────────────────────
@@ -165,13 +171,19 @@ export function MediaPickerModal({ clipId, atMs, onInsertVideo, onInsertImage, o
                 </button>
               </div>
             )}
-            {videos.map((v, i) => (
-              <div key={v.id} className="flex items-center gap-3 p-2.5 rounded-xl" style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.07)' }}>
+            {videos.map((v, i) => (<div key={v.id} className="contents">
+              {/* A heading over each group */}
+              {(i === 0 || !!videos[i - 1].is_upload_asset !== !!v.is_upload_asset) && (
+                <p className="px-1 pt-1 text-[10px] font-semibold uppercase tracking-wide" style={{ color: 'rgba(255,255,255,0.4)' }}>
+                  {v.is_upload_asset ? 'Your uploads' : 'Your videos'}
+                </p>
+              )}
+              <div className="flex items-center gap-3 p-2.5 rounded-xl" style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.07)' }}>
                 <div className="shrink-0 flex items-center justify-center rounded-lg" style={{ width: 56, height: 40, background: '#111' }}>
                   <svg width="18" height="18" viewBox="0 0 20 20" fill="none" opacity={0.35}><path d="M5 3l13 7-13 7V3z" fill="white"/></svg>
                 </div>
                 <div className="flex-1 min-w-0">
-                  <p className="text-xs font-semibold text-white truncate">Video {i + 1}</p>
+                  <p className="text-xs font-semibold text-white truncate" title={v.title ?? undefined}>{v.title?.trim() || `Video ${i + 1}`}</p>
                   {v.duration_ms != null && <p className="text-xs" style={{ color: 'rgba(255,255,255,0.35)', marginTop: 1 }}>{msToLabel(v.duration_ms)}</p>}
                 </div>
                 <button
@@ -182,7 +194,7 @@ export function MediaPickerModal({ clipId, atMs, onInsertVideo, onInsertImage, o
                   Insert
                 </button>
               </div>
-            ))}
+            </div>))}
           </div>
         )}
 

@@ -41,6 +41,8 @@ interface SaveClipInput {
   overlays: Omit<Overlay, 'created_at'>[]
   /** Remove pauses and filler words when exporting */
   removeFillers?: boolean
+  /** The clip's own sound (top of the Music panel) */
+  originalSound?: { volume: number; muted: boolean }
 }
 
 export async function saveClip(userId: string, clipId: string, body: SaveClipInput) {
@@ -112,6 +114,9 @@ export async function saveClip(userId: string, clipId: string, body: SaveClipInp
   const hasEnabledField = await captionEnabledField()
   const hasPresetFields = await captionPresetFields()
   const hasRemoveFillers = typeof body.removeFillers === 'boolean' && await clipsHasRemoveFillers()
+  const hasFades = await hasColumn('audio_tracks', 'fade_in')
+  const original = body.originalSound
+  const hasOriginal = !!original && typeof original.volume === 'number' && await hasColumn('clips', 'original_volume')
 
   // Every statement is built up front and pipelined in one transaction: the database is far
   // from the server (~300–500 ms per round trip), and awaiting each statement made saves take
@@ -183,6 +188,9 @@ export async function saveClip(userId: string, clipId: string, body: SaveClipInp
     }
 
     if (hasRemoveFillers) q.push(tx`UPDATE clips SET remove_fillers = ${body.removeFillers!} WHERE id = ${clipId}`)
+    if (hasOriginal) {
+      q.push(tx`UPDATE clips SET original_volume = ${Math.max(0, Math.min(1, original!.volume))}, original_muted = ${!!original!.muted} WHERE id = ${clipId}`)
+    }
 
     q.push(tx`DELETE FROM text_overlays WHERE clip_id = ${clipId}`)
     if (textOverlays.length > 0) {
@@ -194,8 +202,9 @@ export async function saveClip(userId: string, clipId: string, body: SaveClipInp
 
     q.push(tx`DELETE FROM audio_tracks WHERE clip_id = ${clipId}`)
     if (audioTracks.length > 0) {
-      q.push(tx`INSERT INTO audio_tracks ${tx(audioTracks.map(({ id, storage_path, start_ms, volume, duck_under_speech, offset_ms, end_ms, muted, locked }) => ({
+      q.push(tx`INSERT INTO audio_tracks ${tx(audioTracks.map(({ id, storage_path, start_ms, volume, duck_under_speech, offset_ms, end_ms, muted, locked, fade_in, fade_out }) => ({
         id, clip_id: clipId, storage_path, start_ms: ms(start_ms), volume, duck_under_speech,
+        ...(hasFades ? { fade_in: !!fade_in, fade_out: !!fade_out } : {}),
         ...(hasControls ? {
           offset_ms: offset_ms == null ? null : ms(offset_ms), end_ms: end_ms == null ? null : ms(end_ms),
           muted: !!muted, locked: !!locked,
@@ -232,7 +241,7 @@ export async function saveClip(userId: string, clipId: string, body: SaveClipInp
  * export afterwards), nothing is deleted.
  */
 export async function deleteClips(userId: string, clipIds: unknown) {
-  const { cleanIds, deleteR2Keys, MAX_BULK_DELETE } = await import('./videos')
+  const { cleanIds, deleteR2Keys, MAX_BULK_DELETE, uploadsOnlyUsedBy, deleteUploads } = await import('./videos')
   const ids = cleanIds(clipIds)
   if (ids.length === 0) throw Object.assign(new Error('No clips selected'), { status: 400 })
   if (ids.length > MAX_BULK_DELETE) throw Object.assign(new Error(`You can delete up to ${MAX_BULK_DELETE} clips at a time`), { status: 400 })
@@ -254,7 +263,16 @@ export async function deleteClips(userId: string, clipIds: unknown) {
   // Before the rows go (it reads them); it never throws
   const { logClipEvents } = await import('./suggestionEvents')
   await logClipEvents(userId, ids, 'deleted')
+  // B-roll uploaded into these clips that no other clip uses goes with them (read before the rows go)
+  const uploads = await uploadsOnlyUsedBy(userId, ids)
+  const songs = await sql<{ storage_path: string }[]>`
+    SELECT DISTINCT storage_path FROM audio_tracks WHERE clip_id = ANY(${ids}) AND storage_path LIKE ${`audio/${userId}/%`}`
   await sql`DELETE FROM clips WHERE id = ANY(${ids})`
+  await deleteUploads(uploads)
+  // Songs uploaded for these clips (stored per upload; another clip can't share one)
+  const stillUsed = new Set((await sql<{ storage_path: string }[]>`
+    SELECT storage_path FROM audio_tracks WHERE storage_path = ANY(${songs.map(s => s.storage_path)})`).map(r => r.storage_path))
+  await deleteR2Keys(songs.map(s => s.storage_path).filter(p => !stillUsed.has(p)))
   return { deleted: ids.length }
 }
 
@@ -288,6 +306,16 @@ async function itemControlFields(): Promise<boolean> {
   const rows = await sql`SELECT 1 FROM information_schema.columns WHERE table_name = 'crop_boxes' AND column_name = 'hidden'`.catch(() => [])
   itemControlsKnown = rows.length > 0
   return itemControlsKnown
+}
+
+// Columns the backend adds when it starts (remembered once seen): saving works before and after
+const knownColumns = new Set<string>()
+async function hasColumn(table: string, column: string): Promise<boolean> {
+  const key = `${table}.${column}`
+  if (knownColumns.has(key)) return true
+  const rows = await sql`SELECT 1 FROM information_schema.columns WHERE table_name = ${table} AND column_name = ${column}`.catch(() => [])
+  if (rows.length) knownColumns.add(key)
+  return rows.length > 0
 }
 
 // clips.remove_fillers (added by the backend with "Remove pauses and filler words"): same rule
