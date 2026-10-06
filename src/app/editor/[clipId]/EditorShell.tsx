@@ -1,6 +1,7 @@
 'use client'
 
 import { InfoTip } from '@/components/ui/info-tip'
+import { musicGainAt, speechRangesInVideo, heardSpeech, type Range as SpeechRange } from '@/modules/editor/musicGain'
 import { useState, useEffect, useLayoutEffect, useRef, useMemo, Fragment } from 'react'
 import type { Clip, Segment, CropBox, BoxKeyframe, CaptionStyle, TextOverlay, AudioTrack, Transition, TranscriptWord, LayoutType, Overlay } from '@chai-cut/shared'
 import { VideoPreview, OutputCanvas } from '@/components/editor/VideoPreview'
@@ -26,7 +27,7 @@ import { useConfirm } from '@/components/editor/ConfirmDialog'
 import { EditorTour, hasSeenEditorTour } from '@/components/editor/EditorTour'
 import { FrameAddMenu, type AddChoice } from '@/components/editor/FrameAddMenu'
 import { createFrameMediaPool } from '@/modules/editor/frameMedia'
-import { FRAME_TEMPLATES, isFrameLayout, frameOf, frameLanes, frameSlotLabels, emptySlotStretches, slotOffers, DEFAULT_BAND, DEFAULT_CORNERS } from '@/modules/editor/frames'
+import { FRAME_TEMPLATES, isFrameLayout, frameOf, mainAudioVolume, frameLanes, frameSlotLabels, emptySlotStretches, slotOffers, DEFAULT_BAND, DEFAULT_CORNERS } from '@/modules/editor/frames'
 import { signOut } from 'next-auth/react'
 import { PlatformOverlay, PLATFORM_SAFE, type Platform } from '@/components/editor/PlatformOverlay'
 // ── Domain stores ──────────────────────────────────────────────────────────────
@@ -55,6 +56,10 @@ interface Props {
   initialCaptionStyles: CaptionStyle[]
   initialTextOverlays: TextOverlay[]
   initialAudioTracks: AudioTrack[]
+  /** Playable links for stored songs, by track id (songs saved before uploads existed have none) */
+  initialMusicUrls?: Record<string, string>
+  /** The clip's own sound as saved (top of the Music panel) */
+  initialOriginalSound?: { volume: number; muted: boolean }
   initialTransitions: Transition[]
   initialOverlays: Overlay[]
 }
@@ -131,6 +136,7 @@ const TOOLS: { id: Tool; label: string; title: string; hint: string; icon: React
 export function EditorShell({
   clip, videoUrl, words: initialWords, initialSegments,
   initialCaptionStyles, initialTextOverlays, initialAudioTracks, initialTransitions, initialOverlays,
+  initialMusicUrls, initialOriginalSound,
 }: Props) {
   // ── Video player ─────────────────────────────────────────────────────────────
   const { videoRef, seekToMs, togglePlay, pause } = useVideoSync(clip.start_ms, clip.end_ms)
@@ -355,10 +361,21 @@ export function EditorShell({
   // Lengths of music files added in this session (read from the file), so their timeline bars
   // show the right length; tracks without one run to the clip's end
   const [musicDurations, setMusicDurations] = useState<Record<string, number>>({})
-  // The main video's own sound (top of the Music panel). Applied to the preview here.
-  // TODO(backend): save originalVolume / originalMuted with the clip and mix them in at export
-  const [originalVolume, setOriginalVolume] = useState(1)
-  const [originalMuted, setOriginalMuted] = useState(false)
+  // The main video's own sound (top of the Music panel): applied to the preview here, saved with
+  // the clip and used by the export
+  const [originalVolume, setOriginalVolume] = useState(initialOriginalSound?.volume ?? 1)
+  const [originalMuted, setOriginalMuted] = useState(initialOriginalSound?.muted ?? false)
+  const originalSoundRef = useRef({ volume: originalVolume, muted: originalMuted })
+  const originalLoadedRef = useRef(true)
+  useEffect(() => {
+    originalSoundRef.current = { volume: originalVolume, muted: originalMuted }
+    if (originalLoadedRef.current) { originalLoadedRef.current = false; return }
+    // A change is saved like any other edit (2.5 s later)
+    if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current)
+    unsavedRef.current = true
+    editVersionRef.current++
+    autoSaveTimerRef.current = setTimeout(() => latestHandleSaveRef.current(), 2500)
+  }, [originalVolume, originalMuted]) // eslint-disable-line react-hooks/exhaustive-deps
   // A muted section (its own sound off): the video is silent while the playhead is in it
   const [sectionMuted, setSectionMuted] = useState(false)
   // The frame sound sync sets the main video's volume every frame, so the level goes through it
@@ -373,7 +390,57 @@ export function EditorShell({
   // Music heard in the preview: one <audio> per track added in this session, playing the picked
   // file in step with the video (tracks loaded from a saved clip have no file here yet)
   const musicEls = useRef(new Map<string, HTMLAudioElement>())
+  // Stored songs' playable links, songs still uploading or whose upload failed, and the last message
+  const [musicUrls, setMusicUrls] = useState<Record<string, string>>(initialMusicUrls ?? {})
+  const [musicUploads, setMusicUploads] = useState<Record<string, 'uploading' | 'failed'>>({})
+  const [musicNotice, setMusicNotice] = useState<string | null>(null)
+  /** Stores a picked song (any audio, or a video's sound; up to 20 MB) */
+  async function uploadMusicFile(f: File): Promise<{ storage_path: string; url: string }> {
+    const form = new FormData()
+    form.append('file', f)
+    const res = await fetch('/api/audio/upload', { method: 'POST', body: form })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) throw new Error(data.error ?? 'The song could not be uploaded')
+    return data
+  }
+  /** Plays a song file in the preview (and learns its length for the timeline bar) */
+  function attachMusicEl(id: string, src: string) {
+    const old = musicEls.current.get(id)
+    if (old) { old.pause(); if (old.src.startsWith('blob:')) URL.revokeObjectURL(old.src) }
+    const a = new Audio()
+    a.preload = 'auto'
+    a.onloadedmetadata = () => { if (isFinite(a.duration)) setMusicDurations(d => ({ ...d, [id]: Math.round(a.duration * 1000) })) }
+    a.src = src
+    musicEls.current.set(id, a)
+    return a
+  }
+  function sendMusic(id: string, f: File) {
+    setMusicUploads(u => ({ ...u, [id]: 'uploading' }))
+    uploadMusicFile(f).then(({ storage_path, url }) => {
+      setAudioTracks(prev => prev.map(t => t.id === id ? { ...t, storage_path } : t))
+      setMusicUrls(m => ({ ...m, [id]: url }))
+      setMusicUploads(u => { const n = { ...u }; delete n[id]; return n })
+    }).catch((e: unknown) => {
+      setMusicUploads(u => ({ ...u, [id]: 'failed' }))
+      setMusicNotice(e instanceof Error ? e.message : 'The song could not be uploaded')
+    })
+  }
+  const MAX_MUSIC_MB = 20
+  function musicTooBig(f: File) {
+    if (f.size <= MAX_MUSIC_MB * 1024 * 1024) return false
+    setMusicNotice(`Music files can be up to ${MAX_MUSIC_MB} MB. Pick a smaller file or a shorter song.`)
+    return true
+  }
+  /** "Re-add this song": a song saved before uploads existed (or whose upload failed) gets its file */
+  function readdMusic(id: string, f: File) {
+    if (musicTooBig(f)) return
+    setMusicNotice(null)
+    attachMusicEl(id, URL.createObjectURL(f))
+    sendMusic(id, f)
+  }
   function addMusicTrack(f: File, at?: number | 'end') {
+    if (musicTooBig(f)) return
+    setMusicNotice(null)
     const id = crypto.randomUUID()
     // The music starts where the playhead is (where you paused), not at the start of the clip —
     // or where the "+" menu says: the start, or so that it ends with the clip
@@ -383,9 +450,10 @@ export function EditorShell({
     const lenMs = clip.end_ms - clip.start_ms
     const edges = useEditorStore.getState().segments.flatMap(s => [s.start_ms, s.end_ms]).filter(t => t > startMs + 200 && t < lenMs)
     const sectionEnd = at === 'end' ? undefined : Math.min(lenMs, ...edges)
-    setAudioTracks(prev => [...prev, { id, clip_id: clip.id, storage_path: f.name, start_ms: startMs, ...(sectionEnd !== undefined ? { end_ms: sectionEnd } : {}), volume: 0.5, duck_under_speech: true }])
-    const a = new Audio()
-    a.preload = 'auto'
+    // Fades on by default (the buttons switch them off); the name stands in until the upload is stored
+    setAudioTracks(prev => [...prev, { id, clip_id: clip.id, storage_path: f.name, start_ms: startMs, ...(sectionEnd !== undefined ? { end_ms: sectionEnd } : {}), volume: 0.5, duck_under_speech: true, fade_in: true, fade_out: true }])
+    sendMusic(id, f)
+    const a = attachMusicEl(id, URL.createObjectURL(f))
     a.onloadedmetadata = () => {
       if (!isFinite(a.duration)) return
       const lenMs = Math.round(a.duration * 1000)
@@ -398,9 +466,31 @@ export function EditorShell({
         setAudioTracks(prev => prev.map(t => t.id === id && t.end_ms != null && t.end_ms > t.start_ms + lenMs ? { ...t, end_ms: t.start_ms + lenMs } : t))
       }
     }
-    a.src = URL.createObjectURL(f)
-    musicEls.current.set(id, a)
   }
+  // Stored songs (a saved clip, or after "Re-add") play from storage
+  useEffect(() => {
+    for (const t of audioTracks) {
+      if (isMainAudio(t) || musicEls.current.has(t.id) || !musicUrls[t.id]) continue
+      attachMusicEl(t.id, musicUrls[t.id])
+    }
+  }, [audioTracks, musicUrls]) // eslint-disable-line react-hooks/exhaustive-deps
+  // Where the voice is actually heard (clip time): music dips only there, as in the export — not
+  // while the original sound is muted, in muted sections, under a B-roll's own sound, in a frame
+  // whose main video is silent; with the sound detached, where its bars play
+  const speech = useMemo(() => {
+    const originals = audioTracks.filter(isMainAudio)
+    const span = (s: { start_ms: number; end_ms: number }): SpeechRange => [s.start_ms, s.end_ms]
+    return heardSpeech({
+      speechInVideo: speechRangesInVideo(words, clip.start_ms, clip.end_ms),
+      clipStartMs: clip.start_ms, clipLenMs: clip.end_ms - clip.start_ms,
+      originals: originals.length ? originals : null,
+      mainVolume: originalMuted ? 0 : originalVolume,
+      mutedSections: segments.filter(s => s.muted).map(span),
+      quietSections: segments.filter(s => isFrameLayout(s.layout)
+        ? mainAudioVolume(frameOf(s)) <= 0
+        : addedVideoBox(s, mainVideoId)?.muted === false).map(span),
+    })
+  }, [words, clip.start_ms, clip.end_ms, audioTracks, originalMuted, originalVolume, segments, mainVideoId]) // eslint-disable-line react-hooks/exhaustive-deps
   // Keep every track's audio in step with the playhead: play while the playhead is inside it,
   // re-sync if it drifts, pause otherwise; follow each track's volume
   useEffect(() => {
@@ -411,7 +501,8 @@ export function EditorShell({
         if (![...musicEls.current.values()].some(o => o.src === el.src)) URL.revokeObjectURL(el.src)
         continue
       }
-      el.volume = tr.muted || (isMainAudio(tr) && sectionMuted) ? 0 : Math.max(0, Math.min(1, tr.volume ?? 0.5))
+      // Volume, fades and the dip under speech — the same rules as the export's mix
+      el.volume = isMainAudio(tr) && sectionMuted ? 0 : musicGainAt(tr, currentTimeMs, musicDurations[id], speech, clipLengthMs)
       const local = (currentTimeMs - tr.start_ms + (tr.offset_ms ?? 0)) / 1000
       const stop = tr.end_ms ?? Infinity
       const inside = currentTimeMs >= tr.start_ms && currentTimeMs < stop && (!isFinite(el.duration) || local < el.duration)
@@ -422,7 +513,7 @@ export function EditorShell({
         el.pause()
       }
     }
-  }, [playing, currentTimeMs, audioTracks, sectionMuted])
+  }, [playing, currentTimeMs, audioTracks, sectionMuted, musicDurations, speech]) // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => () => { for (const el of musicEls.current.values()) { el.pause(); URL.revokeObjectURL(el.src) } }, [])
   // Format panel: sections whose "what's in it" list is open, the kind of item shown, and the list
   const [openSections, setOpenSections] = useState<Set<string>>(() => new Set())
@@ -722,6 +813,7 @@ export function EditorShell({
           })),
           captionStyle, textOverlays, audioTracks, transitions, filters, overlays,
           removeFillers: removeFillersRef.current,
+          originalSound: originalSoundRef.current,
         }),
       })
       if (!res.ok) {
@@ -1039,7 +1131,12 @@ export function EditorShell({
   }, [audioTracks, videoUrl])
   // While the sound is detached the video itself is quiet (and comes back when that bar is deleted)
   const hasMainAudio = audioTracks.some(isMainAudio)
-  useEffect(() => { setOriginalMuted(hasMainAudio) }, [hasMainAudio])
+  const hadMainAudioRef = useRef(hasMainAudio)
+  useEffect(() => {
+    if (hadMainAudioRef.current === hasMainAudio) return
+    hadMainAudioRef.current = hasMainAudio
+    setOriginalMuted(hasMainAudio)
+  }, [hasMainAudio])
 
   function deleteMusic(id: string) {
     if (blocked({ kind: 'music', id })) return
@@ -2360,6 +2457,10 @@ export function EditorShell({
                 selectedId={pickedMusicId} onSelect={pickMusic}
                 currentTimeMs={currentTimeMs} clipLengthMs={clipLengthMs} durations={musicDurations}
                 onAddTrack={addMusicTrack}
+                uploads={musicUploads}
+                missing={t => !isMainAudio(t) && !t.storage_path.startsWith('audio/') && !musicEls.current.has(t.id)}
+                onReadd={readdMusic}
+                notice={musicNotice}
                 onRemoveTrack={deleteMusic}
                 onUpdateTrack={(id, u) => { if (!blocked({ kind: 'music', id })) setAudioTracks(prev => prev.map(t => t.id === id ? { ...t, ...u } : t)) }} />
               </>
@@ -2891,7 +2992,7 @@ export function EditorShell({
       )}
 
       {/* "+" → Music: pick an audio file; it goes in at the start, or so it ends with the clip */}
-      <input ref={musicInputRef} type="file" accept="audio/*" className="hidden" aria-hidden="true" tabIndex={-1}
+      <input ref={musicInputRef} type="file" accept="audio/*,video/*" className="hidden" aria-hidden="true" tabIndex={-1}
         onChange={e => {
           const f = e.target.files?.[0]
           e.target.value = ''

@@ -70,6 +70,32 @@ export function EditorShellMobile({
   clip, videoUrl, words: initialWords, initialSegments,
   initialCaptionStyles, initialTextOverlays, initialAudioTracks, initialTransitions, initialOverlays,
 }: Props) {
+  // Music: stored when picked (any audio, or a video's sound; up to 20 MB) so it's in the export
+  const [musicUploads, setMusicUploads] = useState<Record<string, 'uploading' | 'failed'>>({})
+  const [musicNotice, setMusicNotice] = useState<string | null>(null)
+  /** Adds a song (or, with `replaceId`, gives an old name-only song its file: "Re-add this song") */
+  function addMusic(f: File, replaceId?: string) {
+    if (f.size > 20 * 1024 * 1024) { setMusicNotice('Music files can be up to 20 MB. Pick a smaller file or a shorter song.'); return }
+    setMusicNotice(null)
+    const id = replaceId ?? crypto.randomUUID()
+    if (!replaceId) {
+      setAudioTracks(prev => [...prev, { id, clip_id: clip.id, storage_path: f.name, start_ms: 0, volume: 0.5, duck_under_speech: true, fade_in: true, fade_out: true }])
+    }
+    setMusicUploads(u => ({ ...u, [id]: 'uploading' }))
+    const form = new FormData()
+    form.append('file', f)
+    fetch('/api/audio/upload', { method: 'POST', body: form })
+      .then(async r => { const d = await r.json().catch(() => ({})); if (!r.ok) throw new Error(d.error ?? 'The song could not be uploaded'); return d as { storage_path: string } })
+      .then(({ storage_path }) => {
+        setAudioTracks(prev => prev.map(t => t.id === id ? { ...t, storage_path } : t))
+        setMusicUploads(u => { const n = { ...u }; delete n[id]; return n })
+      })
+      .catch((e: unknown) => {
+        setMusicUploads(u => ({ ...u, [id]: 'failed' }))
+        setMusicNotice(e instanceof Error ? e.message : 'The song could not be uploaded')
+      })
+  }
+
   // ── Video player ─────────────────────────────────────────────────────────────
   const { videoRef, seekToMs, togglePlay, pause } = useVideoSync(clip.start_ms, clip.end_ms)
   const { currentTimeMs, durationMs, playing } = usePlayerStore()
@@ -949,7 +975,9 @@ export function EditorShellMobile({
             {activeTab === 'audio' && (
               <div style={{ padding: 12 }}>
                 <AudioMixerPanel tracks={audioTracks}
-                  onAddTrack={f => setAudioTracks(prev => [...prev, { id: crypto.randomUUID(), clip_id: clip.id, storage_path: f.name, start_ms: 0, volume: 0.5, duck_under_speech: true }])}
+                  onAddTrack={addMusic} uploads={musicUploads} notice={musicNotice}
+                  missing={t => !t.storage_path.startsWith('audio/') && !t.storage_path.startsWith('main-video:') && !musicUploads[t.id]}
+                  onReadd={(id, f) => addMusic(f, id)}
                   onRemoveTrack={askRemoveTrack}
                   onUpdateTrack={(id, u) => setAudioTracks(prev => prev.map(t => t.id === id ? { ...t, ...u } : t))} />
               </div>

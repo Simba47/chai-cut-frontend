@@ -269,6 +269,9 @@ export interface AudioTrack {
   offset_ms?: number
   /** Trimmed music: clip time where this track stops (default: when the song ends) */
   end_ms?: number
+  /** The fade-in / fade-out buttons (0.5 s each, in the preview and the export) */
+  fade_in?: boolean
+  fade_out?: boolean
   /** Editor controls: silent / can't be moved, trimmed or deleted */
   muted?: boolean
   locked?: boolean
