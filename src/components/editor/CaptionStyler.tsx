@@ -244,6 +244,18 @@ export function CaptionStyler({
 
   return (
     <div className="flex flex-col gap-5 px-4 pb-5 pt-1">
+      {/* Making captions failed (e.g. Google's service down): say why, and offer to try again */}
+      {retranscribeError && !retranscribing && (
+        <div role="alert" className="flex flex-col gap-2 rounded-xl px-3 py-2.5 text-[12px] leading-snug"
+          style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.35)', color: '#fca5a5' }}>
+          <span>{retranscribeError}</span>
+          <button type="button" onClick={() => onRetranscribe('unknown')}
+            className="self-start rounded-lg px-2.5 py-1 text-[11px] font-semibold transition-colors hover:bg-[rgba(239,68,68,0.2)]"
+            style={{ border: '1px solid rgba(239,68,68,0.45)', color: '#fecaca' }}>
+            Try again
+          </button>
+        </div>
+      )}
       <style>{PRESET_CSS}</style>
       {/* ── Style: each tile is a little dark "screen" playing the animation, its name below ── */}
       <section className="flex flex-col gap-2.5">

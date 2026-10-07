@@ -34,7 +34,17 @@ export async function GET(req: NextRequest) {
       AND status IN ('queued', 'processing') LIMIT 1`
   const pending = !!job
 
-  if (!rows.length) return NextResponse.json({ words: null, video_status: video.status, pending })
+  // The caption job the editor is waiting for (?job=), if it failed: its reason, so the editor can
+  // say so instead of waiting
+  let failed: string | null = null
+  const jobId = searchParams.get('job')
+  if (jobId && /^[0-9a-f-]{36}$/i.test(jobId)) {
+    const [bad] = await sql`
+      SELECT error FROM jobs WHERE id = ${jobId} AND type = 'transcribe' AND payload->>'video_id' = ${videoId} AND status = 'failed'`
+    if (bad) failed = String(bad.error ?? 'the caption job failed').replace(/^Error:\s*/, '').slice(0, 200)
+  }
+
+  if (!rows.length) return NextResponse.json({ words: null, video_status: video.status, pending, failed })
 
   const words = await sql`SELECT * FROM transcript_words WHERE transcript_id = ${rows[0].id} ORDER BY start_ms`
   return NextResponse.json({ words, video_status: video.status, pending })

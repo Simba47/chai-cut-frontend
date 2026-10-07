@@ -63,7 +63,7 @@ export function TextOverlayPanel({ overlays, currentTimeMs, clipDurationMs, onAd
     setLastCount(overlays.length)
   }, [overlays, lastCount])
 
-  const newRef = useRef<HTMLInputElement>(null)
+  const newRef = useRef<HTMLTextAreaElement>(null)
   // The Emoji section: an emoji on its own, as a sticker on the video (big, at the playhead, 3 s)
   function addEmoji(e: string) {
     onAdd({
@@ -91,10 +91,12 @@ export function TextOverlayPanel({ overlays, currentTimeMs, clipDurationMs, onAd
       {/* Add */}
       <div className="flex flex-col gap-2">
         <div className="flex gap-2">
-          <input ref={newRef} type="text" value={newText} onChange={e => setNewText(e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && handleAdd()}
-            placeholder="Type your text…" aria-label="New text"
-            className="tx-input flex-1" />
+          {/* Enter starts a new line; Ctrl+Enter (or the + button) adds the text */}
+          <textarea ref={newRef} value={newText} onChange={e => setNewText(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); handleAdd() } }}
+            placeholder="Type your text…" aria-label="New text" title="Enter starts a new line · Ctrl+Enter adds it"
+            rows={Math.min(4, Math.max(1, newText.split('\n').length))}
+            className="tx-input flex-1 resize-none" style={{ lineHeight: 1.35, paddingTop: 8, paddingBottom: 8 }} />
           <EmojiButton label="Add an emoji to the text" onPick={e => setNewText(insertAtCursor(newRef.current, newText, e))} />
           <button onClick={handleAdd} disabled={!newText.trim()} className="tx-add">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
@@ -135,7 +137,7 @@ function TextItem({ o, open, currentTimeMs, clipDurationMs, onToggle, onUpdate, 
   onUpdate: (u: Partial<TextOverlay>) => void
   onRemove: () => void
 }) {
-  const textRef = useRef<HTMLInputElement>(null)
+  const textRef = useRef<HTMLTextAreaElement>(null)
   // Picking a style or an animation replays the entrance in the preview straight away
   const applyPreset = (style: TextStyle) => {
     onUpdate({ ...style, ...(style.font ? {} : o.font === 'monospace' ? { font: 'sans-serif' } : {}) })
@@ -160,7 +162,10 @@ function TextItem({ o, open, currentTimeMs, clipDurationMs, onToggle, onUpdate, 
       {open && (
         <div className="flex flex-col gap-5 pt-3">
           <div className="flex gap-2">
-            <input ref={textRef} className="tx-input flex-1" value={o.text} onChange={e => onUpdate({ text: e.target.value })} aria-label="Text" data-text-id={o.id} />
+            {/* Enter starts a new line, as in any editor */}
+            <textarea ref={textRef} className="tx-input flex-1 resize-none" value={o.text} onChange={e => onUpdate({ text: e.target.value })}
+              aria-label="Text" data-text-id={o.id} title="Enter starts a new line"
+              rows={Math.min(6, Math.max(1, o.text.split('\n').length))} style={{ lineHeight: 1.35, paddingTop: 8, paddingBottom: 8 }} />
             <EmojiButton label="Add an emoji to the text" onPick={e => onUpdate({ text: insertAtCursor(textRef.current, o.text, e) })} />
           </div>
           {/* When it shows */}
