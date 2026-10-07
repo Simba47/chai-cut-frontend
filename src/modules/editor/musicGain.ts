@@ -45,6 +45,11 @@ function subtract(ranges: Range[], cuts: Range[]): Range[] {
  */
 export function heardSpeech(o: {
   speechInVideo: Range[]
+  /**
+   * Where someone speaks in CLIP time, when that isn't just the video's time minus the clip's
+   * start (parts of the clip removed: lib/trims.ts). Used while the sound isn't detached.
+   */
+  speechInClip?: Range[]
   clipStartMs: number
   clipLenMs: number
   /** Detached original-sound bars, or null when the sound isn't detached */
@@ -62,7 +67,8 @@ export function heardSpeech(o: {
     })
   } else {
     if (o.mainVolume <= 0) return []
-    heard = subtract(o.speechInVideo.map(([a, b]) => [Math.max(0, a - o.clipStartMs), Math.min(o.clipLenMs, b - o.clipStartMs)] as Range), o.quietSections)
+    const inClip = o.speechInClip ?? o.speechInVideo.map(([a, b]) => [a - o.clipStartMs, b - o.clipStartMs] as Range)
+    heard = subtract(inClip.map(([a, b]) => [Math.max(0, a), Math.min(o.clipLenMs, b)] as Range), o.quietSections)
   }
   return subtract(heard, o.mutedSections).sort((p, q) => p[0] - q[0])
 }

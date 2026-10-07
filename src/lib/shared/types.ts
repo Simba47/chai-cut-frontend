@@ -225,6 +225,17 @@ export interface TextOverlay {
   /** Editor controls: not shown or exported / can't be moved, trimmed or deleted */
   hidden?: boolean
   locked?: boolean
+  /**
+   * Width of the text box, as a share of the frame's width (dragged on the preview): the text
+   * wraps inside it. Unset = one line per line typed (no wrapping).
+   */
+  w?: number | null
+  /**
+   * Height of the text box, as a share of the frame's height (dragged on the preview): the text
+   * keeps its size and sits in the middle of the box. Never smaller than the text. Unset = as tall
+   * as the text.
+   */
+  h?: number | null
   // ── Text styling (Text tool). All optional: older text keeps its look.
   // TODO(backend): save these with the text and draw them in the export.
   /** 400 regular · 700 bold · 900 black (default 700) */

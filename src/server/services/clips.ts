@@ -1,4 +1,5 @@
 import sql from '@/lib/db'
+import { cleanTrims, trimMap, MAX_CLIP_MS, MIN_CLIP_MS } from '@/lib/trims'
 import type { SegmentLocal, BoxKeyframeLocal, CaptionStyle, TextOverlay, AudioTrack, Transition, Overlay, FrameSettings, FrameItem, CornerStyle } from '@chai-cut/shared'
 
 interface CreateClipInput {
@@ -43,6 +44,13 @@ interface SaveClipInput {
   removeFillers?: boolean
   /** The clip's own sound (top of the Music panel) */
   originalSound?: { volume: number; muted: boolean }
+  /**
+   * Parts of the video removed from the clip: [[start, end], …] in ms of the source video
+   * (lib/trims.ts). Left out by an editor that doesn't know about them: what's saved stays.
+   */
+  trims?: unknown
+  /** The clip's start and end in its video, when dragged in the editor: [start, end] ms */
+  range?: unknown
 }
 
 export async function saveClip(userId: string, clipId: string, body: SaveClipInput) {
@@ -51,7 +59,7 @@ export async function saveClip(userId: string, clipId: string, body: SaveClipInp
 
   // Ownership check and the existing caption style in one round trip
   const [[clip], [existingStyle]] = await Promise.all([
-    sql`SELECT c.id, v.user_id FROM clips c JOIN videos v ON v.id = c.video_id WHERE c.id = ${clipId}`,
+    sql`SELECT c.id, c.start_ms, c.end_ms, to_jsonb(c)->'trim_ranges' AS trim_ranges, v.user_id, v.duration_ms AS video_duration_ms FROM clips c JOIN videos v ON v.id = c.video_id WHERE c.id = ${clipId}`,
     sql`SELECT id FROM caption_styles WHERE clip_id = ${clipId} LIMIT 1`,
   ])
   if (!clip) throw Object.assign(new Error('Clip not found'), { status: 404 })
@@ -115,6 +123,15 @@ export async function saveClip(userId: string, clipId: string, body: SaveClipInp
   const hasPresetFields = await captionPresetFields()
   const hasRemoveFillers = typeof body.removeFillers === 'boolean' && await clipsHasRemoveFillers()
   const hasFades = await hasColumn('audio_tracks', 'fade_in')
+  const hasTextW = await hasColumn('text_overlays', 'w')
+  const hasTextH = await hasColumn('text_overlays', 'h')
+  // The clip's start and end, when dragged in the editor (bug #8)
+  const range = clipRangeFrom(body.range, clip, body.trims)
+  const clipStart = range ? range[0] : Number(clip.start_ms), clipEnd = range ? range[1] : Number(clip.end_ms)
+  // Removed parts of the video, once the database has that field (the backend adds it when it starts)
+  const trims = Array.isArray(body.trims) && await hasColumn('clips', 'trim_ranges')
+    ? cleanTrims(body.trims, clipStart, clipEnd)
+    : null
   const original = body.originalSound
   const hasOriginal = !!original && typeof original.volume === 'number' && await hasColumn('clips', 'original_volume')
 
@@ -188,14 +205,20 @@ export async function saveClip(userId: string, clipId: string, body: SaveClipInp
     }
 
     if (hasRemoveFillers) q.push(tx`UPDATE clips SET remove_fillers = ${body.removeFillers!} WHERE id = ${clipId}`)
+    if (range) q.push(tx`UPDATE clips SET start_ms = ${range[0]}, end_ms = ${range[1]} WHERE id = ${clipId}`)
+    if (trims) q.push(tx`UPDATE clips SET trim_ranges = ${trims.length ? sql.json(trims as never) : null} WHERE id = ${clipId}`)
     if (hasOriginal) {
       q.push(tx`UPDATE clips SET original_volume = ${Math.max(0, Math.min(1, original!.volume))}, original_muted = ${!!original!.muted} WHERE id = ${clipId}`)
     }
 
     q.push(tx`DELETE FROM text_overlays WHERE clip_id = ${clipId}`)
     if (textOverlays.length > 0) {
-      q.push(tx`INSERT INTO text_overlays ${tx(textOverlays.map(({ id, text, start_ms, end_ms, x, y, font, size, color, hidden, locked }) => ({
+      q.push(tx`INSERT INTO text_overlays ${tx(textOverlays.map(({ id, text, start_ms, end_ms, x, y, font, size, color, hidden, locked, w, h }) => ({
         id, clip_id: clipId, text, start_ms: ms(start_ms), end_ms: ms(end_ms), x, y, font, size, color,
+        // Box width (the text wraps inside it): a share of the frame's width, or none
+        ...(hasTextW ? { w: typeof w === 'number' && w > 0 ? Math.min(1, w) : null } : {}),
+        // Box height (the text sits in its middle): a share of the frame's height, or none
+        ...(hasTextH ? { h: typeof h === 'number' && h > 0 ? Math.min(1, h) : null } : {}),
         ...(hasControls ? { hidden: !!hidden, locked: !!locked } : {}),
       })))}`)
     }
@@ -306,6 +329,27 @@ async function itemControlFields(): Promise<boolean> {
   const rows = await sql`SELECT 1 FROM information_schema.columns WHERE table_name = 'crop_boxes' AND column_name = 'hidden'`.catch(() => [])
   itemControlsKnown = rows.length > 0
   return itemControlsKnown
+}
+
+/**
+ * A dragged clip start / end from the editor, checked: inside the video, at least MIN_CLIP_MS, and
+ * playing at most MAX_CLIP_MS (a clip already longer may only get shorter). Null when unchanged;
+ * refused (400) when it breaks a rule.
+ */
+function clipRangeFrom(raw: unknown, clip: Record<string, unknown>, newTrims?: unknown): [number, number] | null {
+  if (raw == null) return null
+  const bad = (msg: string) => Object.assign(new Error(msg), { status: 400 })
+  if (!Array.isArray(raw) || raw.length !== 2 || !raw.every(v => Number.isFinite(Number(v)))) throw bad('Invalid clip start and end')
+  const start = Math.round(Number(raw[0])), end = Math.round(Number(raw[1]))
+  const oldStart = Number(clip.start_ms), oldEnd = Number(clip.end_ms)
+  if (start === oldStart && end === oldEnd) return null
+  const videoLen = Number(clip.video_duration_ms) || 0
+  if (start < 0 || (videoLen > 0 && end > videoLen + 50)) throw bad('The clip can\u2019t reach past its video')
+  const played = (t: unknown, a: number, b: number) => trimMap(cleanTrims(t, a, b), a, b).lengthMs
+  const len = played(Array.isArray(newTrims) ? newTrims : clip.trim_ranges, start, end)
+  if (len < MIN_CLIP_MS) throw bad('A clip must be at least 1 second long')
+  if (len > Math.max(MAX_CLIP_MS, played(clip.trim_ranges, oldStart, oldEnd)) + 50) throw bad('A clip can be up to 5 minutes long')
+  return [start, Math.min(end, videoLen > 0 ? videoLen : end)]
 }
 
 // Columns the backend adds when it starts (remembered once seen): saving works before and after
