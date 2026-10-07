@@ -24,7 +24,7 @@ export async function sendOtpEmail(
     ? 'Enter this code to verify your Shortcut account.'
     : 'Enter this code to reset your password.'
 
-  await getResend().emails.send({
+  const { error } = await getResend().emails.send({
     from: FROM,
     to: email,
     subject,
@@ -55,4 +55,10 @@ export async function sendOtpEmail(
 </body>
 </html>`,
   })
+  // The SDK doesn't throw on API-level failures (bad key, unverified domain, etc.) — it just
+  // returns { error }. Left unchecked, the caller (and the user) sees a false "email sent".
+  if (error) {
+    console.error('[mailer] Resend rejected the OTP email:', error)
+    throw new Error(`Failed to send verification email: ${error.message}`)
+  }
 }
