@@ -63,13 +63,39 @@ export function ClipsGallery({ video, videoUrl, stockUrls, job, clips: initial }
     return () => clearInterval(t)
   }, [running, exporting, video.id, job?.status, router])
 
+  // Download: AI's clips are edits, not files yet, so the first Download exports the clip and the
+  // file saves by itself once it's ready
+  const [wantDl, setWantDl] = useState<string[]>([])
+  useEffect(() => {
+    const ready = wantDl.filter(id => clips.some(c => c.id === id && c.output_url))
+    if (!ready.length) return
+    for (const id of ready) {
+      const a = document.createElement('a')
+      a.href = `/api/clips/${id}/download`
+      a.download = ''
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+    }
+    setWantDl(w => w.filter(id => !ready.includes(id)))
+  }, [clips, wantDl])
+  useEffect(() => {
+    // An export that failed: stop waiting on it
+    setWantDl(w => w.some(id => clips.some(c => c.id === id && c.status === 'failed')) ? w.filter(id => !clips.some(c => c.id === id && c.status === 'failed')) : w)
+  }, [clips])
+
   async function exportClip(id: string) {
+    setWantDl(w => w.includes(id) ? w : [...w, id])
     setExportError(null)
     const res = await fetch('/api/export', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ clip_id: id, quality: '1080p' }),
     })
-    if (!res.ok) { setExportError((await res.json().catch(() => ({}))).error ?? 'Export failed'); return }
+    if (!res.ok) {
+      setWantDl(w => w.filter(x => x !== id))
+      setExportError((await res.json().catch(() => ({}))).error ?? 'Export failed')
+      return
+    }
     setClips(cs => cs.map(c => c.id === id ? { ...c, status: 'rendering', output_url: null } : c))
   }
 
@@ -110,7 +136,7 @@ export function ClipsGallery({ video, videoUrl, stockUrls, job, clips: initial }
               AI edits
             </p>
             <h1 className="ag-title" title={video.title ?? undefined}>{video.title || 'Your video'}</h1>
-            <p className="ag-sub">Play any clip to watch it as a reel. Edit it to make changes, or export it to download.</p>
+            <p className="ag-sub">Play any clip to watch it as a reel. Like it? Download it. Edit it to make changes.</p>
             <div className="flex flex-wrap items-center gap-2 mt-4">
               <span className="ag-stat"><b>{clips.length}</b> clip{clips.length === 1 ? '' : 's'}</span>
               {batches.length > 1 && <span className="ag-stat"><b>{batches.length}</b> batches</span>}
@@ -201,11 +227,12 @@ export function ClipsGallery({ video, videoUrl, stockUrls, job, clips: initial }
                         Download
                       </a>
                     ) : (
-                      <button onClick={() => exportClip(c.id)} disabled={c.status === 'rendering'} className="ag-btn ag-btn-dark">
+                      <button onClick={() => exportClip(c.id)} disabled={c.status === 'rendering'} className="ag-btn ag-btn-dark"
+                        title={c.status === 'rendering' ? 'It downloads by itself when ready' : 'Export this clip as AI edited it, then download it'}>
                         {c.status === 'rendering'
                           ? <span className="w-3 h-3 border-2 border-current border-t-transparent rounded-full animate-spin" />
-                          : <svg width="13" height="13" viewBox="0 0 14 14" fill="none" aria-hidden="true"><path d="M7 10V3M4 6l3-3 3 3M2 11.5h10" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /></svg>}
-                        {c.status === 'rendering' ? 'Exporting…' : 'Export'}
+                          : <svg width="13" height="13" viewBox="0 0 14 14" fill="none" aria-hidden="true"><path d="M7 2v7M4 7l3 3 3-3M2 11.5h10" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /></svg>}
+                        {c.status === 'rendering' ? (wantDl.includes(c.id) ? 'Preparing…' : 'Exporting…') : 'Download'}
                       </button>
                     )}
                   </div>

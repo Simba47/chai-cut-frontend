@@ -42,6 +42,21 @@ export async function checkClipQuota(userId: string): Promise<void> {
   }
 }
 
+/** Largest video a user can upload as B-roll from the editor (or the plan's limit, if smaller) */
+export const MAX_BROLL_UPLOAD_BYTES = 500 * 1024 * 1024
+
+/** A B-roll upload (editor): no video-count limit, only a size cap */
+export async function checkBrollSize(userId: string, fileSizeBytes: number): Promise<void> {
+  const plan = await getUserPlanConfig(userId)
+  const cap = Math.min(plan.maxFileSizeBytes, MAX_BROLL_UPLOAD_BYTES)
+  if (fileSizeBytes > cap) {
+    throw Object.assign(
+      new Error(`Videos added to a clip can be up to ${Math.round(cap / (1024 * 1024))} MB. Trim it or pick a shorter one.`),
+      { status: 403 },
+    )
+  }
+}
+
 export async function checkFileSizeQuota(userId: string, fileSizeBytes: number): Promise<void> {
   const plan = await getUserPlanConfig(userId)
   if (fileSizeBytes > plan.maxFileSizeBytes) {

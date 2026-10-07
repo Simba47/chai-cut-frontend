@@ -1,9 +1,10 @@
 'use client'
 
 import { useRef, useEffect, useCallback, useState, useMemo, useId, createContext, useContext } from 'react'
+import { emojiFamily, captionEmojiFamily } from '@/modules/editor/emojiFont'
 import type { RefObject } from 'react'
 import type { SegmentLocal, Overlay, TextOverlay as TextOverlayType, CaptionStyle, TranscriptWord, FrameItem, FrameLane, CornerStyle } from '@chai-cut/shared'
-import { BG_PAD, shownText, textCss, textReplayElapsed, withAlpha } from '@/modules/editor/textStyle'
+import { BG_PAD, shownText, textCss, textReplayElapsed, withAlpha, wrapTextLines, TEXT_LINE_EM, MIN_TEXT_W, MIN_TEXT_H } from '@/modules/editor/textStyle'
 import type { BoxPosition } from '@/lib/interpolation'
 import type { TextCase } from './CaptionStyler'
 import { applyCase } from './CaptionStyler'
@@ -233,7 +234,7 @@ function paintFrameText(ctx: CanvasRenderingContext2D, it: FrameItem, fallbackBg
   const lh = size * 1.2
   ctx.save()
   ctx.beginPath(); ctx.rect(0, y, W, h); ctx.clip()
-  ctx.font = `700 ${size}px Montserrat, ${it.font || 'sans-serif'}`
+  ctx.font = `700 ${size}px ${emojiFamily()}, Montserrat, ${it.font || 'sans-serif'}`
   ctx.fillStyle = it.color || '#ffffff'
   ctx.textAlign = 'center'
   ctx.textBaseline = 'middle'
@@ -249,7 +250,7 @@ function frameTextBlock(text: string, size1080: number): { lines: string[]; w: n
   if (!measureCtx && typeof document !== 'undefined') measureCtx = document.createElement('canvas').getContext('2d')
   let widest = 0
   if (measureCtx) {
-    measureCtx.font = `700 ${size1080}px Montserrat, sans-serif`
+    measureCtx.font = `700 ${size1080}px ${emojiFamily()}, Montserrat, sans-serif`
     for (const ln of lines) widest = Math.max(widest, measureCtx.measureText(ln).width)
   } else widest = Math.max(...lines.map(l => l.length)) * size1080 * 0.56
   const pad = size1080 * 0.4
@@ -652,7 +653,7 @@ function drawPresetCaptions(
   // The Noto Indic fonts have no Latin letters: Roman-letter captions use Roboto (as render.py)
   const font = exportFont(style.language === 'roman' ? 'roboto' : style.font)
   const fontPx = (style.size ?? 52) * k * font.em
-  const fontFamily = `"${font.family}", sans-serif`
+  const fontFamily = `${captionEmojiFamily(font.em)}, "${font.family}", sans-serif`
   const lineStart = chunk[0].start_ms
   const lineEnd = chunk[chunk.length - 1].end_ms
 
@@ -772,7 +773,7 @@ function drawCaptions(
   const lineHeight = Math.round(fontSize * 1.4)
   const PAD_X      = Math.round(W * 0.05)
   const maxLineW   = W - PAD_X * 2
-  const fontFamily = `"${font.family}", sans-serif`
+  const fontFamily = `${captionEmojiFamily(font.em)}, "${font.family}", sans-serif`
 
   ctx.save()
   ctx.font         = `400 ${fontSize}px ${fontFamily}`
@@ -867,6 +868,32 @@ function drawTextOverlays(
   }
 }
 
+/** A canvas for measuring text off screen (the drag box needs the same lines as the canvas) */
+let wrapCtx: CanvasRenderingContext2D | null = null
+function measurer(): CanvasRenderingContext2D | null {
+  if (!wrapCtx && typeof document !== 'undefined') wrapCtx = document.createElement('canvas').getContext('2d')
+  return wrapCtx
+}
+
+/**
+ * The lines a positioned text is shown in, for a frame `frameW` px wide. Line breaks are measured
+ * with the export's own font file at its own weight (render.py draws text with it), so the lines
+ * break where the exported video breaks them — whatever font the preview draws with.
+ */
+export function textOverlayLines(o: Pick<TextOverlayType, 'text' | 'uppercase' | 'font' | 'size' | 'w'>, frameW: number): string[] {
+  const full = shownText(o)
+  if (!o.w || !(o.w > 0)) return full.split('\n')
+  const ctx = measurer()
+  if (!ctx) return full.split('\n')
+  const f = exportFont(o.font)
+  ctx.save()
+  ctx.font = `400 ${(o.size ?? 72) * frameW / 1080}px ${emojiFamily()}, "${f.family}", sans-serif`
+  if ('letterSpacing' in ctx) (ctx as CanvasRenderingContext2D & { letterSpacing: string }).letterSpacing = '0px'
+  const lines = wrapTextLines(full, o.w * frameW, s => ctx.measureText(s).width)
+  ctx.restore()
+  return lines
+}
+
 /**
  * One positioned text with its Text-tool styling: weight, italic, capitals, letter spacing,
  * opacity, rotation, outline, background box, shadow / glow, and its entrance animation
@@ -879,7 +906,7 @@ function drawStyledText(ctx: CanvasRenderingContext2D, o: TextOverlayType, elaps
   const fontSize = Math.max(8, Math.round((o.size ?? 72) * k))
   // A bundled font id (e.g. 'roboto') draws with the export's own file, as drawtext does
   const bundled = EXPORT_FONTS[o.font ?? ''] ? exportFont(o.font) : null
-  const fontFamily = bundled ? `"${bundled.family}", sans-serif` : (o.font ?? 'sans-serif')
+  const fontFamily = `${emojiFamily()}, ${bundled ? `"${bundled.family}", sans-serif` : (o.font ?? 'sans-serif')}`
   const weight = o.weight ?? (bundled ? 400 : 700)
   const full = shownText(o)
 
@@ -929,12 +956,20 @@ function drawStyledText(ctx: CanvasRenderingContext2D, o: TextOverlayType, elaps
   ctx.textBaseline = 'top'
   const spacing = (o.letter_spacing ?? 0) * k
   if ('letterSpacing' in ctx) (ctx as CanvasRenderingContext2D & { letterSpacing: string }).letterSpacing = `${spacing}px`
-  // Size from the whole text, so the box doesn't grow while typing in
-  const textW = ctx.measureText(full).width
-  const lineH = fontSize * 1.15
+  // The lines it is shown in (Enter, and wrapping inside its box width). Size from the whole
+  // text, so the box doesn't grow while typing in
+  const lines = textOverlayLines(o, W)
+  const textW = Math.max(0, ...lines.map(l => ctx.measureText(l).width))
+  const lineH = fontSize * TEXT_LINE_EM
   const padX = o.bg_color ? fontSize * BG_PAD.x : 0
   const padY = o.bg_color ? fontSize * BG_PAD.y : 0
-  const boxW = textW + padX * 2, boxH = lineH + padY * 2
+  const textBoxH = lineH * lines.length + padY * 2
+  // A box with a width / height set: the background fills it, the text sits in its middle (up and down)
+  const boxW = Math.max(textW + padX * 2, o.w ? o.w * W : 0), boxH = Math.max(textBoxH, o.h ? o.h * H : 0)
+  const shiftY = (boxH - textBoxH) / 2
+  // Typewriter: the first characters of the text, line by line
+  let left = text.length
+  const shown = lines.map(l => { const part = l.slice(0, Math.max(0, left)); left -= l.length + 1; return part })
   const x = (o.x ?? 0.1) * W, y = (o.y ?? 0.4) * H + dy
 
   ctx.globalAlpha = alpha
@@ -965,26 +1000,27 @@ function drawStyledText(ctx: CanvasRenderingContext2D, o: TextOverlayType, elaps
   else if (shadow === 'glow') { ctx.shadowColor = o.shadow_color ?? o.color ?? '#ffffff'; ctx.shadowBlur = 24 * k; ctx.shadowOffsetX = ctx.shadowOffsetY = 0 }
   if (o.bg_color) { ctx.shadowColor = 'transparent' }
 
-  const tx = x + padX, ty = y + padY + (lineH - fontSize) / 2
+  const tx = x + padX, ty0 = y + shiftY + padY + (lineH - fontSize) / 2
+  const each = (draw: (line: string, ty: number) => void) => shown.forEach((l, i) => { if (l) draw(l, ty0 + i * lineH) })
   // Outline first (it carries the shadow), then the fill on top
   if (o.stroke_color && (o.stroke_width ?? 0) > 0) {
     ctx.lineJoin = 'round'
     ctx.lineWidth = 2 * (o.stroke_width ?? 0) * k
     ctx.strokeStyle = o.stroke_color
-    ctx.strokeText(text, tx, ty)
+    each((l, ty) => ctx.strokeText(l, tx, ty))
     if (shadow !== 'glow') ctx.shadowColor = 'transparent'
   }
   ctx.fillStyle = o.color ?? '#ffffff'
-  ctx.fillText(text, tx, ty)
+  each((l, ty) => ctx.fillText(l, tx, ty))
   // A glow reads stronger with a second pass
-  if (shadow === 'glow' && !o.bg_color) ctx.fillText(text, tx, ty)
+  if (shadow === 'glow' && !o.bg_color) each((l, ty) => ctx.fillText(l, tx, ty))
   // Glitch: red and cyan copies split off either side for a moment
   if (glitch > 0) {
     ctx.shadowColor = 'transparent'
     ctx.globalAlpha = alpha * 0.7 * glitch
     const off = 8 * k * glitch
-    ctx.fillStyle = '#ff2a55'; ctx.fillText(text, tx - off, ty)
-    ctx.fillStyle = '#22e5ff'; ctx.fillText(text, tx + off, ty)
+    ctx.fillStyle = '#ff2a55'; each((l, ty) => ctx.fillText(l, tx - off, ty))
+    ctx.fillStyle = '#22e5ff'; each((l, ty) => ctx.fillText(l, tx + off, ty))
   }
   ctx.restore()
 }
@@ -996,7 +1032,7 @@ function drawStyledText(ctx: CanvasRenderingContext2D, o: TextOverlayType, elaps
 function drawCenteredText(ctx: CanvasRenderingContext2D, o: TextOverlayType) {
   const W = ctx.canvas.width, H = ctx.canvas.height
   const font = EXPORT_FONTS[o.font ?? ''] ? exportFont(o.font) : null
-  const family = font ? `"${font.family}", sans-serif` : (o.font ?? 'sans-serif')
+  const family = `${emojiFamily()}, ${font ? `"${font.family}", sans-serif` : (o.font ?? 'sans-serif')}`
   const weight = font ? 400 : 700                      // drawtext uses the font file as it is
   let px = (o.size ?? 48) * W / 1080
   ctx.save()
@@ -1033,6 +1069,11 @@ interface OutputCanvasProps {
   slotSourceFor?: (seg: SegmentLocal | null, box: SegmentLocal['crop_boxes'][number]) => HTMLVideoElement | null | false
   currentTimeMs: number
   clipStartMs?: number
+  /**
+   * Parts of the clip were removed (lib/trims.ts): the main video's time (ms) → clip time. Without
+   * it clip time is the video's time minus clipStartMs.
+   */
+  videoToTimeline?: (videoMs: number) => number
   activeSegment: SegmentLocal | null
   getPositionAt: (boxId: string, t_ms: number) => BoxPosition
   overlays?: Overlay[]
@@ -1052,6 +1093,9 @@ interface OutputCanvasProps {
   // Text overlays
   textOverlays?: TextOverlayType[]
   activeTextOverlayId?: string | null
+  /** A text to start typing in on the preview (e.g. one just added); onEditTextDone when typing ends */
+  editTextOverlayId?: string | null
+  onEditTextDone?: () => void
   onTextOverlayChange?: (id: string, updates: Partial<TextOverlayType>) => void
   onSelectTextOverlay?: (id: string | null) => void
   onDeleteTextOverlay?: (id: string) => void
@@ -1072,11 +1116,11 @@ interface OutputCanvasProps {
 }
 
 export function OutputCanvas({
-  videoRef, currentTimeMs, clipStartMs = 0, activeSegment, getPositionAt, segmentAt, hardCuts = false, sourceFor, slotSourceFor,
+  videoRef, currentTimeMs, clipStartMs = 0, videoToTimeline, activeSegment, getPositionAt, segmentAt, hardCuts = false, sourceFor, slotSourceFor,
   overlays = [], activeOverlayId, onOverlayChange, onSelectOverlay, onDeleteOverlay,
   className, style, skipTransitionRef,
   words, captionStyle, captionTextCase = 'title', showCaptions = false,
-  textOverlays = [], activeTextOverlayId, onTextOverlayChange, onSelectTextOverlay, onDeleteTextOverlay,
+  textOverlays = [], activeTextOverlayId, onTextOverlayChange, onSelectTextOverlay, onDeleteTextOverlay, editTextOverlayId, onEditTextDone,
   onCaptionPositionChange, frameMedia, onFrameLaneClick, onFrameItemClick, activeFrameItemId, onFrameItemChange, onFrameRowsChange, onFrameMainRectChange,
 }: OutputCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
@@ -1090,6 +1134,7 @@ export function OutputCanvas({
   const activeSegmentRef = useRef(activeSegment)
   const currentTimeMsRef = useRef(currentTimeMs)
   const clipStartMsRef   = useRef(clipStartMs)
+  const toTimelineRef    = useRef(videoToTimeline)
   const getPositionAtRef = useRef(getPositionAt)
   activeSegmentRef.current = activeSegment
   const segmentAtRef = useRef(segmentAt)
@@ -1102,6 +1147,7 @@ export function OutputCanvas({
   hardCutsRef.current = hardCuts
   currentTimeMsRef.current = currentTimeMs
   clipStartMsRef.current   = clipStartMs
+  toTimelineRef.current    = videoToTimeline
   getPositionAtRef.current = getPositionAt
 
   const prevSegIdRef    = useRef<string | null>(null)
@@ -1116,6 +1162,11 @@ export function OutputCanvas({
   captionCaseRef.current  = captionTextCase
   showCaptionsRef.current = showCaptions
 
+  // The text being typed in on the preview: the canvas leaves it out (its text field shows it)
+  const [editingTextId, setEditingTextId] = useState<string | null>(null)
+  useEffect(() => { if (editTextOverlayId) setEditingTextId(editTextOverlayId) }, [editTextOverlayId])
+  const editingTextRef = useRef(editingTextId)
+  editingTextRef.current = editingTextId
   const textOverlaysRef = useRef(textOverlays)
   textOverlaysRef.current = textOverlays
 
@@ -1141,8 +1192,12 @@ export function OutputCanvas({
 
       if (canvas && video && video.readyState >= 2) {
         const ctx    = canvas.getContext('2d')
+        // Clip time of the frame on screen (removed parts closed up, when there are any)
+        const toTimeline = toTimelineRef.current
+        const videoMs = video.currentTime * 1000
+        const clipMsNow = Math.max(0, toTimeline ? toTimeline(videoMs) : videoMs - clipStartMsRef.current)
         const seg    = segmentAtRef.current
-          ? segmentAtRef.current(Math.max(0, video.currentTime * 1000 - clipStartMsRef.current))
+          ? segmentAtRef.current(clipMsNow)
           : activeSegmentRef.current
         const newId  = seg?.id ?? null
 
@@ -1167,10 +1222,11 @@ export function OutputCanvas({
 
           // Read current time directly from the video element — this is always
           // frame-accurate and never lags behind the React state update cycle.
-          const liveMs = video.currentTime * 1000
           // Keyframes are stored with clip-relative t_ms (0 = clip start).
-          // Caption words use absolute timestamps matching liveMs directly.
-          const clipRelativeMs = Math.max(0, liveMs - clipStartMsRef.current)
+          // Caption words use absolute timestamps matching liveMs directly (with removed parts,
+          // the words were moved onto the clip's own time: its start + clip time).
+          const clipRelativeMs = clipMsNow
+          const liveMs = toTimeline ? clipStartMsRef.current + clipRelativeMs : videoMs
 
           // Keep frame slots' own videos in step with the main player, then draw
           frameMediaRef.current?.sync(seg, clipRelativeMs, !video.paused, video)
@@ -1207,7 +1263,7 @@ export function OutputCanvas({
 
           // Draw text overlays (clip-relative time)
           if (textOverlaysRef.current.length > 0) {
-            drawTextOverlays(ctx, textOverlaysRef.current, clipRelativeMs, video.paused)
+            drawTextOverlays(ctx, editingTextRef.current ? textOverlaysRef.current.filter(t => t.id !== editingTextRef.current) : textOverlaysRef.current, clipRelativeMs, video.paused)
           }
         }
       }
@@ -1327,6 +1383,9 @@ export function OutputCanvas({
           onChange={updates => onTextOverlayChange?.(o.id, updates)}
           onSelect={onSelectTextOverlay ?? (() => {})}
           onDelete={() => onDeleteTextOverlay?.(o.id)}
+          editing={o.id === editingTextId}
+          onStartEdit={() => { onSelectTextOverlay?.(o.id); setEditingTextId(o.id) }}
+          onEndEdit={() => { setEditingTextId(null); onEditTextDone?.() }}
         />
       ))}
       {/* Caption position drag handle */}
@@ -1662,10 +1721,15 @@ interface TextOverlayBoxProps {
   onChange: (updates: Partial<TextOverlayType>) => void
   onSelect: (id: string | null) => void
   onDelete: () => void
+  /** Being typed in on the preview (double-click): a text field takes the canvas text's place */
+  editing: boolean
+  onStartEdit: () => void
+  onEndEdit: () => void
 }
 
-function TextOverlayBox({ overlay, isActive, onChange, onSelect, onDelete }: TextOverlayBoxProps) {
+function TextOverlayBox({ overlay, isActive, onChange, onSelect, onDelete, editing, onStartEdit, onEndEdit }: TextOverlayBoxProps) {
   const ref = useRef<HTMLDivElement>(null)
+  const areaRef = useRef<HTMLTextAreaElement>(null)
   const setGuides = useContext(GuideContext)
 
   function cRect() {
@@ -1673,7 +1737,17 @@ function TextOverlayBox({ overlay, isActive, onChange, onSelect, onDelete }: Tex
     return r ? { w: r.width, h: r.height } : { w: 1, h: 1 }
   }
 
+  // Editing on the preview: the cursor goes in with the words selected; Enter makes a new line
+  useEffect(() => {
+    if (!editing) return
+    const el = areaRef.current
+    if (!el) return
+    el.focus()
+    el.select()
+  }, [editing])
+
   function startDrag(e: React.MouseEvent) {
+    if (editing) return
     e.stopPropagation()
     onSelect(overlay.id)
     const sx = e.clientX, sy = e.clientY
@@ -1702,6 +1776,54 @@ function TextOverlayBox({ overlay, isActive, onChange, onSelect, onDelete }: Tex
     window.addEventListener('mouseup', up)
   }
 
+  /** Drag a side: the box's width (the text wraps inside it). The other side stays where it is. */
+  function startWidth(e: React.MouseEvent, side: 'left' | 'right') {
+    e.stopPropagation()
+    e.preventDefault()
+    onSelect(overlay.id)
+    const sx = e.clientX
+    const { w: cw } = cRect()
+    const box = ref.current?.getBoundingClientRect()
+    const x0 = overlay.x ?? 0.1
+    const w0 = overlay.w ?? (box ? box.width / cw : 0.5)
+    const right = x0 + w0
+    function move(ev: MouseEvent) {
+      const d = (ev.clientX - sx) / cRect().w
+      if (side === 'right') onChange({ w: Math.max(MIN_TEXT_W, Math.min(1 - x0, w0 + d)) })
+      else {
+        const x = Math.max(0, Math.min(right - MIN_TEXT_W, x0 + d))
+        onChange({ x, w: right - x })
+      }
+    }
+    function up() { window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up) }
+    window.addEventListener('mousemove', move)
+    window.addEventListener('mouseup', up)
+  }
+
+  /** Drag the top or bottom: the box's height (the text stays its size, in the middle of the box) */
+  function startHeight(e: React.MouseEvent, side: 'top' | 'bottom') {
+    e.stopPropagation()
+    e.preventDefault()
+    onSelect(overlay.id)
+    const sy = e.clientY
+    const { h: ch } = cRect()
+    const box = ref.current?.getBoundingClientRect()
+    const y0 = overlay.y ?? 0.4
+    const h0 = overlay.h ?? (box ? box.height / ch : 0.1)
+    const bottom = y0 + h0
+    function move(ev: MouseEvent) {
+      const d = (ev.clientY - sy) / cRect().h
+      if (side === 'bottom') onChange({ h: Math.max(MIN_TEXT_H, Math.min(1 - y0, h0 + d)) })
+      else {
+        const y = Math.max(0, Math.min(bottom - MIN_TEXT_H, y0 + d))
+        onChange({ y, h: bottom - y })
+      }
+    }
+    function up() { window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up) }
+    window.addEventListener('mousemove', move)
+    window.addEventListener('mouseup', up)
+  }
+
   function startResize(e: React.MouseEvent) {
     e.stopPropagation()
     const sx = e.clientX
@@ -1719,35 +1841,78 @@ function TextOverlayBox({ overlay, isActive, onChange, onSelect, onDelete }: Tex
   const centred = overlay.x == null
   const x = overlay.x ?? 0.5
   const y = overlay.y ?? 0.4
-  const color = overlay.color ?? '#ffffff'
   const accent = '#c8ff00'
+  const fontSize = `${(overlay.size ?? 72) / 10.8}cqw`
+  const handle = (extra: React.CSSProperties): React.CSSProperties => ({
+    position: 'absolute', background: accent, border: '2px solid #111', borderRadius: 4, pointerEvents: 'auto', ...extra,
+  })
 
   return (
     <div
       ref={ref}
       onMouseDown={startDrag}
-      onClick={e => { e.stopPropagation(); onSelect(overlay.id) }}
+      onClick={e => { e.stopPropagation(); if (!editing) onSelect(overlay.id) }}
+      onDoubleClick={e => { e.stopPropagation(); if (!centred) onStartEdit() }}
+      title={editing ? undefined : 'Double-click to edit the text'}
       style={{
         position: 'absolute',
         left: `${x * 100}%`,
         top: `${y * 100}%`,
         transform: [centred ? 'translateX(-50%)' : '', overlay.rotation ? `rotate(${overlay.rotation}deg)` : ''].join(' ').trim() || undefined,
-        cursor: 'move',
+        cursor: editing ? 'text' : 'move',
         userSelect: 'none',
-        border: `1.5px solid ${isActive ? accent : 'transparent'}`,
+        border: `1.5px solid ${isActive || editing ? accent : 'transparent'}`,
         borderRadius: 3,
         padding: 0,
-        background: isActive ? 'rgba(200,255,0,0.12)' : 'transparent',
+        background: editing ? 'rgba(0,0,0,0.25)' : isActive ? 'rgba(200,255,0,0.12)' : 'transparent',
         backdropFilter: 'none',
         boxShadow: isActive ? `0 0 0 1px ${accent}44` : 'none',
-        maxWidth: '90%',
+        // A box with a width set shows that width (the text wraps inside it)
+        ...(overlay.w && !centred ? { width: `${overlay.w * 100}%` } : { maxWidth: '90%' }),
+        // A box with a height set: at least that tall, the text in its middle
+        ...(overlay.h && !centred ? { minHeight: `${overlay.h * 100}%`, display: 'flex', flexDirection: 'column', justifyContent: 'center' } : {}),
       }}
     >
-      {/* Invisible text — sized to match canvas text (canvas 540×960; size/6.075 cqw = size/1080*960/540 of container width) */}
-      <span style={{ ...textCss(overlay, true), fontSize: `${(overlay.size ?? 72) / 10.8}cqw`, display: 'block', pointerEvents: 'none', userSelect: 'none', margin: 0 }}>
-        {overlay.text || '…'}
-      </span>
-      {isActive && (
+      {editing ? (
+        <textarea
+          ref={areaRef}
+          value={overlay.text}
+          onChange={e => onChange({ text: e.target.value })}
+          onMouseDown={e => e.stopPropagation()}
+          onClick={e => e.stopPropagation()}
+          onBlur={onEndEdit}
+          onKeyDown={e => { e.stopPropagation(); if (e.key === 'Escape') { e.preventDefault(); onEndEdit() } }}
+          aria-label="Edit the text"
+          rows={Math.max(1, overlay.text.split('\n').length)}
+          spellCheck={false}
+          style={{
+            ...textCss(overlay), fontSize, lineHeight: TEXT_LINE_EM,
+            display: 'block', width: overlay.w ? '100%' : undefined, minWidth: '2ch',
+            whiteSpace: overlay.w ? 'pre-wrap' : 'pre', overflow: 'hidden', resize: 'none',
+            background: 'transparent', border: 'none', outline: 'none', padding: 0, margin: 0,
+            caretColor: accent, userSelect: 'text',
+            ...({ fieldSizing: 'content' } as React.CSSProperties),
+          }}
+        />
+      ) : (
+        /* Invisible text — the canvas's own lines, sized to match canvas text (canvas 540×960; size/6.075 cqw = size/1080*960/540 of container width) */
+        <span style={{ ...textCss(overlay, true), fontSize, lineHeight: TEXT_LINE_EM, whiteSpace: 'pre', display: 'block', pointerEvents: 'none', userSelect: 'none', margin: 0 }}>
+          {(overlay.text ? textOverlayLines(overlay, 1080).join('\n') : '') || '…'}
+        </span>
+      )}
+      {isActive && !editing && !centred && (['left', 'right'] as const).map(side => (
+        <div key={side} onMouseDown={e => startWidth(e, side)}
+          title="Drag to make the text box wider or narrower (the text wraps inside it)"
+          aria-label={`Text box width (${side} side)`}
+          style={handle({ top: '50%', [side]: -5, transform: 'translateY(-50%)', width: 8, height: 22, cursor: 'ew-resize' })} />
+      ))}
+      {isActive && !editing && !centred && (['top', 'bottom'] as const).map(side => (
+        <div key={side} onMouseDown={e => startHeight(e, side)}
+          title="Drag to make the text box taller or shorter (the text stays in its middle)"
+          aria-label={`Text box height (${side} side)`}
+          style={handle({ left: '50%', [side]: -5, transform: 'translateX(-50%)', width: 22, height: 8, cursor: 'ns-resize' })} />
+      ))}
+      {isActive && !editing && (
         <button
           onMouseDown={e => { e.stopPropagation(); onDelete() }}
           style={{
@@ -1761,15 +1926,15 @@ function TextOverlayBox({ overlay, isActive, onChange, onSelect, onDelete }: Tex
           <svg width="7" height="7" viewBox="0 0 8 8" fill="none"><path d="M1 1l6 6M7 1L1 7" stroke="white" strokeWidth="1.4" strokeLinecap="round"/></svg>
         </button>
       )}
-      {isActive && (
+      {isActive && !editing && (
         <div
           onMouseDown={startResize}
-          title="Drag to resize"
+          title="Drag to make the text bigger or smaller"
           style={{
             position: 'absolute', bottom: -6, right: -6,
             width: 14, height: 14, borderRadius: 3,
             background: accent, border: '2px solid #111',
-            cursor: 'ew-resize', pointerEvents: 'auto',
+            cursor: 'nwse-resize', pointerEvents: 'auto',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
           }}
         >

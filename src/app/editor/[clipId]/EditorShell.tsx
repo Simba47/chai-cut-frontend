@@ -1,9 +1,13 @@
 'use client'
 
+import { InfoTip } from '@/components/ui/info-tip'
+import { musicGainAt, speechRangesInVideo, speechRanges, heardSpeech, type Range as SpeechRange } from '@/modules/editor/musicGain'
 import { useState, useEffect, useLayoutEffect, useRef, useMemo, Fragment } from 'react'
 import type { Clip, Segment, CropBox, BoxKeyframe, CaptionStyle, TextOverlay, AudioTrack, Transition, TranscriptWord, LayoutType, Overlay } from '@chai-cut/shared'
 import { VideoPreview, OutputCanvas } from '@/components/editor/VideoPreview'
-import { computeCutRanges, reactionRanges, removedMs } from '@/lib/cuts'
+import { computeCutRanges, reactionRanges, removedMs, withoutRanges } from '@/lib/cuts'
+import { cleanTrims, trimMap, addTrim, wordsOnTimeline, MAX_CLIP_MS, MIN_CLIP_MS } from '@/lib/trims'
+import { toTimelineState, toSourceState, rippleDelete, lockedInRange, insertAtStart, extendEnd, type TimedState } from '@/modules/editor/trimState'
 import { PostText, type PostTextValue } from '@/components/clips/PostText'
 import { BrollPanel, type StockResult } from '@/components/editor/BrollPanel'
 import { useBrollSources, useBorrowedSlots } from '@/modules/editor/brollSources'
@@ -25,7 +29,7 @@ import { useConfirm } from '@/components/editor/ConfirmDialog'
 import { EditorTour, hasSeenEditorTour } from '@/components/editor/EditorTour'
 import { FrameAddMenu, type AddChoice } from '@/components/editor/FrameAddMenu'
 import { createFrameMediaPool } from '@/modules/editor/frameMedia'
-import { FRAME_TEMPLATES, isFrameLayout, frameOf, frameLanes, frameSlotLabels, emptySlotStretches, slotOffers, DEFAULT_BAND, DEFAULT_CORNERS } from '@/modules/editor/frames'
+import { FRAME_TEMPLATES, isFrameLayout, frameOf, mainAudioVolume, frameLanes, frameSlotLabels, emptySlotStretches, slotOffers, DEFAULT_BAND, DEFAULT_CORNERS } from '@/modules/editor/frames'
 import { signOut } from 'next-auth/react'
 import { PlatformOverlay, PLATFORM_SAFE, type Platform } from '@/components/editor/PlatformOverlay'
 // ── Domain stores ──────────────────────────────────────────────────────────────
@@ -54,6 +58,10 @@ interface Props {
   initialCaptionStyles: CaptionStyle[]
   initialTextOverlays: TextOverlay[]
   initialAudioTracks: AudioTrack[]
+  /** Playable links for stored songs, by track id (songs saved before uploads existed have none) */
+  initialMusicUrls?: Record<string, string>
+  /** The clip's own sound as saved (top of the Music panel) */
+  initialOriginalSound?: { volume: number; muted: boolean }
   initialTransitions: Transition[]
   initialOverlays: Overlay[]
 }
@@ -71,6 +79,10 @@ const PLATFORM_OPTIONS: { id: Platform; label: string; icon: React.ReactNode }[]
 ]
 // Options sidebar width (px)
 const OPTIONS_W = 272
+const PREVIEW_W = 360
+// How wide the side columns can be dragged
+const OPTIONS_RANGE: [number, number] = [220, 520]
+const PREVIEW_RANGE: [number, number] = [260, 620]
 const DEFAULT_SEG_ID = '__default-format'
 const DEFAULT_BOX_ID = '__default-box'
 const ACCENT = '#c8ff00'
@@ -124,16 +136,36 @@ const TOOLS: { id: Tool; label: string; title: string; hint: string; icon: React
 ]
 
 export function EditorShell({
-  clip, videoUrl, words: initialWords, initialSegments,
+  clip: savedClip, videoUrl, words: initialWords, initialSegments,
   initialCaptionStyles, initialTextOverlays, initialAudioTracks, initialTransitions, initialOverlays,
+  initialMusicUrls, initialOriginalSound,
 }: Props) {
+  // ── Removed parts of the video (lib/trims.ts, modules/editor/trimState.ts) ───
+  // The editor works on the clip as it plays. `rawClip` is the clip's stretch of the source video
+  // (as saved, or as its start / end was dragged since: clipRange). `clip` is that with the removed
+  // parts closed up — it ends where what's left ends, and every time below is timeline time.
+  // Nothing removed: the two are the same.
+  const trims = useEditorStore(s => s.trims)
+  const clipRange = useEditorStore(s => s.clipRange)
+  const rawClip = useMemo(
+    () => (clipRange ? { ...savedClip, start_ms: clipRange[0], end_ms: clipRange[1] } : savedClip),
+    [savedClip, clipRange],
+  )
+  const trim = useMemo(() => trimMap(trims, rawClip.start_ms, rawClip.end_ms), [trims, rawClip.start_ms, rawClip.end_ms])
+  const trimmed = trims.length > 0
+  const clip = useMemo(() => (trimmed ? { ...rawClip, end_ms: rawClip.start_ms + trim.lengthMs } : rawClip), [rawClip, trimmed, trim.lengthMs])
+  /** The main video's own time (ms) → timeline time; undefined while nothing is removed */
+  const videoToTimeline = trimmed ? trim.toTimeline : undefined
+  /** Whether this database can save removed parts yet (its backend adds the field when it starts) */
+  const canTrim = 'trim_ranges' in (rawClip as object)
+
   // ── Video player ─────────────────────────────────────────────────────────────
-  const { videoRef, seekToMs, togglePlay, pause } = useVideoSync(clip.start_ms, clip.end_ms)
+  const { videoRef, seekToMs, togglePlay, pause } = useVideoSync(rawClip.start_ms, rawClip.end_ms, undefined, trimmed ? trim.kept : undefined)
   const { currentTimeMs, durationMs, playing } = usePlayerStore()
   // Append media fragment so browser seeks to clip start at network level,
   // preventing a flash of the video's frame 0 on page load / cache hit.
-  const clipVideoUrl = videoUrl && clip.start_ms > 0
-    ? `${videoUrl}#t=${clip.start_ms / 1000}`
+  const clipVideoUrl = videoUrl && savedClip.start_ms > 0
+    ? `${videoUrl}#t=${savedClip.start_ms / 1000}`
     : videoUrl
 
   // ── Domain stores ────────────────────────────────────────────────────────────
@@ -142,19 +174,25 @@ export function EditorShell({
     hydrate: hydrateEditor, updateSegment, removeSegment,
     splitAtMs, updateBoxSource, insertBrollAtMs, applyLayout, setSegmentEdge, addFormat, moveJunction, absorbSection,
     neighbourFraming, joinSameLayoutNeighbours, setViewAt, recordMotionAt, removeViewChange, moveViewChange,
-    placeBroll, removeBroll: removeBrollShot,
+    placeBroll, removeBroll: removeBrollShot, duplicateViewChange,
     upsertKeyframe, setBoxKeyframes, getPositionAt, updateFrameBand,
     updateFrame, addFrameItem, updateFrameItem, removeFrameItem,
     setActiveSegmentId, setActiveBoxId,
   } = useEditorStore()
 
   const {
-    words, captionStyle, captionTextCase, showCaptions, romanize,
+    words: sourceWords, captionStyle, captionTextCase, showCaptions, romanize,
     retranscribing, retranscribeElapsed, retranscribeError,
     hydrate: hydrateCaptions, setWords, updateWord, updateCaptionStyle,
     setCaptionTextCase, setShowCaptions, setRomanize,
     setRetranscribing, setRetranscribeElapsed, setRetranscribeError,
   } = useCaptionStore()
+
+  // Words where they are heard in the clip as it plays (those in removed parts are left out)
+  const words = useMemo(
+    () => (trimmed ? wordsOnTimeline(sourceWords, trim, rawClip.start_ms, rawClip.end_ms) : sourceWords),
+    [sourceWords, trimmed, trim, rawClip.start_ms, rawClip.end_ms],
+  )
 
   const {
     overlays, textOverlays, audioTracks, transitions, filters, activeOverlayId,
@@ -170,7 +208,7 @@ export function EditorShell({
 
   // ── Hydrate stores from server props (once on mount) ─────────────────────────
   useEffect(() => {
-    const localSegments = normalizeCoverage(rowsToLocal(initialSegments), clip.end_ms - clip.start_ms)
+    const localSegments = normalizeCoverage(rowsToLocal(initialSegments), savedClip.end_ms - savedClip.start_ms)
     const initialKeyframeMap: KeyframeMap = {}
     for (const seg of initialSegments) {
       for (const box of seg.crop_boxes) {
@@ -179,7 +217,14 @@ export function EditorShell({
           : [{ t_ms: seg.start_ms, ...defaultCropForSlot(seg.layout as LayoutType, box.slot_index) }]) as typeof initialKeyframeMap[string]
       }
     }
-    hydrateEditor(localSegments, initialKeyframeMap)
+    // Saved in source clip time; shown with the removed parts closed up
+    const savedTrims = cleanTrims((savedClip as unknown as { trim_ranges?: unknown }).trim_ranges, savedClip.start_ms, savedClip.end_ms)
+    let loaded: TimedState = {
+      segments: localSegments, keyframes: initialKeyframeMap,
+      overlays: initialOverlays, textOverlays: initialTextOverlays, audioTracks: initialAudioTracks, transitions: initialTransitions,
+    }
+    if (savedTrims.length) loaded = toTimelineState(loaded, trimMap(savedTrims, savedClip.start_ms, savedClip.end_ms), savedClip.start_ms)
+    hydrateEditor(loaded.segments, loaded.keyframes, savedTrims)
 
     // Captions on/off: the saved choice when the clip has a caption style; a clip without one yet
     // starts with captions on if it has words (a style saved before the on/off field counts as on)
@@ -189,10 +234,10 @@ export function EditorShell({
     hydrateCaptions(initialWords, savedStyle ?? { color: '#FFE700' }, showCaptions)
 
     hydrateMedia({
-      overlays: initialOverlays,
-      textOverlays: initialTextOverlays,
-      audioTracks: initialAudioTracks,
-      transitions: initialTransitions,
+      overlays: loaded.overlays,
+      textOverlays: loaded.textOverlays,
+      audioTracks: loaded.audioTracks,
+      transitions: loaded.transitions,
     })
 
     // The clip as loaded: the auto-save stays quiet until the state differs from this
@@ -209,13 +254,82 @@ export function EditorShell({
   // Captions are on their way while a caption job for this video is waiting/running (e.g. the
   // whole-video job right after upload) and this clip doesn't have its words yet
   const captionsPending = !!(clip as unknown as { captions_pending?: boolean }).captions_pending
-  const clipHasWords = (list: { start_ms: number }[]) => list.some(w => w.start_ms >= clip.start_ms && w.start_ms < clip.end_ms)
+  // (lists from the server are in the video's own time: the saved clip's stretch)
+  const clipHasWords = (list: { start_ms: number }[]) => list.some(w => w.start_ms >= rawClip.start_ms && w.start_ms < rawClip.end_ms)
   const [transcribing, setTranscribing] = useState(
     !clipHasWords(initialWords) && (captionsPending || (videoStatus !== 'ready' && videoStatus !== 'failed'))
   )
   const [isFreePlan, setIsFreePlan] = useState(false)
   const [tool, setTool] = useState<Tool>('format')
   const [optionsOpen, setOptionsOpen] = useState(true)
+  // The Preview column on the right: closed for more room to edit (remembered per browser)
+  const [previewOpen, setPreviewOpen] = useState(true)
+  // Widths of the two side columns, dragged at their inner edge (remembered per browser)
+  const [optionsW, setOptionsW] = useState(OPTIONS_W)
+  const [previewW, setPreviewW] = useState(PREVIEW_W)
+  const [resizing, setResizing] = useState<'options' | 'preview' | 'timeline' | null>(null)
+  // The timeline's height, dragged at the line above the play bar (null = its usual size); remembered per browser
+  const [timelineH, setTimelineH] = useState<number | null>(null)
+  const timelineRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    try { const h = Number(localStorage.getItem('editor.timelineH')); if (h) setTimelineH(h) } catch { /* storage blocked */ }
+  }, [])
+  /** Drag the line between the video and the play bar: up makes the timeline taller, down the video bigger */
+  function startTimelineResize(e: React.PointerEvent) {
+    if (e.button !== 0) return
+    e.preventDefault(); e.stopPropagation()
+    const y0 = e.clientY
+    const h0 = timelineRef.current?.offsetHeight ?? 220
+    const max = Math.round(window.innerHeight * 0.7)
+    let h = h0
+    setResizing('timeline')
+    const move = (ev: PointerEvent) => { h = Math.round(Math.max(90, Math.min(max, h0 + (y0 - ev.clientY)))); setTimelineH(h) }
+    const up = () => {
+      window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up)
+      setResizing(null)
+      try { localStorage.setItem('editor.timelineH', String(h)) } catch { /* storage blocked */ }
+    }
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', up)
+  }
+  function resetTimelineHeight() {
+    setTimelineH(null)
+    try { localStorage.removeItem('editor.timelineH') } catch { /* storage blocked */ }
+  }
+  useEffect(() => {
+    try {
+      const o = Number(localStorage.getItem('editor.optionsW')), pv = Number(localStorage.getItem('editor.previewW'))
+      if (o) setOptionsW(Math.max(OPTIONS_RANGE[0], Math.min(OPTIONS_RANGE[1], o)))
+      if (pv) setPreviewW(Math.max(PREVIEW_RANGE[0], Math.min(PREVIEW_RANGE[1], pv)))
+    } catch { /* storage blocked */ }
+  }, [])
+  /** Drag a side column's inner edge to resize it; double-click puts its usual width back */
+  function startColumnResize(e: React.PointerEvent, which: 'options' | 'preview') {
+    if (e.button !== 0) return
+    e.preventDefault(); e.stopPropagation()
+    const x0 = e.clientX
+    const w0 = which === 'options' ? optionsW : previewW
+    const [lo, hi] = which === 'options' ? OPTIONS_RANGE : PREVIEW_RANGE
+    let w = w0
+    setResizing(which)
+    const move = (ev: PointerEvent) => {
+      // The options column grows to the right, the preview column to the left
+      const d = which === 'options' ? ev.clientX - x0 : x0 - ev.clientX
+      w = Math.round(Math.max(lo, Math.min(hi, w0 + d)))
+      if (which === 'options') setOptionsW(w); else setPreviewW(w)
+    }
+    const up = () => {
+      window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up)
+      setResizing(null)
+      try { localStorage.setItem(which === 'options' ? 'editor.optionsW' : 'editor.previewW', String(w)) } catch { /* storage blocked */ }
+    }
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', up)
+  }
+  function resetColumn(which: 'options' | 'preview') {
+    if (which === 'options') setOptionsW(OPTIONS_W); else setPreviewW(PREVIEW_W)
+    try { localStorage.removeItem(which === 'options' ? 'editor.optionsW' : 'editor.previewW') } catch { /* storage blocked */ }
+  }
   // First-time tour: opens once the page has settled; the header's "?" replays it
   const [tourOpen, setTourOpen] = useState(false)
   useEffect(() => {
@@ -229,6 +343,8 @@ export function EditorShell({
   const [pickerOnly, setPickerOnly] = useState<'video' | 'photo' | null>(null)
   // A text just added from the "+" menu: its box in the Text panel takes focus to type into
   const [focusTextId, setFocusTextId] = useState<string | null>(null)
+  // A text just added: typed in right on the preview (or in the Text panel when the preview is closed)
+  const [editTextId, setEditTextId] = useState<string | null>(null)
   // Hidden file input for "+" → Music, and where that music goes
   const musicInputRef = useRef<HTMLInputElement>(null)
   const musicAtRef = useRef<number | 'end'>(0)
@@ -253,9 +369,9 @@ export function EditorShell({
   const videoUrls = useMemo(() => Object.fromEntries(Object.entries(videoLibrary).map(([id, v]) => [id, v.url])), [videoLibrary])
   // B-roll shots are drawn from their own videos in the preview (muted; the speaker carries on)
   const mainVideoId = (clip as unknown as { video_id: string }).video_id
-  const brollSource = useBrollSources(videoRef, clip.start_ms, id => videoLibraryRef.current[id]?.url, mainVideoId)
+  const brollSource = useBrollSources(videoRef, clip.start_ms, id => videoLibraryRef.current[id]?.url, mainVideoId, videoToTimeline)
   // Borrowed reaction slots (Make my clips): the clip's own video from another moment, per slot
-  const borrowed = useBorrowedSlots(videoRef, clip.start_ms, mainVideoId, videoUrl)
+  const borrowed = useBorrowedSlots(videoRef, clip.start_ms, mainVideoId, videoUrl, videoToTimeline)
   const [pendingBrollMs, setPendingBrollMs] = useState<number | null>(null)
   const [clipStatus, setClipStatus] = useState<string>(clip.status)
   const [outputUrl, setOutputUrl] = useState<string | null>(clip.output_url)
@@ -279,21 +395,24 @@ export function EditorShell({
   const [timelineHidden, setTimelineHidden] = useState(false)
   // Cleanup: the list of cuts can be folded away
   const [cutsOpen, setCutsOpen] = useState(true)
-  // Options panel: the tool's explanation is one line until expanded (remembered on this device)
-  const [hintOpen, setHintOpenState] = useState(false)
-  useEffect(() => { try { setHintOpenState(localStorage.getItem('shortcut.toolHintOpen') === '1') } catch { /* private mode */ } }, [])
-  const setHintOpen = (f: (v: boolean) => boolean) => setHintOpenState(v => {
-    const next = f(v)
-    try { localStorage.setItem('shortcut.toolHintOpen', next ? '1' : '0') } catch { /* private mode */ }
-    return next
-  })
   // Lengths of music files added in this session (read from the file), so their timeline bars
   // show the right length; tracks without one run to the clip's end
   const [musicDurations, setMusicDurations] = useState<Record<string, number>>({})
-  // The main video's own sound (top of the Music panel). Applied to the preview here.
-  // TODO(backend): save originalVolume / originalMuted with the clip and mix them in at export
-  const [originalVolume, setOriginalVolume] = useState(1)
-  const [originalMuted, setOriginalMuted] = useState(false)
+  // The main video's own sound (top of the Music panel): applied to the preview here, saved with
+  // the clip and used by the export
+  const [originalVolume, setOriginalVolume] = useState(initialOriginalSound?.volume ?? 1)
+  const [originalMuted, setOriginalMuted] = useState(initialOriginalSound?.muted ?? false)
+  const originalSoundRef = useRef({ volume: originalVolume, muted: originalMuted })
+  const originalLoadedRef = useRef(true)
+  useEffect(() => {
+    originalSoundRef.current = { volume: originalVolume, muted: originalMuted }
+    if (originalLoadedRef.current) { originalLoadedRef.current = false; return }
+    // A change is saved like any other edit (2.5 s later)
+    if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current)
+    unsavedRef.current = true
+    editVersionRef.current++
+    autoSaveTimerRef.current = setTimeout(() => latestHandleSaveRef.current(), 2500)
+  }, [originalVolume, originalMuted]) // eslint-disable-line react-hooks/exhaustive-deps
   // A muted section (its own sound off): the video is silent while the playhead is in it
   const [sectionMuted, setSectionMuted] = useState(false)
   // The frame sound sync sets the main video's volume every frame, so the level goes through it
@@ -308,7 +427,57 @@ export function EditorShell({
   // Music heard in the preview: one <audio> per track added in this session, playing the picked
   // file in step with the video (tracks loaded from a saved clip have no file here yet)
   const musicEls = useRef(new Map<string, HTMLAudioElement>())
+  // Stored songs' playable links, songs still uploading or whose upload failed, and the last message
+  const [musicUrls, setMusicUrls] = useState<Record<string, string>>(initialMusicUrls ?? {})
+  const [musicUploads, setMusicUploads] = useState<Record<string, 'uploading' | 'failed'>>({})
+  const [musicNotice, setMusicNotice] = useState<string | null>(null)
+  /** Stores a picked song (any audio, or a video's sound; up to 20 MB) */
+  async function uploadMusicFile(f: File): Promise<{ storage_path: string; url: string }> {
+    const form = new FormData()
+    form.append('file', f)
+    const res = await fetch('/api/audio/upload', { method: 'POST', body: form })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) throw new Error(data.error ?? 'The song could not be uploaded')
+    return data
+  }
+  /** Plays a song file in the preview (and learns its length for the timeline bar) */
+  function attachMusicEl(id: string, src: string) {
+    const old = musicEls.current.get(id)
+    if (old) { old.pause(); if (old.src.startsWith('blob:')) URL.revokeObjectURL(old.src) }
+    const a = new Audio()
+    a.preload = 'auto'
+    a.onloadedmetadata = () => { if (isFinite(a.duration)) setMusicDurations(d => ({ ...d, [id]: Math.round(a.duration * 1000) })) }
+    a.src = src
+    musicEls.current.set(id, a)
+    return a
+  }
+  function sendMusic(id: string, f: File) {
+    setMusicUploads(u => ({ ...u, [id]: 'uploading' }))
+    uploadMusicFile(f).then(({ storage_path, url }) => {
+      setAudioTracks(prev => prev.map(t => t.id === id ? { ...t, storage_path } : t))
+      setMusicUrls(m => ({ ...m, [id]: url }))
+      setMusicUploads(u => { const n = { ...u }; delete n[id]; return n })
+    }).catch((e: unknown) => {
+      setMusicUploads(u => ({ ...u, [id]: 'failed' }))
+      setMusicNotice(e instanceof Error ? e.message : 'The song could not be uploaded')
+    })
+  }
+  const MAX_MUSIC_MB = 20
+  function musicTooBig(f: File) {
+    if (f.size <= MAX_MUSIC_MB * 1024 * 1024) return false
+    setMusicNotice(`Music files can be up to ${MAX_MUSIC_MB} MB. Pick a smaller file or a shorter song.`)
+    return true
+  }
+  /** "Re-add this song": a song saved before uploads existed (or whose upload failed) gets its file */
+  function readdMusic(id: string, f: File) {
+    if (musicTooBig(f)) return
+    setMusicNotice(null)
+    attachMusicEl(id, URL.createObjectURL(f))
+    sendMusic(id, f)
+  }
   function addMusicTrack(f: File, at?: number | 'end') {
+    if (musicTooBig(f)) return
+    setMusicNotice(null)
     const id = crypto.randomUUID()
     // The music starts where the playhead is (where you paused), not at the start of the clip —
     // or where the "+" menu says: the start, or so that it ends with the clip
@@ -318,9 +487,10 @@ export function EditorShell({
     const lenMs = clip.end_ms - clip.start_ms
     const edges = useEditorStore.getState().segments.flatMap(s => [s.start_ms, s.end_ms]).filter(t => t > startMs + 200 && t < lenMs)
     const sectionEnd = at === 'end' ? undefined : Math.min(lenMs, ...edges)
-    setAudioTracks(prev => [...prev, { id, clip_id: clip.id, storage_path: f.name, start_ms: startMs, ...(sectionEnd !== undefined ? { end_ms: sectionEnd } : {}), volume: 0.5, duck_under_speech: true }])
-    const a = new Audio()
-    a.preload = 'auto'
+    // Fades on by default (the buttons switch them off); the name stands in until the upload is stored
+    setAudioTracks(prev => [...prev, { id, clip_id: clip.id, storage_path: f.name, start_ms: startMs, ...(sectionEnd !== undefined ? { end_ms: sectionEnd } : {}), volume: 0.5, duck_under_speech: true, fade_in: true, fade_out: true }])
+    sendMusic(id, f)
+    const a = attachMusicEl(id, URL.createObjectURL(f))
     a.onloadedmetadata = () => {
       if (!isFinite(a.duration)) return
       const lenMs = Math.round(a.duration * 1000)
@@ -333,9 +503,33 @@ export function EditorShell({
         setAudioTracks(prev => prev.map(t => t.id === id && t.end_ms != null && t.end_ms > t.start_ms + lenMs ? { ...t, end_ms: t.start_ms + lenMs } : t))
       }
     }
-    a.src = URL.createObjectURL(f)
-    musicEls.current.set(id, a)
   }
+  // Stored songs (a saved clip, or after "Re-add") play from storage
+  useEffect(() => {
+    for (const t of audioTracks) {
+      if (isMainAudio(t) || musicEls.current.has(t.id) || !musicUrls[t.id]) continue
+      attachMusicEl(t.id, musicUrls[t.id])
+    }
+  }, [audioTracks, musicUrls]) // eslint-disable-line react-hooks/exhaustive-deps
+  // Where the voice is actually heard (clip time): music dips only there, as in the export — not
+  // while the original sound is muted, in muted sections, under a B-roll's own sound, in a frame
+  // whose main video is silent; with the sound detached, where its bars play
+  const speech = useMemo(() => {
+    const originals = audioTracks.filter(isMainAudio)
+    const span = (s: { start_ms: number; end_ms: number }): SpeechRange => [s.start_ms, s.end_ms]
+    return heardSpeech({
+      // Detached sound bars play the video's own file: the words in the video's own time
+      speechInVideo: speechRangesInVideo(sourceWords, rawClip.start_ms, rawClip.end_ms),
+      ...(trimmed ? { speechInClip: speechRanges(words, clip.start_ms, clip.end_ms) } : {}),
+      clipStartMs: clip.start_ms, clipLenMs: clip.end_ms - clip.start_ms,
+      originals: originals.length ? originals : null,
+      mainVolume: originalMuted ? 0 : originalVolume,
+      mutedSections: segments.filter(s => s.muted).map(span),
+      quietSections: segments.filter(s => isFrameLayout(s.layout)
+        ? mainAudioVolume(frameOf(s)) <= 0
+        : addedVideoBox(s, mainVideoId)?.muted === false).map(span),
+    })
+  }, [words, sourceWords, trimmed, clip.start_ms, clip.end_ms, audioTracks, originalMuted, originalVolume, segments, mainVideoId]) // eslint-disable-line react-hooks/exhaustive-deps
   // Keep every track's audio in step with the playhead: play while the playhead is inside it,
   // re-sync if it drifts, pause otherwise; follow each track's volume
   useEffect(() => {
@@ -346,7 +540,8 @@ export function EditorShell({
         if (![...musicEls.current.values()].some(o => o.src === el.src)) URL.revokeObjectURL(el.src)
         continue
       }
-      el.volume = tr.muted || (isMainAudio(tr) && sectionMuted) ? 0 : Math.max(0, Math.min(1, tr.volume ?? 0.5))
+      // Volume, fades and the dip under speech — the same rules as the export's mix
+      el.volume = isMainAudio(tr) && sectionMuted ? 0 : musicGainAt(tr, currentTimeMs, musicDurations[id], speech, clipLengthMs)
       const local = (currentTimeMs - tr.start_ms + (tr.offset_ms ?? 0)) / 1000
       const stop = tr.end_ms ?? Infinity
       const inside = currentTimeMs >= tr.start_ms && currentTimeMs < stop && (!isFinite(el.duration) || local < el.duration)
@@ -357,7 +552,7 @@ export function EditorShell({
         el.pause()
       }
     }
-  }, [playing, currentTimeMs, audioTracks, sectionMuted])
+  }, [playing, currentTimeMs, audioTracks, sectionMuted, musicDurations, speech]) // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => () => { for (const el of musicEls.current.values()) { el.pause(); URL.revokeObjectURL(el.src) } }, [])
   // Format panel: sections whose "what's in it" list is open, the kind of item shown, and the list
   const [openSections, setOpenSections] = useState<Set<string>>(() => new Set())
@@ -366,8 +561,8 @@ export function EditorShell({
   // Picking a photo, text or music (timeline, preview or its panel) opens its settings on the left
   const openSettings = (t: Tool) => { setTool(t); toggleOptions(true) }
   // (`open` false: select only — a single click on the timeline doesn't open the sidebar)
-  function pickPhoto(id: string, open = true) { setActiveOverlayId(id); setActiveTextOverlayId(null); if (open) openSettings('photos') }
-  function pickText(id: string, open = true) { setActiveTextOverlayId(id); setActiveOverlayId(null); if (open) openSettings('text') }
+  function pickPhoto(id: string, open = true) { setActiveOverlayId(id); setActiveTextOverlayId(null); setLastPick('overlay'); if (open) openSettings('photos') }
+  function pickText(id: string, open = true) { setActiveTextOverlayId(id); setActiveOverlayId(null); setLastPick('text'); if (open) openSettings('text') }
   function pickMusicTrack(id: string, open = true) { pickMusic(id); if (open) openSettings('music') }
   // Timeline clicks select; the same thing clicked again quickly (a double tap) opens its settings
   const lastTapRef = useRef<{ key: string; at: number } | null>(null)
@@ -384,15 +579,15 @@ export function EditorShell({
     if (lockNoteTimer.current) clearTimeout(lockNoteTimer.current)
     lockNoteTimer.current = setTimeout(() => setLockNote(null), 2200)
   }
-  // The timeline's "+" menu: where it was opened (start / end of the clip) and where to show it
-  const [plusMenu, setPlusMenu] = useState<{ atMs: number; anchor: DOMRect } | null>(null)
   // The section the user clicked (on the timeline strip or its card): the Delete buttons show only then
   const [pickedSegId, setPickedSegIdState] = useState<string | null>(null)
   // Music track selected on the timeline (Trim / Delete act on it). Only one thing is selected:
   // picking a video section clears the music, and the other way round
   const [pickedMusicId, setPickedMusicId] = useState<string | null>(null)
-  const setPickedSegId = (id: string | null) => { setPickedSegIdState(id); setPickedMusicId(null) }
-  const pickMusic = (id: string) => { setPickedSegIdState(null); setPickedMusicId(id) }
+  const setPickedSegId = (id: string | null) => { setPickedSegIdState(id); setPickedMusicId(null); if (id) setLastPick('section') }
+  const pickMusic = (id: string) => { setPickedSegIdState(null); setPickedMusicId(id); setLastPick('music') }
+  // What was picked last (on the timeline, the preview or a panel): the Delete button and key act on it
+  const [lastPick, setLastPick] = useState<'music' | 'overlay' | 'text' | 'section' | 'frameItem' | null>(null)
   // Export press: the download animation plays first, then the render starts (see .ed-export in globals.css)
   const [exportPress, setExportPress] = useState(false)
   function pressExport() {
@@ -568,13 +763,14 @@ export function EditorShell({
     autoSaveTimerRef.current = setTimeout(() => latestHandleSaveRef.current(), 2500)
     return () => { if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current) }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [segments, keyframes, captionStyle, textOverlays, audioTracks, transitions, filters, overlays])
+  }, [segments, keyframes, trims, clipRange, captionStyle, textOverlays, audioTracks, transitions, filters, overlays])
 
   // Options sidebar open/closed and the social media preview choice are remembered per browser
   const [platform, setPlatformState] = useState<Platform>('off')
   useEffect(() => {
     try {
       if (localStorage.getItem('editor.optionsOpen') === 'false') setOptionsOpen(false)
+      if (localStorage.getItem('editor.previewOpen') === 'false') setPreviewOpen(false)
       const p = localStorage.getItem('editor.platformPreview')
       if (p === 'instagram' || p === 'youtube') setPlatformState(p)
     } catch { /* storage blocked */ }
@@ -582,6 +778,39 @@ export function EditorShell({
   function setPlatform(p: Platform) {
     setPlatformState(p)
     try { localStorage.setItem('editor.platformPreview', p) } catch { /* storage blocked */ }
+  }
+  /**
+   * Add a video, photo, song or text at a time (the playhead): from a sub timeline (its icon or its
+   * empty row). A video or photo lasts 5 s, text 3 s (moved back to fit before the clip's end);
+   * music plays until the section ends.
+   */
+  function addMediaAt(kind: 'video' | 'photo' | 'music' | 'text', atMs: number) {
+    pause()
+    const t = Math.max(0, Math.min(atMs, clipLengthMs - 50))
+    if (kind === 'video' || kind === 'photo') {
+      setPickerOnly(kind); setPickerAtMs(Math.max(0, Math.min(t, clipLengthMs - 5000)))
+      return
+    }
+    if (kind === 'music') {
+      musicAtRef.current = t
+      musicInputRef.current?.click()
+      return
+    }
+    const len = Math.min(3000, clipLengthMs)
+    const start = Math.max(0, Math.min(t, clipLengthMs - len))
+    const id = crypto.randomUUID()
+    setTextOverlays(prev => [...prev, {
+      id, clip_id: clip.id, text: 'Your text', start_ms: start, end_ms: start + len,
+      x: 0.1, y: 0.4, font: 'sans-serif', size: 72, color: '#ffffff',
+    }])
+    setActiveTextOverlayId(id)
+    if (previewOpen) setEditTextId(id); else setFocusTextId(id)
+    seekToMs(start)
+    setTool('text'); toggleOptions(true)
+  }
+  function togglePreview(open: boolean) {
+    setPreviewOpen(open)
+    try { localStorage.setItem('editor.previewOpen', String(open)) } catch { /* storage blocked */ }
   }
   function toggleOptions(open: boolean) {
     setOptionsOpen(open)
@@ -610,9 +839,19 @@ export function EditorShell({
     setSaveState('saving')
     const version = editVersionRef.current
     // Read fresh state imperatively — avoids stale closure in auto-save ref
-    const { segments, keyframes } = useEditorStore.getState()
+    const editor = useEditorStore.getState()
     const { captionStyle } = useCaptionStore.getState()
-    const { overlays, textOverlays, audioTracks, transitions, filters } = useMediaStore.getState()
+    const media = useMediaStore.getState()
+    const { filters } = media
+    // The editor holds timeline time; a clip is saved in source clip time, with what was removed
+    let state: TimedState = {
+      segments: editor.segments, keyframes: editor.keyframes,
+      overlays: media.overlays, textOverlays: media.textOverlays, audioTracks: media.audioTracks, transitions: media.transitions,
+    }
+    // (the clip's start and end as they are now: they may have been dragged)
+    const range = editor.clipRange ?? [savedClip.start_ms, savedClip.end_ms]
+    if (editor.trims.length) state = toSourceState(state, trimMap(editor.trims, range[0], range[1]), range[0])
+    const { segments, keyframes, overlays, textOverlays, audioTracks, transitions } = state
     try {
       const res = await fetch(`/api/clips/${clip.id}/save`, {
         method: 'POST',
@@ -623,7 +862,12 @@ export function EditorShell({
             crop_boxes: s.crop_boxes.map(b => ({ ...b, keyframes: keyframes[b.id] ?? b.keyframes })),
           })),
           captionStyle, textOverlays, audioTracks, transitions, filters, overlays,
+          ...(canTrim ? { trims: editor.trims } : {}),
+          // Always the clip's start and end as they are now (an undo back to how it loaded must be saved too;
+          // the server only writes a change)
+          ...(canTrim ? { range } : {}),
           removeFillers: removeFillersRef.current,
+          originalSound: originalSoundRef.current,
         }),
       })
       if (!res.ok) {
@@ -708,11 +952,39 @@ export function EditorShell({
     setClipStatus('draft'); setOutputUrl(null); setRenderStuckSince(null); setRenderElapsed(0)
   }
 
-  /** Captions on: made now for this clip if it has none yet (nothing is captioned until asked) */
+  /**
+   * Whether part of the clip as it plays was never captioned: no words at all, or a stretch of
+   * more than CAPTION_GAP_MS at its start or end with none (the clip was made longer after its
+   * captions were made). A pause that long at an end is rare; captioning it again is cheap.
+   */
+  const CAPTION_GAP_MS = 4000
+  function needsCaptions(): boolean {
+    const kept = trim.kept
+    if (!kept.length) return false
+    const inside = sourceWords.filter(w => kept.some(([a, b]) => w.start_ms >= a && w.start_ms < b)).sort((a, b) => a.start_ms - b.start_ms)
+    if (!inside.length) return true
+    return inside[0].start_ms - kept[0][0] > CAPTION_GAP_MS || kept[kept.length - 1][1] - inside[inside.length - 1].end_ms > CAPTION_GAP_MS
+  }
+  /** Make captions for the clip as it is now: save first, so the job reads its current start and end */
+  async function makeCaptions() {
+    if (transcribing || retranscribing || isFreePlan) return
+    setRetranscribing(true)
+    await handleSave()
+    handleRetranscribe('unknown')
+  }
+  /** Captions on: made now for this clip if any part of it has none yet (nothing is captioned until asked) */
   function turnCaptions(on: boolean) {
     setShowCaptions(on)
-    if (on && !clipHasWords(words) && !transcribing && !retranscribing && !isFreePlan) handleRetranscribe('unknown')
+    if (on && needsCaptions()) makeCaptions()
   }
+  // Captions are on and the clip was just made longer: caption the new part too (once the drag is over)
+  const captionAfterEdgeRef = useRef(false)
+  const [edgeDragsDone, setEdgeDragsDone] = useState(0)
+  useEffect(() => {
+    if (!captionAfterEdgeRef.current) return
+    captionAfterEdgeRef.current = false
+    if (showCaptions && needsCaptions()) makeCaptions()
+  }, [edgeDragsDone]) // eslint-disable-line react-hooks/exhaustive-deps
 
   async function handleRetranscribe(languageCode: string) {
     setRetranscribing(true); setRetranscribeElapsed(0); setRetranscribeError(null)
@@ -735,20 +1007,28 @@ export function EditorShell({
       }
       const videoId = (clip as unknown as { video_id: string }).video_id
       const queuedAt = new Date().toISOString()
+      const { job_id: jobId } = await res.json().catch(() => ({})) as { job_id?: string | null }
       const poll = async () => {
         const deadline = Date.now() + 5 * 60 * 1000
         while (Date.now() < deadline) {
           await new Promise(r => setTimeout(r, 3000))
-          const res = await fetch(`/api/transcribe/words?video_id=${videoId}&since=${encodeURIComponent(queuedAt)}`)
+          const res = await fetch(`/api/transcribe/words?video_id=${videoId}&since=${encodeURIComponent(queuedAt)}${jobId ? `&job=${jobId}` : ''}`)
           if (res.ok) {
-            const { words: newWords } = await res.json()
+            const { words: newWords, failed } = await res.json()
             if (newWords && newWords.length > 0) {
               setWords(newWords)
               stopTimer(); setRetranscribing(false); return
             }
+            // The caption job stopped with an error: say so instead of waiting on
+            if (failed) {
+              stopTimer(); setRetranscribing(false)
+              setRetranscribeError(`Captions couldn't be made: ${failed}`)
+              return
+            }
           }
         }
         stopTimer(); setRetranscribing(false)
+        setRetranscribeError('Captions are taking too long. Try again in a minute.')
       }
       poll()
     } catch (err) {
@@ -914,12 +1194,13 @@ export function EditorShell({
     if (existing) { pickMusicTrack(existing.id, false); return }
     pause()
     const id = crypto.randomUUID()
-    setAudioTracks(prev => [...prev, {
-      id, clip_id: clip.id, storage_path: `${MAIN_AUDIO_PREFIX}${mainVideoId}`,
-      // Its "song" is the whole main video: this clip starts clip.start_ms into it
-      start_ms: 0, end_ms: clipLengthMs, offset_ms: clip.start_ms,
+    // Its "song" is the whole main video: one bar for each part of it that stays in the clip
+    // (one bar from the clip's start when nothing was removed)
+    setAudioTracks(prev => [...prev, ...trim.kept.map(([from, to], i) => ({
+      id: i === 0 ? id : crypto.randomUUID(), clip_id: clip.id, storage_path: `${MAIN_AUDIO_PREFIX}${mainVideoId}`,
+      start_ms: trim.starts[i], end_ms: trim.starts[i] + (to - from), offset_ms: from,
       volume: originalMuted ? 1 : Math.min(1, originalVolume), duck_under_speech: false,
-    }])
+    }))])
     pickMusicTrack(id, false)
   }
   // Each detached-sound track plays the main video's own file (so it also works after a reload / undo)
@@ -927,7 +1208,7 @@ export function EditorShell({
     // Saving keeps only a track's start, volume and ducking (not where in its file it starts), so a
     // reloaded detached sound gets its place in the video back: in step with the clip
     if (audioTracks.some(t => isMainAudio(t) && t.offset_ms == null)) {
-      setAudioTracks(prev => prev.map(t => isMainAudio(t) && t.offset_ms == null ? { ...t, offset_ms: clip.start_ms + t.start_ms } : t))
+      setAudioTracks(prev => prev.map(t => isMainAudio(t) && t.offset_ms == null ? { ...t, offset_ms: trim.toSource(t.start_ms) } : t))
       return
     }
     for (const t of audioTracks) {
@@ -941,7 +1222,12 @@ export function EditorShell({
   }, [audioTracks, videoUrl])
   // While the sound is detached the video itself is quiet (and comes back when that bar is deleted)
   const hasMainAudio = audioTracks.some(isMainAudio)
-  useEffect(() => { setOriginalMuted(hasMainAudio) }, [hasMainAudio])
+  const hadMainAudioRef = useRef(hasMainAudio)
+  useEffect(() => {
+    if (hadMainAudioRef.current === hasMainAudio) return
+    hadMainAudioRef.current = hasMainAudio
+    setOriginalMuted(hasMainAudio)
+  }, [hasMainAudio])
 
   function deleteMusic(id: string) {
     if (blocked({ kind: 'music', id })) return
@@ -980,7 +1266,7 @@ export function EditorShell({
     const vid = videoRef.current
     if (sectionBlocked(segments.find(s => s.crop_boxes.some(b => b.id === boxId))?.id)) return
     if (motionModeRef.current) {
-      const t_ms = vid && !vid.paused ? Math.round(vid.currentTime * 1000) - clip.start_ms : currentTimeMs
+      const t_ms = vid && !vid.paused ? Math.round(trim.toTimeline(vid.currentTime * 1000)) : currentTimeMs
       recordMotionAt(boxId, Math.max(0, t_ms), pos)
       return
     }
@@ -1023,6 +1309,7 @@ export function EditorShell({
   function selectFrameItem(id: string | null, segId = frameSeg?.id, open = true) {
     if (segId && segId !== frameSeg?.id) pendingFrameSelectRef.current = id
     else setActiveFrameItemId(id)
+    if (id) setLastPick('frameItem')
     if (!id || !open) return
     const seg = segments.find(x => x.id === segId)
     const it = seg ? frameOf(seg).items?.find(x => x.id === id) : undefined
@@ -1193,6 +1480,116 @@ export function EditorShell({
   const { confirm, dialog: confirmDialog } = useConfirm()
   const UNDO_NOTE = 'You can undo this.'
 
+  /**
+   * Cut timeline [a, b) out of the clip and close the gap (trimState.ts rippleDelete): that part
+   * of the video is removed, what was only in it goes with it, what comes after moves up. One
+   * undo step. Saved as a removed part of the source video; the export cuts it out.
+   */
+  function removePart(a: number, b: number) {
+    pause()
+    const editor = useEditorStore.getState(), media = useMediaStore.getState()
+    const state: TimedState = {
+      segments: editor.segments, keyframes: editor.keyframes,
+      overlays: media.overlays, textOverlays: media.textOverlays, audioTracks: media.audioTracks, transitions: media.transitions,
+    }
+    const locked = lockedInRange(state, a, b)
+    if (locked.length) { notifyLocked(`${locked[0][0].toUpperCase()}${locked[0].slice(1)} in this part is locked — unlock it first`); return }
+    const map = trimMap(editor.trims, rawClip.start_ms, rawClip.end_ms)
+    const nextTrims = addTrim(editor.trims, map, Math.round(a), Math.round(b), rawClip.start_ms, rawClip.end_ms)
+    const gone = map.lengthMs - trimMap(nextTrims, rawClip.start_ms, rawClip.end_ms).lengthMs
+    // (a start or end dragged back over a removed part makes it part of the clip again: see moveClipEdge)
+    const added = withoutRanges(nextTrims, editor.trims)
+    if (gone <= 0 || !added.length) return
+    // What went, in the timeline as it was (a sliver left beside an earlier cut goes with it)
+    const from = map.toTimeline(added[0][0])
+    const next = rippleDelete(state, from, from + gone)
+    skipCanvasTransitionRef.current = true
+    seekAfterTrimRef.current = from
+    editor.applyTrim(next.segments, next.keyframes, nextTrims)
+    useMediaStore.setState({ overlays: next.overlays, textOverlays: next.textOverlays, audioTracks: next.audioTracks, transitions: next.transitions })
+  }
+  // The removed parts changed (a part cut out, an undo, a redo): the video may be standing in a
+  // part that no longer plays, so put the playhead back on the timeline — at the join after a cut
+  const seekAfterTrimRef = useRef<number | null>(null)
+  const trimsKey = `${rawClip.start_ms}:${rawClip.end_ms}|${trims.map(r => r.join('-')).join(',')}`
+  const trimsSeenRef = useRef(trimsKey)
+  useEffect(() => {
+    if (trimsSeenRef.current === trimsKey) return
+    trimsSeenRef.current = trimsKey
+    const at = seekAfterTrimRef.current ?? usePlayerStore.getState().currentTimeMs
+    seekAfterTrimRef.current = null
+    pause()
+    seekToMs(Math.max(0, Math.min(at, trim.lengthMs - 1)))
+  }, [trimsKey]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  /** The least of a clip that must stay when a part is cut out */
+  const MIN_CLIP_LEFT_MS = MIN_CLIP_MS
+
+  // ── The clip's own start and end (dragged at the ends of the timeline) ─────────
+  // A clip can play at most MAX_CLIP_MS (one that is already longer can only get shorter), and
+  // can't reach past the start or end of its video.
+  const videoDurationMs = Number((savedClip as unknown as { video_duration_ms?: number | null }).video_duration_ms) || 0
+  const maxClipMs = Math.max(MAX_CLIP_MS, trim.lengthMs)
+  const clipEdgeLimits = {
+    startEarlier: Math.max(0, Math.min(rawClip.start_ms, maxClipMs - trim.lengthMs)),
+    startLater: Math.max(0, trim.lengthMs - MIN_CLIP_MS),
+    endEarlier: Math.max(0, trim.lengthMs - MIN_CLIP_MS),
+    endLater: videoDurationMs > rawClip.end_ms ? Math.max(0, Math.min(videoDurationMs - rawClip.end_ms, maxClipMs - trim.lengthMs)) : 0,
+  }
+  /**
+   * Move the clip's start (`delta` < 0: earlier, more video; > 0: later, cut from the front) or its
+   * end (> 0: later; < 0: earlier). Cutting works like deleting that part (rippleDelete); adding
+   * video carries the first / last section over it.
+   * While the handle is dragged this runs many times (`done` false), each time from the clip as it
+   * was when the drag began, so the timeline and preview show the change live; the whole drag is
+   * one undo step.
+   */
+  type EdgeBase = { state: TimedState; trims: typeof trims; clipRange: typeof clipRange; start: number; end: number; map: typeof trim; limits: typeof clipEdgeLimits }
+  const edgeBaseRef = useRef<EdgeBase | null>(null)
+  function moveClipEdge(edge: 'start' | 'end', delta: number, done = true) {
+    let base = edgeBaseRef.current
+    if (!base) {
+      const editor = useEditorStore.getState(), media = useMediaStore.getState()
+      base = {
+        state: { segments: editor.segments, keyframes: editor.keyframes, overlays: media.overlays, textOverlays: media.textOverlays, audioTracks: media.audioTracks, transitions: media.transitions },
+        trims: editor.trims, clipRange: editor.clipRange, start: rawClip.start_ms, end: rawClip.end_ms, map: trim, limits: clipEdgeLimits,
+      }
+      edgeBaseRef.current = base
+      pause()
+    }
+    if (done) { edgeBaseRef.current = null; setEdgeDragsDone(n => n + 1) }
+    const lim = base.limits
+    const d = Math.round(edge === 'start'
+      ? Math.max(-lim.startEarlier, Math.min(lim.startLater, delta))
+      : Math.max(-lim.endEarlier, Math.min(lim.endLater, delta)))
+    const editor = useEditorStore.getState()
+    if (!d) {
+      // Back where it started: the clip as it was
+      useEditorStore.setState({ segments: base.state.segments, keyframes: base.state.keyframes, trims: base.trims, clipRange: base.clipRange })
+      useMediaStore.setState({ overlays: base.state.overlays, textOverlays: base.state.textOverlays, audioTracks: base.state.audioTracks, transitions: base.state.transitions })
+      return
+    }
+    const state = base.state
+    const trim0 = base.map
+    const len = trim0.lengthMs
+    let next: TimedState, start = base.start, end = base.end, playhead: number
+    if (edge === 'start' && d < 0) { next = insertAtStart(state, -d); start += d; playhead = 0; captionAfterEdgeRef.current = true }
+    else if (edge === 'end' && d > 0) { next = extendEnd(state, len, len + d); end += d; playhead = len + d - 1; captionAfterEdgeRef.current = true }
+    else {
+      // Cutting from an end: what's there goes, as when a part is deleted
+      const [a, b] = edge === 'start' ? [0, d] : [len + d, len]
+      const locked = lockedInRange(state, a, b)
+      if (locked.length) { notifyLocked(`${locked[0][0].toUpperCase()}${locked[0].slice(1)} there is locked — unlock it first`); return }
+      next = rippleDelete(state, a, b)
+      if (edge === 'start') { start = trim0.toSource(d); playhead = 0 } else { end = trim0.toSourceEnd(len + d); playhead = Math.max(0, len + d - 1) }
+    }
+    if (!done) captionAfterEdgeRef.current = false   // only once the drag is over
+    skipCanvasTransitionRef.current = true
+    seekAfterTrimRef.current = playhead
+    editor.applyTrim(next.segments, next.keyframes, cleanTrims(base.trims, start, end), [start, end])
+    useMediaStore.setState({ overlays: next.overlays, textOverlays: next.textOverlays, audioTracks: next.audioTracks, transitions: next.transitions })
+  }
+
   function askDeleteFormat(segId: string) {
     if (blocked({ kind: 'section', id: segId })) return
     const i = cropPositions.findIndex(x => x.id === segId)
@@ -1200,11 +1597,22 @@ export function EditorShell({
     if (!seg) return
     const range = `${msToLabel(seg.start_ms)}–${msToLabel(seg.end_ms)}`
     const frameNote = isFrameLayout(seg.layout) ? ' Everything in its frame (photos, videos, text) is removed too.' : ''
-    if (cropPositions.length === 1) {
-      confirm({ title: 'Reset this format to Vertical?', body: `It becomes a plain Vertical format again.${frameNote} ${UNDO_NOTE}`, confirmLabel: 'Reset' }, () => handleDeleteFormat(segId))
+    const resetLook = cropPositions.length === 1
+      ? { title: 'Reset this format to Vertical?', body: `It becomes a plain Vertical format again.${frameNote} ${UNDO_NOTE}`, confirmLabel: 'Reset' }
+      : { title: `Delete format ${i + 1}?`, body: `${range} goes back to the default framing.${frameNote} ${UNDO_NOTE}` }
+    // Deleting a section cuts that part of the video out — unless it is (nearly) the whole clip,
+    // or this database can't save removed parts yet: then only its look is reset, as before
+    const length = seg.end_ms - seg.start_ms
+    if (!canTrim || clipLengthMs - length < MIN_CLIP_LEFT_MS) {
+      confirm(resetLook, () => handleDeleteFormat(segId))
       return
     }
-    confirm({ title: `Delete format ${i + 1}?`, body: `${range} goes back to the default framing.${frameNote} ${UNDO_NOTE}` }, () => handleDeleteFormat(segId))
+    confirm({
+      title: 'Delete this part of the video?',
+      body: `${range} is cut out: the clip gets ${lengthLabel(length)} shorter and what comes after moves up. Text, photos and sounds that are only in this part go with it.${frameNote} ${UNDO_NOTE}`,
+      extraLabel: cropPositions.length === 1 ? 'Keep the video, reset it to Vertical' : 'Keep the video, only remove this section\u2019s look',
+      onExtra: () => handleDeleteFormat(segId),
+    }, () => removePart(seg.start_ms, seg.end_ms))
   }
 
   function askRemoveFrame(segId: string) {
@@ -1415,6 +1823,33 @@ export function EditorShell({
   }
 
   // ── Keyboard shortcuts: Space play/pause · S split · [ ] trim · Delete · ←/→ 1 s (Shift: 5 s) ──
+  /**
+   * What the Delete button / key removes: the thing picked last — a song, a photo or video on top,
+   * a text, something in a frame, an added video, or a section — if it's still there; otherwise
+   * whatever is still picked, most specific first. Each asks first (except music) and can be undone.
+   */
+  function deleteTarget(): { label: string; run: () => void } | null {
+    const music = pickedMusicId ? audioTracks.find(t => t.id === pickedMusicId) : undefined
+    const overlay = activeOverlayId ? overlays.find(o => o.id === activeOverlayId) : undefined
+    const text = activeTextOverlayId ? textOverlays.find(o => o.id === activeTextOverlayId) : undefined
+    const fItem = frameSeg && activeFrameItemId ? activeFrameItemId : null
+    const seg = pickedSegId ? segments.find(x => x.id === pickedSegId) : undefined
+    const options = {
+      music: music && { label: 'the selected music', run: () => deleteMusic(music.id) },
+      overlay: overlay && { label: overlay.type === 'video' ? 'the selected video' : 'the selected photo', run: () => askDeleteOverlay(overlay.id) },
+      text: text && { label: 'the selected text', run: () => askDeleteTextOverlay(text.id) },
+      frameItem: fItem && frameSeg && {
+        label: fItem.startsWith('main:') ? 'the main video in this slot' : 'the selected item in the frame',
+        run: () => fItem.startsWith('main:') ? askRemoveMain(frameSeg.id, Number(fItem.slice(5))) : askRemoveFrameItem(frameSeg.id, fItem),
+      },
+      section: seg && (brollShots.some(b => b.id === seg.id)
+        ? { label: 'the selected video', run: () => confirm({ title: 'Delete this video?', body: `The main video shows here again. ${UNDO_NOTE}` }, () => removeBroll(seg.id)) }
+        : { label: 'the selected section', run: () => askDeleteFormat(seg.id) }),
+    }
+    if (lastPick && options[lastPick]) return options[lastPick] || null
+    return options.frameItem || options.music || options.overlay || options.text || options.section || null
+  }
+
   const shortcutsRef = useRef({ togglePlay, seekToMs, currentTimeMs, clipDurationMs, trimSelectedTo, splitHere, deleteSelected: () => {} })
   shortcutsRef.current = {
     togglePlay, seekToMs, currentTimeMs, clipDurationMs, trimSelectedTo, splitHere,
@@ -1427,6 +1862,9 @@ export function EditorShell({
         setSelectedView(null)
         return
       }
+      // What was picked (the same as the Delete button)
+      const target = deleteTarget()
+      if (target) { target.run(); return }
       const onScreen = (o: { start_ms: number; end_ms: number }) => currentTimeMs >= o.start_ms && currentTimeMs < o.end_ms
       const text = textOverlays.find(o => o.id === activeTextOverlayId && onScreen(o))
       if (text) { askDeleteTextOverlay(text.id); return }
@@ -1700,7 +2138,6 @@ export function EditorShell({
           <span aria-current="page" className="font-semibold text-[var(--ed-text)] shrink-0" title={clipTitle}>Editing board</span>
         </nav>
 
-        <UndoRedo />
         <SaveIndicator state={leaving ? 'saving' : saveState} leaving={leaving} onRetry={handleSave} />
 
         <div className="flex-1" />
@@ -1789,11 +2226,17 @@ export function EditorShell({
 
         {/* Options sidebar — settings for the selected tool only; collapsible */}
         <aside id="options-sidebar" aria-label={`${activeTool.title} options`} aria-hidden={!optionsOpen}
-          className="ed-options shrink-0 min-h-0 overflow-hidden" data-open={optionsOpen || undefined}
-          style={{ width: optionsOpen ? OPTIONS_W : 0, background: 'var(--ed-panel)' }}
+          className="ed-options relative shrink-0 min-h-0 overflow-hidden" data-open={optionsOpen || undefined} data-resizing={resizing === 'options' || undefined}
+          style={{ width: optionsOpen ? optionsW : 0, background: 'var(--ed-panel)' }}
           {...(!optionsOpen ? { inert: true } : {})}>
+          {/* Its right edge: drag to make the column wider or narrower */}
+          {optionsOpen && (
+            <div role="separator" aria-orientation="vertical" aria-label="Drag to resize the options panel. Double-click to reset."
+              title="Drag to resize · double-click to reset" className="ed-col-handle" style={{ right: 0 }} data-on={resizing === 'options' || undefined}
+              onPointerDown={e => startColumnResize(e, 'options')} onDoubleClick={() => resetColumn('options')} />
+          )}
           {/* Fixed width inside, so the panel slides and fades as one piece while the column opens */}
-          <div className="ed-options-inner h-full flex flex-col min-h-0" style={{ width: OPTIONS_W }}>
+          <div className="ed-options-inner h-full flex flex-col min-h-0" style={{ width: optionsW }}>
           <div className="shrink-0 pl-4 pr-2 pt-3 pb-3 flex items-start gap-2" style={{ borderBottom: '1px solid rgb(var(--ed-fg) / 0.06)' }}>
             <div className="flex-1 min-w-0 pt-1">
             {tool === 'captions' && editingTranscript ? (
@@ -1803,15 +2246,11 @@ export function EditorShell({
               </button>
             ) : (
               <>
-                <h2 className="text-sm font-semibold text-[var(--ed-text)]">{activeTool.title}</h2>
-                {/* The tool's explanation: one line until expanded with the chevron (remembered) */}
-                <button type="button" onClick={() => setHintOpen(v => !v)} aria-expanded={hintOpen}
-                  title={hintOpen ? 'Show less' : 'Show more'} className="ed-hint">
-                  <span className={hintOpen ? 'ed-hint-text' : 'ed-hint-text ed-hint-clamp'}>{activeTool.hint}</span>
-                  <span className="ed-collapse" data-open={hintOpen || undefined} aria-hidden="true">
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M6 9l6 6 6-6" /></svg>
-                  </span>
-                </button>
+                {/* The tool's explanation sits behind the ⓘ */}
+                <h2 className="flex items-center gap-1.5 text-sm font-semibold text-[var(--ed-text)]">
+                  {activeTool.title}
+                  <InfoTip label={`About ${activeTool.title}`}>{activeTool.hint}</InfoTip>
+                </h2>
               </>
             )}
             </div>
@@ -1890,7 +2329,9 @@ export function EditorShell({
                     const col = broll ? BROLL_COLOR : LAYOUT_COLORS[shown]
                     const isActiveSeg = seg.id === activeSegment?.id
                     const only = cropPositions.length === 1
-                    const deleteLabel = only ? 'Reset this format to Vertical' : `Delete format ${i + 1} (its time goes back to default framing)`
+                    // Deleting a section cuts that part of the video out (askDeleteFormat); only the whole clip is reset instead
+                    const deleteLabel = !canTrim ? (only ? 'Reset this format to Vertical' : `Delete format ${i + 1} (its time goes back to default framing)`)
+                      : clipLengthMs - (seg.end_ms - seg.start_ms) < MIN_CLIP_LEFT_MS ? 'Reset this format to Vertical' : `Delete this part of the video (${msToLabel(seg.start_ms)}–${msToLabel(seg.end_ms)})`
                     const name = broll ? 'Video' : LAYOUTS.find(l => l.id === shown)?.label ?? shown
                     const all = itemsBySection.get(seg.id) ?? []
                     const items = sectionFilter === 'all' ? all : all.filter(x => x.kind === sectionFilter)
@@ -2230,6 +2671,10 @@ export function EditorShell({
                 selectedId={pickedMusicId} onSelect={pickMusic}
                 currentTimeMs={currentTimeMs} clipLengthMs={clipLengthMs} durations={musicDurations}
                 onAddTrack={addMusicTrack}
+                uploads={musicUploads}
+                missing={t => !isMainAudio(t) && !t.storage_path.startsWith('audio/') && !musicEls.current.has(t.id)}
+                onReadd={readdMusic}
+                notice={musicNotice}
                 onRemoveTrack={deleteMusic}
                 onUpdateTrack={(id, u) => { if (!blocked({ kind: 'music', id })) setAudioTracks(prev => prev.map(t => t.id === id ? { ...t, ...u } : t)) }} />
               </>
@@ -2347,6 +2792,14 @@ export function EditorShell({
             </div>
           </div>
 
+          {/* The line between the video and the play bar: drag to resize (double-click resets) */}
+          {!timelineHidden && (
+            <div className="relative shrink-0" style={{ height: 0, zIndex: 30 }}>
+              <div role="separator" aria-orientation="horizontal" aria-label="Drag to resize the video and the timeline. Double-click to reset."
+                title="Drag to resize · double-click to reset" className="ed-row-handle" data-on={resizing === 'timeline' || undefined}
+                onPointerDown={startTimelineResize} onDoubleClick={resetTimelineHeight} />
+            </div>
+          )}
           {/* Transport */}
           {/* Timeline bar: [show/hide timeline · trim · delete] [previous section · play · next section · time]
               [zoom slider]. Every button has a plain-words tooltip. */}
@@ -2396,19 +2849,23 @@ export function EditorShell({
                         <circle cx="6" cy="6" r="3" /><circle cx="6" cy="18" r="3" /><path d="M20 4L8.1 15.9M14.5 14.5L20 20M8.1 8.1L12 12" />
                       </svg>
                     </button>
-                    {/* Delete: removes the selected music. For a video section it's a button only for now —
-                        TODO(backend): delete the selected trimmed video part */}
+                    {/* Delete: whatever is selected — a song, photo, video, text, frame item or section */}
+                    {(() => {
+                      const del = deleteTarget()
+                      return (
                     <button
-                      onClick={() => { if (kind === 'music' && pickedMusic) deleteMusic(pickedMusic.id) }}
-                      disabled={!kind}
-                      aria-label={kind === 'music' ? 'Delete the selected music' : 'Delete the selected video section'}
-                      title={kind === 'music' ? 'Delete the selected music' : kind === 'video' ? 'Delete the selected video section' : 'Click the video or the music on the timeline to delete it'}
+                      onClick={() => del?.run()}
+                      disabled={!del}
+                      aria-label={del ? `Delete ${del.label}` : 'Delete'}
+                      title={del ? `Delete ${del.label} (Delete key)` : 'Select a video, photo, song, text or section to delete it'}
                       className="ed-tl-btn ed-tl-danger"
                     >
                       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                         <path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14M10 11v6M14 11v6" />
                       </svg>
                     </button>
+                      )
+                    })()}
                     {/* Detach audio: the main video's sound onto its own Music bar */}
                     <button onClick={detachAudio}
                       aria-label={hasMainAudio ? 'Select the detached original sound' : 'Detach the audio from the main video'}
@@ -2461,13 +2918,18 @@ export function EditorShell({
                 <span className="font-semibold" style={{ color: 'rgb(var(--ed-fg) / 0.85)' }}>{msToTenths(currentTimeMs)}</span>
                 <span className="ed-transport-total" style={{ color: 'rgb(var(--ed-fg) / 0.38)' }}> / {msToLabel(clipDurationMs)}</span>
               </span>
-              {/* Always at the far end of the bar, with or without the time beside it */}
-              <div className="ml-auto shrink-0"><ZoomSlider zoom={timelineZoom} onZoom={setTimelineZoom} /></div>
+              {/* Always at the far end of the bar, with or without the time beside it: undo / redo, then zoom */}
+              <div className="ml-auto shrink-0 flex items-center gap-1">
+                <UndoRedo />
+                <span className="ed-tl-sep" aria-hidden="true" />
+                <ZoomSlider zoom={timelineZoom} onZoom={setTimelineZoom} />
+              </div>
             </div>
           </div>
 
           {/* Timeline (hidden with "Hide timeline") */}
-          <div data-tour="timeline" hidden={timelineHidden} className="shrink-0 overflow-y-auto px-4 pt-3 pb-4" style={{ maxHeight: '38vh', background: 'var(--ed-track)', borderTop: '1px solid rgb(var(--ed-fg) / 0.06)' }}>
+          <div ref={timelineRef} data-tour="timeline" hidden={timelineHidden} className="shrink-0 overflow-y-auto px-4 pt-3 pb-4"
+            style={{ ...(timelineH ? { height: timelineH } : { maxHeight: '38vh' }), background: 'var(--ed-track)', borderTop: '1px solid rgb(var(--ed-fg) / 0.06)' }}>
             <SegmentTimeline
               selectedMusicId={pickedMusicId} onSelectMusic={id => pickMusicTrack(id, doubleTap(`m${id}`))}
               photos={overlays.filter(o => o.type === 'image').map(o => ({ id: o.id, start_ms: o.start_ms, end_ms: o.end_ms, url: o.preview_url, hidden: o.hidden, locked: isLocked({ kind: 'photo', id: o.id }) }))}
@@ -2486,11 +2948,13 @@ export function EditorShell({
                 const len = t.end_ms != null ? t.end_ms - t.start_ms : null
                 return { ...t, start_ms: startMs, ...(len != null ? { end_ms: startMs + len } : {}) }
               }))}
-              onAddHere={anchor => { pause(); setPlusMenu({ atMs: Math.round(currentTimeMs), anchor }) }}
+              onAddKind={kind => addMediaAt(kind, Math.round(currentTimeMs))}
               zoom={timelineZoom} onZoomChange={setTimelineZoom} showToolbar={false}
               segments={segments} clipStartMs={clip.start_ms} clipEndMs={clip.end_ms}
               currentTimeMs={currentTimeMs} activeSegmentId={activeSegment?.id ?? null}
               videoUrl={videoUrl} safeDurationMs={clipDurationMs} onSeek={seekToMs}
+              sourceAt={trim.toSource} sourceKey={trimsKey}
+              clipEdgeLimits={canTrim ? clipEdgeLimits : undefined} onClipEdge={moveClipEdge}
               onSelectSegment={id => setActiveSegmentId(id)}
               onBrollChange={retimeBroll}
               videoUrls={videoUrls}
@@ -2541,14 +3005,54 @@ export function EditorShell({
                 removeViewChange(viewBox.id, t)
                 setSelectedView(null)
               }}
+              onDuplicateView={t => {
+                if (!viewBox || !activeSegment || sectionBlocked(activeSegment.id)) return
+                pause()
+                const at = duplicateViewChange(viewBox.id, t, activeSegment.end_ms)
+                if (at == null) { notifyLocked('No room for a copy right after this view — move the next one or pick another'); return }
+                // The copy is picked, under the playhead: drag it wherever it should go
+                setSelectedView({ boxId: viewBox.id, t: at })
+                seekToMs(at)
+              }}
             />
           </div>
         </main>
 
         {/* Right column: 9:16 output preview, always visible */}
-        <aside data-tour="export" className="shrink-0 flex flex-col min-h-0" style={{ width: 360, background: 'var(--ed-panel)', borderLeft: '1px solid rgb(var(--ed-fg) / 0.07)' }}>
+        {/* Closed: a slim rail to bring the Preview back */}
+        {!previewOpen && (
+          <div className="ed-preview-rail shrink-0 flex flex-col items-center gap-2 py-3" style={{ width: 52, background: 'var(--ed-panel)', borderLeft: '1px solid rgb(var(--ed-fg) / 0.07)' }}>
+            <button onClick={() => togglePreview(true)} aria-label="Open the preview" title="Open the preview"
+              className="w-9 h-9 flex items-center justify-center rounded-lg transition-colors hover:bg-[rgb(var(--ed-fg)/0.1)]"
+              style={{ color: 'rgb(var(--ed-fg) / 0.7)' }}>
+              <span style={{ display: 'inline-flex', transform: 'scaleX(-1)' }}><SidebarIcon open={false} /></span>
+            </button>
+            <button onClick={() => togglePreview(true)} title="Open the preview to watch and export"
+              className="text-[11px] font-semibold tracking-wide transition-colors hover:text-[var(--ed-text)]"
+              style={{ writingMode: 'vertical-rl', transform: 'rotate(180deg)', color: 'rgb(var(--ed-fg) / 0.5)' }}>
+              Preview · Export
+            </button>
+          </div>
+        )}
+        <aside data-tour="export" aria-hidden={!previewOpen} className="ed-preview-col relative shrink-0 flex flex-col min-h-0 overflow-hidden" data-open={previewOpen || undefined} data-resizing={resizing === 'preview' || undefined}
+          style={{ width: previewOpen ? previewW : 0, background: 'var(--ed-panel)' }}
+          {...(!previewOpen ? { inert: true } : {})}>
+          {/* Its left edge: drag to make the preview wider or narrower */}
+          {previewOpen && (
+            <div role="separator" aria-orientation="vertical" aria-label="Drag to resize the preview. Double-click to reset."
+              title="Drag to resize · double-click to reset" className="ed-col-handle" style={{ left: 0 }} data-on={resizing === 'preview' || undefined}
+              onPointerDown={e => startColumnResize(e, 'preview')} onDoubleClick={() => resetColumn('preview')} />
+          )}
+          <div className="ed-preview-inner flex flex-col min-h-0 h-full" style={{ width: previewW }}>
           <div className="shrink-0 px-4 flex items-center justify-between" style={{ height: 48, borderBottom: '1px solid rgb(var(--ed-fg) / 0.06)' }}>
-            <span className="text-sm font-semibold text-[var(--ed-text)]">Preview</span>
+            <span className="flex items-center gap-1">
+              <button onClick={() => togglePreview(false)} aria-label="Close the preview" title="Close the preview (more room to edit)"
+                className="-ml-1.5 w-8 h-8 flex items-center justify-center rounded-lg transition-colors hover:bg-[rgb(var(--ed-fg)/0.1)]"
+                style={{ color: 'rgb(var(--ed-fg) / 0.55)' }}>
+                <span style={{ display: 'inline-flex', transform: 'scaleX(-1)' }}><SidebarIcon open /></span>
+              </button>
+              <span className="text-sm font-semibold text-[var(--ed-text)]">Preview</span>
+            </span>
             <div className="flex items-center gap-1.5">
               {rendering ? (
                 // While the reel renders, the Export button stays and keeps playing its download
@@ -2638,14 +3142,15 @@ export function EditorShell({
                 </div>
               ) : (
                 <OutputCanvas
-                  videoRef={videoRef} currentTimeMs={currentTimeMs} clipStartMs={clip.start_ms}
+                  videoRef={videoRef} currentTimeMs={currentTimeMs} clipStartMs={clip.start_ms} videoToTimeline={videoToTimeline}
                   activeSegment={viewSegment} getPositionAt={viewGetPositionAt} sourceFor={brollSource} slotSourceFor={borrowed.slotSourceFor}
                   skipTransitionRef={skipCanvasTransitionRef} words={displayWords}
                   captionStyle={captionStyle} captionTextCase={captionTextCase} showCaptions={showCaptions}
                   overlays={overlays.filter(o => !o.hidden)} activeOverlayId={activeOverlayId}
-                  onOverlayChange={(id, u) => { if (!blocked({ kind: 'photo', id })) updateOverlay(id, u) }} onSelectOverlay={id => { const o = overlays.find(x => x.id === id); if (o?.type === 'image') pickPhoto(id); else setActiveOverlayId(id) }} onDeleteOverlay={askDeleteOverlay}
+                  onOverlayChange={(id, u) => { if (!blocked({ kind: 'photo', id })) updateOverlay(id, u) }} onSelectOverlay={id => { const o = overlays.find(x => x.id === id); if (o?.type === 'image') pickPhoto(id); else { setActiveOverlayId(id); setLastPick('overlay') } }} onDeleteOverlay={askDeleteOverlay}
                   textOverlays={textOverlays.filter(o => !o.hidden)} activeTextOverlayId={activeTextOverlayId}
-                  onTextOverlayChange={(id, u) => { if (!blocked({ kind: 'text', id })) updateTextOverlay(id, u) }} onSelectTextOverlay={id => { if (id) pickText(id); else setActiveTextOverlayId(null) }} onDeleteTextOverlay={askDeleteTextOverlay}
+                  onTextOverlayChange={(id, u) => { if (!blocked({ kind: 'text', id })) updateTextOverlay(id, u) }} onSelectTextOverlay={id => { if (id) pickText(id, false); else setActiveTextOverlayId(null) }}
+                  editTextOverlayId={previewOpen ? editTextId : null} onEditTextDone={() => setEditTextId(null)} onDeleteTextOverlay={askDeleteTextOverlay}
                   onCaptionPositionChange={y => updateCaptionStyle({ position_y: y })}
                   frameMedia={framePool}
                   onFrameLaneClick={focusLane}
@@ -2667,6 +3172,7 @@ export function EditorShell({
             </div>
           </div>
 
+          </div>
         </aside>
       </div>
 
@@ -2682,41 +3188,6 @@ export function EditorShell({
       )}
 
       {/* The timeline's "+" menu: photos / videos into a frame slot (Dual, Trio…), B-roll, music, text */}
-      {plusMenu && (() => {
-        const t = Math.max(0, Math.min(plusMenu.atMs, clipLengthMs - 50))
-        const openTool = (id: Tool) => { setPlusMenu(null); setTool(id); toggleOptions(true) }
-        // Everything goes in at the playhead. A video or photo lasts 5 s (near the end, the clip's last 5 s)
-        const mediaAt = Math.max(0, Math.min(t, clipLengthMs - 5000))
-        const pick = (kind: 'video' | 'photo') => { setPlusMenu(null); setPickerOnly(kind); setPickerAtMs(mediaAt) }
-        const addText = () => {
-          const len = Math.min(3000, clipLengthMs)
-          const start = Math.max(0, Math.min(t, clipLengthMs - len))
-          const id = crypto.randomUUID()
-          setTextOverlays(prev => [...prev, {
-            id, clip_id: clip.id, text: 'Your text', start_ms: start, end_ms: start + len,
-            x: 0.1, y: 0.4, font: 'sans-serif', size: 72, color: '#ffffff',
-          }])
-          setActiveTextOverlayId(id); setFocusTextId(id)
-          seekToMs(start)
-          openTool('text')
-        }
-        const addMusic = () => {
-          setPlusMenu(null)
-          musicAtRef.current = t   // plays from here until this section ends (drag its end to carry on)
-          musicInputRef.current?.click()
-        }
-        return (
-          <TimelineAddMenu
-            atLabel={msToLabel(t)} anchor={plusMenu.anchor}
-            onVideo={() => pick('video')}
-            onPhoto={() => pick('photo')}
-            onMusic={addMusic}
-            onText={addText}
-            onClose={() => setPlusMenu(null)}
-          />
-        )
-      })()}
-
       {addMenu && (() => {
         const seg = segments.find(x => x.id === addMenu.segId)
         if (!seg || !isFrameLayout(seg.layout)) return null
@@ -2747,7 +3218,7 @@ export function EditorShell({
       )}
 
       {/* "+" → Music: pick an audio file; it goes in at the start, or so it ends with the clip */}
-      <input ref={musicInputRef} type="file" accept="audio/*" className="hidden" aria-hidden="true" tabIndex={-1}
+      <input ref={musicInputRef} type="file" accept="audio/*,video/*" className="hidden" aria-hidden="true" tabIndex={-1}
         onChange={e => {
           const f = e.target.files?.[0]
           e.target.value = ''
@@ -2873,67 +3344,6 @@ function SkipFiveIcon({ dir }: { dir: 'back' | 'forward' }) {
 
 /** Tiny 9:16 frame showing how a format divides the reel */
 /**
- * Menu of the timeline's "+" buttons. In a frame (Dual, Trio…) it lists the frame's slots, so a
- * photo or video goes straight into the right one (then drag its ends on the timeline to set
- * when it shows). Outside a frame it explains the first step: pick a frame. A video, photo,
- * music or text can always be added at that end of the clip.
- */
-function TimelineAddMenu({ atLabel, anchor, onVideo, onPhoto, onMusic, onText, onClose }: {
-  /** The playhead time everything is added at, e.g. "0:18" */
-  atLabel: string
-  anchor: DOMRect
-  onVideo: () => void
-  onPhoto: () => void
-  onMusic: () => void
-  onText: () => void
-  onClose: () => void
-}) {
-  const ref = useRef<HTMLDivElement>(null)
-  useEffect(() => {
-    const onDown = (e: PointerEvent) => { if (!ref.current?.contains(e.target as Node)) onClose() }
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.stopPropagation(); onClose() } }
-    window.addEventListener('pointerdown', onDown, true)
-    window.addEventListener('keydown', onKey, true)
-    ref.current?.querySelector<HTMLButtonElement>('button')?.focus()
-    return () => { window.removeEventListener('pointerdown', onDown, true); window.removeEventListener('keydown', onKey, true) }
-  }, [onClose])
-
-  const W = 268
-  // Centred over the "+" on the playhead, opening upwards
-  const left = Math.max(8, Math.min(window.innerWidth - W - 8, anchor.left + anchor.width / 2 - W / 2))
-  const bottom = window.innerHeight - anchor.top + 8
-  const row = 'w-full flex items-center gap-3 px-2.5 py-2 rounded-lg text-left transition-colors hover:bg-[rgb(var(--ed-fg)/0.07)] focus-visible:outline-none focus-visible:bg-[rgb(var(--ed-fg)/0.07)]'
-  const icon = (d: React.ReactNode, tint = 'rgb(var(--ed-fg) / 0.8)') => (
-    <span className="shrink-0 w-8 h-8 flex items-center justify-center rounded-lg" style={{ background: 'rgb(var(--ed-fg) / 0.06)', color: tint }}>
-      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{d}</svg>
-    </span>
-  )
-  return (
-    <div ref={ref} role="menu" aria-label={`Add at ${atLabel}`} className="fixed flex flex-col p-1.5 rounded-xl ed-tour-card"
-      style={{ left, bottom, width: W, zIndex: 120, background: 'var(--ed-popover)', border: '1px solid rgb(var(--ed-fg) / 0.12)', boxShadow: '0 18px 48px -12px rgba(0,0,0,0.8)' }}>
-      <p className="px-2.5 pt-1.5 pb-1 text-[11px] font-semibold uppercase tracking-wider" style={{ color: 'rgb(var(--ed-fg) / 0.4)' }}>
-        Add at {atLabel}
-      </p>
-
-      {([
-        ['Video', `Your videos or upload one · 5 s from ${atLabel}`, onVideo, <><rect x="2" y="5" width="15" height="14" rx="2" /><path d="M17 10l5-3v10l-5-3z" /></>, '#f97316'],
-        ['Photo', `Upload a photo · 5 s from ${atLabel}`, onPhoto, <><rect x="3" y="3" width="18" height="18" rx="2" /><circle cx="8.5" cy="8.5" r="1.5" /><path d="M21 15l-5-5L5 21" /></>, '#60a5fa'],
-        ['Music', 'Pick a song · plays until this section ends', onMusic, <><path d="M9 18V5l12-2v13" /><circle cx="6" cy="18" r="3" /><circle cx="18" cy="16" r="3" /></>, '#c084fc'],
-        ['Text', `A text box for 3 s from ${atLabel}`, onText, <path d="M4 7V4h16v3M9 20h6M12 4v16" />, '#f472b6'],
-      ] as const).map(([label, hint, act, d, tint]) => (
-        <button key={label} role="menuitem" className={row} onClick={act}>
-          {icon(d, tint)}
-          <span className="min-w-0 flex flex-col">
-            <span className="text-[13px] font-medium text-[var(--ed-text)]">{label}</span>
-            <span className="text-[11px]" style={{ color: 'rgb(var(--ed-fg) / 0.45)' }}>{hint}</span>
-          </span>
-        </button>
-      ))}
-    </div>
-  )
-}
-
-/**
  * Layout switch for the section under the playhead: a dock of the four formats with a lime highlight
  * that slides to the picked one (measured from the buttons, so it fits any label length or language).
  */
@@ -3018,14 +3428,14 @@ function isTextEntry(el: Element | null | undefined): boolean {
   return ['text', 'number', 'search', 'email', 'url', 'tel', 'password', ''].includes((el as HTMLInputElement).type)
 }
 
-// Header undo/redo buttons (shortcuts: Ctrl/⌘+Z, Ctrl/⌘+Shift+Z)
+// Undo / redo, in the play bar next to the zoom (shortcuts: Ctrl/⌘+Z, Ctrl/⌘+Shift+Z)
 function UndoRedo() {
   const { canUndo, canRedo } = useHistory()
   const mac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform)
   const mod = mac ? '⌘' : 'Ctrl+'
-  const btn = 'w-8 h-8 flex items-center justify-center rounded-lg transition-colors hover:bg-[rgb(var(--ed-fg)/0.1)] disabled:opacity-30 disabled:hover:bg-transparent'
+  const btn = 'ed-tl-btn'
   return (
-    <div className="flex items-center gap-0.5 shrink-0 pl-3" style={{ borderLeft: '1px solid rgb(var(--ed-fg) / 0.1)', color: 'rgb(var(--ed-fg) / 0.75)' }}>
+    <div className="flex items-center gap-0.5 shrink-0" role="group" aria-label="Undo and redo">
       <button onClick={undo} disabled={!canUndo} aria-label="Undo" title={`Undo (${mod}Z)`} className={btn}>
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M9 14L4 9l5-5" /><path d="M4 9h10.5a5.5 5.5 0 010 11H11" /></svg>
       </button>

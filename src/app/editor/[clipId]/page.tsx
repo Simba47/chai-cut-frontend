@@ -29,7 +29,7 @@ export default async function EditorPage({
   if (!user) redirect('/login')
 
   const [clip] = await sql`
-    SELECT c.*, v.storage_path, v.status AS video_status, v.user_id, v.title AS video_title
+    SELECT c.*, v.storage_path, v.status AS video_status, v.user_id, v.title AS video_title, v.duration_ms AS video_duration_ms
     FROM clips c JOIN videos v ON v.id = c.video_id
     WHERE c.id = ${clipId}
   `
@@ -96,6 +96,9 @@ export default async function EditorPage({
   const captionStyles = captionStylesRaw as unknown as CaptionStyle[]
   const textOverlays = textOverlaysRaw as unknown as TextOverlay[]
   const audioTracks = audioTracksRaw as unknown as AudioTrack[]
+  // Stored songs play from storage (they survive a reload); old name-only entries have none
+  const { musicUrls } = await import('@/server/services/music')
+  const initialMusicUrls = await musicUrls(audioTracks)
   const transitions = transitionsRaw as unknown as Transition[]
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -164,6 +167,12 @@ export default async function EditorPage({
     initialCaptionStyles: captionStyles ?? [],
     initialTextOverlays: textOverlays ?? [],
     initialAudioTracks: audioTracks ?? [],
+    initialMusicUrls,
+    // The clip's own sound (Music panel); read loosely so it works before the backend adds the columns
+    initialOriginalSound: {
+      volume: clip.original_volume == null ? 1 : Number(clip.original_volume),
+      muted: clip.original_muted === true,
+    },
     initialTransitions: transitions ?? [],
     initialOverlays: overlays ?? [],
   }

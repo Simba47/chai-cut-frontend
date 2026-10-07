@@ -1,4 +1,5 @@
 import sql from '@/lib/db'
+import { cleanTrims, trimMap, MAX_CLIP_MS, MIN_CLIP_MS } from '@/lib/trims'
 import type { SegmentLocal, BoxKeyframeLocal, CaptionStyle, TextOverlay, AudioTrack, Transition, Overlay, FrameSettings, FrameItem, CornerStyle } from '@chai-cut/shared'
 
 interface CreateClipInput {
@@ -41,6 +42,15 @@ interface SaveClipInput {
   overlays: Omit<Overlay, 'created_at'>[]
   /** Remove pauses and filler words when exporting */
   removeFillers?: boolean
+  /** The clip's own sound (top of the Music panel) */
+  originalSound?: { volume: number; muted: boolean }
+  /**
+   * Parts of the video removed from the clip: [[start, end], …] in ms of the source video
+   * (lib/trims.ts). Left out by an editor that doesn't know about them: what's saved stays.
+   */
+  trims?: unknown
+  /** The clip's start and end in its video, when dragged in the editor: [start, end] ms */
+  range?: unknown
 }
 
 export async function saveClip(userId: string, clipId: string, body: SaveClipInput) {
@@ -49,7 +59,7 @@ export async function saveClip(userId: string, clipId: string, body: SaveClipInp
 
   // Ownership check and the existing caption style in one round trip
   const [[clip], [existingStyle]] = await Promise.all([
-    sql`SELECT c.id, v.user_id FROM clips c JOIN videos v ON v.id = c.video_id WHERE c.id = ${clipId}`,
+    sql`SELECT c.id, c.start_ms, c.end_ms, to_jsonb(c)->'trim_ranges' AS trim_ranges, v.user_id, v.duration_ms AS video_duration_ms FROM clips c JOIN videos v ON v.id = c.video_id WHERE c.id = ${clipId}`,
     sql`SELECT id FROM caption_styles WHERE clip_id = ${clipId} LIMIT 1`,
   ])
   if (!clip) throw Object.assign(new Error('Clip not found'), { status: 404 })
@@ -112,6 +122,18 @@ export async function saveClip(userId: string, clipId: string, body: SaveClipInp
   const hasEnabledField = await captionEnabledField()
   const hasPresetFields = await captionPresetFields()
   const hasRemoveFillers = typeof body.removeFillers === 'boolean' && await clipsHasRemoveFillers()
+  const hasFades = await hasColumn('audio_tracks', 'fade_in')
+  const hasTextW = await hasColumn('text_overlays', 'w')
+  const hasTextH = await hasColumn('text_overlays', 'h')
+  // The clip's start and end, when dragged in the editor (bug #8)
+  const range = clipRangeFrom(body.range, clip, body.trims)
+  const clipStart = range ? range[0] : Number(clip.start_ms), clipEnd = range ? range[1] : Number(clip.end_ms)
+  // Removed parts of the video, once the database has that field (the backend adds it when it starts)
+  const trims = Array.isArray(body.trims) && await hasColumn('clips', 'trim_ranges')
+    ? cleanTrims(body.trims, clipStart, clipEnd)
+    : null
+  const original = body.originalSound
+  const hasOriginal = !!original && typeof original.volume === 'number' && await hasColumn('clips', 'original_volume')
 
   // Every statement is built up front and pipelined in one transaction: the database is far
   // from the server (~300–500 ms per round trip), and awaiting each statement made saves take
@@ -183,19 +205,29 @@ export async function saveClip(userId: string, clipId: string, body: SaveClipInp
     }
 
     if (hasRemoveFillers) q.push(tx`UPDATE clips SET remove_fillers = ${body.removeFillers!} WHERE id = ${clipId}`)
+    if (range) q.push(tx`UPDATE clips SET start_ms = ${range[0]}, end_ms = ${range[1]} WHERE id = ${clipId}`)
+    if (trims) q.push(tx`UPDATE clips SET trim_ranges = ${trims.length ? sql.json(trims as never) : null} WHERE id = ${clipId}`)
+    if (hasOriginal) {
+      q.push(tx`UPDATE clips SET original_volume = ${Math.max(0, Math.min(1, original!.volume))}, original_muted = ${!!original!.muted} WHERE id = ${clipId}`)
+    }
 
     q.push(tx`DELETE FROM text_overlays WHERE clip_id = ${clipId}`)
     if (textOverlays.length > 0) {
-      q.push(tx`INSERT INTO text_overlays ${tx(textOverlays.map(({ id, text, start_ms, end_ms, x, y, font, size, color, hidden, locked }) => ({
+      q.push(tx`INSERT INTO text_overlays ${tx(textOverlays.map(({ id, text, start_ms, end_ms, x, y, font, size, color, hidden, locked, w, h }) => ({
         id, clip_id: clipId, text, start_ms: ms(start_ms), end_ms: ms(end_ms), x, y, font, size, color,
+        // Box width (the text wraps inside it): a share of the frame's width, or none
+        ...(hasTextW ? { w: typeof w === 'number' && w > 0 ? Math.min(1, w) : null } : {}),
+        // Box height (the text sits in its middle): a share of the frame's height, or none
+        ...(hasTextH ? { h: typeof h === 'number' && h > 0 ? Math.min(1, h) : null } : {}),
         ...(hasControls ? { hidden: !!hidden, locked: !!locked } : {}),
       })))}`)
     }
 
     q.push(tx`DELETE FROM audio_tracks WHERE clip_id = ${clipId}`)
     if (audioTracks.length > 0) {
-      q.push(tx`INSERT INTO audio_tracks ${tx(audioTracks.map(({ id, storage_path, start_ms, volume, duck_under_speech, offset_ms, end_ms, muted, locked }) => ({
+      q.push(tx`INSERT INTO audio_tracks ${tx(audioTracks.map(({ id, storage_path, start_ms, volume, duck_under_speech, offset_ms, end_ms, muted, locked, fade_in, fade_out }) => ({
         id, clip_id: clipId, storage_path, start_ms: ms(start_ms), volume, duck_under_speech,
+        ...(hasFades ? { fade_in: !!fade_in, fade_out: !!fade_out } : {}),
         ...(hasControls ? {
           offset_ms: offset_ms == null ? null : ms(offset_ms), end_ms: end_ms == null ? null : ms(end_ms),
           muted: !!muted, locked: !!locked,
@@ -232,7 +264,7 @@ export async function saveClip(userId: string, clipId: string, body: SaveClipInp
  * export afterwards), nothing is deleted.
  */
 export async function deleteClips(userId: string, clipIds: unknown) {
-  const { cleanIds, deleteR2Keys, MAX_BULK_DELETE } = await import('./videos')
+  const { cleanIds, deleteR2Keys, MAX_BULK_DELETE, uploadsOnlyUsedBy, deleteUploads } = await import('./videos')
   const ids = cleanIds(clipIds)
   if (ids.length === 0) throw Object.assign(new Error('No clips selected'), { status: 400 })
   if (ids.length > MAX_BULK_DELETE) throw Object.assign(new Error(`You can delete up to ${MAX_BULK_DELETE} clips at a time`), { status: 400 })
@@ -254,7 +286,16 @@ export async function deleteClips(userId: string, clipIds: unknown) {
   // Before the rows go (it reads them); it never throws
   const { logClipEvents } = await import('./suggestionEvents')
   await logClipEvents(userId, ids, 'deleted')
+  // B-roll uploaded into these clips that no other clip uses goes with them (read before the rows go)
+  const uploads = await uploadsOnlyUsedBy(userId, ids)
+  const songs = await sql<{ storage_path: string }[]>`
+    SELECT DISTINCT storage_path FROM audio_tracks WHERE clip_id = ANY(${ids}) AND storage_path LIKE ${`audio/${userId}/%`}`
   await sql`DELETE FROM clips WHERE id = ANY(${ids})`
+  await deleteUploads(uploads)
+  // Songs uploaded for these clips (stored per upload; another clip can't share one)
+  const stillUsed = new Set((await sql<{ storage_path: string }[]>`
+    SELECT storage_path FROM audio_tracks WHERE storage_path = ANY(${songs.map(s => s.storage_path)})`).map(r => r.storage_path))
+  await deleteR2Keys(songs.map(s => s.storage_path).filter(p => !stillUsed.has(p)))
   return { deleted: ids.length }
 }
 
@@ -288,6 +329,37 @@ async function itemControlFields(): Promise<boolean> {
   const rows = await sql`SELECT 1 FROM information_schema.columns WHERE table_name = 'crop_boxes' AND column_name = 'hidden'`.catch(() => [])
   itemControlsKnown = rows.length > 0
   return itemControlsKnown
+}
+
+/**
+ * A dragged clip start / end from the editor, checked: inside the video, at least MIN_CLIP_MS, and
+ * playing at most MAX_CLIP_MS (a clip already longer may only get shorter). Null when unchanged;
+ * refused (400) when it breaks a rule.
+ */
+function clipRangeFrom(raw: unknown, clip: Record<string, unknown>, newTrims?: unknown): [number, number] | null {
+  if (raw == null) return null
+  const bad = (msg: string) => Object.assign(new Error(msg), { status: 400 })
+  if (!Array.isArray(raw) || raw.length !== 2 || !raw.every(v => Number.isFinite(Number(v)))) throw bad('Invalid clip start and end')
+  const start = Math.round(Number(raw[0])), end = Math.round(Number(raw[1]))
+  const oldStart = Number(clip.start_ms), oldEnd = Number(clip.end_ms)
+  if (start === oldStart && end === oldEnd) return null
+  const videoLen = Number(clip.video_duration_ms) || 0
+  if (start < 0 || (videoLen > 0 && end > videoLen + 50)) throw bad('The clip can\u2019t reach past its video')
+  const played = (t: unknown, a: number, b: number) => trimMap(cleanTrims(t, a, b), a, b).lengthMs
+  const len = played(Array.isArray(newTrims) ? newTrims : clip.trim_ranges, start, end)
+  if (len < MIN_CLIP_MS) throw bad('A clip must be at least 1 second long')
+  if (len > Math.max(MAX_CLIP_MS, played(clip.trim_ranges, oldStart, oldEnd)) + 50) throw bad('A clip can be up to 5 minutes long')
+  return [start, Math.min(end, videoLen > 0 ? videoLen : end)]
+}
+
+// Columns the backend adds when it starts (remembered once seen): saving works before and after
+const knownColumns = new Set<string>()
+async function hasColumn(table: string, column: string): Promise<boolean> {
+  const key = `${table}.${column}`
+  if (knownColumns.has(key)) return true
+  const rows = await sql`SELECT 1 FROM information_schema.columns WHERE table_name = ${table} AND column_name = ${column}`.catch(() => [])
+  if (rows.length) knownColumns.add(key)
+  return rows.length > 0
 }
 
 // clips.remove_fillers (added by the backend with "Remove pauses and filler words"): same rule

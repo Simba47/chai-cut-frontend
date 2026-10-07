@@ -6,10 +6,12 @@ import sql from '@/lib/db'
 import { findClips, type FoundClip, type Subscores } from './clipFinder'
 import { logSuggestionEvents, type SuggestionSource } from './suggestionEvents'
 
-const BEST_MOMENTS_MODEL = 'claude-haiku-4-5-20251001'
-/** Best moments without an Anthropic key: the model Make my clips already uses */
-const BEST_MOMENTS_FALLBACK_MODEL = 'gemini-2.5-flash'
-const CLIP_SEARCH_MODEL = 'gemini-3.1-pro-preview'
+/**
+ * One model picks clips everywhere — Best moments, Ask AI, and Make my clips on the worker
+ * (jobs/ai_edit.ts) — so the three agree with each other and there is one price and one vendor.
+ * (Before: Claude Haiku, Gemini 3.1 Pro preview and Gemini 2.5 Flash, one each.)
+ */
+export const CLIP_MODEL = 'gemini-2.5-flash'
 
 /** 'shown' for each AI suggestion returned (plain fallback chunks are not AI picks) */
 function logShown(userId: string, videoId: string, source: SuggestionSource, model: string, suggestions: ClipSuggestion[]) {
@@ -22,6 +24,8 @@ function logShown(userId: string, videoId: string, source: SuggestionSource, mod
 export async function listVideos(userId: string, includeAssets = false) {
   return sql`
     SELECT id, title, status, download_progress, duration_ms, created_at, storage_path, source_url, source_type,
+      -- Assets: B-roll the user uploaded in the editor (no stock_ref) or a saved stock clip
+      role = 'asset' AS is_asset, (role = 'asset' AND stock_ref IS NULL) AS is_upload_asset,
       -- Why processing failed (e.g. a link that isn't shared publicly). Read through to_jsonb so
       -- this works before the worker has added the column.
       to_jsonb(videos)->>'error' AS error,
@@ -83,6 +87,39 @@ export async function deleteVideo(userId: string, videoId: string) {
  * upload, its cached audio and each clip's export). All or nothing: if any id isn't one of the
  * user's videos, nothing is deleted.
  */
+/**
+ * B-roll the user uploaded in the editor (an asset, not a stock clip) that only these clips use
+ * — in a section, a frame or as a video overlay. Read before the clips are deleted; stock clips
+ * are kept for reuse, and an upload another clip still uses stays.
+ */
+export async function uploadsOnlyUsedBy(userId: string, clipIds: string[]): Promise<Array<{ id: string; storage_path: string | null }>> {
+  if (!clipIds.length) return []
+  return sql<Array<{ id: string; storage_path: string | null }>>`
+    WITH refs AS (
+      SELECT cb.source_video_id AS vid, s.clip_id FROM crop_boxes cb JOIN segments s ON s.id = cb.segment_id
+        WHERE cb.source_video_id IS NOT NULL
+      UNION ALL
+      SELECT o.source_video_id, o.clip_id FROM overlays o WHERE o.source_video_id IS NOT NULL
+      UNION ALL
+      SELECT (it->>'source_video_id')::uuid, s.clip_id FROM segments s
+        CROSS JOIN LATERAL jsonb_array_elements(
+          CASE WHEN jsonb_typeof(s.frame->'items') = 'array' THEN s.frame->'items' ELSE '[]'::jsonb END) it
+        WHERE it->>'kind' = 'video' AND (it->>'source_video_id') ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+    )
+    SELECT v.id, v.storage_path FROM videos v
+    WHERE v.user_id = ${userId} AND v.role = 'asset' AND v.stock_ref IS NULL
+      AND v.id IN (SELECT vid FROM refs WHERE clip_id = ANY(${clipIds}))
+      AND NOT EXISTS (SELECT 1 FROM refs WHERE refs.vid = v.id AND NOT (refs.clip_id = ANY(${clipIds})))
+  `
+}
+
+/** Deletes the uploads found by uploadsOnlyUsedBy: their files, then their rows */
+export async function deleteUploads(uploads: Array<{ id: string; storage_path: string | null }>) {
+  if (!uploads.length) return
+  await deleteR2Keys(uploads.flatMap(u => u.storage_path ? [u.storage_path, u.storage_path.replace(/\.[^.]+$/, '_audio.flac')] : []))
+  await sql`DELETE FROM videos WHERE id = ANY(${uploads.map(u => u.id)}) AND role = 'asset' AND stock_ref IS NULL`
+}
+
 export async function deleteVideos(userId: string, videoIds: string[]) {
   const ids = cleanIds(videoIds)
   if (ids.length === 0) throw Object.assign(new Error('No videos selected'), { status: 400 })
@@ -104,10 +141,14 @@ export async function deleteVideos(userId: string, videoIds: string[]) {
     WHERE video_id = ANY(${ids}) AND output_storage_path IS NOT NULL
   `
   for (const row of clipOutputs) keysToDelete.push(row.output_storage_path as string)
+  // B-roll uploaded into these videos' clips and used nowhere else goes too
+  const clipIds = (await sql<{ id: string }[]>`SELECT id FROM clips WHERE video_id = ANY(${ids})`).map(r => r.id)
+  const uploads = (await uploadsOnlyUsedBy(userId, clipIds)).filter(u => !ids.includes(u.id))
 
   await deleteR2Keys(keysToDelete)
   // Clips, formats, captions, overlays… go with their video (foreign keys cascade)
   await sql`DELETE FROM videos WHERE id = ANY(${ids}) AND user_id = ${userId}`
+  await deleteUploads(uploads)
   return { deleted: ids.length }
 }
 
@@ -132,7 +173,7 @@ export interface ClipSuggestion {
 }
 type Word = { word: string; start_ms: number; end_ms: number }
 
-export async function getVideoSuggestions(userId: string, videoId: string): Promise<{ suggestions: ClipSuggestion[]; model?: string }> {
+export async function getVideoSuggestions(userId: string, videoId: string, extraExclude: Array<[number, number]> = []): Promise<{ suggestions: ClipSuggestion[]; model?: string }> {
   const [video] = await sql`
     SELECT id, user_id, duration_ms, status FROM videos WHERE id = ${videoId}
   `
@@ -152,17 +193,15 @@ export async function getVideoSuggestions(userId: string, videoId: string): Prom
   const durationMs = video.duration_ms ?? 0
   if (words.length === 0) return { suggestions: makeTimeChunks(durationMs) }
 
-  // Claude when its key is set, otherwise Gemini; plain chunks only when no AI can answer
-  const anthropicKey = process.env.ANTHROPIC_API_KEY
+  // Plain chunks only when no AI can answer
   const geminiKey = process.env.GEMINI_API_KEY
-  if (!anthropicKey && !geminiKey) return { suggestions: makeWordChunks(words, durationMs) }
+  if (!geminiKey) return { suggestions: makeWordChunks(words, durationMs) }
 
-  const exclude = await clippedRanges(videoId, durationMs)
-  const model = anthropicKey ? BEST_MOMENTS_MODEL : BEST_MOMENTS_FALLBACK_MODEL
+  // Skip what's already a clip, and moments already listed (so "View more" finds new ones)
+  const exclude = [...await clippedRanges(videoId, durationMs), ...extraExclude]
+  const model = CLIP_MODEL
   try {
-    const suggestions = anthropicKey
-      ? await detectClipsWithClaude(words, durationMs, anthropicKey, exclude)
-      : await detectBestWithGemini(words, durationMs, geminiKey!, exclude)
+    const suggestions = await detectBestMoments(words, durationMs, geminiKey, exclude)
     logShown(userId, videoId, 'best_moments', model, suggestions)
     return { suggestions, model }
   } catch (e) {
@@ -223,7 +262,7 @@ export async function addBestMoments(userId: string, videoId: string): Promise<{
       INSERT INTO ai_suggestion_events ${sql([...clipIdOf].map(([s, clipId]) => ({
         user_id: userId, video_id: videoId, clip_id: clipId, source: 'best_moments', event: 'used',
         suggestion: sql.json({ start_ms: s.start_ms, end_ms: s.end_ms, title: s.title, score: s.score ?? null,
-          subscores: s.subscores ?? null, reason: s.reason ?? null, model: model ?? BEST_MOMENTS_MODEL, auto_added: true } as never),
+          subscores: s.subscores ?? null, reason: s.reason ?? null, model: model ?? CLIP_MODEL, auto_added: true } as never),
       })))}
     `.catch(e => console.warn('[best-moments] section not recorded:', e instanceof Error ? e.message : e))
   }
@@ -270,7 +309,7 @@ export async function getVideoSuggestionsByCriteria(
   if (!geminiKey) throw Object.assign(new Error('AI clip detection is not configured'), { status: 500 })
 
   const suggestions = await detectClipsByCriteria(words, durationMs, trimmedCriteria, geminiKey)
-  logShown(userId, videoId, 'clip_search', CLIP_SEARCH_MODEL, suggestions)
+  logShown(userId, videoId, 'clip_search', CLIP_MODEL, suggestions)
   return { suggestions }
 }
 
@@ -295,35 +334,11 @@ async function clippedRanges(videoId: string, durationMs: number): Promise<Array
     .map(c => [c.start_ms, c.end_ms])
 }
 
-// Best moments: Claude reads the whole transcript in ~10-minute windows (see clipFinder.ts)
-async function detectClipsWithClaude(words: Word[], durationMs: number, apiKey: string, exclude: Array<[number, number]>): Promise<ClipSuggestion[]> {
-  const ask = async (system: string, user: string) => {
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
-      body: JSON.stringify({
-        model: BEST_MOMENTS_MODEL,
-        max_tokens: 2048,
-        system,
-        messages: [{ role: 'user', content: user }],
-      }),
-    })
-    if (!res.ok) throw new Error(`Anthropic API ${res.status}`)
-    const data = await res.json()
-    return (data.content?.[0]?.text ?? '') as string
-  }
-  const clips = await findClips({
-    words, durationMs, mode: { kind: 'best' }, ask, exclude,
-    log: msg => console.error('[suggestions]', msg),
-  })
-  return clips.map((c, i) => toSuggestion(c, `ai-${i}`))
-}
-
-// Best moments on Gemini (no Anthropic key): same windows, prompt and scoring as Claude's
-async function detectBestWithGemini(words: Word[], durationMs: number, apiKey: string, exclude: Array<[number, number]>): Promise<ClipSuggestion[]> {
+// Best moments: the whole transcript in ~10-minute windows (see clipFinder.ts)
+async function detectBestMoments(words: Word[], durationMs: number, apiKey: string, exclude: Array<[number, number]>): Promise<ClipSuggestion[]> {
   const genAI = new GoogleGenerativeAI(apiKey)
   const ask = async (system: string, user: string) => {
-    const m = genAI.getGenerativeModel({ model: BEST_MOMENTS_FALLBACK_MODEL, systemInstruction: system })
+    const m = genAI.getGenerativeModel({ model: CLIP_MODEL, systemInstruction: system })
     return (await m.generateContent(user)).response.text()
   }
   const clips = await findClips({
@@ -340,7 +355,7 @@ async function detectClipsByCriteria(
 ): Promise<ClipSuggestion[]> {
   const genAI = new GoogleGenerativeAI(apiKey)
   const ask = async (system: string, user: string) => {
-    const model = genAI.getGenerativeModel({ model: CLIP_SEARCH_MODEL, systemInstruction: system })
+    const model = genAI.getGenerativeModel({ model: CLIP_MODEL, systemInstruction: system })
     const result = await model.generateContent(user)
     return result.response.text()
   }
@@ -381,7 +396,10 @@ function makeTimeChunks(durationMs: number): ClipSuggestion[] {
 
 export const AUTO_CLIP_COUNTS = [3, 5, 10] as const
 
-export async function createAutoClips(userId: string, videoId: string, clipCount = 5, addBroll = false) {
+/** The Make my clips checkboxes (each on unless false) */
+export interface AutoClipOptions { captions?: boolean; title?: boolean; motion?: boolean; layouts?: boolean }
+
+export async function createAutoClips(userId: string, videoId: string, clipCount = 5, addBroll = false, options: AutoClipOptions = {}) {
   const count = Math.round(Number(clipCount))
   if (!Number.isFinite(count) || count < 1 || count > 10) {
     throw Object.assign(new Error('Choose between 1 and 10 clips'), { status: 400 })
@@ -418,7 +436,11 @@ export async function createAutoClips(userId: string, videoId: string, clipCount
   const [aiJob] = await sql`
     INSERT INTO ai_edit_jobs (video_id, clip_count, status) VALUES (${videoId}, ${count}, 'queued') RETURNING id
   `
-  const payload = { ai_edit_job_id: aiJob.id, video_id: videoId, clip_count: count, add_broll: addBroll }
+  const payload = {
+    ai_edit_job_id: aiJob.id, video_id: videoId, clip_count: count, add_broll: addBroll,
+    captions: options.captions !== false, title: options.title !== false,
+    motion: options.motion !== false, layouts: options.layouts !== false,
+  }
   await sql`INSERT INTO jobs (type, payload, status) VALUES ('ai_edit', ${sql.json(payload)}, 'queued')`
   return { ai_edit_job_id: aiJob.id as string }
 }

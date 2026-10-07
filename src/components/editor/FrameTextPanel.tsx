@@ -1,5 +1,7 @@
 'use client'
 
+import { InfoTip } from '@/components/ui/info-tip'
+import { EmojiButton, insertAtCursor } from './EmojiPicker'
 import type { SegmentLocal, FrameItem, FrameLane, FrameBand } from '@chai-cut/shared'
 import { isFrameLayout, frameHasBand, frameLanes, frameOf, DEFAULT_BAND } from '@/modules/editor/frames'
 import { FRAME_ITEM_COLORS, frameItemColor } from './SegmentTimeline'
@@ -77,8 +79,9 @@ export function FrameTextPanel({ segment, currentTimeMs, selectedId, onSelect, o
               <div className="flex flex-col gap-3 px-3 pb-3 pt-1">
                 {it.captions ? (
                   <>
-                    <p className="text-[11px] leading-relaxed" style={{ color: 'rgb(var(--ed-fg) / 0.5)' }}>
-                      Your captions show inside the band here instead of their usual spot. Style them in Captions.
+                    <p className="flex items-center gap-1.5 text-[11px]" style={{ color: 'rgb(var(--ed-fg) / 0.5)' }}>
+                      Captions in this band
+                      <InfoTip label="About captions in the band" size={12}>Your captions show inside the band here instead of their usual spot. Style them in Captions.</InfoTip>
                     </p>
                     <button onClick={() => onUpdate(it.id, { captions: false, text: '' })}
                       className="self-start text-[11px] font-medium hover:underline" style={{ color: 'var(--ed-accent-text)' }}>Use your own text instead</button>
@@ -87,10 +90,15 @@ export function FrameTextPanel({ segment, currentTimeMs, selectedId, onSelect, o
                   const t = { ...DEFAULT_BAND, ...(it.lane === 'band' ? frame.band : { bg: '#000000', size: 80 }), ...pickStyle(it) }
                   return (
                     <>
-                      <textarea rows={2} value={it.text ?? ''} placeholder="Type your title or hook…" aria-label="Text" autoFocus={!it.text}
-                        onChange={e => onUpdate(it.id, { text: e.target.value })}
-                        className="w-full px-3 py-2 rounded-lg text-sm outline-none resize-none text-[var(--ed-text)]"
-                        style={{ background: 'rgb(var(--ed-fg) / 0.06)', border: '1px solid rgb(var(--ed-fg) / 0.12)' }} />
+                      <div className="flex gap-2 items-start">
+                        <textarea rows={2} value={it.text ?? ''} placeholder="Type your title or hook…" aria-label="Text" autoFocus={!it.text}
+                          data-frame-text={it.id}
+                          onChange={e => onUpdate(it.id, { text: e.target.value })}
+                          className="flex-1 px-3 py-2 rounded-lg text-sm outline-none resize-none text-[var(--ed-text)]"
+                          style={{ background: 'rgb(var(--ed-fg) / 0.06)', border: '1px solid rgb(var(--ed-fg) / 0.12)' }} />
+                        <EmojiButton label="Add an emoji to the text"
+                          onPick={e => onUpdate(it.id, { text: insertAtCursor(document.querySelector<HTMLTextAreaElement>(`[data-frame-text="${it.id}"]`), it.text ?? '', e) })} />
+                      </div>
                       <Swatches title="Background" colors={TEXT_BG} value={t.bg} onChange={bg => onUpdate(it.id, { bg })} />
                       <Swatches title="Text colour" colors={TEXT_COLOR} value={t.color} onChange={color => onUpdate(it.id, { color })} />
                       <div className="flex flex-col gap-1.5">

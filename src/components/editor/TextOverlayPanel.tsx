@@ -1,10 +1,12 @@
 'use client'
 
+import { InfoTip } from '@/components/ui/info-tip'
 import { useEffect, useRef, useState } from 'react'
 import type { TextOverlay } from '@chai-cut/shared'
 import { FontPicker, loadVideoFonts } from './CaptionStyler'
 import { EmptyState } from './EditorTour'
 import { TimeRange } from './ItemTimeRange'
+import { EmojiButton, EmojiGrid, insertAtCursor } from './EmojiPicker'
 import { TEXT_ANIMATION_GROUPS, TEXT_PRESETS, replayTextAnimation, textCss, type TextStyle } from '@/modules/editor/textStyle'
 
 interface Props {
@@ -61,6 +63,17 @@ export function TextOverlayPanel({ overlays, currentTimeMs, clipDurationMs, onAd
     setLastCount(overlays.length)
   }, [overlays, lastCount])
 
+  const newRef = useRef<HTMLTextAreaElement>(null)
+  // The Emoji section: an emoji on its own, as a sticker on the video (big, at the playhead, 3 s)
+  function addEmoji(e: string) {
+    onAdd({
+      text: e,
+      start_ms: Math.round(currentTimeMs),
+      end_ms: Math.round(Math.min(currentTimeMs + 3000, clipDurationMs)),
+      x: 0.4, y: 0.4, font: 'sans-serif', size: 160, color: '#ffffff',
+    })
+  }
+
   function handleAdd() {
     if (!newText.trim()) return
     onAdd({
@@ -78,19 +91,28 @@ export function TextOverlayPanel({ overlays, currentTimeMs, clipDurationMs, onAd
       {/* Add */}
       <div className="flex flex-col gap-2">
         <div className="flex gap-2">
-          <input type="text" value={newText} onChange={e => setNewText(e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && handleAdd()}
-            placeholder="Type your text…" aria-label="New text"
-            className="tx-input flex-1" />
+          {/* Enter starts a new line; Ctrl+Enter (or the + button) adds the text */}
+          <textarea ref={newRef} value={newText} onChange={e => setNewText(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); handleAdd() } }}
+            placeholder="Type your text…" aria-label="New text" title="Enter starts a new line · Ctrl+Enter adds it"
+            rows={Math.min(4, Math.max(1, newText.split('\n').length))}
+            className="tx-input flex-1 resize-none" style={{ lineHeight: 1.35, paddingTop: 8, paddingBottom: 8 }} />
+          <EmojiButton label="Add an emoji to the text" onPick={e => setNewText(insertAtCursor(newRef.current, newText, e))} />
           <button onClick={handleAdd} disabled={!newText.trim()} className="tx-add">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
             Add
           </button>
         </div>
-        <p className="text-[11px] leading-relaxed" style={{ color: 'rgb(var(--ed-fg) / 0.45)' }}>
-          It appears at the playhead for 3 seconds. Drag it on the video to move it; drag its bar on the timeline to change when it shows.
+        <p className="flex items-center gap-1.5 text-[11px]" style={{ color: 'rgb(var(--ed-fg) / 0.45)' }}>
+          How it works
+          <InfoTip label="How text works" size={12}>It appears at the playhead for 3 seconds. Drag it on the video to move it; drag its bar on the timeline to change when it shows.</InfoTip>
         </p>
       </div>
+
+      {/* Emoji on their own, as stickers on the video — drawn as they'll be in the download */}
+      <Fold title="Emoji">
+        <EmojiGrid height={200} onPick={addEmoji} />
+      </Fold>
 
       {overlays.length === 0 ? (
         <EmptyState icon={<path d="M4 7V5h16v2M9 19h6M12 5v14" />} title="No text yet"
@@ -115,6 +137,7 @@ function TextItem({ o, open, currentTimeMs, clipDurationMs, onToggle, onUpdate, 
   onUpdate: (u: Partial<TextOverlay>) => void
   onRemove: () => void
 }) {
+  const textRef = useRef<HTMLTextAreaElement>(null)
   // Picking a style or an animation replays the entrance in the preview straight away
   const applyPreset = (style: TextStyle) => {
     onUpdate({ ...style, ...(style.font ? {} : o.font === 'monospace' ? { font: 'sans-serif' } : {}) })
@@ -138,7 +161,13 @@ function TextItem({ o, open, currentTimeMs, clipDurationMs, onToggle, onUpdate, 
 
       {open && (
         <div className="flex flex-col gap-5 pt-3">
-          <input className="tx-input" value={o.text} onChange={e => onUpdate({ text: e.target.value })} aria-label="Text" data-text-id={o.id} />
+          <div className="flex gap-2">
+            {/* Enter starts a new line, as in any editor */}
+            <textarea ref={textRef} className="tx-input flex-1 resize-none" value={o.text} onChange={e => onUpdate({ text: e.target.value })}
+              aria-label="Text" data-text-id={o.id} title="Enter starts a new line"
+              rows={Math.min(6, Math.max(1, o.text.split('\n').length))} style={{ lineHeight: 1.35, paddingTop: 8, paddingBottom: 8 }} />
+            <EmojiButton label="Add an emoji to the text" onPick={e => onUpdate({ text: insertAtCursor(textRef.current, o.text, e) })} />
+          </div>
           {/* When it shows */}
           <TimeRange startMs={o.start_ms} endMs={o.end_ms} currentTimeMs={currentTimeMs}
             onStart={ms => onUpdate({ start_ms: Math.round(Math.max(0, Math.min(o.end_ms - 200, ms))) })}

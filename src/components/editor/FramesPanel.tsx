@@ -1,5 +1,6 @@
 'use client'
 
+import { InfoTip } from '@/components/ui/info-tip'
 import { useEffect, useState } from 'react'
 import type { SegmentLocal, FrameLayout, FrameItem, FrameSettings, SlotMotion, CornerStyle } from '@chai-cut/shared'
 import { FRAME_TEMPLATES, FRAME_LAYOUTS, isFrameLayout, frameLanes, frameOf, cornerGeometry, CORNER_MAX, mainSlotSound } from '@/modules/editor/frames'
@@ -357,8 +358,9 @@ function FrameContents({ seg, currentTimeMs, videoTitles, selected, onSelectItem
                     </div>
                     <CornerPicker value={frame.main_corners?.[String(r.lane)]}
                       onChange={corners => onUpdateFrame({ main_corners: { ...frame.main_corners, [String(r.lane)]: corners } })} />
-                    <p className="text-[11px] leading-relaxed" style={{ color: 'rgb(var(--ed-fg) / 0.45)' }}>
-                      Frame it by dragging its box on the source video. It plays for the whole frame.
+                    <p className="flex items-center gap-1.5 text-[11px]" style={{ color: 'rgb(var(--ed-fg) / 0.45)' }}>
+                      Framing
+                      <InfoTip label="About framing the main video" size={12}>Frame it by dragging its box on the source video. It plays for the whole frame. In the preview you can also move and resize it.</InfoTip>
                     </p>
                     <button onClick={() => onRemoveMain(r.lane as number)}
                       className="self-end text-[11px] font-medium hover:underline" style={{ color: '#f87171' }}>Take it out of this slot</button>
