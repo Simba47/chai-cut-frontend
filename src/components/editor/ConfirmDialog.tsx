@@ -12,6 +12,9 @@ export interface ConfirmOptions {
   onCancel?: () => void
   /** A warning rather than a delete: the confirm button isn't red */
   tone?: 'danger' | 'warning'
+  /** A second, gentler thing to do instead (a quiet link under the text) */
+  extraLabel?: string
+  onExtra?: () => void
 }
 
 type Pending = ConfirmOptions & { onConfirm: () => void }
@@ -27,7 +30,7 @@ export function useConfirm(): { confirm: (options: ConfirmOptions, onConfirm: ()
   return { confirm, dialog }
 }
 
-function ConfirmDialog({ title, body, confirmLabel = 'Delete', cancelLabel = 'Cancel', onCancel, tone = 'danger', onConfirm, onClose }: Pending & { onClose: () => void }) {
+function ConfirmDialog({ title, body, confirmLabel = 'Delete', cancelLabel = 'Cancel', onCancel, tone = 'danger', extraLabel, onExtra, onConfirm, onClose }: Pending & { onClose: () => void }) {
   const confirmRef = useRef<HTMLButtonElement>(null)
 
   useEffect(() => {
@@ -66,6 +69,13 @@ function ConfirmDialog({ title, body, confirmLabel = 'Delete', cancelLabel = 'Ca
         </span>
         <p id="confirm-title" className="cfm-title">{title}</p>
         {body && <p id="confirm-body" className="cfm-body">{body}</p>}
+        {extraLabel && onExtra && (
+          <button onClick={() => { onClose(); onExtra() }}
+            className="text-[12px] underline underline-offset-2 transition-opacity opacity-70 hover:opacity-100"
+            style={{ color: 'inherit', marginTop: -4, marginBottom: 10 }}>
+            {extraLabel}
+          </button>
+        )}
         <div className="cfm-actions">
           <button onClick={() => { onClose(); onCancel?.() }} className="cfm-btn cfm-cancel">
             {cancelLabel}<kbd className="cfm-kbd">Esc</kbd>

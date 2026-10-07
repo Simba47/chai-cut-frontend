@@ -33,7 +33,8 @@ export async function queueRetranscribe(userId: string, clipId: string, language
     clip_end_ms: row.end_ms,
     ...(renderAfter ? { render_after: renderAfter } : {}),
   }
-  await sql`INSERT INTO jobs (type, payload, status) VALUES ('transcribe', ${sql.json(payload)}, 'queued')`
+  const [job] = await sql`INSERT INTO jobs (type, payload, status) VALUES ('transcribe', ${sql.json(payload)}, 'queued') RETURNING id`
+  return job?.id as string | undefined
 }
 
 /**

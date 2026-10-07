@@ -6,10 +6,12 @@ import sql from '@/lib/db'
 import { findClips, type FoundClip, type Subscores } from './clipFinder'
 import { logSuggestionEvents, type SuggestionSource } from './suggestionEvents'
 
-const BEST_MOMENTS_MODEL = 'claude-haiku-4-5-20251001'
-/** Best moments without an Anthropic key: the model Make my clips already uses */
-const BEST_MOMENTS_FALLBACK_MODEL = 'gemini-2.5-flash'
-const CLIP_SEARCH_MODEL = 'gemini-3.1-pro-preview'
+/**
+ * One model picks clips everywhere — Best moments, Ask AI, and Make my clips on the worker
+ * (jobs/ai_edit.ts) — so the three agree with each other and there is one price and one vendor.
+ * (Before: Claude Haiku, Gemini 3.1 Pro preview and Gemini 2.5 Flash, one each.)
+ */
+export const CLIP_MODEL = 'gemini-2.5-flash'
 
 /** 'shown' for each AI suggestion returned (plain fallback chunks are not AI picks) */
 function logShown(userId: string, videoId: string, source: SuggestionSource, model: string, suggestions: ClipSuggestion[]) {
@@ -191,18 +193,15 @@ export async function getVideoSuggestions(userId: string, videoId: string, extra
   const durationMs = video.duration_ms ?? 0
   if (words.length === 0) return { suggestions: makeTimeChunks(durationMs) }
 
-  // Claude when its key is set, otherwise Gemini; plain chunks only when no AI can answer
-  const anthropicKey = process.env.ANTHROPIC_API_KEY
+  // Plain chunks only when no AI can answer
   const geminiKey = process.env.GEMINI_API_KEY
-  if (!anthropicKey && !geminiKey) return { suggestions: makeWordChunks(words, durationMs) }
+  if (!geminiKey) return { suggestions: makeWordChunks(words, durationMs) }
 
   // Skip what's already a clip, and moments already listed (so "View more" finds new ones)
   const exclude = [...await clippedRanges(videoId, durationMs), ...extraExclude]
-  const model = anthropicKey ? BEST_MOMENTS_MODEL : BEST_MOMENTS_FALLBACK_MODEL
+  const model = CLIP_MODEL
   try {
-    const suggestions = anthropicKey
-      ? await detectClipsWithClaude(words, durationMs, anthropicKey, exclude)
-      : await detectBestWithGemini(words, durationMs, geminiKey!, exclude)
+    const suggestions = await detectBestMoments(words, durationMs, geminiKey, exclude)
     logShown(userId, videoId, 'best_moments', model, suggestions)
     return { suggestions, model }
   } catch (e) {
@@ -263,7 +262,7 @@ export async function addBestMoments(userId: string, videoId: string): Promise<{
       INSERT INTO ai_suggestion_events ${sql([...clipIdOf].map(([s, clipId]) => ({
         user_id: userId, video_id: videoId, clip_id: clipId, source: 'best_moments', event: 'used',
         suggestion: sql.json({ start_ms: s.start_ms, end_ms: s.end_ms, title: s.title, score: s.score ?? null,
-          subscores: s.subscores ?? null, reason: s.reason ?? null, model: model ?? BEST_MOMENTS_MODEL, auto_added: true } as never),
+          subscores: s.subscores ?? null, reason: s.reason ?? null, model: model ?? CLIP_MODEL, auto_added: true } as never),
       })))}
     `.catch(e => console.warn('[best-moments] section not recorded:', e instanceof Error ? e.message : e))
   }
@@ -310,7 +309,7 @@ export async function getVideoSuggestionsByCriteria(
   if (!geminiKey) throw Object.assign(new Error('AI clip detection is not configured'), { status: 500 })
 
   const suggestions = await detectClipsByCriteria(words, durationMs, trimmedCriteria, geminiKey)
-  logShown(userId, videoId, 'clip_search', CLIP_SEARCH_MODEL, suggestions)
+  logShown(userId, videoId, 'clip_search', CLIP_MODEL, suggestions)
   return { suggestions }
 }
 
@@ -335,35 +334,11 @@ async function clippedRanges(videoId: string, durationMs: number): Promise<Array
     .map(c => [c.start_ms, c.end_ms])
 }
 
-// Best moments: Claude reads the whole transcript in ~10-minute windows (see clipFinder.ts)
-async function detectClipsWithClaude(words: Word[], durationMs: number, apiKey: string, exclude: Array<[number, number]>): Promise<ClipSuggestion[]> {
-  const ask = async (system: string, user: string) => {
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
-      body: JSON.stringify({
-        model: BEST_MOMENTS_MODEL,
-        max_tokens: 2048,
-        system,
-        messages: [{ role: 'user', content: user }],
-      }),
-    })
-    if (!res.ok) throw new Error(`Anthropic API ${res.status}`)
-    const data = await res.json()
-    return (data.content?.[0]?.text ?? '') as string
-  }
-  const clips = await findClips({
-    words, durationMs, mode: { kind: 'best' }, ask, exclude,
-    log: msg => console.error('[suggestions]', msg),
-  })
-  return clips.map((c, i) => toSuggestion(c, `ai-${i}`))
-}
-
-// Best moments on Gemini (no Anthropic key): same windows, prompt and scoring as Claude's
-async function detectBestWithGemini(words: Word[], durationMs: number, apiKey: string, exclude: Array<[number, number]>): Promise<ClipSuggestion[]> {
+// Best moments: the whole transcript in ~10-minute windows (see clipFinder.ts)
+async function detectBestMoments(words: Word[], durationMs: number, apiKey: string, exclude: Array<[number, number]>): Promise<ClipSuggestion[]> {
   const genAI = new GoogleGenerativeAI(apiKey)
   const ask = async (system: string, user: string) => {
-    const m = genAI.getGenerativeModel({ model: BEST_MOMENTS_FALLBACK_MODEL, systemInstruction: system })
+    const m = genAI.getGenerativeModel({ model: CLIP_MODEL, systemInstruction: system })
     return (await m.generateContent(user)).response.text()
   }
   const clips = await findClips({
@@ -380,7 +355,7 @@ async function detectClipsByCriteria(
 ): Promise<ClipSuggestion[]> {
   const genAI = new GoogleGenerativeAI(apiKey)
   const ask = async (system: string, user: string) => {
-    const model = genAI.getGenerativeModel({ model: CLIP_SEARCH_MODEL, systemInstruction: system })
+    const model = genAI.getGenerativeModel({ model: CLIP_MODEL, systemInstruction: system })
     const result = await model.generateContent(user)
     return result.response.text()
   }

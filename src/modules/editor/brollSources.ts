@@ -21,11 +21,15 @@ export function useBrollSources(
   getUrl: (videoId: string) => string | undefined,
   /** The clip's own video: slots showing it are borrowed reactions (useBorrowedSlots), not B-roll */
   mainVideoId?: string | null,
+  /** Parts of the clip were removed (lib/trims.ts): the main video's time (ms) → clip time */
+  videoToTimeline?: (videoMs: number) => number,
 ) {
   const els = useRef(new Map<string, HTMLVideoElement>())
   const active = useRef<string | null>(null)
   const getUrlRef = useRef(getUrl)
   getUrlRef.current = getUrl
+  const toTimelineRef = useRef(videoToTimeline)
+  toTimelineRef.current = videoToTimeline
 
   return useCallback((seg: SegmentLocal | null) => {
     const box = seg && !isFrameLayout(seg.layout) ? seg.crop_boxes[0] : undefined
@@ -52,7 +56,7 @@ export function useBrollSources(
     // Its own sound when switched on (the main video is quiet under it then, as in the export)
     el.muted = sound ? false : box?.muted !== false
     el.volume = Math.max(0, Math.min(1, (sound ? sound.volume : box?.volume) ?? 1))
-    const rel = main.currentTime * 1000 - clipStartMs
+    const rel = toTimelineRef.current ? toTimelineRef.current(main.currentTime * 1000) : main.currentTime * 1000 - clipStartMs
     const want = ((sound ? sound.offset_ms : box?.source_offset_ms ?? 0) + rel - seg.start_ms) / 1000
     if (Math.abs(el.currentTime - want) > 0.3) el.currentTime = Math.max(0, want)
     if (main.paused && !el.paused) el.pause()
@@ -148,9 +152,13 @@ export function useBorrowedSlots(
   clipStartMs: number,
   mainVideoId: string | null | undefined,
   mainUrl: string | null | undefined,
+  /** Parts of the clip were removed (lib/trims.ts): the main video's time (ms) → clip time */
+  videoToTimeline?: (videoMs: number) => number,
 ) {
   const pool = useRef<BorrowedPool | null>(null)
   const segs = useRef<SegmentLocal[]>([])
+  const toTimelineRef = useRef(videoToTimeline)
+  toTimelineRef.current = videoToTimeline
   useEffect(() => {
     if (!mainUrl || !mainVideoId) return
     pool.current = new BorrowedPool(mainUrl, mainVideoId)
@@ -161,7 +169,8 @@ export function useBorrowedSlots(
     if (!isBorrowedSlot(seg, box, mainVideoId)) return null
     const main = videoRef.current
     if (!seg || !main || !pool.current) return false
-    pool.current.sync(segs.current.length ? segs.current : [seg], main.currentTime * 1000 - clipStartMs, !main.paused)
+    const rel = toTimelineRef.current ? toTimelineRef.current(main.currentTime * 1000) : main.currentTime * 1000 - clipStartMs
+    pool.current.sync(segs.current.length ? segs.current : [seg], rel, !main.paused)
     return pool.current.source(box.id)
   }, [videoRef, clipStartMs, mainVideoId])
 

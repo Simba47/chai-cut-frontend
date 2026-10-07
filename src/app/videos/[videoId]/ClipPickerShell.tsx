@@ -500,7 +500,7 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: P
       body: JSON.stringify({
         event, source, clip_id: clipId,
         suggestion: { start_ms: s.start_ms, end_ms: s.end_ms, title: s.title, score: s.score, subscores: s.subscores, reason: s.reason,
-          model: source === 'best_moments' ? 'claude-haiku-4-5-20251001' : 'gemini-3.1-pro-preview' },
+          model: 'gemini-2.5-flash' },   // one model picks clips everywhere (CLIP_MODEL in services/videos.ts)
       }),
     }).catch(() => {})
   }
@@ -621,7 +621,7 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: P
     }
   }
 
-  // On demand only — each call asks Claude to read the transcript. Every moment it finds is
+  // On demand only — each call asks AI to read the transcript. Every moment it finds is
   // saved as a draft clip in the Best moments section; the next call finds new ones.
   // Cancel on a running Ask AI / Best moments search: the request is dropped and the list stays as it was
   const momentsAbort = useRef<AbortController | null>(null)
@@ -692,7 +692,7 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: P
     createClip(s.start_ms, s.end_ms, s.id, s.title, { s, source }, false)
   }
 
-  // On demand — asks Claude to find moments matching a specific, user-typed criteria
+  // On demand — asks AI to find moments matching a specific, user-typed criteria
   async function findByCriteria(query?: string, fresh = false) {
     const q = (query ?? aiCriteria).trim()
     if (!q) return

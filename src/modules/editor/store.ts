@@ -6,7 +6,8 @@ import { LAYOUT_SLOT_COUNT } from '@chai-cut/shared'
 import { getBoxPositionAtLerp, type BoxPosition } from '@/lib/interpolation'
 import { makeBox, defaultCropForSlot } from './utils'
 import { isFrameLayout, DEFAULT_BAND, defaultFrame, frameOf, placeNewItem } from './frames'
-import { setViewAt, recordMotionAt, removeViewChangeAt, moveViewChange, type ViewKeyframe } from './views'
+import { setViewAt, recordMotionAt, removeViewChangeAt, moveViewChange, duplicateViewChange, type ViewKeyframe } from './views'
+import type { Range } from '@/lib/cuts'
 
 export type KeyframeMap = Record<string, BoxKeyframe[]>  // boxId → sorted keyframes
 
@@ -29,13 +30,20 @@ function withIds(boxId: string, kfs: ViewKeyframe[]): BoxKeyframe[] {
 interface EditorState {
   segments: SegmentLocal[]
   keyframes: KeyframeMap
+  /** Parts of the video removed from this clip, in ms of the source video (lib/trims.ts) */
+  trims: Range[]
+  /** The clip's start and end in the source video when moved in the editor (null = as loaded) */
+  clipRange: Range | null
   activeSegmentId: string | null
   activeBoxId: string | null
 }
 
 interface EditorActions {
-  hydrate: (segments: SegmentLocal[], keyframes: KeyframeMap) => void
+  hydrate: (segments: SegmentLocal[], keyframes: KeyframeMap, trims?: Range[]) => void
   reset: () => void
+  /** A part of the video removed, or the clip's start / end moved: the sections and keyframes as they
+   *  are afterwards, the removed parts, and (when it moved) the clip's start and end in the video */
+  applyTrim: (segments: SegmentLocal[], keyframes: KeyframeMap, trims: Range[], clipRange?: Range) => void
   // Segments
   addSegment: (seg: Omit<SegmentLocal, 'id' | 'crop_boxes'>, onCreate?: (id: string) => void, initialBoxes?: CropBoxLocal[]) => void
   updateSegment: (id: string, updates: Partial<Omit<SegmentLocal, 'id'>>) => void
@@ -63,6 +71,8 @@ interface EditorActions {
   recordMotionAt: (boxId: string, t: number, pos: BoxPosition) => void
   removeViewChange: (boxId: string, t: number) => void
   moveViewChange: (boxId: string, from: number, to: number, formatStart: number, formatEnd: number) => void
+  /** Copy the view change at t (see views.ts duplicateViewChange). Returns where the copy went, or null if there's no room. */
+  duplicateViewChange: (boxId: string, t: number, formatEnd: number) => number | null
   /** Frame slots: change what a slot shows (source video, photo, motion, volume, mute) */
   updateSlot: (segId: string, boxId: string, patch: Partial<Pick<CropBoxLocal, 'source_video_id' | 'source_offset_ms' | 'image_path' | 'image_url' | 'image_motion' | 'volume' | 'muted'>>) => void
   /** Frame layouts: change the letterbox band's look */
@@ -150,11 +160,19 @@ const brollUnder = new Map<string, { covered: SegmentLocal[]; afterId: string | 
 export const useEditorStore = create<EditorState & EditorActions>()((set, get) => ({
   segments: [],
   keyframes: {},
+  trims: [],
+  clipRange: null,
   activeSegmentId: null,
   activeBoxId: null,
 
-  hydrate: (segments, keyframes) => set({ segments, keyframes, activeSegmentId: null, activeBoxId: null }),
-  reset: () => set({ segments: [] as SegmentLocal[], keyframes: {} as KeyframeMap, activeSegmentId: null, activeBoxId: null }),
+  hydrate: (segments, keyframes, trims = []) => set({ segments, keyframes, trims, clipRange: null, activeSegmentId: null, activeBoxId: null }),
+  reset: () => set({ segments: [] as SegmentLocal[], keyframes: {} as KeyframeMap, trims: [] as Range[], clipRange: null, activeSegmentId: null, activeBoxId: null }),
+  applyTrim: (segments, keyframes, trims, clipRange) => {
+    // What each video shot covered was noted in times that have just moved: forget it (taking a
+    // shot out then gives its time to the section before it, as after a reload)
+    brollUnder.clear()
+    set({ segments, keyframes, trims, ...(clipRange ? { clipRange } : {}) })
+  },
 
   addSegment: (seg, onCreate, initialBoxes) => {
     const id = crypto.randomUUID()
@@ -365,6 +383,12 @@ export const useEditorStore = create<EditorState & EditorActions>()((set, get) =
   moveViewChange: (boxId, from, to, formatStart, formatEnd) => set(s => ({
     keyframes: { ...s.keyframes, [boxId]: withIds(boxId, moveViewChange(s.keyframes[boxId] ?? [], from, to, formatStart, formatEnd)) },
   })),
+  duplicateViewChange: (boxId, t, formatEnd) => {
+    const out = duplicateViewChange(get().keyframes[boxId] ?? [], t, formatEnd)
+    if (!out) return null
+    set(s => ({ keyframes: { ...s.keyframes, [boxId]: withIds(boxId, out.keyframes) } }))
+    return out.at
+  },
 
   removeSegment: (id) => set(s => {
     // Formats are independent: deleting one leaves its time to the default framing

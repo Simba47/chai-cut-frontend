@@ -79,6 +79,37 @@ export function shownText(o: Pick<TextOverlay, 'text' | 'uppercase'>): string {
   return o.uppercase ? o.text.toUpperCase() : o.text
 }
 
+/** Line height of a text, in em of its font size (the export uses the same) */
+export const TEXT_LINE_EM = 1.15
+/** Narrowest a text box can be dragged, as a share of the frame's width */
+export const MIN_TEXT_W = 0.08
+/** Shortest a text box can be dragged, as a share of the frame's height */
+export const MIN_TEXT_H = 0.03
+
+/**
+ * The lines a text is shown in: each line typed (Enter), and with a box width set (`maxW` > 0),
+ * words wrapped onto the next line when the line would be wider than the box. A word wider than
+ * the box keeps a line of its own. `measure` gives a string's width in the same units as `maxW`.
+ * The export (render.py _wrap_text_lines) breaks lines by exactly this rule, measuring with the
+ * same font file — so lines break in the same places in the preview and the video.
+ */
+export function wrapTextLines(text: string, maxW: number, measure: (s: string) => number): string[] {
+  const lines: string[] = []
+  for (const para of text.split('\n')) {
+    if (!(maxW > 0)) { lines.push(para); continue }
+    const words = para.split(' ')
+    let line = ''
+    for (let i = 0; i < words.length; i++) {
+      const word = words[i]
+      const probe = i === 0 ? word : `${line} ${word}`
+      if (i > 0 && line && measure(probe) > maxW) { lines.push(line); line = word }
+      else line = probe
+    }
+    lines.push(line)
+  }
+  return lines
+}
+
 /** Inner padding of the background box, in em */
 export const BG_PAD = { x: 0.35, y: 0.18 }
 
