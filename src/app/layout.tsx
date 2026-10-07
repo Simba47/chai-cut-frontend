@@ -4,6 +4,7 @@ import Script from 'next/script'
 import './globals.css'
 import './landing.css'
 import './auth.css'
+import './legal.css'
 import { Providers } from './providers'
 
 // Exposed as --font-display; only the landing page opts into it

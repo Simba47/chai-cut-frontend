@@ -16,6 +16,8 @@ import { SectionTransition } from '@/components/ui/section-transition'
 import { FaqSection, type FaqItem } from '@/components/ui/faq-section'
 import { neutralStyle, useLiteMotion } from '@/components/ui/use-lite-motion'
 import { PLANS } from '@/lib/plans'
+import { COMPANY } from '@/lib/company'
+import { GMAIL_COMPOSE, openMailAppOnPhones } from '@/components/ui/email-link'
 
 const free = PLANS.free
 const pro = PLANS.starter // shown as "Pro" on the landing page
@@ -143,12 +145,7 @@ const FEATURES: CarouselItem[] = [
   { id: 'search', tag: 'Search', icon: featureIcon('⌕', 'fi-blue'), title: 'Scene Search', description: 'Shortcut searches the captions and pulls out that exact moment from your video which is needed for you.' },
 ]
 
-// Placeholder email until the real support inbox is ready
-const CONTACT = {
-  email: 'hello@example.com',
-  phone: '+91 77024 04917',
-  address: ['Hyderabad, Telangana'],
-}
+const CONTACT = COMPANY
 
 const EXPLORE = [
   { label: 'Features', href: '#features' },
@@ -177,7 +174,8 @@ const SOCIALS = [
   {
     label: 'Email Shortcut',
     bg: '#FFFFFF',
-    href: `mailto:${CONTACT.email}`,
+    href: GMAIL_COMPOSE,
+    onClick: openMailAppOnPhones,
     icon: (
       <svg viewBox="52 42 88 66" width="22" height="17" fill="currentColor" aria-hidden>
         <path d="M58 108h14V74L52 59v43c0 3.32 2.69 6 6 6" />
@@ -600,6 +598,7 @@ export function LandingPage() {
                   title={s.label}
                   target="_blank"
                   rel="noopener noreferrer"
+                  onClick={s.onClick}
                   style={{ '--brand-bg': s.bg } as React.CSSProperties}
                 >
                   <span className="social-face">{s.icon}</span>
@@ -621,7 +620,7 @@ export function LandingPage() {
           <FooterReveal delay={0.3} className="footer-col" id="contact">
             <h4 className="footer-heading">Contact</h4>
             <ul className="footer-list footer-contact">
-              <li><Mail aria-hidden /><a href={`mailto:${CONTACT.email}`}>{CONTACT.email}</a></li>
+              <li><Mail aria-hidden /><a href={GMAIL_COMPOSE} target="_blank" rel="noopener noreferrer" onClick={openMailAppOnPhones}>{CONTACT.email}</a></li>
               <li><Phone aria-hidden /><a href={`tel:${CONTACT.phone.replace(/\s/g, '')}`}>{CONTACT.phone}</a></li>
               <li><MapPin aria-hidden /><address>{CONTACT.address.map(line => <span key={line}>{line}</span>)}</address></li>
             </ul>
@@ -629,10 +628,11 @@ export function LandingPage() {
         </div>
 
         <FooterReveal delay={0.4} className="footer-bottom">
-          <span className="footer-copy">© 2026 STOORY MARKETING PRIVATE LIMITED. All rights reserved.</span>
+          <span className="footer-copy">© 2026 {COMPANY.legalName}. All rights reserved.</span>
           <div className="footer-links">
-            <a href="#">Privacy Policy</a>
-            <a href="#">Terms of Service</a>
+            <Link href="/terms">Terms</Link>
+            <Link href="/privacy">Privacy</Link>
+            <Link href="/support">Support</Link>
           </div>
         </FooterReveal>
       </footer>
