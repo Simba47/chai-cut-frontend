@@ -163,7 +163,10 @@ export function ClipsGallery({ video, videoUrl, stockUrls, job, clips: initial }
           <div className="ag-banner" role="status">You stopped the last run{clips.length ? '. The clips it made are below.' : '.'}</div>
         )}
         {job?.status === 'failed' && job.error !== 'Cancelled by you' && (
-          <div className="ag-banner ag-banner-red" role="alert">Making clips failed{job.error ? `: ${job.error}` : ''}. Try again from the clip board.</div>
+          <div className="ag-banner ag-banner-red" role="alert">
+            {/* (a video with no sound can't be tried again: its message says what to do) */}
+            {/no sound/i.test(job.error ?? '') ? job.error : <>Making clips failed{job.error ? `: ${job.error}` : ''}. Try again from the clip board.</>}
+          </div>
         )}
         {exportError && <div className="ag-banner ag-banner-red" role="alert">{exportError}</div>}
         {!running && clips.length === 0 && (
