@@ -1,4 +1,5 @@
 import type { NextAuthConfig } from 'next-auth'
+import { PUBLIC_PATHS } from './lib/publicPaths'
 
 export const authConfig = {
   pages: {
@@ -14,7 +15,7 @@ export const authConfig = {
         pathname.startsWith('/verify-otp') ||
         pathname.startsWith('/forgot-password') ||
         pathname.startsWith('/reset-password')
-      const isPublic = pathname === '/'
+      const isPublic = PUBLIC_PATHS.includes(pathname)
       const isApi = pathname.startsWith('/api')
       if (!isLoggedIn && !isAuthPage && !isPublic && !isApi) return false
       if (isLoggedIn && isAuthPage) return Response.redirect(new URL('/dashboard', nextUrl))
