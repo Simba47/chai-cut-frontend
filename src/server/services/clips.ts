@@ -59,7 +59,9 @@ export async function saveClip(userId: string, clipId: string, body: SaveClipInp
 
   // Ownership check and the existing caption style in one round trip
   const [[clip], [existingStyle]] = await Promise.all([
-    sql`SELECT c.id, c.start_ms, c.end_ms, to_jsonb(c)->'trim_ranges' AS trim_ranges, v.user_id, v.duration_ms AS video_duration_ms FROM clips c JOIN videos v ON v.id = c.video_id WHERE c.id = ${clipId}`,
+    sql`SELECT c.id, c.start_ms, c.end_ms, to_jsonb(c)->'trim_ranges' AS trim_ranges,
+      (to_jsonb(c)->>'original_start_ms')::int AS original_start_ms, (to_jsonb(c)->>'original_end_ms')::int AS original_end_ms,
+      v.user_id, v.duration_ms AS video_duration_ms FROM clips c JOIN videos v ON v.id = c.video_id WHERE c.id = ${clipId}`,
     sql`SELECT id FROM caption_styles WHERE clip_id = ${clipId} LIMIT 1`,
   ])
   if (!clip) throw Object.assign(new Error('Clip not found'), { status: 404 })
@@ -127,6 +129,7 @@ export async function saveClip(userId: string, clipId: string, body: SaveClipInp
   const hasTextH = await hasColumn('text_overlays', 'h')
   // The clip's start and end, when dragged in the editor (bug #8)
   const range = clipRangeFrom(body.range, clip, body.trims)
+  const keepsMadeRange = !!range && await hasColumn('clips', 'original_start_ms')
   const clipStart = range ? range[0] : Number(clip.start_ms), clipEnd = range ? range[1] : Number(clip.end_ms)
   // Removed parts of the video, once the database has that field (the backend adds it when it starts)
   const trims = Array.isArray(body.trims) && await hasColumn('clips', 'trim_ranges')
@@ -205,7 +208,14 @@ export async function saveClip(userId: string, clipId: string, body: SaveClipInp
     }
 
     if (hasRemoveFillers) q.push(tx`UPDATE clips SET remove_fillers = ${body.removeFillers!} WHERE id = ${clipId}`)
-    if (range) q.push(tx`UPDATE clips SET start_ms = ${range[0]}, end_ms = ${range[1]} WHERE id = ${clipId}`)
+    if (range) {
+      q.push(tx`UPDATE clips SET start_ms = ${range[0]}, end_ms = ${range[1]} WHERE id = ${clipId}`)
+      // The first move keeps where the clip was made (Reset goes back to it)
+      if (keepsMadeRange) {
+        q.push(tx`UPDATE clips SET original_start_ms = COALESCE(original_start_ms, ${Number(clip.start_ms)}),
+          original_end_ms = COALESCE(original_end_ms, ${Number(clip.end_ms)}) WHERE id = ${clipId}`)
+      }
+    }
     if (trims) q.push(tx`UPDATE clips SET trim_ranges = ${trims.length ? sql.json(trims as never) : null} WHERE id = ${clipId}`)
     if (hasOriginal) {
       q.push(tx`UPDATE clips SET original_volume = ${Math.max(0, Math.min(1, original!.volume))}, original_muted = ${!!original!.muted} WHERE id = ${clipId}`)
@@ -343,6 +353,8 @@ function clipRangeFrom(raw: unknown, clip: Record<string, unknown>, newTrims?: u
   const start = Math.round(Number(raw[0])), end = Math.round(Number(raw[1]))
   const oldStart = Number(clip.start_ms), oldEnd = Number(clip.end_ms)
   if (start === oldStart && end === oldEnd) return null
+  // Back to where the clip was made (Reset): always allowed, however long it was
+  if (clip.original_start_ms != null && start === Number(clip.original_start_ms) && end === Number(clip.original_end_ms)) return [start, end]
   const videoLen = Number(clip.video_duration_ms) || 0
   if (start < 0 || (videoLen > 0 && end > videoLen + 50)) throw bad('The clip can\u2019t reach past its video')
   const played = (t: unknown, a: number, b: number) => trimMap(cleanTrims(t, a, b), a, b).lengthMs

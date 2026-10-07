@@ -116,7 +116,8 @@ export async function uploadsOnlyUsedBy(userId: string, clipIds: string[]): Prom
 /** Deletes the uploads found by uploadsOnlyUsedBy: their files, then their rows */
 export async function deleteUploads(uploads: Array<{ id: string; storage_path: string | null }>) {
   if (!uploads.length) return
-  await deleteR2Keys(uploads.flatMap(u => u.storage_path ? [u.storage_path, u.storage_path.replace(/\.[^.]+$/, '_audio.flac')] : []))
+  await deleteR2Keys(uploads.flatMap(u => u.storage_path
+    ? [u.storage_path, u.storage_path.replace(/\.[^.]+$/, '_audio.flac'), u.storage_path.replace(/\.[^.]+$/, '_reading.json')] : []))
   await sql`DELETE FROM videos WHERE id = ANY(${uploads.map(u => u.id)}) AND role = 'asset' AND stock_ref IS NULL`
 }
 
@@ -134,6 +135,8 @@ export async function deleteVideos(userId: string, videoIds: string[]) {
     keysToDelete.push(video.storage_path)
     // FLAC audio cache created during transcription
     keysToDelete.push(video.storage_path.replace(/\.[^.]+$/, '_audio.flac'))
+    // A whole-video reading that stopped part-way (the worker deletes it itself once it finishes)
+    keysToDelete.push(video.storage_path.replace(/\.[^.]+$/, '_reading.json'))
   }
   // Rendered output for every clip of these videos
   const clipOutputs = await sql`

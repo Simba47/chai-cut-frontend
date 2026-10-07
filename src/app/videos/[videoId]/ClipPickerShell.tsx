@@ -1050,7 +1050,10 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: P
         )}
         {autoJob?.status === 'failed' && autoJob.error !== 'Cancelled by you' && (
           <p className="text-xs" style={{ color: '#f87171' }}>
-            Making clips failed{autoJob.error ? `: ${autoJob.error}` : ''}. Try again, or make clips by hand below.
+            {/* (a video with no sound can't be tried again: its message says what to do) */}
+            {/no sound/i.test(autoJob.error ?? '')
+              ? <>{autoJob.error} You can still make clips by hand below.</>
+              : <>Making clips failed{autoJob.error ? `: ${autoJob.error}` : ''}. Try again, or make clips by hand below.</>}
           </p>
         )}
         {autoClips.length > 0 && !autoRunning && (

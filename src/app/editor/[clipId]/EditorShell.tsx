@@ -11,7 +11,7 @@ import { toTimelineState, toSourceState, rippleDelete, lockedInRange, insertAtSt
 import { PostText, type PostTextValue } from '@/components/clips/PostText'
 import { BrollPanel, type StockResult } from '@/components/editor/BrollPanel'
 import { useBrollSources, useBorrowedSlots } from '@/modules/editor/brollSources'
-import { SegmentTimeline, ZOOM_STEPS, LAYOUT_COLORS } from '@/components/editor/SegmentTimeline'
+import { SegmentTimeline, LAYOUT_COLORS, MAX_ZOOM, zoomStep, zoomLabel } from '@/components/editor/SegmentTimeline'
 import { TranscriptPanel } from '@/components/editor/TranscriptPanel'
 import { CaptionStyler } from '@/components/editor/CaptionStyler'
 import { TextOverlayPanel } from '@/components/editor/TextOverlayPanel'
@@ -1415,8 +1415,9 @@ export function EditorShell({
   }
 
   // ── Reset all edits ─────────────────────────────────────────────────────────
-  // Back to how a fresh clip starts: one Vertical format over the whole clip, no frames, text,
-  // media, music, transitions or filters, and the default caption look. The captions themselves
+  // Back to how the clip was made: its original start and end (before any drag of its ends), no
+  // part of it cut out, one Vertical format over the whole of it, no frames, text, media, music,
+  // transitions or filters, pauses kept, and the default caption look. The captions themselves
   // (words, language, on/off) stay. It's one undo step, so Undo brings everything back.
   const [confirmResetAll, setConfirmResetAll] = useState(false)
   function handleResetAll() {
@@ -1425,8 +1426,19 @@ export function EditorShell({
     skipCanvasTransitionRef.current = true
     setActiveFrameItemId(null)
     setActiveTextOverlayId(null)
-    useEditorStore.setState({ segments: [], keyframes: {}, activeSegmentId: null, activeBoxId: null })
-    addFormat(0, clipLengthMs, 'vertical', getVideoAR())
+    setSelectedView(null)
+    edgeBaseRef.current = null
+    // Where the clip was made: kept when its ends were first dragged (else: as it was loaded)
+    const made = savedClip as typeof savedClip & { original_start_ms?: number | null; original_end_ms?: number | null }
+    const origStart = made.original_start_ms ?? savedClip.start_ms
+    const origEnd = made.original_end_ms ?? savedClip.end_ms
+    useEditorStore.setState({
+      segments: [], keyframes: {}, trims: [], activeSegmentId: null, activeBoxId: null,
+      clipRange: origStart === savedClip.start_ms && origEnd === savedClip.end_ms ? null : [origStart, origEnd],
+    })
+    seekAfterTrimRef.current = 0
+    addFormat(0, origEnd - origStart, 'vertical', getVideoAR())
+    if (removeFillers) setRemoveFillers(false)
     useMediaStore.setState({
       overlays: [], textOverlays: [], audioTracks: [], transitions: [],
       filters: { brightness: 100, contrast: 100, saturation: 100 }, activeOverlayId: null,
@@ -1822,7 +1834,7 @@ export function EditorShell({
     }])
   }
 
-  // ── Keyboard shortcuts: Space play/pause · S split · [ ] trim · Delete · ←/→ 1 s (Shift: 5 s) ──
+  // ── Keyboard shortcuts: Space play/pause · S split · [ ] trim · Delete · ←/→ 0.5 s (Shift: 5 s) ──
   /**
    * What the Delete button / key removes: the thing picked last — a song, a photo or video on top,
    * a text, something in a frame, an added video, or a section — if it's still there; otherwise
@@ -1907,7 +1919,7 @@ export function EditorShell({
         e.preventDefault(); s.deleteSelected()
       } else if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
         e.preventDefault()
-        const step = (e.shiftKey ? 5000 : 1000) * (e.key === 'ArrowLeft' ? -1 : 1)
+        const step = (e.shiftKey ? 5000 : 500) * (e.key === 'ArrowLeft' ? -1 : 1)
         s.seekToMs(Math.max(0, Math.min(s.clipDurationMs, s.currentTimeMs + step)))
       }
     }
@@ -2208,7 +2220,7 @@ export function EditorShell({
                   style={{ width: 280, zIndex: 71, background: 'var(--ed-panel)', border: '1px solid rgb(var(--ed-fg) / 0.12)', boxShadow: '0 12px 32px rgba(0,0,0,0.55)' }}>
                   <p id="reset-all-title" className="text-sm font-semibold text-[var(--ed-text)]">Reset all edits?</p>
                   <p id="reset-all-desc" className="text-xs leading-relaxed" style={{ color: 'rgb(var(--ed-fg) / 0.55)' }}>
-                    Formats, frames, text, media, music, the video’s sound and the caption look go back to the start. Your captions stay. You can undo this.
+                    The clip goes back to how it was made: its original start and end, nothing cut out. Formats, frames, text, media, music, the video’s sound and the caption look go back to the start. Your captions stay. You can undo this.
                   </p>
                   <div className="flex justify-end gap-2">
                     <button onClick={() => setConfirmResetAll(false)} autoFocus
@@ -2998,6 +3010,9 @@ export function EditorShell({
                 const moved = viewChanges(useEditorStore.getState().keyframes[viewBox.id] ?? [])
                   .reduce((best, v) => Math.abs(v.t_ms - to) < Math.abs(best - to) ? v.t_ms : best, from)
                 setSelectedView({ boxId: viewBox.id, t: moved })
+                // The preview shows that moment, with this view: you see where the key is going
+                pause()
+                seekToMs(moved)
                 return moved
               }}
               onRemoveView={t => {
@@ -3541,22 +3556,21 @@ function msToClock(ms: number) {
 
 /** Timeline zoom as − 1x +: each press one step (1x → 1.25x → 1.5x → 2x → 3x → 4x); click the value for 1x */
 function ZoomSlider({ zoom, onZoom }: { zoom: number; onZoom: (z: number) => void }) {
-  const i = Math.max(0, ZOOM_STEPS.indexOf(zoom))
-  const last = ZOOM_STEPS.length - 1
-  const set = (k: number) => onZoom(ZOOM_STEPS[Math.max(0, Math.min(last, k))])
+  const i = zoom > 1 ? 1 : 0   // zoomed in or not
   return (
-    <div className="flex items-center gap-1" role="group" aria-label="Timeline zoom">
-      <button onClick={() => set(i - 1)} disabled={i === 0} aria-label="Zoom out" title="Zoom out" className="ed-tl-btn">
+    <div className="flex items-center gap-1" role="group" aria-label="Timeline zoom"
+      title="Pinch on the trackpad, or scroll the mouse wheel over the video strip, to zoom">
+      <button onClick={() => onZoom(zoomStep(zoom, -1))} disabled={i === 0} aria-label="Zoom out" title="Zoom out" className="ed-tl-btn">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="M8 11h6M20 20l-4-4" /></svg>
       </button>
-      <button onClick={() => set(0)} disabled={i === 0} aria-live="polite" aria-label={`Zoom ${ZOOM_STEPS[i]}x${i ? ', back to 1x' : ''}`}
+      <button onClick={() => onZoom(1)} disabled={i === 0} aria-live="polite" aria-label={`Zoom ${zoomLabel(zoom)}x${i ? ', back to 1x' : ''}`}
         title={i ? 'Back to the whole clip (1x)' : 'Whole clip'}
         className="h-7 min-w-[46px] px-2 rounded-md text-xs font-semibold tabular-nums transition-colors disabled:cursor-default"
         style={i ? { background: 'rgba(200,255,0,0.14)', color: 'var(--ed-accent-text)', boxShadow: 'inset 0 0 0 1px rgba(200,255,0,0.35)' }
           : { color: 'rgb(var(--ed-fg) / 0.7)', boxShadow: 'inset 0 0 0 1px rgb(var(--ed-fg) / 0.12)' }}>
-        {ZOOM_STEPS[i]}x
+        {zoomLabel(zoom)}x
       </button>
-      <button onClick={() => set(i + 1)} disabled={i === last} aria-label="Zoom in" title="Zoom in" className="ed-tl-btn">
+      <button onClick={() => onZoom(zoomStep(zoom, 1))} disabled={zoom >= MAX_ZOOM} aria-label="Zoom in" title="Zoom in" className="ed-tl-btn">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="M8 11h6M11 8v6M20 20l-4-4" /></svg>
       </button>
     </div>

@@ -181,12 +181,18 @@ function msToLabel(ms: number): string {
   return `${m}:${String(s % 60).padStart(2, '0')}`
 }
 
-export const ZOOM_STEPS = [1, 1.25, 1.5, 2, 3, 4]
+export const ZOOM_STEPS = [1, 1.25, 1.5, 2, 3, 4, 6, 8]
+export const MAX_ZOOM = ZOOM_STEPS[ZOOM_STEPS.length - 1]
+/** The next zoom step out (-1) or in (1) from any zoom — a pinch can leave it between steps */
+export function zoomStep(zoom: number, dir: 1 | -1): number {
+  return dir > 0 ? (ZOOM_STEPS.find(z => z > zoom + 0.001) ?? MAX_ZOOM) : ([...ZOOM_STEPS].reverse().find(z => z < zoom - 0.001) ?? 1)
+}
+/** A zoom as shown on its button: 1.25×, 1.7×, 3× */
+export const zoomLabel = (zoom: number) => `${Math.round(zoom * 100) / 100}`
 
 /** Zoom out · Fit · Zoom in, for the timeline (inside it, or in the editor's control bar) */
 export function TimelineZoom({ zoom, onZoom }: { zoom: number; onZoom: (z: number) => void }) {
-  const i = ZOOM_STEPS.indexOf(zoom)
-  const step = (dir: 1 | -1) => onZoom(ZOOM_STEPS[Math.max(0, Math.min(ZOOM_STEPS.length - 1, i + dir))])
+  const step = (dir: 1 | -1) => onZoom(zoomStep(zoom, dir))
   const btn = 'w-8 h-8 flex items-center justify-center rounded-lg transition-colors disabled:opacity-30 hover:bg-[rgb(var(--ed-fg)/0.08)]'
   return (
     <div className="flex items-center gap-0.5 p-0.5 rounded-xl" role="group" aria-label="Timeline zoom"
@@ -198,9 +204,9 @@ export function TimelineZoom({ zoom, onZoom }: { zoom: number; onZoom: (z: numbe
       <button onClick={() => onZoom(1)} disabled={zoom === 1} title="Fit the whole clip"
         className="h-8 min-w-[48px] px-2 flex items-center justify-center rounded-lg text-xs font-semibold tabular-nums transition-colors hover:bg-[rgb(var(--ed-fg)/0.08)] disabled:hover:bg-transparent"
         style={{ color: zoom === 1 ? 'rgb(var(--ed-fg) / 0.6)' : ACCENT }}>
-        {zoom === 1 ? 'Fit' : `${zoom}×`}
+        {zoom === 1 ? 'Fit' : `${zoomLabel(zoom)}×`}
       </button>
-      <button onClick={() => step(1)} disabled={zoom === ZOOM_STEPS[ZOOM_STEPS.length - 1]} aria-label="Zoom in timeline" title="Zoom in"
+      <button onClick={() => step(1)} disabled={zoom >= MAX_ZOOM} aria-label="Zoom in timeline" title="Zoom in"
         className={btn} style={{ color: 'rgb(var(--ed-fg) / 0.8)' }}>
         <svg {...iconProps}><circle cx="11" cy="11" r="7" /><path d="M8 11h6M11 8v6M20 20l-4-4" /></svg>
       </button>
@@ -385,6 +391,8 @@ export function SegmentTimeline({
   const setZoom = (z: number) => { if (onZoomChange) onZoomChange(z); else setZoomState(z) }
   const [viewW, setViewW] = useState(0)
   const [dragging, setDragging] = useState<string | null>(null)
+  /** A ◆ being dragged: where it is now (its moment's frame floats above it) */
+  const [viewDragT, setViewDragT] = useState<number | null>(null)
   const [snapLine, setSnapLine] = useState<number | null>(null)
   // A join dragged onto the next join: the section that goes when it's released
   const [doomed, setDoomed] = useState<{ id: string; label: string; start: number; end: number } | null>(null)
@@ -419,11 +427,39 @@ export function SegmentTimeline({
     return () => ro.disconnect()
   }, [])
 
-  // Mouse wheel scrolls the zoomed timeline sideways (the scrollbar is hidden)
+  // Zoom with the trackpad or the mouse:
+  //  • pinch (the browser sends it as Ctrl + wheel) or Ctrl + wheel anywhere on the timeline;
+  //  • the plain wheel (up / down) with the pointer over the video strip.
+  // The moment under the pointer stays under the pointer. Otherwise the wheel scrolls the zoomed
+  // timeline sideways (the scrollbar is hidden).
+  const zoomRef = useRef(zoom)
+  zoomRef.current = zoom
+  const setZoomRef = useRef(setZoom)
+  setZoomRef.current = setZoom
+  /** Where to keep the pointer's moment after a zoom: its share of the strip, and its x in the view */
+  const zoomAnchor = useRef<{ share: number; x: number } | null>(null)
+  /** When the wheel last zoomed: the playhead doesn't pull the view away right after */
+  const wheelZoomAt = useRef(0)
   useEffect(() => {
     const el = scrollRef.current
     if (!el) return
     const onWheel = (e: WheelEvent) => {
+      const overStrip = !!(e.target as HTMLElement | null)?.closest?.('[data-lane="main"]')
+      const vertical = Math.abs(e.deltaY) > Math.abs(e.deltaX)
+      if (e.ctrlKey || e.metaKey || (overStrip && vertical && !e.shiftKey)) {
+        e.preventDefault()   // (and the page itself doesn't zoom)
+        // A pinch sends small steps, a mouse wheel ~100 per notch: each notch about ×1.3
+        const k = e.ctrlKey && Math.abs(e.deltaY) < 40 ? 0.012 : 0.0026
+        const z0 = zoomRef.current
+        const z = Math.round(Math.max(1, Math.min(MAX_ZOOM, z0 * Math.exp(-e.deltaY * k))) * 100) / 100
+        if (z === z0) return
+        const rect = el.getBoundingClientRect()
+        const x = e.clientX - rect.left
+        zoomAnchor.current = { share: (el.scrollLeft + x) / Math.max(1, el.scrollWidth), x }
+        wheelZoomAt.current = performance.now()
+        setZoomRef.current(z)
+        return
+      }
       if (el.scrollWidth <= el.clientWidth) return
       const d = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY
       if (!d) return
@@ -433,11 +469,17 @@ export function SegmentTimeline({
     el.addEventListener('wheel', onWheel, { passive: false })
     return () => el.removeEventListener('wheel', onWheel)
   }, [])
+  useLayoutEffect(() => {
+    const el = scrollRef.current, a = zoomAnchor.current
+    if (!el || !a) return
+    zoomAnchor.current = null
+    el.scrollLeft = Math.max(0, a.share * el.scrollWidth - a.x)
+  }, [zoom])
 
   // Keep the playhead in view when zoomed in (after seeking or while playing)
   useEffect(() => {
     const el = scrollRef.current
-    if (!el || zoom === 1 || duration <= 0) return
+    if (!el || zoom === 1 || duration <= 0 || performance.now() - wheelZoomAt.current < 600) return
     const x = (currentTimeMs / duration) * el.scrollWidth
     if (x < el.scrollLeft + 24 || x > el.scrollLeft + el.clientWidth - 24) {
       el.scrollLeft = Math.max(0, x - el.clientWidth * 0.2)
@@ -856,13 +898,14 @@ export function SegmentTimeline({
       if (!moved && Math.abs(ev.clientX - sx) < 3) return
       moved = true
       const landed = onMoveView(cur, Math.round(msFromClientX(ev.clientX)))
-      if (typeof landed === 'number') { cur = landed; setSnapLine(landed) }
+      if (typeof landed === 'number') { cur = landed; setSnapLine(landed); setViewDragT(landed) }
     }
     const up = () => {
       window.removeEventListener('pointermove', move)
       window.removeEventListener('pointerup', up)
       setDragging(null)
       setSnapLine(null)
+      setViewDragT(null)
       if (moved) onSelectView?.(cur)
     }
     window.addEventListener('pointermove', move)
@@ -1260,6 +1303,18 @@ export function SegmentTimeline({
                   Move the view at any moment — each change shows here
                 </span>
               )}
+              {/* The ◆ being dragged: the frame at that moment and its time, above it */}
+              {viewDragT !== null && (() => {
+                const cache = videoUrl ? thumbCache.get(videoUrl) : undefined
+                const src = cache ? nearestThumb(cache, sourceAt ? sourceAt(viewDragT) : clipStartMs + viewDragT, Math.max(1500, duration / 40)) : undefined
+                return (
+                  <div className="absolute pointer-events-none flex flex-col items-center gap-1"
+                    style={{ left: `${pct(viewDragT)}%`, bottom: 'calc(100% + 6px)', transform: 'translateX(-50%)', zIndex: 60 }}>
+                    {src && <img src={src} alt="" style={{ width: 80, height: 56, objectFit: 'cover', borderRadius: 8, boxShadow: `0 0 0 2px ${ACCENT}, 0 8px 18px rgba(0,0,0,0.6)` }} />}
+                    <span className="px-1.5 py-0.5 rounded-md text-[10px] font-bold tabular-nums" style={{ background: ACCENT, color: '#111' }}>{msToLabel(viewDragT)}</span>
+                  </div>
+                )
+              })()}
               {viewMarkers.map((v, i) => {
                 const on = selectedViewT === v.t_ms
                 const first = i === 0
