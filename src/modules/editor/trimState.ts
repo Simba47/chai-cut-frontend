@@ -222,9 +222,10 @@ export function lockedInRange(state: TimedState, a: number, b: number): string[]
  * the very start (the first section, the video's own sound) starts at the new start instead, so
  * the new part looks and sounds like the start did.
  */
-export function insertAtStart(state: TimedState, d: number): TimedState {
+export function insertAtStart(state: TimedState, d: number, isLayer: (seg: SegmentLocal) => boolean = () => false): TimedState {
   if (!(d > 0)) return state
-  const atStart = new Set(state.segments.filter(s => s.start_ms <= 0).map(s => s.id))
+  // (a video on top — `isLayer` — doesn't grow over the new part: it moves later with the rest)
+  const atStart = new Set(state.segments.filter(s => s.start_ms <= 0 && !isLayer(s)).map(s => s.id))
   const keyframes: KeyframeMap = {}
   const segOf = new Map<string, SegmentLocal>()
   for (const seg of state.segments) for (const box of seg.crop_boxes) segOf.set(box.id, seg)
@@ -270,12 +271,13 @@ export function insertAtStart(state: TimedState, d: number): TimedState {
  * Video added after the clip's end (it was `oldLen` long, now `newLen`): what ran to the end — the
  * last section, the video's own sound — carries on to the new end. Nothing else moves.
  */
-export function extendEnd(state: TimedState, oldLen: number, newLen: number): TimedState {
+export function extendEnd(state: TimedState, oldLen: number, newLen: number, isLayer: (seg: SegmentLocal) => boolean = () => false): TimedState {
   if (!(newLen > oldLen)) return state
   const reachesEnd = (end: number | null | undefined) => end != null && end >= oldLen - 1
   return {
     ...state,
-    segments: state.segments.map(seg => (reachesEnd(seg.end_ms) ? { ...seg, end_ms: newLen } : seg)),
+    // (a video on top — `isLayer` — keeps its length)
+    segments: state.segments.map(seg => (reachesEnd(seg.end_ms) && !isLayer(seg) ? { ...seg, end_ms: newLen } : seg)),
     audioTracks: state.audioTracks.map(t => (isMainAudioTrack(t) && reachesEnd(t.end_ms) ? { ...t, end_ms: newLen } : t)),
   }
 }

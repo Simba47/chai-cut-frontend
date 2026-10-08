@@ -1,11 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { requireUser } from '@/server/auth'
-import { cancelAutoClips, createAutoClips, getAutoClips } from '@/server/services/videos'
+import { cancelAutoClips, confirmAutoClips, createAutoClips, getAutoClips } from '@/server/services/videos'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 
-// "Make my clips": start the AI Edit job for this video
+// "Make my clips": start the AI Edit job for this video. With { confirm: true }: say yes to the
+// run that stopped to ask about making fewer clips than asked for.
 export async function POST(req: NextRequest, { params }: { params: Promise<{ videoId: string }> }) {
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
@@ -13,10 +14,12 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ vid
   const body = await req.json().catch(() => null)
   const clipCount = body?.clip_count === undefined ? 5 : Number(body.clip_count)
   try {
+    if (body?.confirm === true) return NextResponse.json(await confirmAutoClips(user.id, videoId))
     // Checkboxes: only an explicit false turns one off
     const on = (k: string) => body?.[k] !== false
     return NextResponse.json(await createAutoClips(user.id, videoId, clipCount, body?.add_broll === true, {
       captions: on('captions'), title: on('title'), motion: on('motion'), layouts: on('layouts'),
+      captionLanguage: body?.caption_language, titleLanguage: body?.title_language,
     }))
   } catch (err: unknown) {
     const e = err as { message?: string; status?: number }

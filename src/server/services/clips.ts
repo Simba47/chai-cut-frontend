@@ -51,6 +51,13 @@ interface SaveClipInput {
   trims?: unknown
   /** The clip's start and end in its video, when dragged in the editor: [start, end] ms */
   range?: unknown
+  /**
+   * Videos on top (B-roll) are layers in the editor, saved as one row of parts in `segments`. This
+   * is the editor's note of the sections it cut to do so (modules/editor/shots.ts), kept as it is
+   * and handed back when the clip is opened; null = no video on top. Left out by an editor that
+   * doesn't know about layers: what's saved stays (and no longer matches the rows, so it's ignored).
+   */
+  layers?: unknown
 }
 
 export async function saveClip(userId: string, clipId: string, body: SaveClipInput) {
@@ -135,6 +142,10 @@ export async function saveClip(userId: string, clipId: string, body: SaveClipInp
   const trims = Array.isArray(body.trims) && await hasColumn('clips', 'trim_ranges')
     ? cleanTrims(body.trims, clipStart, clipEnd)
     : null
+  // The editor's note beside the rows (see SaveClipInput.layers), once the database has the field
+  const layersJson = body.layers === undefined ? undefined : body.layers === null ? null : JSON.stringify(body.layers)
+  const savesLayers = layersJson !== undefined && (layersJson === null || (layersJson.length < 2_000_000 && typeof body.layers === 'object'))
+    && await hasColumn('clips', 'layers')
   const original = body.originalSound
   const hasOriginal = !!original && typeof original.volume === 'number' && await hasColumn('clips', 'original_volume')
 
@@ -217,6 +228,7 @@ export async function saveClip(userId: string, clipId: string, body: SaveClipInp
       }
     }
     if (trims) q.push(tx`UPDATE clips SET trim_ranges = ${trims.length ? sql.json(trims as never) : null} WHERE id = ${clipId}`)
+    if (savesLayers) q.push(tx`UPDATE clips SET layers = ${body.layers ? sql.json(body.layers as never) : null} WHERE id = ${clipId}`)
     if (hasOriginal) {
       q.push(tx`UPDATE clips SET original_volume = ${Math.max(0, Math.min(1, original!.volume))}, original_muted = ${!!original!.muted} WHERE id = ${clipId}`)
     }
