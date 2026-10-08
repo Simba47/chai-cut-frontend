@@ -1,6 +1,7 @@
 import type { Metadata } from 'next'
 import Link from 'next/link'
-import { LegalPage, type LegalSection } from '@/components/legal/LegalPage'
+import { Clock, Cookie, Database, Lock, Mail, RefreshCw, Share2, ShieldCheck, Sparkles, UserCheck } from 'lucide-react'
+import { LegalCardPage, type LegalCard } from '@/components/legal/LegalCardPage'
 import { COMPANY } from '@/lib/company'
 import { EmailLink } from '@/components/ui/email-link'
 
@@ -9,214 +10,58 @@ export const metadata: Metadata = {
   description: 'How Shortcut collects, uses, shares and protects your information.',
 }
 
-const UPDATED = 'October 7, 2026'
+const UPDATED = 'October 8, 2026'
 const mail = <EmailLink />
 
-// Outside services that process data for us. Keep in step with the code (src/lib, src/server/services).
-const PROVIDERS: [string, string, string][] = [
-  ['Cloudflare (R2)', 'Stores your uploaded videos, audio and finished clips', 'Your videos, audio and clips'],
-  ['Our database host', 'Stores your account, projects and settings', 'Account details and project data'],
-  ['Sarvam AI', 'Turns the speech in your videos into text (transcription and captions)', 'Audio from your videos'],
-  ['Google (Gemini)', 'Finds the best moments and writes hooks, titles, captions and hashtags', 'Transcripts of your videos'],
-  ['Anthropic (Claude)', 'Finds the best moments in your videos', 'Transcripts of your videos'],
-  ['Resend', 'Sends verification codes and account emails', 'Your email address'],
-  ['Pexels and Pixabay', 'Supply stock videos you search for in the editor', 'The search words you type (no personal details)'],
-  ['Our payment partner', 'Processes payments for paid plans', 'Payment details you enter at checkout'],
-]
-
-const SECTIONS: LegalSection[] = [
+// The services named in "Sharing of Information" must stay in step with the code (src/lib, src/server/services).
+const CARDS: LegalCard[] = [
   {
-    id: 'who-we-are',
-    title: 'Who we are',
-    body: <>
-      <p>Shortcut is a video editing service that turns long videos into short, vertical clips for YouTube Shorts, Instagram Reels and similar platforms. It is available on our website and in our mobile apps for Android and iOS (together, the “Service”).</p>
-      <p>The Service is operated by <strong>{COMPANY.legalName}</strong>, {COMPANY.address.join(', ')}, India (“Shortcut”, “we”, “us”, “our”). We are responsible for the personal data described in this policy.</p>
-    </>,
+    icon: Database,
+    title: 'Information We Collect',
+    body: <>We collect information you provide directly to us when you create an account, upload or import videos, edit clips, choose a plan, or request support. This includes your name, email address, password (stored only in hashed form), the videos and audio you upload, any images or logos you add, your edits, and your plan and usage details. When we process your videos we also create transcripts and AI results such as clip moments, hooks, titles, captions and hashtags, and our servers receive basic technical data such as your IP address and device and browser type. In our mobile apps, we ask for access to your photos, videos and files only so you can pick a video to upload and save finished clips. We do not collect your contacts, precise location, or social media account data. Shortcut is meant for people aged 18 and over, and we do not knowingly collect data from children.</>,
   },
   {
-    id: 'information-we-collect',
-    title: 'Information we collect',
-    body: <>
-      <h3>Information you give us</h3>
-      <ul>
-        <li><strong>Account details:</strong> your email address, password and, if you add it, your name. We store your password only in a scrambled (hashed) form that we cannot read.</li>
-        <li><strong>Videos and files you upload:</strong> the videos you upload from your device or import from a link (such as a Google Drive link), and any images or logos you add to your clips.</li>
-        <li><strong>Your edits:</strong> the clips you make, caption styles, text, layouts, stock videos you add and other editing choices.</li>
-        <li><strong>Plan and payment details:</strong> the plan you choose and its status. If you buy a paid plan, your card or UPI details are collected and processed by our payment partner. We do not store your full card details.</li>
-        <li><strong>Messages to us:</strong> what you send when you email, call or message us for support.</li>
-      </ul>
-      <h3>Information created when you use Shortcut</h3>
-      <ul>
-        <li><strong>Transcripts and AI results:</strong> the text of what is said in your videos, the moments chosen for clips, and the hooks, titles, captions and hashtags written for them.</li>
-        <li><strong>Technical information:</strong> basic details our servers receive when you use the Service, such as your IP address, device and browser type, and the time of your visit. We use these to keep the Service working and secure.</li>
-      </ul>
-      <p>We do not collect your contacts, precise location, or information from your social media accounts.</p>
-    </>,
+    icon: Sparkles,
+    title: 'How We Use Your Information',
+    body: <>We use the information we collect to create and secure your account, verify your email with a one-time code, store and transcribe your videos, find the best moments, write captions and text, render your clips, manage your plan and usage limits, provide support, prevent misuse, and communicate with you about your account and important changes to the service. We do not use your videos for advertising, and we do not use them to train our own AI models.</>,
   },
   {
-    id: 'how-we-use',
-    title: 'How we use your information',
-    body: <>
-      <ul>
-        <li>To create and manage your account, and to verify your email address with a one-time code.</li>
-        <li>To provide the Service: store your videos, transcribe them, find clip-worthy moments, generate captions and text, and render your finished clips.</li>
-        <li>To manage your plan, usage limits and payments.</li>
-        <li>To send you important messages about your account, such as verification codes, password resets and changes to these terms.</li>
-        <li>To answer your questions and give you support.</li>
-        <li>To keep the Service safe, prevent misuse and fix problems.</li>
-        <li>To comply with the law.</li>
-      </ul>
-      <p>We do not sell your personal data, and we do not use your videos for advertising.</p>
-    </>,
+    icon: Share2,
+    title: 'Sharing of Information',
+    body: <>Your videos and clips are private to your account and are only published if you download and post them yourself. We never sell your personal data to third parties. Information is only shared with trusted service providers who process it on our behalf to run Shortcut: Cloudflare (storing your videos and clips), our database host (account and project data), Sarvam AI (turning the speech in your videos into text), Google Gemini and Anthropic Claude (AI that reads your transcripts to pick moments and write captions), Resend (sending email codes), and Pexels and Pixabay (the stock video search words you type). We may also share information when the law requires it or to protect the rights and safety of our users.</>,
   },
   {
-    id: 'ai-processing',
-    title: 'How AI is used on your videos',
-    body: <>
-      <p>Shortcut uses artificial intelligence to do the work for you. When you upload a video, its audio is sent to a speech-to-text service to create a transcript, and the transcript is sent to AI language models that pick the best moments and write hooks, titles, captions and hashtags. These services are listed in section 5.</p>
-      <p>We send these services only what they need to do the task, and they process it on our behalf. We do not use your videos to train AI models of our own. AI results can be wrong, so please review your clips and captions before you post them.</p>
-    </>,
+    icon: Lock,
+    title: 'Data Security',
+    body: <>We implement commercially reasonable technical and organisational security measures designed to protect your information from loss, theft, misuse, and unauthorised access, including encrypted connections (HTTPS), hashed passwords, private storage for your videos with time-limited access links, and limited staff access. Payments for paid plans are processed by our payment partner, and we never store your full card details.</>,
   },
   {
-    id: 'sharing',
-    title: 'Who we share information with',
-    body: <>
-      <p>We share your information only with the service providers that help us run Shortcut, and only as much as they need to do their job:</p>
-      <div className="legal-table-wrap">
-        <table className="legal-table">
-          <thead><tr><th>Service</th><th>What it does for us</th><th>What it receives</th></tr></thead>
-          <tbody>{PROVIDERS.map(([name, does, gets]) => <tr key={name}><td>{name}</td><td>{does}</td><td>{gets}</td></tr>)}</tbody>
-        </table>
-      </div>
-      <p>We may also share information:</p>
-      <ul>
-        <li><strong>When the law requires it,</strong> for example in response to a valid court order or a request from a government authority.</li>
-        <li><strong>To protect rights and safety,</strong> including to prevent fraud or misuse of the Service.</li>
-        <li><strong>If our business changes hands,</strong> such as in a merger or acquisition. The new owner will have to protect your information in line with this policy.</li>
-      </ul>
-      <p>Your videos and clips are private to your account. They are only published somewhere if you download them and post them yourself.</p>
-    </>,
+    icon: Cookie,
+    title: 'Cookies & Tracking',
+    body: <>We use only the cookies and similar on-device storage needed for Shortcut to work, such as keeping you signed in and remembering your settings. We do not use advertising cookies, and we do not track you across other apps or websites. You may control cookie settings through your browser, but disabling cookies will sign you out and may limit certain features.</>,
   },
   {
-    id: 'app-permissions',
-    title: 'Mobile app permissions',
-    body: <>
-      <p>Our mobile apps ask for permission only when a feature needs it:</p>
-      <ul>
-        <li><strong>Photos, videos and files:</strong> to let you pick a video to upload and to save finished clips to your device. The app only reads the files you choose.</li>
-        <li><strong>Internet access:</strong> to upload your videos and use the Service.</li>
-        <li><strong>Notifications (if you allow them):</strong> to tell you when your clips are ready.</li>
-      </ul>
-      <p>You can turn these permissions off at any time in your phone’s settings. Some features may not work without them.</p>
-    </>,
+    icon: UserCheck,
+    title: 'Your Rights',
+    body: <>You have the right to access, correct, or delete your personal data at any time, and to withdraw your consent, as provided under India’s Digital Personal Data Protection Act, 2023. You can update your name and password in Account settings, and delete your account and all of its data from Account settings → Delete my account (see <Link href="/delete-account">Delete your account</Link>). To request a copy of your data or exercise any other right, please contact us at {mail}. We will respond within 30 days.</>,
   },
   {
-    id: 'cookies',
-    title: 'Cookies and similar technologies',
-    body: <>
-      <p>We use a small number of cookies and similar storage on your device that are needed for the Service to work, mainly to keep you signed in and to remember your settings. We do not use advertising cookies or sell data to advertisers.</p>
-      <p>You can block or delete cookies in your browser settings, but you will then need to sign in again, and some parts of the Service may not work.</p>
-    </>,
+    icon: Clock,
+    title: 'Data Retention',
+    body: <>We retain your account data for as long as your account is active. Your videos, clips and transcripts are kept for the history period of your plan, and you can delete them at any time. When you delete your account, we delete your account details, videos, audio, clips, transcripts and project data, and backup copies are removed within 30 days. We keep limited records, such as payment and tax records, only as long as the law requires.</>,
   },
   {
-    id: 'security',
-    title: 'How we protect your information',
-    body: <>
-      <p>We use reasonable technical and organisational measures to protect your information, including encrypted connections (HTTPS), hashed passwords, private storage for your videos with time-limited access links, and limited staff access to personal data.</p>
-      <p>No online service can be completely secure. If we learn of a breach that affects your personal data, we will inform you and the relevant authorities as the law requires.</p>
-    </>,
+    icon: RefreshCw,
+    title: 'Changes to This Policy',
+    body: <>We may update this Privacy Policy from time to time. We will notify you of any significant changes by posting the new policy on this page and updating the ‘Last updated’ date. We encourage you to review this policy periodically to stay informed about how we protect your information.</>,
   },
   {
-    id: 'retention',
-    title: 'How long we keep your information',
-    body: <>
-      <p>We keep your account details for as long as your account is open. Your videos, clips and transcripts are kept for the history period of your plan, shown on our pricing page, after which we may delete them (see our <Link href="/terms">Terms and Conditions</Link>). You can delete individual videos and clips at any time.</p>
-      <p>When you delete your account, we delete your account details, videos, audio, clips, transcripts and project data. Copies in our backups are removed within 30 days. We may keep limited records, such as payment and tax records, for as long as the law requires.</p>
-    </>,
-  },
-  {
-    id: 'delete-account',
-    title: 'Deleting your account',
-    body: <>
-      <p>You can delete your account and all of its data yourself, at any time:</p>
-      <ul>
-        <li><strong>In the app or on the website:</strong> sign in, open <strong>Account settings</strong>, and choose <strong>Delete my account…</strong>. Confirm with your password. This cannot be undone.</li>
-        <li><strong>By email:</strong> if you cannot sign in, email {mail} from the email address on your account and ask us to delete it. We will confirm it is you and delete the account within 7 business days.</li>
-      </ul>
-      <p>See <Link href="/delete-account">Delete your account</Link> for step-by-step instructions and exactly what is deleted.</p>
-    </>,
-  },
-  {
-    id: 'your-rights',
-    title: 'Your rights',
-    body: <>
-      <p>Under India’s Digital Personal Data Protection Act, 2023, and other laws that apply to you, you have the right to:</p>
-      <ul>
-        <li>Get a summary of the personal data we hold about you and how we use it.</li>
-        <li>Correct or update personal data that is wrong or incomplete. You can change your name and password in Settings.</li>
-        <li>Have your personal data deleted (see section 10).</li>
-        <li>Withdraw your consent at any time. This will not affect what we did before you withdrew it, but we may no longer be able to provide the Service.</li>
-        <li>Raise a complaint with our Grievance Officer (see section 16), and if you are not satisfied, with the Data Protection Board of India.</li>
-        <li>Nominate another person to exercise these rights for you if you die or become unable to do so.</li>
-      </ul>
-      <p>To use any of these rights, email {mail}. We will reply within 30 days.</p>
-    </>,
-  },
-  {
-    id: 'children',
-    title: 'Children',
-    body: <>
-      <p>Shortcut is meant for people aged 18 and over. We do not knowingly collect personal data from anyone under 18. If you believe a child has given us their information, email {mail} and we will delete it.</p>
-    </>,
-  },
-  {
-    id: 'international',
-    title: 'Where your information is processed',
-    body: <>
-      <p>We are based in India. Some of our service providers process data on servers in other countries. When that happens, we take steps to make sure your information is protected as described in this policy and as Indian law requires.</p>
-    </>,
-  },
-  {
-    id: 'links',
-    title: 'Other websites and services',
-    body: <>
-      <p>The Service may link to or work with other services, such as Google Drive, YouTube or Instagram. Their own privacy policies apply to how they handle your information, and we are not responsible for them.</p>
-    </>,
-  },
-  {
-    id: 'changes',
-    title: 'Changes to this policy',
-    body: <>
-      <p>We may update this policy from time to time. When we do, we will change the “Last updated” date at the top. If the changes are significant, we will also tell you by email or in the app before they take effect.</p>
-    </>,
-  },
-  {
-    id: 'contact',
-    title: 'Contact us and Grievance Officer',
-    body: <>
-      <p>If you have any questions or complaints about this policy or your personal data, please contact our Grievance Officer:</p>
-      <div className="legal-contact">
-        <p><strong>Grievance Officer, {COMPANY.legalName}</strong></p>
-        <p>Email: {mail}</p>
-        <p>Phone: <a href={`tel:${COMPANY.phone.replace(/\s/g, '')}`}>{COMPANY.phone}</a></p>
-        <p>Address: {COMPANY.address.join(', ')}, India</p>
-      </div>
-      <p style={{ marginTop: 12 }}>We will acknowledge your complaint within 48 hours and try to resolve it within 30 days.</p>
-    </>,
+    icon: Mail,
+    title: 'Contact Us',
+    body: <>If you have any questions about this Privacy Policy or our data practices, please contact our Grievance Officer at {mail} or <a href={`tel:${COMPANY.phone.replace(/\s/g, '')}`}>{COMPANY.phone}</a>, or write to us at: {COMPANY.legalName}, {COMPANY.address.join(', ')}, India.</>,
   },
 ]
 
 export default function PrivacyPage() {
-  return (
-    <LegalPage
-      eyebrow="Data protection"
-      title="Privacy Policy"
-      updated={UPDATED}
-      intro={<>
-        <p>This Privacy Policy explains what information Shortcut collects when you use our website and mobile apps, how we use it, who we share it with, and the choices you have.</p>
-        <p>By using Shortcut, you agree to this policy. If you do not agree, please do not use the Service.</p>
-      </>}
-      sections={SECTIONS}
-    />
-  )
+  return <LegalCardPage badge="Data Protection" badgeIcon={ShieldCheck} title="Privacy Policy" updated={UPDATED} cards={CARDS} />
 }
