@@ -3,6 +3,7 @@
 import { useRef, useState, useEffect, useLayoutEffect, Fragment } from 'react'
 import type { SegmentLocal, LayoutType, TextOverlay, FrameItem, FrameLane, FrameLayout } from '@chai-cut/shared'
 import { isFrameLayout, FRAME_TEMPLATES, frameLanesFor, frameOf, laneItems, itemBounds, MIN_ITEM_MS } from '@/modules/editor/frames'
+import { isShot } from '@/modules/editor/shots'
 
 export const LAYOUT_COLORS: Record<LayoutType, string> = {
   vertical:   '#22c55e',
@@ -44,10 +45,6 @@ function visibleLanes(seg: SegmentLocal) {
     if (r.lane === 'band') return !empty
     return !(slots === 1 && main.includes(r.lane) && empty)
   })
-}
-
-function isBroll(seg: SegmentLocal): boolean {
-  return seg.crop_boxes.some(b => b.source_video_id != null)
 }
 
 const THUMB_W = 80
@@ -161,7 +158,6 @@ function VideoThumbnails({ videoUrl, startMs, durationMs, count = THUMB_COUNT, r
 
 // Friendly name of a format, shown on its block and in its handles' labels
 function formatName(seg: SegmentLocal): string {
-  if (isBroll(seg)) return 'B-roll'
   if (isFrameLayout(seg.layout)) return `Frame · ${FRAME_TEMPLATES[seg.layout].name}`
   if (seg.layout === 'split') return 'Split screen'
   return seg.layout.charAt(0).toUpperCase() + seg.layout.slice(1)
@@ -274,6 +270,12 @@ interface Props {
   onDuplicateView?: (t: number) => void
   /** Playable URLs of the videos B-roll shots show, by video id (for their thumbnails) */
   videoUrls?: Record<string, string>
+  /**
+   * The clip's own video. `segments` holds the sections AND the videos put on top of them (B-roll:
+   * a first slot showing another video, see shots.ts): those lie on their own lane, as layers —
+   * the strip and its sections stay whole under them.
+   */
+  mainVideoId?: string | null
   /** B-roll shots (shown on their own lane over the film strip): moved or trimmed to a new time */
   onBrollChange?: (segId: string, startMs: number, endMs: number) => void
   /** Bin on the section the user clicked on the strip: delete that section */
@@ -308,6 +310,7 @@ interface Props {
 
 export function SegmentTimeline({
   segments,
+  mainVideoId,
   clipStartMs,
   clipEndMs,
   currentTimeMs,
@@ -536,8 +539,9 @@ export function SegmentTimeline({
       const y = rect ? e.clientY - rect.top : -1
       const onStrip = y >= STRIP_TOP && y <= STRIP_TOP + STRIP_H
       const t = msFromClientX(e.clientX)
-      // The strip under a video (B-roll) section picks that section too
-      const hit = onStrip ? mains.find(m => t >= m.start_ms && t < m.end_ms) ?? brolls.find(b => t >= b.start_ms && t < b.end_ms) : undefined
+      // (a video on top is picked on its own lane: the strip under it is the section's. Without
+      // layers the video is the part there, so the strip picks it)
+      const hit = onStrip ? mains.find(m => t >= m.start_ms && t < m.end_ms) ?? (layered ? undefined : brolls.find(b => t >= b.start_ms && t < b.end_ms)) : undefined
       onPickSegment(hit?.id ?? null)
     }
     onSeek(msFromClientX(e.clientX))
@@ -552,7 +556,8 @@ export function SegmentTimeline({
 
   // Clamp an edge so formats never overlap and never get shorter than MIN_FORMAT_MS
   function clampEdge(seg: SegmentLocal, edge: 'start' | 'end', t: number) {
-    const byT = [...segments].sort((a, b) => a.start_ms - b.start_ms)
+    // (the neighbours are sections: a video on top lies over them)
+    const byT = layered ? mains : byTime
     const i = byT.findIndex(x => x.id === seg.id)
     if (edge === 'start') return Math.max(byT[i - 1]?.end_ms ?? 0, Math.min(seg.end_ms - MIN_FORMAT_MS, t))
     return Math.min(byT[i + 1]?.start_ms ?? duration, Math.max(seg.start_ms + MIN_FORMAT_MS, t))
@@ -708,7 +713,7 @@ export function SegmentTimeline({
   }
   /** "Fits section 2" / "Fits sections 1–2" when an item lines up exactly with sections */
   function fitLabel(startMs: number, endMs: number): string | null {
-    const sections = byTime.filter(x => x.end_ms - x.start_ms > 50)
+    const sections = mains.filter(x => x.end_ms - x.start_ms > 50)
     const first = sections.findIndex(x => Math.abs(x.start_ms - startMs) <= 1)
     const last = sections.findIndex(x => Math.abs(x.end_ms - endMs) <= 1)
     if (first === -1 || last < first) return null
@@ -923,18 +928,18 @@ export function SegmentTimeline({
   const ticks: { t: number; major: boolean }[] = []
   for (let i = 0; i * minorMs <= duration; i++) ticks.push({ t: i * minorMs, major: i % minorPerMajor === 0 })
 
-  const colorOf = (seg: SegmentLocal) => (isBroll(seg) ? '#f97316' : LAYOUT_COLORS[seg.layout])
-  // B-roll shots sit on their own lane over the film strip (the speaker carries on under them);
-  // the strip, its ◆ keys and joins are about the formats that frame the main video
-  const brolls = byTime.filter(sg => isBroll(sg) && !isFrameLayout(sg.layout))
-  const mains = byTime.filter(sg => !brolls.includes(sg))
+  const colorOf = (seg: SegmentLocal) => LAYOUT_COLORS[seg.layout]
+  // Videos on top (B-roll) are layers: they sit on their own lane, over the sections, which stay
+  // whole under them. The strip, its ◆ keys and joins are about the sections that frame the main video.
+  const brolls = byTime.filter(sg => isShot(sg, mainVideoId))
+  const mains = byTime.filter(sg => !isShot(sg, mainVideoId))
+  // An editor that doesn't keep layers (no mainVideoId: the phone editor) still has each video as
+  // a part of its own between the sections, not over them
+  const layered = mainVideoId != null
   // One lane over the strip holds the joins between touching formats and the B-roll shots
   // The joins lane: just tall enough for its handles, and a thin gap when there are none
   const RULER_H = 30, STRIP_H = 52
   const LANE_H = mains.some((m, i) => i + 1 < mains.length && Math.abs(mains[i + 1].start_ms - m.end_ms) <= 1) ? 18 : 6
-  /** The format a B-roll shot sits over (the one before it, else after): the strip keeps its colour there */
-  const underBroll = (seg: SegmentLocal) =>
-    [...mains].reverse().find(m => m.end_ms <= seg.start_ms + 1) ?? mains.find(m => m.start_ms >= seg.end_ms - 1)
   // The main video's own sound, when detached, sits in a row right over the strip
   const originals = musicTracks.filter(m => m.original)
   const ORIG_H = originals.length ? 24 : 0
@@ -947,12 +952,11 @@ export function SegmentTimeline({
   }
 
   /**
-   * Drag a B-roll shot: its body moves it, its ends trim it. The shot follows the pointer on its
-   * lane and takes its new time when released (the formats around it are re-made once, then).
+   * Drag a video on top: its body moves it, its ends trim it. It follows the pointer on its lane
+   * and takes its new time when released. Only it moves: the sections under it are not touched.
    */
   function handleBrollDown(e: React.PointerEvent, seg: SegmentLocal, part: 'body' | 'start' | 'end') {
     e.stopPropagation(); e.preventDefault()
-    onSelectSegment(seg.id)
     if (seg.locked) { onSeek(seg.start_ms); onPickSegment?.(seg.id); return }
     const sx = e.clientX
     const grab = msFromClientX(e.clientX) - seg.start_ms
@@ -1013,7 +1017,7 @@ export function SegmentTimeline({
   const gaps: { start_ms: number; end_ms: number }[] = []
   {
     let cursor = 0
-    for (const seg of byTime) {
+    for (const seg of layered ? mains : byTime) {
       if (seg.start_ms - cursor >= 50) gaps.push({ start_ms: cursor, end_ms: seg.start_ms })
       cursor = Math.max(cursor, seg.end_ms)
     }
@@ -1123,7 +1127,7 @@ export function SegmentTimeline({
                 const key = `join-${left.id}`
                 const active = dragging === key
                 const cl = colorOf(left), cr = colorOf(right)
-                const li = byTime.indexOf(left) + 1
+                const li = mains.indexOf(left) + 1
                 return (
                   <button key={key}
                     onPointerDown={e => handleJunctionDown(e, left, right)}
@@ -1198,20 +1202,6 @@ export function SegmentTimeline({
                 </div>
               ))}
 
-              {brolls.map(seg => {
-                const under = underBroll(seg)
-                if (!under) return null
-                const color = colorOf(under)
-                const picked = seg.id === pickedSegmentId
-                return (
-                  <div key={`under-${seg.id}`} className="absolute inset-y-0 pointer-events-none"
-                    style={{
-                      left: `${pct(seg.start_ms)}%`, width: `${pct(seg.end_ms - seg.start_ms)}%`, background: `${color}2a`, borderTop: `3px solid ${color}aa`,
-                      // Picked: the same lime frame a format gets
-                      ...(picked ? { boxShadow: `inset 0 2px 0 ${ACCENT}, inset 0 -2px 0 ${ACCENT}, inset 2px 0 0 ${ACCENT}, inset -2px 0 0 ${ACCENT}`, borderRadius: 12 } : {}),
-                    }} />
-                )
-              })}
               {/* Each format: the selected one stays bright inside a lime trim frame (its handles are the
                   frame's sides), the others are dimmed. Its colour only shows as the dot on its chip. */}
               {mains.map(seg => {
