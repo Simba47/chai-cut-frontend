@@ -399,8 +399,14 @@ function makeTimeChunks(durationMs: number): ClipSuggestion[] {
 
 export const AUTO_CLIP_COUNTS = [3, 5, 10] as const
 
-/** The Make my clips checkboxes (each on unless false) */
-export interface AutoClipOptions { captions?: boolean; title?: boolean; motion?: boolean; layouts?: boolean }
+/** The Make my clips checkboxes (each on unless false), and what the captions and the title are written in */
+export interface AutoClipOptions {
+  captions?: boolean; title?: boolean; motion?: boolean; layouts?: boolean
+  /** 'native' = the speaker's own script (Telugu, Hindi letters); 'roman' = English letters (Tenglish, Hinglish…) */
+  captionLanguage?: 'native' | 'roman'
+  /** 'roman' = English letters in the speaker's language; 'english'; 'native' = the speaker's own script */
+  titleLanguage?: 'roman' | 'english' | 'native'
+}
 
 export async function createAutoClips(userId: string, videoId: string, clipCount = 5, addBroll = false, options: AutoClipOptions = {}) {
   const count = Math.round(Number(clipCount))
@@ -443,9 +449,37 @@ export async function createAutoClips(userId: string, videoId: string, clipCount
     ai_edit_job_id: aiJob.id, video_id: videoId, clip_count: count, add_broll: addBroll,
     captions: options.captions !== false, title: options.title !== false,
     motion: options.motion !== false, layouts: options.layouts !== false,
+    caption_language: options.captionLanguage === 'roman' ? 'roman' : 'native',
+    title_language: options.titleLanguage === 'english' || options.titleLanguage === 'native' ? options.titleLanguage : 'roman',
   }
   await sql`INSERT INTO jobs (type, payload, status) VALUES ('ai_edit', ${sql.json(payload)}, 'queued')`
   return { ai_edit_job_id: aiJob.id as string }
+}
+
+/**
+ * "Yes, make these": the latest run found fewer good moments than clips asked for and stopped to
+ * ask (status 'confirm', the moments kept in ai_edit_jobs.found). It is queued again with the
+ * same choices, to make exactly those moments — they are not looked for (or paid for) again.
+ */
+export async function confirmAutoClips(userId: string, videoId: string) {
+  const [video] = await sql`SELECT id FROM videos WHERE id = ${videoId} AND user_id = ${userId}`
+  if (!video) throw Object.assign(new Error('Not found'), { status: 404 })
+  const [job] = await sql`
+    SELECT id, status, (CASE WHEN jsonb_typeof(to_jsonb(j)->'found') = 'array' THEN jsonb_array_length(to_jsonb(j)->'found') ELSE 0 END) AS found
+    FROM ai_edit_jobs j WHERE video_id = ${videoId} ORDER BY created_at DESC LIMIT 1
+  `
+  if (!job || job.status !== 'confirm' || !job.found) throw Object.assign(new Error('Nothing is waiting for your answer. Press Make my clips to start again.'), { status: 409 })
+  const [first] = await sql`
+    SELECT payload FROM jobs WHERE type = 'ai_edit' AND payload->>'ai_edit_job_id' = ${job.id} ORDER BY created_at DESC LIMIT 1
+  `
+  // Only the first yes counts (a double click must not queue it twice)
+  const taken = await sql`
+    UPDATE ai_edit_jobs SET status = 'queued', clip_count = ${job.found}, progress = 0 WHERE id = ${job.id} AND status = 'confirm' RETURNING id
+  `
+  if (!taken.length) return { ai_edit_job_id: job.id as string }
+  const payload = { ...(first?.payload as Record<string, unknown> ?? {}), ai_edit_job_id: job.id, video_id: videoId, clip_count: job.found, confirmed: true }
+  await sql`INSERT INTO jobs (type, payload, status) VALUES ('ai_edit', ${sql.json(payload as never)}, 'queued')`
+  return { ai_edit_job_id: job.id as string }
 }
 
 export interface AutoClip {
@@ -467,7 +501,7 @@ export async function cancelAutoClips(userId: string, videoId: string) {
   if (!video) throw Object.assign(new Error('Not found'), { status: 404 })
   const stopped = await sql`
     UPDATE ai_edit_jobs SET status = 'failed', error = ${AI_EDIT_CANCELLED}
-    WHERE video_id = ${videoId} AND status IN ('queued', 'running')
+    WHERE video_id = ${videoId} AND status IN ('queued', 'running', 'confirm')
     RETURNING id
   `
   if (!stopped.length) throw Object.assign(new Error('Nothing is running for this video'), { status: 409 })
@@ -486,7 +520,8 @@ export async function getAutoClips(userId: string, videoId: string) {
 
   // progress / ai_score / ai_reason are read through to_jsonb so this works before the worker adds them
   const [job] = await sql`
-    SELECT id, status, error, clip_count, created_at, COALESCE((to_jsonb(j)->>'progress')::int, 0) AS progress
+    SELECT id, status, error, clip_count, created_at, COALESCE((to_jsonb(j)->>'progress')::int, 0) AS progress,
+      (CASE WHEN jsonb_typeof(to_jsonb(j)->'found') = 'array' THEN jsonb_array_length(to_jsonb(j)->'found') ELSE 0 END) AS found_count
     FROM ai_edit_jobs j WHERE video_id = ${videoId} ORDER BY created_at DESC LIMIT 1
   `
   if (!job) return { job: null, clips: [] as AutoClip[] }
@@ -508,7 +543,8 @@ export async function getAutoClips(userId: string, videoId: string) {
       : null,
   })))
   return {
-    job: { id: job.id, status: job.status, progress: job.progress, error: job.error, clip_count: job.clip_count },
+    // found_count: the good moments a run found before it stopped to ask about making fewer clips ('confirm')
+    job: { id: job.id, status: job.status, progress: job.progress, error: job.error, clip_count: job.clip_count, found_count: Number(job.found_count) || 0 },
     clips,
   }
 }

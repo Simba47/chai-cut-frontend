@@ -45,7 +45,7 @@ type ClipTab = 'all' | ClipOrigin | 'fav'
 const ASK_EXAMPLES = ['funny reactions', 'controversial takes', 'emotional moments', 'big announcements', 'best advice']
 const CLIP_TABS: Array<{ id: ClipTab; label: string; empty: string }> = [
   { id: 'all', label: 'All clips', empty: '' },
-  { id: 'yours', label: 'Your clips', empty: 'Clips you make yourself (New clip or Edit full video) show here.' },
+  { id: 'yours', label: 'Your clips', empty: 'Clips you make yourself (New clip) show here.' },
   { id: 'ask', label: 'Ask AI', empty: 'Describe what you want in Ask AI, then press Use on a result.' },
   { id: 'auto', label: 'Make my clips', empty: 'Clips AI makes for you with Make my clips show here.' },
   { id: 'best', label: 'Best moments', empty: 'Find best moments, then press + on the ones you want.' },
@@ -74,7 +74,8 @@ interface Suggestion {
   clip_id?: string
 }
 
-interface AutoJob { id: string; status: 'queued' | 'running' | 'done' | 'failed'; progress: number; error: string | null; clip_count: number }
+// 'confirm': the run found fewer good moments (found_count) than clips asked for and waits for a yes
+interface AutoJob { id: string; status: 'queued' | 'running' | 'done' | 'failed' | 'confirm'; progress: number; error: string | null; clip_count: number; found_count?: number }
 interface AutoClip {
   id: string; title: string | null; start_ms: number; end_ms: number; status: string
   output_url: string | null; ai_score: number | null; ai_reason: string | null
@@ -107,6 +108,19 @@ const AUTO_OPTIONS: Array<{ id: AutoOption; label: string; tip: string }> = [
   { id: 'layouts', label: 'Cuts (split, trio)', tip: 'Split and trio when 2 or more people are in the shot. Off: always vertical, on one person' },
 ]
 const AUTO_OPTIONS_KEY = 'clipboard.makeOptions'
+// What the captions and the title are written in (speech in an Indian language; English speech stays English)
+type CaptionLanguage = 'native' | 'roman'
+type TitleLanguage = 'roman' | 'english' | 'native'
+const CAPTION_LANGUAGES: Array<{ id: CaptionLanguage; label: string }> = [
+  { id: 'native', label: 'Original script (తెలుగు, हिंदी)' },
+  { id: 'roman', label: 'English letters (Tenglish, Hinglish…)' },
+]
+const TITLE_LANGUAGES: Array<{ id: TitleLanguage; label: string }> = [
+  { id: 'roman', label: 'English letters (Tenglish, Hinglish…)' },
+  { id: 'english', label: 'English' },
+  { id: 'native', label: 'Original script (తెలుగు, हिंदी)' },
+]
+const AUTO_LANGUAGE_KEY = 'clipboard.makeLanguages'
 
 // Make my clips: how many clips one run can make (the server allows 1 to 10)
 const AUTO_MAX = 10
@@ -243,10 +257,21 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: P
   // What's typed in the count box (may be empty or too big while typing; settles on blur)
   const [countText, setCountText] = useState('5')
   const [autoOpts, setAutoOpts] = useState<Record<AutoOption, boolean>>({ captions: true, title: true, motion: true, layouts: true })
+  // What the captions and the title are written in (remembered per browser, like the checkboxes)
+  const [captionLang, setCaptionLang] = useState<CaptionLanguage>('native')
+  const [titleLang, setTitleLang] = useState<TitleLanguage>('roman')
+  function pickLanguage(next: { caption?: CaptionLanguage; title?: TitleLanguage }) {
+    const caption = next.caption ?? captionLang, title = next.title ?? titleLang
+    setCaptionLang(caption); setTitleLang(title)
+    try { localStorage.setItem(AUTO_LANGUAGE_KEY, JSON.stringify({ caption, title })) } catch { /* storage blocked */ }
+  }
   useEffect(() => {
     try {
       const saved = JSON.parse(localStorage.getItem(AUTO_OPTIONS_KEY) ?? 'null') as Partial<Record<AutoOption, boolean>> | null
       if (saved) setAutoOpts(o => ({ ...o, ...saved }))
+      const lang = JSON.parse(localStorage.getItem(AUTO_LANGUAGE_KEY) ?? 'null') as { caption?: string; title?: string } | null
+      if (CAPTION_LANGUAGES.some(l => l.id === lang?.caption)) setCaptionLang(lang!.caption as CaptionLanguage)
+      if (TITLE_LANGUAGES.some(l => l.id === lang?.title)) setTitleLang(lang!.title as TitleLanguage)
     } catch { /* storage blocked */ }
   }, [])
   function toggleAutoOpt(id: AutoOption) {
@@ -531,31 +556,12 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: P
         router.refresh()
         return
       }
-      // Every clip starts as one Vertical format over the whole clip (like "Edit full video")
+      // Every clip starts as one Vertical format over the whole clip
       router.push(`/editor/${clip_id}`)
     } catch (e) {
       console.error(e)
       setBusy(null)
       setClipError(e instanceof Error ? e.message : 'Failed to create clip. Please try again.')
-    }
-  }
-
-  async function editFullVideo() {
-    setBusy('full')
-    setClipError(null)
-    try {
-      const res = await fetch('/api/clips', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ video_id: video.id }),
-      })
-      if (!res.ok) throw new Error((await res.json()).error ?? 'Failed to open video')
-      const { clip_id } = await res.json()
-      router.push(`/editor/${clip_id}`)
-    } catch (e) {
-      console.error(e)
-      setBusy(null)
-      setClipError(e instanceof Error ? e.message : 'Failed to open video. Please try again.')
     }
   }
 
@@ -567,6 +573,8 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: P
     setAutoClips(data.clips ?? [])
   }
   const autoRunning = autoJob?.status === 'queued' || autoJob?.status === 'running'
+  // The run stopped to ask: fewer good moments were found than clips asked for
+  const autoAsking = autoJob?.status === 'confirm' && !!autoJob.found_count
   // A run that finishes while this page is open goes straight to its clips
   const wasRunningRef = useRef(false)
   useEffect(() => {
@@ -595,7 +603,26 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: P
       const res = await fetch(`/api/videos/${video.id}/auto-clips`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ clip_count: count, add_broll: autoBroll, ...autoOpts }),
+        body: JSON.stringify({ clip_count: count, add_broll: autoBroll, ...autoOpts, caption_language: captionLang, title_language: titleLang }),
+      })
+      if (!res.ok) throw new Error((await res.json()).error ?? 'Could not start making clips')
+      await loadAutoClips()
+    } catch (e) {
+      setAutoError(e instanceof Error ? e.message : 'Could not start making clips')
+    } finally {
+      setAutoStarting(false)
+    }
+  }
+
+  // "Make these N": yes to the run that found fewer good moments than clips asked for
+  async function confirmFewerClips() {
+    setAutoStarting(true)
+    setAutoError(null)
+    try {
+      const res = await fetch(`/api/videos/${video.id}/auto-clips`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ confirm: true }),
       })
       if (!res.ok) throw new Error((await res.json()).error ?? 'Could not start making clips')
       await loadAutoClips()
@@ -863,8 +890,9 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: P
     </div>
   )
 
-  // ── Under the video: Edit full video + New clip (which opens the start/end form in place) ──
-  // While a clip is shown in Preview, the first button edits that clip instead of the whole video
+  // ── Under the video: New clip (which opens the start/end form in place) ──
+  // While a clip or a moment is shown in Preview, a button beside it opens that one in the editor.
+  // (There is no "Edit full video": this makes clips out of a long video, it doesn't edit the whole of it.)
   const editingPreviewed = viewMode === 'preview' && !!previewId && clips.some(c => c.id === previewId)
   const editingMoment = viewMode === 'preview' && momentPreview ? momentPreview : null
   const newClipBar = showForm ? (
@@ -918,25 +946,22 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: P
       </p>
     </form>
   ) : (
-    // Two equal-width, equal-height buttons: same border, weight and icon size, so they read as a pair
-    <div className="shrink-0 grid grid-cols-2 gap-3 w-full max-w-md mx-auto">
-      {/* Previewing a clip: this edits that clip; otherwise the whole video */}
-      <button onClick={editingMoment ? () => editMoment(editingMoment.s, editingMoment.source)
-          : editingPreviewed ? () => { setBusy('open'); router.push(`/editor/${previewId}`) } : editFullVideo} disabled={!!busy}
-        title={editingMoment ? 'Open the moment you’re previewing in the editor' : editingPreviewed ? 'Open the clip you’re previewing in the editor' : 'Open the whole video in the editor as one clip'}
-        className="h-12 flex items-center justify-center gap-2 px-5 rounded-xl text-sm font-semibold transition-colors hover:bg-white/10 disabled:opacity-40"
-        style={{ color: 'rgba(255,255,255,0.9)', border: '1px solid rgba(255,255,255,0.16)', background: 'rgba(255,255,255,0.03)' }}>
-        {busy === 'full' || ((editingPreviewed || editingMoment) && (busy === 'open' || busy === editingMoment?.s.id)) ? <Spinner /> : editingPreviewed || editingMoment ? (
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-            <path d="M12 20h9" /><path d="M16.5 3.5a2.1 2.1 0 013 3L7 19l-4 1 1-4z" />
-          </svg>
-        ) : (
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-            <rect x="3" y="5" width="18" height="14" rx="2" /><path d="M10 9l5 3-5 3z" />
-          </svg>
-        )}
-        {editingMoment ? 'Edit this moment' : editingPreviewed ? 'Edit this clip' : 'Edit full video'}
-      </button>
+    // Previewing a clip or a moment: two equal-width, equal-height buttons (same border, weight and
+    // icon size, so they read as a pair). Otherwise New clip alone.
+    <div className={`shrink-0 grid gap-3 w-full mx-auto ${editingPreviewed || editingMoment ? 'grid-cols-2 max-w-md' : 'grid-cols-1 max-w-[216px]'}`}>
+      {(editingPreviewed || editingMoment) && (
+        <button onClick={editingMoment ? () => editMoment(editingMoment.s, editingMoment.source) : () => { setBusy('open'); router.push(`/editor/${previewId}`) }} disabled={!!busy}
+          title={editingMoment ? 'Open the moment you’re previewing in the editor' : 'Open the clip you’re previewing in the editor'}
+          className="h-12 flex items-center justify-center gap-2 px-5 rounded-xl text-sm font-semibold transition-colors hover:bg-white/10 disabled:opacity-40"
+          style={{ color: 'rgba(255,255,255,0.9)', border: '1px solid rgba(255,255,255,0.16)', background: 'rgba(255,255,255,0.03)' }}>
+          {busy === 'open' || busy === editingMoment?.s.id ? <Spinner /> : (
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+              <path d="M12 20h9" /><path d="M16.5 3.5a2.1 2.1 0 013 3L7 19l-4 1 1-4z" />
+            </svg>
+          )}
+          {editingMoment ? 'Edit this moment' : 'Edit this clip'}
+        </button>
+      )}
       <button onClick={openForm} disabled={!!busy}
         className="h-12 flex items-center justify-center gap-2 px-5 rounded-xl text-sm font-semibold transition-opacity hover:opacity-90 disabled:opacity-40"
         style={{ background: ACCENT, color: '#000', border: `1px solid ${ACCENT}` }}>
@@ -1017,7 +1042,58 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: P
           ))}
         </div>
 
+        {/* What the captions and the title are written in (each only while its box is ticked) */}
+        {(autoOpts.captions || autoOpts.title) && (
+          <div className="flex flex-col gap-1.5">
+            {autoOpts.captions && (
+              <label className="flex items-center gap-2 text-[11px]" style={{ color: 'rgba(255,255,255,0.55)' }}>
+                <span className="shrink-0 w-[68px]">Captions in</span>
+                <select value={captionLang} disabled={autoRunning} onChange={e => pickLanguage({ caption: e.target.value as CaptionLanguage })}
+                  aria-label="What the captions are written in"
+                  className="flex-1 min-w-0 px-2 py-1.5 rounded-md text-[11px] text-white outline-none disabled:opacity-50"
+                  style={{ background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.12)' }}>
+                  {CAPTION_LANGUAGES.map(l => <option key={l.id} value={l.id} style={{ color: '#000' }}>{l.label}</option>)}
+                </select>
+              </label>
+            )}
+            {autoOpts.title && (
+              <label className="flex items-center gap-2 text-[11px]" style={{ color: 'rgba(255,255,255,0.55)' }}>
+                <span className="shrink-0 w-[68px]">Title in</span>
+                <select value={titleLang} disabled={autoRunning} onChange={e => pickLanguage({ title: e.target.value as TitleLanguage })}
+                  aria-label="What the title is written in"
+                  className="flex-1 min-w-0 px-2 py-1.5 rounded-md text-[11px] text-white outline-none disabled:opacity-50"
+                  style={{ background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.12)' }}>
+                  {TITLE_LANGUAGES.map(l => <option key={l.id} value={l.id} style={{ color: '#000' }}>{l.label}</option>)}
+                </select>
+              </label>
+            )}
+          </div>
+        )}
+
         {autoError && <p className="text-xs" style={{ color: '#f87171' }}>{autoError}</p>}
+        {/* Fewer good moments than clips asked for: nothing is made until the user says yes */}
+        {autoAsking && autoJob && (
+          <div role="alert" className="flex flex-col gap-2 px-3 py-2.5 rounded-xl" style={{ background: 'rgba(251,191,36,0.07)', border: '1px solid rgba(251,191,36,0.3)' }}>
+            <p className="text-xs font-semibold" style={{ color: '#fcd34d' }}>
+              Only {autoJob.found_count} good clip{autoJob.found_count === 1 ? '' : 's'} can be made from this video
+            </p>
+            <p className="text-[11px]" style={{ color: 'rgba(255,255,255,0.6)' }}>
+              You asked for {autoJob.clip_count}. Nothing has been made yet.
+            </p>
+            <div className="flex items-center gap-2">
+              <button type="button" onClick={confirmFewerClips} disabled={autoStarting}
+                className="flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-md text-[11px] font-bold disabled:opacity-50"
+                style={{ background: ACCENT, color: '#000' }}>
+                {autoStarting && <Spinner />} Make {autoJob.found_count === 1 ? 'this 1 clip' : `these ${autoJob.found_count} clips`}
+              </button>
+              <button type="button" onClick={stopMakingClips} disabled={autoStopping || autoStarting}
+                className="px-3 py-1.5 rounded-md text-[11px] font-semibold transition-colors hover:bg-white/10 disabled:opacity-50"
+                style={{ color: 'rgba(255,255,255,0.75)', border: '1px solid rgba(255,255,255,0.2)' }}>
+                {autoStopping ? 'Cancelling…' : 'Cancel'}
+              </button>
+            </div>
+          </div>
+        )}
         {autoRunning && autoJob && (
           <div className="flex flex-col gap-1.5 px-3 py-2.5 rounded-xl" style={{ background: 'rgba(200,255,0,0.04)', border: '1px solid rgba(200,255,0,0.12)' }}>
             <div className="flex items-center justify-between gap-2 text-xs">
@@ -1032,6 +1108,8 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: P
             <div className="flex items-center gap-2">
               <p className="flex-1 text-[11px]" style={{ color: 'rgba(255,255,255,0.4)' }}>
                 {autoJob.clip_count ? `${autoJob.clip_count} clip${autoJob.clip_count === 1 ? '' : 's'}` : ''}
+                {/* Reading comes first and is the slow part of a long video */}
+                {autoJob.status === 'running' && autoJob.progress < 20 ? ' · a long video takes a while to read; you can leave this page, it carries on' : ''}
               </p>
               <button type="button" onClick={stopMakingClips} disabled={autoStopping}
                 title="Stop making clips (clips already made are kept)"
