@@ -1,4 +1,6 @@
+import { ListObjectsV2Command } from '@aws-sdk/client-s3'
 import sql from '@/lib/db'
+import { r2, R2_BUCKET } from '@/lib/r2'
 import { hashPassword, validatePassword, verifyPassword } from '@/modules/auth/password'
 import { deleteR2Keys } from './videos'
 import { getUserPlanConfig } from './quota'
@@ -68,7 +70,7 @@ export async function changePassword(userId: string, current: unknown, next: unk
  * subscriptions, logs…), then the user. Needs the password (when the account has one) as a check.
  */
 export async function deleteAccount(userId: string, password: unknown): Promise<void> {
-  const [row] = await sql<{ password_hash: string | null }[]>`SELECT password_hash FROM users WHERE id = ${userId}`
+  const [row] = await sql<{ email: string; password_hash: string | null }[]>`SELECT email, password_hash FROM users WHERE id = ${userId}`
   if (!row) throw Object.assign(new Error('Account not found'), { status: 404 })
   if (row.password_hash) {
     if (typeof password !== 'string' || !(await verifyPassword(password, row.password_hash))) {
@@ -89,6 +91,7 @@ export async function deleteAccount(userId: string, password: unknown): Promise<
     keys.push(v.storage_path, v.storage_path.replace(/\.[^.]+$/, '_audio.flac'), v.storage_path.replace(/\.[^.]+$/, '_reading.json'))
   }
   for (const c of clipOutputs) keys.push(c.output_storage_path)
+  keys.push(...await listR2Keys(`overlays/${userId}/`))
   await deleteR2Keys(keys)
 
   // Then every row pointing at the user, found from the database's own foreign keys (so a table
@@ -110,6 +113,22 @@ export async function deleteAccount(userId: string, password: unknown): Promise<
       const [has] = await tx`SELECT 1 FROM information_schema.columns WHERE table_name = ${t} AND column_name = 'user_id'`
       if (has) await tx`DELETE FROM ${tx(t)} WHERE user_id = ${userId}`
     }
+    // Sign-in codes are kept by email, not user id
+    await tx`DELETE FROM verification_otps WHERE email = ${row.email}`
     await tx`DELETE FROM users WHERE id = ${userId}`
   })
+}
+
+/** Every stored file under a folder, e.g. the images and logos a user added in the editor (best effort) */
+async function listR2Keys(prefix: string): Promise<string[]> {
+  const keys: string[] = []
+  let token: string | undefined
+  try {
+    do {
+      const page = await r2.send(new ListObjectsV2Command({ Bucket: R2_BUCKET, Prefix: prefix, ContinuationToken: token }))
+      for (const o of page.Contents ?? []) if (o.Key) keys.push(o.Key)
+      token = page.IsTruncated ? page.NextContinuationToken : undefined
+    } while (token)
+  } catch {}
+  return keys
 }
