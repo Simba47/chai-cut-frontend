@@ -4,6 +4,14 @@ import { useRef, useEffect, useCallback } from 'react'
 import { usePlayerStore } from './store'
 
 type PushedSeg = { start_ms: number; end_ms: number; video_offset_ms?: number | null }
+/** A part of the source video that stays in the clip: [start, end) in ms of the video */
+type KeptRange = [number, number]
+
+// How close to the end of a kept part the player jumps to the next one: a frame at 30 fps, so no
+// frame of the removed part is shown (the export joins on frames too)
+const JOIN_LOOKAHEAD_MS = 34
+// A seek can land a little before the time asked for: within this, the video is where it should be
+const SEEK_SLACK_MS = 60
 
 interface InsertState {
   insertStartMs: number  // timeline start of INSERT (= video_offset_ms of pushed seg)
@@ -15,7 +23,9 @@ interface InsertState {
 // Wires a <video> element to the playerStore.
 // Returns videoRef + imperative controls. State (currentTimeMs, playing) is in the store.
 // segments: non-broll segments from the editor store — used to honour video_offset_ms for true INSERTs.
-export function useVideoSync(clipStartMs = 0, clipEndMs?: number, segments?: PushedSeg[]) {
+// kept: when parts of the clip were removed (lib/trims.ts), the parts of the video that stay. The
+// timeline (currentTimeMs, seekToMs) then runs over those parts only, and playback skips the rest.
+export function useVideoSync(clipStartMs = 0, clipEndMs?: number, segments?: PushedSeg[], kept?: KeptRange[]) {
   const videoRef = useRef<HTMLVideoElement>(null)
   const rafRef = useRef<number>(0)
   // true when rafRef holds a requestVideoFrameCallback handle (separate ID space from rAF)
@@ -26,8 +36,50 @@ export function useVideoSync(clipStartMs = 0, clipEndMs?: number, segments?: Pus
   // video_offset_ms of the pushed seg we are legitimately playing through (post-INSERT resume)
   const playingThroughRef = useRef<number | null>(null)
   const { setCurrentTimeMs, setDurationMs, setPlaying } = usePlayerStore()
+  const keptRef = useRef<KeptRange[] | undefined>(kept)
+  keptRef.current = kept && kept.length ? kept : undefined
 
   useEffect(() => { segmentsRef.current = segments }, [segments])
+
+  // ── Removed parts ────────────────────────────────────────────────────────────
+
+  const keptLength = (k: KeptRange[]) => k.reduce((t, [a, b]) => t + (b - a), 0)
+  /** Video ms → timeline ms over the kept parts (a time inside a removed part lands on the join) */
+  function keptToTimeline(k: KeptRange[], absMs: number): number {
+    let at = 0
+    for (const [a, b] of k) {
+      if (absMs < a) return at
+      if (absMs <= b) return at + (absMs - a)
+      at += b - a
+    }
+    return at
+  }
+  /** Timeline ms → video ms over the kept parts (at a join: the first frame after it) */
+  function keptToVideo(k: KeptRange[], ms: number): number {
+    let at = 0
+    for (const [a, b] of k) {
+      if (ms < at + (b - a)) return a + Math.max(0, ms - at)
+      at += b - a
+    }
+    return k[k.length - 1][1]
+  }
+  /**
+   * Playing over kept parts: the timeline time for where the video is now. Jumps the video over a
+   * removed part, and stops it at the end of the last kept part (returns null then: don't tick on).
+   */
+  function followKept(el: HTMLVideoElement, k: KeptRange[], lookahead: number): number | null {
+    const absMs = el.currentTime * 1000
+    let i = 0
+    while (i < k.length - 1 && absMs >= k[i][1] - lookahead) i++
+    if (i === k.length - 1 && absMs >= k[i][1]) {
+      el.pause()
+      el.currentTime = (k[i][1] - 1) / 1000  // stay on the last kept frame
+      setPlaying(false)
+      return null
+    }
+    if (absMs < k[i][0] - SEEK_SLACK_MS) el.currentTime = k[i][0] / 1000
+    return keptToTimeline(k, Math.max(k[i][0], absMs))
+  }
 
   // ── helpers (use refs so closures never go stale) ────────────────────────────
 
@@ -144,6 +196,14 @@ export function useVideoSync(clipStartMs = 0, clipEndMs?: number, segments?: Pus
   const tick = useCallback(() => {
     const el = videoRef.current
     if (!el) return
+    const keptNow = keptRef.current
+    if (keptNow) {
+      const at = followKept(el, keptNow, JOIN_LOOKAHEAD_MS)
+      if (at === null) { setCurrentTimeMs(keptLength(keptNow)); return }
+      setCurrentTimeMs(at)
+      scheduleTick(el)
+      return
+    }
     const absoluteMs = el.currentTime * 1000
     if (clipEndMs !== undefined && absoluteMs >= clipEndMs) {
       el.pause()
@@ -228,6 +288,12 @@ export function useVideoSync(clipStartMs = 0, clipEndMs?: number, segments?: Pus
       cancelTick(el)
     }
     const onLoaded = () => {
+      const k = keptRef.current
+      if (k) {
+        setDurationMs(keptLength(k))
+        if (k[0][0] > 0) el.currentTime = k[0][0] / 1000
+        return
+      }
       const clipDuration = clipEndMs !== undefined
         ? clipEndMs - clipStartMs
         : el.duration * 1000 - clipStartMs
@@ -238,6 +304,18 @@ export function useVideoSync(clipStartMs = 0, clipEndMs?: number, segments?: Pus
     // Safety net: fires even when VFC/rAF is paused (e.g. background tab).
     // Stops the video if it drifts past clipEndMs while the tick was suspended.
     const onTimeUpdate = () => {
+      const k = keptRef.current
+      if (k) {
+        // Past the end of a kept part while the tick slept: move on (or stop at the end)
+        if (el.paused || el.seeking) return
+        const at = followKept(el, k, 0)
+        if (at === null) {
+          cancelTick(el)
+          cancelAnimationFrame(rafRef.current)
+          setCurrentTimeMs(keptLength(k))
+        }
+        return
+      }
       if (clipEndMs === undefined) return
       const absMs = el.currentTime * 1000
       if (absMs >= clipEndMs) {
@@ -257,6 +335,12 @@ export function useVideoSync(clipStartMs = 0, clipEndMs?: number, segments?: Pus
       cancelAnimationFrame(rafRef.current)
       insertRef.current = null
       setPlaying(false)
+      const k = keptRef.current
+      if (k) {
+        el.currentTime = (k[k.length - 1][1] - 1) / 1000
+        setCurrentTimeMs(keptLength(k))
+        return
+      }
       if (clipEndMs !== undefined) {
         el.currentTime = (clipEndMs - 1) / 1000
         setCurrentTimeMs(Math.max(0, videoToTimeline(clipEndMs - clipStartMs)))
@@ -278,6 +362,15 @@ export function useVideoSync(clipStartMs = 0, clipEndMs?: number, segments?: Pus
       cancelTick(el)
     }
   }, [tick, clipStartMs, clipEndMs, setDurationMs, setPlaying, setCurrentTimeMs])
+
+  // The clip's length follows the kept parts when they change (a part removed, an undo)
+  const keptKey = kept && kept.length ? kept.map(r => r.join('-')).join(',') : ''
+  useEffect(() => {
+    const k = keptRef.current
+    if (k) setDurationMs(keptLength(k))
+    else if (clipEndMs !== undefined) setDurationMs(clipEndMs - clipStartMs)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [keptKey, clipStartMs, clipEndMs, setDurationMs])
 
   // ── Public controls ───────────────────────────────────────────────────────────
 
@@ -328,6 +421,20 @@ export function useVideoSync(clipStartMs = 0, clipEndMs?: number, segments?: Pus
     cancelTick(el)
     cancelAnimationFrame(rafRef.current)  // also cancel INSERT RAF if running
     playingThroughRef.current = null
+
+    // Removed parts: the timeline runs over the kept parts only
+    const k = keptRef.current
+    if (k) {
+      insertRef.current = null
+      const at = Math.max(0, Math.min(ms, keptLength(k)))
+      el.currentTime = Math.min(keptToVideo(k, at), k[k.length - 1][1] - 1) / 1000
+      setCurrentTimeMs(at)
+      if (usePlayerStore.getState().playing) {
+        if (el.paused) safePlay(el)
+        else scheduleTick(el)
+      }
+      return
+    }
 
     // Seeking into INSERT range: park video at video_offset_ms, keep currentTimeMs = ms
     const insertOwner = findInsertOwner(ms)

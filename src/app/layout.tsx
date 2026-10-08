@@ -1,8 +1,10 @@
 import type { Metadata } from 'next'
 import { Inter_Tight } from 'next/font/google'
+import Script from 'next/script'
 import './globals.css'
 import './landing.css'
 import './auth.css'
+import './legal.css'
 import { Providers } from './providers'
 
 // Exposed as --font-display; only the landing page opts into it
@@ -27,10 +29,12 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="en" suppressHydrationWarning>
       {/* The app is always dark (the light/dark switch was removed). Clear any
           theme saved by the old switch so nobody stays stuck in light mode. */}
-      <head>
-        <script dangerouslySetInnerHTML={{ __html: `try { localStorage.removeItem('theme') } catch (e) {}` }} />
-      </head>
       <body className={displayFont.variable}>
+        {/* next/script runs it before the page is interactive (a raw <script> in a component
+            makes React warn on every render) */}
+        <Script id="clear-old-theme" strategy="beforeInteractive">
+          {`try { localStorage.removeItem('theme') } catch (e) {}`}
+        </Script>
         <Providers>{children}</Providers>
       </body>
     </html>

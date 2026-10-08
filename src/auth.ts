@@ -8,7 +8,11 @@ import sql from './lib/db'
 
 const g = global as typeof globalThis & { _pgPool?: Pool }
 if (!g._pgPool) {
-  g._pgPool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false }, max: 3 })
+  // Same reason as lib/db.ts: idle connections are closed before Railway's proxy drops them
+  g._pgPool = new Pool({
+    connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false }, max: 3,
+    idleTimeoutMillis: 20_000, keepAlive: true, connectionTimeoutMillis: 15_000,
+  })
 }
 const pool = g._pgPool
 
@@ -28,7 +32,7 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
         if (!email || !password) return null
 
         const [user] = await sql`
-          SELECT id, email, password_hash, "emailVerified"
+          SELECT id, email, name, password_hash, "emailVerified"
           FROM users WHERE email = ${email}
         `
         if (!user || !user.password_hash) return null
@@ -37,13 +41,17 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
         const ok = await verifyPassword(password, user.password_hash as string)
         if (!ok) return null
 
-        return { id: user.id as string, email: user.email as string }
+        return { id: user.id as string, email: user.email as string, name: (user.name as string | null) ?? null }
       },
     }),
   ],
   callbacks: {
-    jwt({ token, user }) {
+    jwt({ token, user, trigger, session }) {
       if (user) token.id = user.id
+      // Account settings changed the name: the page calls update({ name }) so the session shows it
+      if (trigger === 'update' && session && typeof session === 'object' && 'name' in session) {
+        token.name = (session as { name?: string | null }).name ?? null
+      }
       return token
     },
     session({ session, token }) {

@@ -6,7 +6,8 @@ import { useMediaStore } from '@/modules/media/store'
 import { useCaptionStore } from '@/modules/captions/store'
 
 // Undo / redo for everything the editor saves: formats and frames, crop boxes and their motion,
-// overlays, text, audio, transitions, filters and the caption style. Selection is not history.
+// removed parts of the video, overlays, text, audio, transitions, filters and the caption style.
+// Selection is not history.
 //
 // One step = one burst of edits: a whole drag (until the pointer is released) or a run of typing
 // counts once. The auto-save watches the same state, so an undo is saved like any other edit.
@@ -14,6 +15,8 @@ import { useCaptionStore } from '@/modules/captions/store'
 interface Snapshot {
   segments: ReturnType<typeof useEditorStore.getState>['segments']
   keyframes: KeyframeMap
+  trims: ReturnType<typeof useEditorStore.getState>['trims']
+  clipRange: ReturnType<typeof useEditorStore.getState>['clipRange']
   overlays: ReturnType<typeof useMediaStore.getState>['overlays']
   textOverlays: ReturnType<typeof useMediaStore.getState>['textOverlays']
   audioTracks: ReturnType<typeof useMediaStore.getState>['audioTracks']
@@ -35,7 +38,7 @@ export type EditableSnapshot = Snapshot
 function take(): Snapshot {
   const e = useEditorStore.getState(), m = useMediaStore.getState(), c = useCaptionStore.getState()
   return {
-    segments: e.segments, keyframes: e.keyframes,
+    segments: e.segments, keyframes: e.keyframes, trims: e.trims, clipRange: e.clipRange,
     overlays: m.overlays, textOverlays: m.textOverlays, audioTracks: m.audioTracks, transitions: m.transitions, filters: m.filters,
     captionStyle: c.captionStyle,
   }
@@ -47,7 +50,7 @@ function same(a: Snapshot, b: Snapshot) {
 }
 
 function restore(s: Snapshot) {
-  useEditorStore.setState({ segments: s.segments, keyframes: s.keyframes })
+  useEditorStore.setState({ segments: s.segments, keyframes: s.keyframes, trims: s.trims, clipRange: s.clipRange })
   useMediaStore.setState({ overlays: s.overlays, textOverlays: s.textOverlays, audioTracks: s.audioTracks, transitions: s.transitions, filters: s.filters })
   useCaptionStore.setState({ captionStyle: s.captionStyle, romanize: s.captionStyle.language === 'roman' })
 }

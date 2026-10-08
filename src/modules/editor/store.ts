@@ -6,7 +6,9 @@ import { LAYOUT_SLOT_COUNT } from '@chai-cut/shared'
 import { getBoxPositionAtLerp, type BoxPosition } from '@/lib/interpolation'
 import { makeBox, defaultCropForSlot } from './utils'
 import { isFrameLayout, DEFAULT_BAND, defaultFrame, frameOf, placeNewItem } from './frames'
-import { setViewAt, recordMotionAt, removeViewChangeAt, moveViewChange, type ViewKeyframe } from './views'
+import { setViewAt, recordMotionAt, removeViewChangeAt, moveViewChange, duplicateViewChange, type ViewKeyframe } from './views'
+import { isShot } from './shots'
+import type { Range } from '@/lib/cuts'
 
 export type KeyframeMap = Record<string, BoxKeyframe[]>  // boxId → sorted keyframes
 
@@ -27,15 +29,28 @@ function withIds(boxId: string, kfs: ViewKeyframe[]): BoxKeyframe[] {
 }
 
 interface EditorState {
+  /**
+   * The sections of the clip (they never overlap) AND the videos put on top of it (B-roll: see
+   * shots.ts). A video on top is a layer: it lies over the sections, which stay whole under it.
+   */
   segments: SegmentLocal[]
+  /** The clip's own video: a section's first slot showing another video makes it a video on top */
+  mainVideoId: string | null
   keyframes: KeyframeMap
+  /** Parts of the video removed from this clip, in ms of the source video (lib/trims.ts) */
+  trims: Range[]
+  /** The clip's start and end in the source video when moved in the editor (null = as loaded) */
+  clipRange: Range | null
   activeSegmentId: string | null
   activeBoxId: string | null
 }
 
 interface EditorActions {
-  hydrate: (segments: SegmentLocal[], keyframes: KeyframeMap) => void
+  hydrate: (segments: SegmentLocal[], keyframes: KeyframeMap, trims?: Range[], mainVideoId?: string | null) => void
   reset: () => void
+  /** A part of the video removed, or the clip's start / end moved: the sections and keyframes as they
+   *  are afterwards, the removed parts, and (when it moved) the clip's start and end in the video */
+  applyTrim: (segments: SegmentLocal[], keyframes: KeyframeMap, trims: Range[], clipRange?: Range) => void
   // Segments
   addSegment: (seg: Omit<SegmentLocal, 'id' | 'crop_boxes'>, onCreate?: (id: string) => void, initialBoxes?: CropBoxLocal[]) => void
   updateSegment: (id: string, updates: Partial<Omit<SegmentLocal, 'id'>>) => void
@@ -52,7 +67,7 @@ interface EditorActions {
   /**
    * Join the format with its touching neighbours that have the same (non-frame) layout, so
    * switching Split → Vertical doesn't leave separate pieces. Each part keeps its own views (the
-   * crop cuts where the parts met). Skipped for B-roll, frames, and a join that has a transition.
+   * crop cuts where the parts met). Skipped for frames and a join that has a transition.
    * Returns the id of the joined format.
    */
   joinSameLayoutNeighbours: (segId: string, transitionAfter?: Set<string>) => string
@@ -63,12 +78,14 @@ interface EditorActions {
   recordMotionAt: (boxId: string, t: number, pos: BoxPosition) => void
   removeViewChange: (boxId: string, t: number) => void
   moveViewChange: (boxId: string, from: number, to: number, formatStart: number, formatEnd: number) => void
+  /** Copy the view change at t (see views.ts duplicateViewChange). Returns where the copy went, or null if there's no room. */
+  duplicateViewChange: (boxId: string, t: number, formatEnd: number) => number | null
   /** Frame slots: change what a slot shows (source video, photo, motion, volume, mute) */
   updateSlot: (segId: string, boxId: string, patch: Partial<Pick<CropBoxLocal, 'source_video_id' | 'source_offset_ms' | 'image_path' | 'image_url' | 'image_motion' | 'volume' | 'muted'>>) => void
   /** Frame layouts: change the letterbox band's look */
   updateFrameBand: (segId: string, patch: Partial<FrameBand>) => void
   /** Frame layouts: main video's slots and sound */
-  updateFrame: (segId: string, patch: Partial<Pick<FrameSettings, 'main_slots' | 'main_volume' | 'main_muted' | 'main_volumes' | 'main_mutes' | 'main_corners'>>) => void
+  updateFrame: (segId: string, patch: Partial<Pick<FrameSettings, 'main_slots' | 'main_volume' | 'main_muted' | 'main_volumes' | 'main_mutes' | 'main_corners' | 'row_h' | 'main_rects'>>) => void
   /** Put something on a frame lane at time t (see placeNewItem). Returns its id, or null if there's no room. */
   addFrameItem: (segId: string, lane: FrameLane, t: number, item: Omit<FrameItem, 'id' | 'lane' | 'start_ms' | 'end_ms'>) => string | null
   updateFrameItem: (segId: string, itemId: string, patch: Partial<Omit<FrameItem, 'id'>>) => void
@@ -78,10 +95,21 @@ interface EditorActions {
   setSegmentEdge: (segId: string, edge: 'start' | 'end', tMs: number, durationMs: number) => void
   /** Move the shared edge of two touching formats together (one grows, the other shrinks). */
   moveJunction: (leftId: string, rightId: string, tMs: number) => void
+  /** A join dragged onto the next one: `removeId` goes and the touching `keepId` takes its time */
+  absorbSection: (removeId: string, keepId: string) => void
   /** Create a format over [startMs, endMs] (an uncovered stretch). `pos` frames slot 0, or each slot when a list. Returns its id. */
   addFormat: (startMs: number, endMs: number, layout: LayoutType, videoAR?: number, pos?: BoxPosition | (BoxPosition | undefined)[]) => string
   updateBoxSource: (segId: string, boxId: string, source_video_id: string | null, source_offset_ms: number) => void
-  insertBrollAtMs: (videoId: string, atMs: number, durationMs: number, getPos: (boxId: string, t: number) => BoxPosition) => string | null
+  /** A muted video on top (B-roll) over [startMs, endMs): a layer of its own. The sections under it are not touched. */
+  placeBroll: (videoId: string, startMs: number, endMs: number) => string
+  /**
+   * A video on top at a new time. `moved`: dragged as a whole (it shows the same pictures, its
+   * views move with it); otherwise an end was trimmed (trimmed at its start, it carries on from
+   * further into its video). It keeps its sound, hide and lock.
+   */
+  retimeBroll: (id: string, startMs: number, endMs: number, moved: boolean) => void
+  /** Take a video on top out: the sections under it show again, as they were */
+  removeBroll: (id: string) => void
   // Keyframes
   upsertKeyframe: (boxId: string, kf: Omit<BoxKeyframe, 'id' | 'box_id'>) => void
   /** Replace all of a box's keyframes (e.g. one static framing for the whole position). */
@@ -132,14 +160,24 @@ function withFrameEdges(prev: SegmentLocal, next: SegmentLocal): SegmentLocal {
   }
 }
 
+/**
+ * A video on top (a layer over the sections). Only an editor that keeps layers says which video
+ * is the clip's own (hydrate): without it every part is a section, as before layers.
+ */
+const onTop = (s: { mainVideoId: string | null }, seg: SegmentLocal) => s.mainVideoId != null && isShot(seg, s.mainVideoId)
+
 export const useEditorStore = create<EditorState & EditorActions>()((set, get) => ({
   segments: [],
+  mainVideoId: null,
   keyframes: {},
+  trims: [],
+  clipRange: null,
   activeSegmentId: null,
   activeBoxId: null,
 
-  hydrate: (segments, keyframes) => set({ segments, keyframes, activeSegmentId: null, activeBoxId: null }),
-  reset: () => set({ segments: [] as SegmentLocal[], keyframes: {} as KeyframeMap, activeSegmentId: null, activeBoxId: null }),
+  hydrate: (segments, keyframes, trims = [], mainVideoId = null) => set({ segments, keyframes, trims, mainVideoId, clipRange: null, activeSegmentId: null, activeBoxId: null }),
+  reset: () => set({ segments: [] as SegmentLocal[], keyframes: {} as KeyframeMap, trims: [] as Range[], clipRange: null, activeSegmentId: null, activeBoxId: null }),
+  applyTrim: (segments, keyframes, trims, clipRange) => set({ segments, keyframes, trims, ...(clipRange ? { clipRange } : {}) }),
 
   addSegment: (seg, onCreate, initialBoxes) => {
     const id = crypto.randomUUID()
@@ -173,7 +211,8 @@ export const useEditorStore = create<EditorState & EditorActions>()((set, get) =
   }),
 
   setSegmentEdge: (segId, edge, tMs, durationMs) => set(s => {
-    const byTime = [...s.segments].sort((a, b) => a.start_ms - b.start_ms)
+    // The neighbours an edge stops at are sections (a video on top lies over them, in nobody's way)
+    const byTime = s.segments.filter(x => x.id === segId || !onTop(s, x)).sort((a, b) => a.start_ms - b.start_ms)
     const i = byTime.findIndex(x => x.id === segId)
     if (i < 0) return s
     const seg = byTime[i], prev = byTime[i - 1], next = byTime[i + 1]
@@ -194,6 +233,19 @@ export const useEditorStore = create<EditorState & EditorActions>()((set, get) =
     if (t === left.end_ms && t === right.start_ms) return s
     return {
       segments: s.segments.map(x => x.id === leftId ? withFrameEdges(x, { ...x, end_ms: t }) : x.id === rightId ? withFrameEdges(x, withStart(x, t)) : x),
+    }
+  }),
+
+  absorbSection: (removeId, keepId) => set(s => {
+    const gone = s.segments.find(x => x.id === removeId), keep = s.segments.find(x => x.id === keepId)
+    if (!gone || !keep) return s
+    const keepBefore = keep.end_ms <= gone.start_ms + 1
+    return {
+      segments: s.segments.filter(x => x.id !== removeId).map(x => x.id !== keepId ? x
+        // Before it: runs on to its end. After it: starts where it started (its video from there too)
+        : keepBefore ? withFrameEdges(x, { ...x, end_ms: gone.end_ms }) : withFrameEdges(x, withStart(x, gone.start_ms))),
+      activeSegmentId: s.activeSegmentId === removeId ? keepId : s.activeSegmentId,
+      activeBoxId: s.activeSegmentId === removeId ? null : s.activeBoxId,
     }
   }),
 
@@ -267,14 +319,14 @@ export const useEditorStore = create<EditorState & EditorActions>()((set, get) =
   joinSameLayoutNeighbours: (segId, transitionAfter) => {
     let id = segId
     set(s => {
-      const byTime = [...s.segments].sort((a, b) => a.start_ms - b.start_ms)
+      const byTime = s.segments.filter(x => !onTop(s, x)).sort((a, b) => a.start_ms - b.start_ms)
       const kf = { ...s.keyframes }
       const joinable = (a: SegmentLocal, b: SegmentLocal) =>
-        a.layout === b.layout && !isFrameLayout(a.layout)
+        a.layout === b.layout && !isFrameLayout(a.layout) && !a.locked && !b.locked
         && Math.abs(b.start_ms - a.end_ms) <= 1
         && !transitionAfter?.has(a.id)
         && a.crop_boxes.length === b.crop_boxes.length
-        // Main video only, playing on without a jump (B-roll and inserts keep their own sections)
+        // Main video only, playing on without a jump
         && a.crop_boxes.every(box => {
           const other = b.crop_boxes.find(x => x.slot_index === box.slot_index)
           return !!other && !box.source_video_id && !other.source_video_id
@@ -337,6 +389,12 @@ export const useEditorStore = create<EditorState & EditorActions>()((set, get) =
   moveViewChange: (boxId, from, to, formatStart, formatEnd) => set(s => ({
     keyframes: { ...s.keyframes, [boxId]: withIds(boxId, moveViewChange(s.keyframes[boxId] ?? [], from, to, formatStart, formatEnd)) },
   })),
+  duplicateViewChange: (boxId, t, formatEnd) => {
+    const out = duplicateViewChange(get().keyframes[boxId] ?? [], t, formatEnd)
+    if (!out) return null
+    set(s => ({ keyframes: { ...s.keyframes, [boxId]: withIds(boxId, out.keyframes) } }))
+    return out.at
+  },
 
   removeSegment: (id) => set(s => {
     // Formats are independent: deleting one leaves its time to the default framing
@@ -359,6 +417,8 @@ export const useEditorStore = create<EditorState & EditorActions>()((set, get) =
         ...makeBox(box.slot_index, seg.layout, tMs, [{ t_ms: tMs, ...getPos(box.id, tMs) }]),
         source_video_id: box.source_video_id,
         source_offset_ms: box.source_offset_ms + (tMs - seg.start_ms),
+        // A video on top cut in two: both halves keep its sound and hide switches
+        ...(onTop(s, seg) ? { volume: box.volume, muted: box.muted !== false, ...(box.hidden ? { hidden: true } : {}) } : {}),
       }))
       return {
         segments: [
@@ -431,94 +491,45 @@ export const useEditorStore = create<EditorState & EditorActions>()((set, get) =
     }),
   })),
 
-  insertBrollAtMs: (videoId, atMs, durationMs, getPos) => {
-    const segments = get().segments
-    const sorted = [...segments].sort((a, b) => a.sort_order - b.sort_order)
-    let seg = sorted.find(s => atMs >= s.start_ms && atMs <= s.end_ms)
-    if (seg && atMs >= seg.end_ms - 50) {
-      const next = sorted.find(s => s.start_ms >= seg!.end_ms)
-      if (next && next.start_ms - atMs < 50) seg = next
-    }
-    if (!seg) {
-      // Uncovered time: the B-roll becomes a format of its own, up to the next format
-      const nextStart = sorted.find(s => s.start_ms > atMs)?.start_ms ?? Infinity
-      const end = Math.min(atMs + durationMs, nextStart)
-      if (end - atMs < 100) return null
-      const id = crypto.randomUUID()
-      const box: CropBoxLocal = { id: crypto.randomUUID(), slot_index: 0, source_video_id: videoId, source_offset_ms: 0, keyframes: [{ t_ms: atMs, x: 0, y: 0, w: 1, h: 1 }] }
-      set(s => ({
-        segments: [...s.segments, { id, start_ms: atMs, end_ms: end, layout: 'vertical' as LayoutType, sort_order: 0.5, crop_boxes: [box] }].sort((a, b) => a.start_ms - b.start_ms),
-        keyframes: withBoxes(s.keyframes, [box]),
-      }))
-      return id
-    }
-
-    const brollId = crypto.randomUUID()
-    const brollBox: CropBoxLocal = {
-      id: crypto.randomUUID(),
-      slot_index: 0,
-      source_video_id: videoId,
-      source_offset_ms: 0,
-      keyframes: [{ t_ms: atMs, x: 0, y: 0, w: 1, h: 1 }],
-    }
-    const brollEnd = Math.min(atMs + durationMs, seg.end_ms - 100)
-
-    set(s => {
-      const sorted = [...s.segments].sort((a, b) => a.sort_order - b.sort_order)
-      let seg = sorted.find(s => atMs >= s.start_ms && atMs <= s.end_ms)
-      if (seg && atMs >= seg.end_ms - 50) {
-        const next = sorted.find(s => s.start_ms >= seg!.end_ms)
-        if (next) seg = next
-      }
-      if (!seg) return s
-
-      if (atMs <= seg.start_ms + 100) {
-        const brollSeg: SegmentLocal = {
-          id: brollId,
-          start_ms: seg.start_ms,
-          end_ms: Math.min(seg.start_ms + durationMs, seg.end_ms - 100),
-          layout: 'vertical',
-          sort_order: seg.sort_order - 0.5,
-          crop_boxes: [brollBox],
-        }
-        if (brollSeg.end_ms <= brollSeg.start_ms) return s
-        return {
-          segments: [
-            ...s.segments.map(s => s.id === seg!.id ? { ...s, start_ms: brollSeg.end_ms } : s),
-            brollSeg,
-          ].sort((a, b) => a.sort_order - b.sort_order),
-          keyframes: withBoxes(s.keyframes, [brollBox]),
-        }
-      }
-
-      if (brollEnd <= atMs) return s
-
-      const brollSeg: SegmentLocal = {
-        id: brollId, start_ms: atMs, end_ms: brollEnd,
-        layout: 'vertical', sort_order: seg.sort_order + 0.5, crop_boxes: [brollBox],
-      }
-      const result: SegmentLocal[] = [
-        ...s.segments.map(s => s.id === seg!.id ? { ...s, end_ms: atMs } : s),
-        brollSeg,
-      ]
-      let contBoxes: CropBoxLocal[] = []
-      if (brollEnd < seg.end_ms - 100) {
-        contBoxes = seg.crop_boxes.map(box => ({
-          id: crypto.randomUUID(), slot_index: box.slot_index,
-          source_video_id: box.source_video_id,
-          source_offset_ms: box.source_offset_ms + (brollEnd - seg!.start_ms),
-          keyframes: [{ t_ms: brollEnd, ...getPos(box.id, brollEnd) }],
-        }))
-        result.push({ id: crypto.randomUUID(), start_ms: brollEnd, end_ms: seg.end_ms, layout: seg.layout, sort_order: seg.sort_order + 1, crop_boxes: contBoxes })
-      }
-      return {
-        segments: result.sort((a, b) => a.sort_order - b.sort_order),
-        keyframes: withBoxes(s.keyframes, [brollBox, ...contBoxes]),
-      }
-    })
-
-    return brollId
+  placeBroll: (videoId, startMs, endMs) => {
+    const id = crypto.randomUUID()
+    const box = {
+      id: crypto.randomUUID(), slot_index: 0, source_video_id: videoId, source_offset_ms: 0,
+      image_path: null, image_motion: null, volume: 1, muted: true,
+      keyframes: [{ t_ms: startMs, x: 0, y: 0, w: 1, h: 1 }],
+    } as CropBoxLocal
+    set(s => ({
+      segments: [...s.segments, { id, start_ms: startMs, end_ms: endMs, layout: 'vertical' as LayoutType, sort_order: 0, crop_boxes: [box] }]
+        .sort((a, b) => a.start_ms - b.start_ms),
+      keyframes: withBoxes(s.keyframes, [box]),
+    }))
+    return id
   },
+
+  retimeBroll: (id, startMs, endMs, moved) => set(s => {
+    const shot = s.segments.find(x => x.id === id)
+    if (!shot || !(endMs > startMs)) return s
+    const d = startMs - shot.start_ms
+    if (!d && endMs === shot.end_ms) return s
+    const keyframes = { ...s.keyframes }
+    const crop_boxes = shot.crop_boxes.map(box => {
+      if (moved && d && keyframes[box.id]) keyframes[box.id] = keyframes[box.id].map(k => ({ ...k, t_ms: k.t_ms + d }))
+      return moved ? box : { ...box, source_offset_ms: Math.max(0, (box.source_offset_ms ?? 0) + d) }
+    })
+    return {
+      segments: s.segments.map(x => (x.id === id ? { ...x, start_ms: startMs, end_ms: endMs, crop_boxes } : x)).sort((a, b) => a.start_ms - b.start_ms),
+      keyframes,
+    }
+  }),
+
+  removeBroll: (id) => set(s => {
+    if (!s.segments.some(x => x.id === id)) return s
+    return {
+      segments: s.segments.filter(x => x.id !== id),
+      activeSegmentId: s.activeSegmentId === id ? null : s.activeSegmentId,
+      activeBoxId: s.activeSegmentId === id ? null : s.activeBoxId,
+    }
+  }),
 
   upsertKeyframe: (boxId, kf) => set(s => {
     const existing = s.keyframes[boxId] ?? []

@@ -2,6 +2,7 @@
 
 import { useRef, useState } from 'react'
 import type { Overlay } from '@chai-cut/shared'
+import { EmptyState } from './EditorTour'
 
 interface Props {
   overlays: Overlay[]
@@ -80,9 +81,8 @@ export function LayersPanel({
       />
 
       {overlays.length === 0 && (
-        <p className="text-xs text-center py-3" style={{ color: 'rgba(255,255,255,0.25)' }}>
-          No overlays yet. Upload an image to place it on the video.
-        </p>
+        <EmptyState icon={<><rect x="3" y="3" width="18" height="18" rx="3" /><circle cx="9" cy="9" r="2" /><path d="M21 15l-5-5L5 21" /></>}
+          title="No images yet" tip="Upload a logo or sticker to place it on the video." />
       )}
 
       {[...overlays].sort((a, b) => b.z_index - a.z_index).map(ov => (

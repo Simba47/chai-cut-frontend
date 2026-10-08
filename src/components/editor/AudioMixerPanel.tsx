@@ -1,17 +1,45 @@
 'use client'
 
-import { useRef } from 'react'
+import { useEffect, useRef } from 'react'
 import type { AudioTrack } from '@chai-cut/shared'
+import { EmptyState } from './EditorTour'
+import { TimeRange } from './ItemTimeRange'
 
 interface Props {
   tracks: AudioTrack[]
   onAddTrack: (file: File) => void
   onUpdateTrack: (id: string, updates: Partial<AudioTrack>) => void
   onRemoveTrack: (id: string) => void
+  /** The track picked on the timeline (or here): highlighted, with its timing */
+  selectedId?: string | null
+  onSelect?: (id: string) => void
+  currentTimeMs?: number
+  clipLengthMs?: number
+  /** Each song's full length (ms), once known */
+  durations?: Record<string, number>
+  /** The name shown for a track (default: its file name) */
+  nameOf?: (track: AudioTrack) => string
+  /** Songs still uploading, or whose upload failed */
+  uploads?: Record<string, 'uploading' | 'failed'>
+  /** A song with no file to play (saved before uploads existed): offer "Re-add this song" */
+  missing?: (track: AudioTrack) => boolean
+  onReadd?: (id: string, file: File) => void
+  /** A message for the last thing tried (e.g. a file over 20 MB) */
+  notice?: string | null
 }
 
-export function AudioMixerPanel({ tracks, onAddTrack, onUpdateTrack, onRemoveTrack }: Props) {
+/** Any audio file, or a video (its sound is used) */
+const MUSIC_ACCEPT = 'audio/*,video/*'
+
+export function AudioMixerPanel({ tracks, onAddTrack, onUpdateTrack, onRemoveTrack, selectedId = null, onSelect, currentTimeMs = 0, clipLengthMs, durations = {}, nameOf, uploads = {}, missing, onReadd, notice }: Props) {
   const fileInputRef = useRef<HTMLInputElement>(null)
+  // "Re-add this song": which track the picked file is for
+  const readdRef = useRef<HTMLInputElement>(null)
+  const readdIdRef = useRef<string | null>(null)
+  const listRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (selectedId) listRef.current?.querySelector(`[data-track-id="${selectedId}"]`)?.scrollIntoView({ block: 'nearest' })
+  }, [selectedId])
 
   function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
     const f = e.target.files?.[0]
@@ -28,10 +56,12 @@ export function AudioMixerPanel({ tracks, onAddTrack, onUpdateTrack, onRemoveTra
       <input
         ref={fileInputRef}
         type="file"
-        accept="audio/*"
+        accept={MUSIC_ACCEPT}
         className="hidden"
         onChange={handleFileChange}
       />
+      <input ref={readdRef} type="file" accept={MUSIC_ACCEPT} className="hidden"
+        onChange={e => { const f = e.target.files?.[0]; e.target.value = ''; if (f && readdIdRef.current) onReadd?.(readdIdRef.current, f) }} />
 
       <button
         onClick={() => fileInputRef.current?.click()}
@@ -40,15 +70,29 @@ export function AudioMixerPanel({ tracks, onAddTrack, onUpdateTrack, onRemoveTra
       >
         + Add background music
       </button>
+      <p className="-mt-2 text-[11px]" style={{ color: 'var(--text-muted)' }}>Any audio file, or a video for its sound · up to 20 MB</p>
+      {notice && <p role="alert" className="-mt-1 text-xs" style={{ color: '#f87171' }}>{notice}</p>}
 
       {tracks.length === 0 ? (
-        <p className="text-xs" style={{ color: 'var(--text-muted)' }}>No audio tracks added.</p>
+        <EmptyState icon={<><path d="M9 18V5l12-2v13" /><circle cx="6" cy="18" r="3" /><circle cx="18" cy="16" r="3" /></>}
+          title="No music yet" tip="Add a background track above, then set its volume so your voice stays clear." />
       ) : (
-        <div className="flex flex-col gap-3">
-          {tracks.map(track => (
-            <div key={track.id} className="flex flex-col gap-2 p-3 rounded-lg" style={{ background: 'var(--surface-2)' }}>
+        <div ref={listRef} className="flex flex-col gap-3">
+          {tracks.map(track => {
+            const on = track.id === selectedId
+            // Where it stops: its trim end, else the song's end (or the clip's end while unknown)
+            const len = clipLengthMs ?? Infinity
+            const songEnd = durations[track.id] != null ? track.start_ms + durations[track.id] - (track.offset_ms ?? 0) : len
+            const endMs = Math.min(len, track.end_ms ?? songEnd)
+            return (
+            <div key={track.id} data-track-id={track.id} onPointerDown={() => { if (!on) onSelect?.(track.id) }}
+              className="flex flex-col gap-2 p-3 rounded-lg"
+              style={{ background: 'var(--surface-2)', boxShadow: on ? 'inset 0 0 0 1.5px #c084fc' : undefined }}>
               <div className="flex items-center justify-between">
-                <span className="text-xs text-white truncate">{track.storage_path.split('/').pop()}</span>
+                <span className="min-w-0 flex items-center gap-1.5">
+                  <span className="text-xs text-white truncate">{nameOf ? nameOf(track) : track.storage_path.split('/').pop()}</span>
+                  {uploads[track.id] === 'uploading' && <span className="shrink-0 text-[10px]" style={{ color: 'var(--text-muted)' }}>Uploading…</span>}
+                </span>
                 <button
                   onClick={() => onRemoveTrack(track.id)}
                   className="text-xs shrink-0 ml-2"
@@ -57,6 +101,17 @@ export function AudioMixerPanel({ tracks, onAddTrack, onUpdateTrack, onRemoveTra
                   ✕
                 </button>
               </div>
+
+              {/* No file behind it (saved before uploads existed, or its upload failed): it can't play or export */}
+              {(uploads[track.id] === 'failed' || (missing?.(track) && uploads[track.id] !== 'uploading')) && (
+                <div className="flex items-center gap-2 p-2 rounded-md text-[11px]" style={{ background: 'rgba(251,191,36,0.1)', color: '#fbbf24' }}>
+                  <span className="flex-1">{uploads[track.id] === 'failed' ? 'Upload failed — this song won’t be in the export.' : 'This song’s file is missing, so it won’t play or export.'}</span>
+                  <button type="button" onClick={() => { readdIdRef.current = track.id; readdRef.current?.click() }}
+                    className="shrink-0 px-2 py-1 rounded font-semibold" style={{ background: '#fbbf24', color: '#000' }}>
+                    Re-add this song
+                  </button>
+                </div>
+              )}
 
               <div className="flex flex-col gap-1">
                 <div className="flex justify-between text-xs" style={{ color: 'var(--text-muted)' }}>
@@ -83,8 +138,34 @@ export function AudioMixerPanel({ tracks, onAddTrack, onUpdateTrack, onRemoveTra
                 />
                 Duck under speech
               </label>
+
+              {/* Fade-in / fade-out (0.5 s each), in the preview and the export */}
+              <div className="grid grid-cols-2 gap-1.5" role="group" aria-label="Fades">
+                {([['fade_in', 'Fade in'], ['fade_out', 'Fade out']] as const).map(([k, label]) => (
+                  <button key={k} type="button" aria-pressed={!!track[k]}
+                    onClick={() => onUpdateTrack(track.id, { [k]: !track[k] })}
+                    title={`${label} over half a second${track[k] ? ' (on)' : ''}`}
+                    className="py-1.5 rounded-md text-xs font-semibold transition-colors"
+                    style={track[k]
+                      ? { background: 'rgba(192,132,252,0.18)', color: '#e9d5ff', boxShadow: 'inset 0 0 0 1px rgba(192,132,252,0.55)' }
+                      : { background: 'rgba(255,255,255,0.05)', color: 'var(--text-muted)' }}>
+                    {k === 'fade_in' ? '◢' : '◣'} {label}
+                  </button>
+                ))}
+              </div>
+
+              {on && clipLengthMs != null && (
+                <TimeRange startMs={track.start_ms} endMs={endMs} currentTimeMs={currentTimeMs}
+                  onStart={ms => {
+                    // Moving the start keeps a trimmed track's length
+                    const start = Math.round(Math.max(0, Math.min(clipLengthMs - 200, ms)))
+                    onUpdateTrack(track.id, { start_ms: start, ...(track.end_ms != null ? { end_ms: Math.min(clipLengthMs, start + track.end_ms - track.start_ms) } : {}) })
+                  }}
+                  onEnd={ms => onUpdateTrack(track.id, { end_ms: Math.round(Math.min(songEnd, clipLengthMs, Math.max(track.start_ms + 200, ms))) })} />
+              )}
             </div>
-          ))}
+            )
+          })}
         </div>
       )}
     </div>

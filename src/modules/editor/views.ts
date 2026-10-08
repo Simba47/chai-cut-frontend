@@ -1,4 +1,4 @@
-import type { BoxPosition } from '@/lib/interpolation'
+import { getBoxPositionAtLerp, type BoxPosition } from '@/lib/interpolation'
 
 // ── View changes ──────────────────────────────────────────────────────────────
 // A crop box's "view" can change during a format. Each change applies from its moment until the
@@ -53,13 +53,28 @@ export function buildKeyframes(changes: readonly ViewChange[]): ViewKeyframe[] {
 export function setViewAt(kfs: readonly ViewKeyframe[], t: number, p: BoxPosition, formatStart: number): ViewKeyframe[] {
   const changes = viewChanges(kfs)
   if (!changes.length) return [{ t_ms: formatStart, ...p }]
-  const at = Math.max(Math.round(t), formatStart)
-  const near = changes.find(c => Math.abs(c.t_ms - at) <= VIEW_SNAP_MS)
-  if (near) return buildKeyframes(changes.map(c => (c === near ? { ...c, ...p } : c)))
-  if (at - formatStart <= VIEW_SNAP_MS || at < changes[0].t_ms) {
-    return buildKeyframes(changes.map((c, i) => (i === 0 ? { ...c, ...p } : c)))
+  // Never after the playhead (floor, not round): a change even half a millisecond ahead leaves the
+  // playhead inside the hold before it, and the box is drawn as a blend that trails the mouse
+  const at = Math.max(Math.floor(t), formatStart)
+  const first = changes[0]
+  // Which change carries the new view: the first one (at the format's start), a cut close by
+  // (one just ahead moves back to the playhead), or a new cut at the playhead
+  const nearCut = changes.find(c => c !== first && c.cut && Math.abs(c.t_ms - at) <= VIEW_SNAP_MS)
+  const isFirst = at - formatStart <= VIEW_SNAP_MS || at <= first.t_ms
+  const target = isFirst ? first.t_ms : nearCut ? Math.min(nearCut.t_ms, at) : at
+  // The view holds from there until the next cut: glide points in between (Make my clips'
+  // tracking, recorded Motion) belonged to the old path and would pull the box straight back
+  const nextCut = changes.find(c => c !== first && c !== nearCut && c.cut && c.t_ms > Math.max(at, target))
+  const kept = changes.filter(c => c.t_ms < target || (nextCut ? c.t_ms >= nextCut.t_ms : false))
+  // Up to the cut the old path plays on as it was: a point just before it keeps where it had got to
+  const prev = kept.filter(c => c.t_ms < target).pop()
+  if (!isFirst && prev && target - 2 > prev.t_ms) {
+    const was = getBoxPositionAtLerp(target - 2, kfs as ViewKeyframe[])
+    if (Math.abs(was.x - prev.x) + Math.abs(was.y - prev.y) + Math.abs(was.w - prev.w) + Math.abs(was.h - prev.h) > 0.002) {
+      kept.push({ t_ms: target - 2, ...was, cut: false })
+    }
   }
-  return buildKeyframes([...changes, { t_ms: at, ...p, cut: true }])
+  return buildKeyframes([...kept, { t_ms: target, ...p, cut: !isFirst }])
 }
 
 /**
@@ -87,14 +102,50 @@ export function removeViewChangeAt(kfs: readonly ViewKeyframe[], t: number): Vie
   return buildKeyframes(rest)
 }
 
-/** Move the view change at `from` to `to`, kept between its neighbours */
+/** Closest two view changes may be (a cut needs room for its hold keyframe) */
+const MIN_APART_MS = HOLD_GAP_MS + 3
+
+/**
+ * Move the view change at `from` to `to`, anywhere in the format after its first view: it can be
+ * dragged past other changes (the views then play in their new order), but never onto one — it
+ * stops just beside it.
+ */
 export function moveViewChange(kfs: readonly ViewKeyframe[], from: number, to: number, formatStart: number, formatEnd: number): ViewKeyframe[] {
   const changes = viewChanges(kfs)
   const i = changes.findIndex(c => c.t_ms === from)
   if (i <= 0) return [...kfs] // the first view always starts with the format
-  const lo = Math.max(formatStart, changes[i - 1].t_ms) + HOLD_GAP_MS + 2
-  const hi = Math.min(formatEnd - 1, changes[i + 1]?.t_ms ?? Infinity) - HOLD_GAP_MS - 2
+  const lo = Math.max(formatStart, changes[0].t_ms) + MIN_APART_MS
+  const hi = formatEnd - 1 - MIN_APART_MS
   if (hi < lo) return [...kfs]
-  const t = Math.round(Math.max(lo, Math.min(hi, to)))
+  let t = Math.round(Math.max(lo, Math.min(hi, to)))
+  // Not on top of another change: beside it, on the side it was dragged from
+  const others = changes.filter((_, j) => j !== i)
+  const hit = others.find(c => Math.abs(c.t_ms - t) < MIN_APART_MS)
+  if (hit) {
+    const before = hit.t_ms - MIN_APART_MS, after = hit.t_ms + MIN_APART_MS
+    t = from < hit.t_ms ? before : after
+    if (t < lo || t > hi || others.some(c => c !== hit && Math.abs(c.t_ms - t) < MIN_APART_MS)) return [...kfs]
+  }
   return buildKeyframes(changes.map((c, j) => (j === i ? { ...c, t_ms: t } : c)))
+}
+
+/** How far after a view change its copy goes (or half way to the next change, if that is closer) */
+export const DUPLICATE_AFTER_MS = 1000
+
+/**
+ * A copy of the view change at `t`: the same view, a moment later — DUPLICATE_AFTER_MS, or half way
+ * to the next change or the format's end if that's closer. A copy of the first view (or of a cut)
+ * is a cut; a copy of a motion point glides like it. Then it can be dragged anywhere
+ * (moveViewChange). Null when there's no room after it.
+ */
+export function duplicateViewChange(kfs: readonly ViewKeyframe[], t: number, formatEnd: number): { keyframes: ViewKeyframe[]; at: number } | null {
+  const changes = viewChanges(kfs)
+  const i = changes.findIndex(c => c.t_ms === t)
+  if (i < 0) return null
+  const src = changes[i]
+  const limit = Math.min(changes[i + 1]?.t_ms ?? Infinity, formatEnd - 1)
+  const room = limit - t
+  if (room < 2 * MIN_APART_MS + 2) return null
+  const at = Math.round(t + Math.min(DUPLICATE_AFTER_MS, room / 2))
+  return { keyframes: buildKeyframes([...changes, { ...pos(src), t_ms: at, cut: i === 0 ? true : src.cut }]), at }
 }

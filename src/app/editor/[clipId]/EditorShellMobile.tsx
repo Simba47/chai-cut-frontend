@@ -6,6 +6,7 @@ import type {
   AudioTrack, Transition, TranscriptWord, LayoutType, TransitionType, Overlay,
 } from '@chai-cut/shared'
 import { VideoPreview, OutputCanvas } from '@/components/editor/VideoPreview'
+import { computeCutRanges, reactionRanges, removedMs } from '@/lib/cuts'
 import { SegmentTimeline } from '@/components/editor/SegmentTimeline'
 import { CaptionStyler } from '@/components/editor/CaptionStyler'
 import { TextOverlayPanel } from '@/components/editor/TextOverlayPanel'
@@ -69,6 +70,32 @@ export function EditorShellMobile({
   clip, videoUrl, words: initialWords, initialSegments,
   initialCaptionStyles, initialTextOverlays, initialAudioTracks, initialTransitions, initialOverlays,
 }: Props) {
+  // Music: stored when picked (any audio, or a video's sound; up to 20 MB) so it's in the export
+  const [musicUploads, setMusicUploads] = useState<Record<string, 'uploading' | 'failed'>>({})
+  const [musicNotice, setMusicNotice] = useState<string | null>(null)
+  /** Adds a song (or, with `replaceId`, gives an old name-only song its file: "Re-add this song") */
+  function addMusic(f: File, replaceId?: string) {
+    if (f.size > 20 * 1024 * 1024) { setMusicNotice('Music files can be up to 20 MB. Pick a smaller file or a shorter song.'); return }
+    setMusicNotice(null)
+    const id = replaceId ?? crypto.randomUUID()
+    if (!replaceId) {
+      setAudioTracks(prev => [...prev, { id, clip_id: clip.id, storage_path: f.name, start_ms: 0, volume: 0.5, duck_under_speech: true, fade_in: true, fade_out: true }])
+    }
+    setMusicUploads(u => ({ ...u, [id]: 'uploading' }))
+    const form = new FormData()
+    form.append('file', f)
+    fetch('/api/audio/upload', { method: 'POST', body: form })
+      .then(async r => { const d = await r.json().catch(() => ({})); if (!r.ok) throw new Error(d.error ?? 'The song could not be uploaded'); return d as { storage_path: string } })
+      .then(({ storage_path }) => {
+        setAudioTracks(prev => prev.map(t => t.id === id ? { ...t, storage_path } : t))
+        setMusicUploads(u => { const n = { ...u }; delete n[id]; return n })
+      })
+      .catch((e: unknown) => {
+        setMusicUploads(u => ({ ...u, [id]: 'failed' }))
+        setMusicNotice(e instanceof Error ? e.message : 'The song could not be uploaded')
+      })
+  }
+
   // ── Video player ─────────────────────────────────────────────────────────────
   const { videoRef, seekToMs, togglePlay, pause } = useVideoSync(clip.start_ms, clip.end_ms)
   const { currentTimeMs, durationMs, playing } = usePlayerStore()
@@ -118,7 +145,7 @@ export function EditorShellMobile({
     // starts with captions on if it has words (a style saved before the on/off field counts as on)
     const savedStyle = initialCaptionStyles[0]
     const hasCaptions = savedStyle ? savedStyle.enabled !== false : initialWords.length > 0
-    hydrateCaptions(initialWords, savedStyle ?? { color: '#FFE700' }, hasCaptions)
+    hydrateCaptions(initialWords, savedStyle ?? { color: '#FFE700' }, savedStyle ? hasCaptions : false)
     hydrateMedia({
       overlays: initialOverlays,
       textOverlays: initialTextOverlays,
@@ -145,6 +172,9 @@ export function EditorShellMobile({
   const [clipStatus, setClipStatus] = useState<string>(clip.status)
   const [outputUrl, setOutputUrl] = useState<string | null>(clip.output_url)
   const [exporting, setExporting] = useState(false)
+  // Remove pauses and filler words (the cut is made by the export; see src/lib/cuts.ts)
+  const [removeFillers, setRemoveFillersState] = useState(!!(clip as typeof clip & { remove_fillers?: boolean }).remove_fillers)
+  const removeFillersRef = useRef(removeFillers)
   const [exportError, setExportError] = useState<string | null>(null)
   // What exports have always been rendered at (the worker ignored the 2160p asked for here)
   const renderQuality = '1080p' as const
@@ -303,6 +333,7 @@ export function EditorShellMobile({
             crop_boxes: s.crop_boxes.map(b => ({ ...b, keyframes: keyframes[b.id] ?? b.keyframes })),
           })),
           captionStyle, textOverlays, audioTracks, transitions, filters, overlays,
+          removeFillers: removeFillersRef.current,
         }),
       })
       if (!res.ok) {
@@ -330,6 +361,10 @@ export function EditorShellMobile({
     }
   }
   latestHandleSaveRef.current = handleSave
+  const fillerCutMs = useMemo(
+    () => removedMs(computeCutRanges(words, clip.start_ms, clip.end_ms, reactionRanges(segments, clip.start_ms))),
+    [words, clip.start_ms, clip.end_ms, segments],
+  )
 
   // Back online: don't wait out the backoff
   useEffect(() => {
@@ -351,7 +386,7 @@ export function EditorShellMobile({
       if (!(await handleSave())) throw new Error("Couldn't save your latest edits, so nothing was exported. Check your connection and try again.")
       const res = await fetch('/api/export', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ clip_id: clip.id, quality: renderQuality, retranscribe }),
+        body: JSON.stringify({ clip_id: clip.id, quality: renderQuality, retranscribe, remove_fillers: removeFillersRef.current }),
       })
       if (!res.ok) throw new Error((await res.json()).error ?? 'Export failed')
       refreshWordsOnDoneRef.current = retranscribe
@@ -367,6 +402,13 @@ export function EditorShellMobile({
   async function handleReEdit() {
     await fetch(`/api/clips/${clip.id}/reedit`, { method: 'POST' })
     setClipStatus('draft'); setOutputUrl(null)
+  }
+
+  /** Captions on: made now for this clip if it has none yet (nothing is captioned until asked) */
+  function turnCaptions(on: boolean) {
+    setShowCaptions(on)
+    const has = words.some(w => w.start_ms >= clip.start_ms && w.start_ms < clip.end_ms)
+    if (on && !has && !transcribing && !retranscribing && !isFreePlan) handleRetranscribe('unknown')
   }
 
   async function handleRetranscribe(languageCode: string) {
@@ -618,9 +660,21 @@ export function EditorShellMobile({
           </div>
         </div>
         <div style={{ padding: '8px 10px 12px', display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {words.length > 0 && (
+            <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, padding: '8px 10px', borderRadius: 10, background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)', cursor: 'pointer' }}>
+              <input type="checkbox" checked={removeFillers} style={{ accentColor: '#c8ff00', marginTop: 2 }}
+                onChange={e => { setRemoveFillersState(e.target.checked); removeFillersRef.current = e.target.checked; latestHandleSaveRef.current() }} />
+              <span style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                <span style={{ fontSize: 12, fontWeight: 600, color: '#fff' }}>Remove pauses &amp; filler words</span>
+                <span style={{ fontSize: 10, color: 'rgba(255,255,255,0.5)' }}>
+                  {fillerCutMs >= 500 ? `Removes about ${Math.round(fillerCutMs / 1000)} s. ` : 'Nothing much to remove. '}Applied when you export.
+                </span>
+              </span>
+            </label>
+          )}
           {outputUrl && clipStatus === 'done' ? (
             <>
-              <a href={outputUrl} download="export.mp4" target="_blank" rel="noopener noreferrer" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, padding: '10px 0', borderRadius: 10, background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.12)', color: '#fff', fontSize: 12, fontWeight: 700, textDecoration: 'none' }}>
+              <a href={`/api/clips/${clip.id}/download`} download style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, padding: '10px 0', borderRadius: 10, background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.12)', color: '#fff', fontSize: 12, fontWeight: 700, textDecoration: 'none' }}>
                 <svg width="13" height="13" viewBox="0 0 15 15" fill="none"><path d="M7.5 2v8M4 7l3.5 3.5L11 7M2 13h11" stroke="white" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/></svg>
                 Download
               </a>
@@ -672,7 +726,7 @@ export function EditorShellMobile({
           <>
             <div style={{ padding: '10px 12px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
               <span style={{ fontSize: 11, fontWeight: 600, color: showCaptions ? '#fff' : 'rgba(255,255,255,0.45)' }}>Auto-captions</span>
-              <div onClick={() => setShowCaptions(!showCaptions)} style={{ width: 36, height: 20, borderRadius: 10, display: 'flex', alignItems: 'center', paddingLeft: 2, cursor: 'pointer', background: showCaptions ? '#c8ff00' : 'rgba(255,255,255,0.1)', transition: 'background 0.2s' }}>
+              <div onClick={() => turnCaptions(!showCaptions)} style={{ width: 36, height: 20, borderRadius: 10, display: 'flex', alignItems: 'center', paddingLeft: 2, cursor: 'pointer', background: showCaptions ? '#c8ff00' : 'rgba(255,255,255,0.1)', transition: 'background 0.2s' }}>
                 <div style={{ width: 16, height: 16, borderRadius: 8, background: '#fff', transition: 'transform 0.2s', transform: showCaptions ? 'translateX(16px)' : 'translateX(0)' }} />
               </div>
             </div>
@@ -877,7 +931,7 @@ export function EditorShellMobile({
                   <>
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 14px', background: 'rgba(255,255,255,0.04)', borderRadius: 12, border: '1px solid rgba(255,255,255,0.07)' }}>
                       <span style={{ fontSize: 14, fontWeight: 600, color: showCaptions ? '#fff' : 'rgba(255,255,255,0.45)' }}>Auto-captions</span>
-                      <div onClick={() => setShowCaptions(!showCaptions)} style={{ width: 44, height: 24, borderRadius: 12, display: 'flex', alignItems: 'center', paddingLeft: 2, cursor: 'pointer', background: showCaptions ? '#c8ff00' : 'rgba(255,255,255,0.12)', transition: 'background 0.2s' }}>
+                      <div onClick={() => turnCaptions(!showCaptions)} style={{ width: 44, height: 24, borderRadius: 12, display: 'flex', alignItems: 'center', paddingLeft: 2, cursor: 'pointer', background: showCaptions ? '#c8ff00' : 'rgba(255,255,255,0.12)', transition: 'background 0.2s' }}>
                         <div style={{ width: 20, height: 20, borderRadius: 10, background: '#fff', transition: 'transform 0.2s', transform: showCaptions ? 'translateX(20px)' : 'translateX(0)' }} />
                       </div>
                     </div>
@@ -921,7 +975,9 @@ export function EditorShellMobile({
             {activeTab === 'audio' && (
               <div style={{ padding: 12 }}>
                 <AudioMixerPanel tracks={audioTracks}
-                  onAddTrack={f => setAudioTracks(prev => [...prev, { id: crypto.randomUUID(), clip_id: clip.id, storage_path: f.name, start_ms: 0, volume: 0.5, duck_under_speech: true }])}
+                  onAddTrack={addMusic} uploads={musicUploads} notice={musicNotice}
+                  missing={t => !t.storage_path.startsWith('audio/') && !t.storage_path.startsWith('main-video:') && !musicUploads[t.id]}
+                  onReadd={(id, f) => addMusic(f, id)}
                   onRemoveTrack={askRemoveTrack}
                   onUpdateTrack={(id, u) => setAudioTracks(prev => prev.map(t => t.id === id ? { ...t, ...u } : t))} />
               </div>
@@ -960,7 +1016,7 @@ export function EditorShellMobile({
                 </div>
                 {outputUrl && clipStatus === 'done' ? (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                    <a href={outputUrl} download="export.mp4" target="_blank" rel="noopener noreferrer" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, padding: '14px 0', borderRadius: 12, background: '#c8ff00', color: '#000', fontSize: 15, fontWeight: 700, textDecoration: 'none' }}>
+                    <a href={`/api/clips/${clip.id}/download`} download style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, padding: '14px 0', borderRadius: 12, background: '#c8ff00', color: '#000', fontSize: 15, fontWeight: 700, textDecoration: 'none' }}>
                       <svg width="16" height="16" viewBox="0 0 15 15" fill="none"><path d="M7.5 2v8M4 7l3.5 3.5L11 7M2 13h11" stroke="black" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"/></svg>
                       Download
                     </a>

@@ -9,11 +9,12 @@ import { GetObjectCommand } from '@aws-sdk/client-s3'
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 
-export async function GET() {
+// ?assets=1 also lists the user's asset videos (stock clips saved for B-roll), for the editor
+export async function GET(req: NextRequest) {
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   try {
-    const rows = await listVideos(user.id)
+    const rows = await listVideos(user.id, req.nextUrl.searchParams.get('assets') === '1')
     const videos = await Promise.all(
       rows.map(async (v, i) => {
         let video_url: string | null = null

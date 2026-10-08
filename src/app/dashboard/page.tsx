@@ -8,7 +8,7 @@ import type { Video } from '@chai-cut/shared'
 import { ACCEPTED_VIDEO_EXTENSIONS } from '@chai-cut/shared'
 import { Breadcrumbs } from '@/components/ui/breadcrumbs'
 import { AccountMenu } from '@/components/ui/account-menu'
-import { BrandLoader } from '@/components/ui/brand-loader'
+import { BrandLoaderScreen } from '@/components/ui/brand-loader'
 import { FillButtonContent } from '@/components/ui/fill-button'
 import { useVideoUpload } from '@/modules/upload/useVideoUpload'
 
@@ -65,9 +65,8 @@ export default function DashboardPage() {
   const uploading = upload.state.phase === 'uploading' || upload.state.phase === 'finishing'
   const [uploadError, setUploadError] = useState<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
-  // Import from a Google Drive or Dropbox link
-  const [link, setLink] = useState('')
-  const [importing, setImporting] = useState(false)
+  // "Upload video" asks where the video comes from: this device, or a Drive link
+  const [chooserOpen, setChooserOpen] = useState(false)
 
   async function fetchVideos() {
     const res = await fetch('/api/videos')
@@ -124,30 +123,6 @@ export default function DashboardPage() {
     if (error) { setUploadError(error); return }
     setUploadError(null)
     upload.start(f)
-  }
-
-  async function importLink(e: React.FormEvent) {
-    e.preventDefault()
-    const url = link.trim()
-    if (!url || importing) return
-    if (atLimit) { setUploadError(`You've used all ${planInfo?.maxVideos} videos on your plan. Delete a video or upgrade to add more.`); return }
-    setImporting(true)
-    setUploadError(null)
-    try {
-      const res = await fetch('/api/ingest/link', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url }),
-      })
-      const data = await res.json().catch(() => ({}))
-      if (!res.ok) throw new Error(data.error ?? 'Could not import that link')
-      setLink('')
-      await fetchVideos() // the new video appears with its download progress
-    } catch (err) {
-      setUploadError(err instanceof Error ? err.message : 'Could not import that link')
-    } finally {
-      setImporting(false)
-    }
   }
 
   // Page-wide drag-and-drop; the depth counter stops child elements from flickering the overlay
@@ -209,13 +184,8 @@ export default function DashboardPage() {
     if (!res?.ok) setVideos(prev)
   }
 
-  if (loading) {
-    return (
-      <div className="dash" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--accent)' }}>
-        <BrandLoader label="Loading your videos…" />
-      </div>
-    )
-  }
+  // Same full-screen loader as the clip board and editor (ring, glow, progress bar, tips)
+  if (loading) return <BrandLoaderScreen label="Loading your videos…" />
 
   const usagePct = planInfo ? Math.min(100, (planInfo.usage.videos / planInfo.maxVideos) * 100) : 0
   const isEmpty = videos.length === 0
@@ -336,7 +306,7 @@ export default function DashboardPage() {
             <button type="button" className="dash-link-btn" onClick={upload.cancel}>Cancel</button>
           ) : null}
           {!atLimit && upload.state.phase === 'idle' && (
-            <button className="dash-upload-btn" disabled={uploading} onClick={() => fileInputRef.current?.click()}>
+            <button className="dash-upload-btn" disabled={uploading} aria-haspopup="dialog" onClick={() => { setUploadError(null); setChooserOpen(true) }}>
               {/* Arrow flies out to the top-right on hover while a copy slides in from the bottom-left */}
               <span className="dash-upload-icon" aria-hidden>
                 {uploading ? <span className="dash-spinner" /> : (
@@ -350,28 +320,6 @@ export default function DashboardPage() {
             </button>
           )}
         </div>
-
-        {!atLimit && (
-          <form className="dash-import" onSubmit={importLink}>
-            <label htmlFor="dash-import-link">Or import from a link</label>
-            <input
-              id="dash-import-link"
-              className="dash-import-input"
-              type="url"
-              inputMode="url"
-              placeholder="Paste a Google Drive or Dropbox link to a video"
-              value={link}
-              onChange={e => setLink(e.target.value)}
-              disabled={importing}
-            />
-            <button type="submit" className="dash-link-btn" disabled={!link.trim() || importing}>
-              {importing ? 'Importing…' : 'Import'}
-            </button>
-            <span className="dash-import-hint">
-              Set sharing to &ldquo;Anyone with the link&rdquo;. YouTube import is coming soon.
-            </span>
-          </form>
-        )}
 
         {uploadError && <p className="dash-error" role="alert">{uploadError}</p>}
 
@@ -418,6 +366,16 @@ export default function DashboardPage() {
           </div>
         )
       })()}
+
+      {chooserOpen && (
+        <UploadChooser
+          maxFileSizeGb={planInfo?.maxFileSizeGb}
+          onClose={() => setChooserOpen(false)}
+          onDevice={() => { setChooserOpen(false); fileInputRef.current?.click() }}
+          onFile={f => { setChooserOpen(false); startUpload(f) }}
+          onImported={() => { setChooserOpen(false); fetchVideos(); fetchPlan() }}
+        />
+      )}
 
       {pendingDelete && pendingDelete.length > 0 && (
         <DeleteDialog
@@ -686,6 +644,160 @@ function VideoCard({ video, title, selecting, selected, onToggle, onRename, onDe
             <FillButtonContent icon="scissors">Make clips</FillButtonContent>
           </Link>
         )}
+      </div>
+    </div>
+  )
+}
+
+// Which service a pasted link points at — lights up that logo in the upload sheet
+function linkProvider(url: string): 'drive' | null {
+  const u = url.trim().toLowerCase()
+  if (/(^|\/\/|\.)(drive|docs)\.google\.com\//.test(u)) return 'drive'
+  return null
+}
+
+function DriveLogo() {
+  return (
+    <svg width="18" height="16" viewBox="0 0 87.3 78" aria-hidden="true">
+      <path d="M6.6 66.85l3.85 6.65c.8 1.4 1.95 2.5 3.3 3.3L27.5 53H0c0 1.55.4 3.1 1.2 4.5z" fill="#0066da" />
+      <path d="M43.65 25L29.9 1.2c-1.35.8-2.5 1.9-3.3 3.3l-25.4 44A9.06 9.06 0 000 53h27.5z" fill="#00ac47" />
+      <path d="M73.55 76.8c1.35-.8 2.5-1.9 3.3-3.3l1.6-2.75 7.65-13.25c.8-1.4 1.2-2.95 1.2-4.5H59.8l5.85 11.5z" fill="#ea4335" />
+      <path d="M43.65 25L57.4 1.2C56.05.4 54.5 0 52.9 0H34.4c-1.6 0-3.15.45-4.5 1.2z" fill="#00832d" />
+      <path d="M59.8 53H27.5L13.75 76.8c1.35.8 2.9 1.2 4.5 1.2h50.8c1.6 0 3.15-.45 4.5-1.2z" fill="#2684fc" />
+      <path d="M73.4 26.5l-12.7-22c-.8-1.4-1.95-2.5-3.3-3.3L43.65 25 59.8 53h27.45c0-1.55-.4-3.1-1.2-4.5z" fill="#ffba00" />
+    </svg>
+  )
+}
+
+// "Upload video": drop or browse a file from this device, or import from a Google Drive link
+function UploadChooser({ maxFileSizeGb, onClose, onDevice, onFile, onImported }: {
+  maxFileSizeGb?: number
+  onClose: () => void
+  onDevice: () => void
+  onFile: (f: File) => void
+  onImported: () => void
+}) {
+  const [link, setLink] = useState('')
+  const [importing, setImporting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [over, setOver] = useState(false)
+  const provider = linkProvider(link)
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape' && !importing) onClose() }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [importing, onClose])
+
+  async function importLink(e: React.FormEvent) {
+    e.preventDefault()
+    const url = link.trim()
+    if (!url || importing) return
+    setImporting(true)
+    setError(null)
+    try {
+      const res = await fetch('/api/ingest/link', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.error ?? 'Could not import that link')
+      onImported() // the new video appears on the dashboard with its download progress
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not import that link')
+      setImporting(false)
+    }
+  }
+
+  // Drops inside the sheet are handled here, not by the page-wide drop zone behind it
+  const stop = (e: React.DragEvent) => { e.preventDefault(); e.stopPropagation() }
+
+  return (
+    <div
+      className="dash-modal-backdrop dash-sheet-backdrop"
+      onClick={() => { if (!importing) onClose() }}
+      onDragEnter={stop}
+      onDragOver={stop}
+      onDragLeave={stop}
+      onDrop={stop}
+    >
+      <div className="dash-sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-title" onClick={e => e.stopPropagation()}>
+        <div className="dash-sheet-head">
+          <div>
+            <h2 id="sheet-title">Add a video</h2>
+            <p>MP4, MOV, MKV or WebM{maxFileSizeGb ? ` · up to ${maxFileSizeGb} GB` : ''}</p>
+          </div>
+          <button type="button" className="dash-sheet-close" aria-label="Close" onClick={onClose} disabled={importing}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="M6 6l12 12M18 6L6 18" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" />
+            </svg>
+          </button>
+        </div>
+
+        <button
+          type="button"
+          className={`dash-sheet-drop${over ? ' is-over' : ''}`}
+          onClick={onDevice}
+          onDragEnter={e => { stop(e); setOver(true) }}
+          onDragOver={stop}
+          onDragLeave={e => { stop(e); if (!e.currentTarget.contains(e.relatedTarget as Node)) setOver(false) }}
+          onDrop={e => { stop(e); setOver(false); const f = e.dataTransfer.files[0]; if (f) onFile(f) }}
+          autoFocus
+        >
+          <span className="dash-sheet-drop-icon" aria-hidden="true">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+              <path d="M12 15V4m0 0L7.5 8.5M12 4l4.5 4.5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+              <path d="M4 15v3a2 2 0 002 2h12a2 2 0 002-2v-3" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+            </svg>
+          </span>
+          <strong>{over ? 'Release to upload' : 'Drag and drop your video'}</strong>
+          <span>or <em>browse files</em> from your computer</span>
+        </button>
+
+        <div className="dash-sheet-or" aria-hidden="true"><span>or import from a link</span></div>
+
+        <form className="dash-sheet-link" onSubmit={importLink}>
+          <div className={`dash-sheet-field${provider ? ' is-known' : ''}`}>
+            <span className="dash-sheet-field-icon" aria-hidden="true">
+              {provider === 'drive' ? <DriveLogo /> : (
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+                  <path d="M10 14a4 4 0 005.66 0l3-3a4 4 0 00-5.66-5.66l-1 1" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                  <path d="M14 10a4 4 0 00-5.66 0l-3 3a4 4 0 005.66 5.66l1-1" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                </svg>
+              )}
+            </span>
+            <input
+              type="url"
+              inputMode="url"
+              aria-label="Google Drive link"
+              placeholder="Paste a Google Drive link"
+              value={link}
+              onChange={e => { setLink(e.target.value); setError(null) }}
+              disabled={importing}
+            />
+            <button type="submit" className="dash-sheet-import" disabled={!link.trim() || importing}>
+              {importing ? <><span className="dash-spinner" /> Importing</> : 'Import'}
+            </button>
+          </div>
+          {error ? (
+            <p className="dash-sheet-error" role="alert">{error}</p>
+          ) : (
+            <div className="dash-sheet-sources">
+              <span className={`dash-sheet-source${provider === 'drive' ? ' is-on' : ''}`}><DriveLogo /> Google Drive</span>
+              <span className="dash-sheet-note">Share as &ldquo;Anyone with the link&rdquo;</span>
+            </div>
+          )}
+        </form>
+
+        <div className="dash-sheet-foot">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <rect x="5" y="11" width="14" height="10" rx="2" stroke="currentColor" strokeWidth="2" />
+            <path d="M8 11V7a4 4 0 018 0v4" stroke="currentColor" strokeWidth="2" />
+          </svg>
+          Your videos stay private to your account
+          <span className="dash-sheet-soon">YouTube import coming soon</span>
+        </div>
       </div>
     </div>
   )

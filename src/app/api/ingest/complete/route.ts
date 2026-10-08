@@ -11,7 +11,7 @@ export async function POST(req: NextRequest) {
   const durationMs = typeof body.duration_ms === 'number' ? Math.round(body.duration_ms) : undefined
   const title = typeof body.title === 'string' ? body.title : undefined
   try {
-    return NextResponse.json(await completeUpload(user.id, body.storage_path, durationMs, title))
+    return NextResponse.json(await completeUpload(user.id, body.storage_path, durationMs, title, body.asset === true))
   } catch (err) {
     return apiError(err)
   }
