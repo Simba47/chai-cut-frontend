@@ -1,6 +1,7 @@
 import { PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3'
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 import { r2, R2_BUCKET } from '@/lib/r2'
+import { safeName } from './media'
 
 /** Music added in the editor: up to 20 MB; any audio file, or a video file (its sound is used) */
 export const MAX_MUSIC_BYTES = 20 * 1024 * 1024
@@ -24,7 +25,9 @@ export function musicUrl(storagePath: string) {
 export async function uploadMusic(userId: string, file: File) {
   checkMusicFile(file.name, file.type, file.size)
   const ext = (file.name.includes('.') ? file.name.split('.').pop()! : '').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 8) || 'audio'
-  const storage_path = `audio/${userId}/${crypto.randomUUID()}.${ext}`
+  // (the name stays in the key: the editor's Media library shows it)
+  const base = safeName(file.name.replace(/\.[^.]+$/, ''))
+  const storage_path = `audio/${userId}/${crypto.randomUUID()}${base ? `--${base}` : ''}.${ext}`
   await r2.send(new PutObjectCommand({
     Bucket: R2_BUCKET, Key: storage_path,
     Body: Buffer.from(await file.arrayBuffer()),

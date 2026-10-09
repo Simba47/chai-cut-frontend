@@ -66,7 +66,9 @@ function shareUnder(sections: SegmentLocal[], a: number, b: number, is: (s: Segm
 
 /**
  * The clip as it plays: every section cut where a video plays over it, the videos in between, in
- * time order, nothing overlapping. Where two videos overlap, the one that starts later is on top.
+ * time order, nothing overlapping. Where two videos overlap, the one on the higher lane is on top
+ * (on the same lane, the one that starts later) — but a hidden video is see-through: any shown
+ * video under it is on top of it, and it only has the time no shown video plays in.
  *
  * A part that isn't the last part of its section keeps the section's id while drawing (`forSave`
  * off: its crop boxes are the section's own, so the preview reads and edits the section's views).
@@ -78,7 +80,10 @@ function shareUnder(sections: SegmentLocal[], a: number, b: number, is: (s: Segm
  * the video's row carries them (the export reads them from the row that plays).
  */
 export function flattenShots(segments: SegmentLocal[], mainVideoId: Main, forSave = false): SegmentLocal[] {
-  const shots = segments.filter(s => isShot(s, mainVideoId) && s.end_ms > s.start_ms).sort(byStart)
+  // Placed lowest first: each one placed cuts the ones before it (so the last placed is on top)
+  const shown = (s: SegmentLocal) => (s.crop_boxes[0]?.hidden ? 0 : 1)
+  const shots = segments.filter(s => isShot(s, mainVideoId) && s.end_ms > s.start_ms)
+    .sort((a, b) => shown(a) - shown(b) || (a.track ?? 0) - (b.track ?? 0) || byStart(a, b))
   if (!shots.length) return segments
   const sections = segments.filter(s => !isShot(s, mainVideoId))
   let parts: { seg: SegmentLocal; of: SegmentLocal }[] = sections.map(seg => ({ seg, of: seg }))
@@ -142,6 +147,10 @@ export interface SavedLayers {
   cut: SegmentLocal[]
   /** Ids of the rows that are parts of those */
   parts: string[]
+  /** Videos on top added as B-roll (uploaded in the B-roll panel): they stay on the B-roll lane */
+  broll?: string[]
+  /** Videos on top on a lane above the first (id → lane) */
+  tracks?: Record<string, number>
 }
 
 const rowKeys = (rows: SegmentLocal[]) => rows.map(r => `${r.id}:${Math.round(r.start_ms)}:${Math.round(r.end_ms)}`).sort()
@@ -161,10 +170,12 @@ export function toSaved(segments: SegmentLocal[], mainVideoId: Main): { rows: Se
   const cut = whole.filter(s => !isWhole(s))
   const ids = new Set(whole.map(s => s.id))
   const parts = rows.filter(r => !ids.has(r.id) || cut.some(c => c.id === r.id)).map(r => r.id)
+  const broll = whole.filter(s => isShot(s, mainVideoId) && s.lane === 'broll').map(s => s.id)
+  const tracks = Object.fromEntries(whole.filter(s => isShot(s, mainVideoId) && (s.track ?? 0) > 0).map(s => [s.id, s.track!]))
   return {
     rows,
     layers: {
-      v: 1, rows: rowKeys(rows), parts,
+      v: 1, rows: rowKeys(rows), parts, ...(broll.length ? { broll } : {}), ...(Object.keys(tracks).length ? { tracks } : {}),
       // (image_url is a link that runs out: the row's own is used when the clip is opened)
       cut: cut.map(c => ({ ...c, crop_boxes: c.crop_boxes.map(({ image_url: _url, ...b }) => b) })),
     },
@@ -196,6 +207,23 @@ const plainShot = (s: SegmentLocal, mainVideoId: Main): SegmentLocal => {
  */
 export function restoreLayers(rows: SegmentLocal[], layers: unknown, mainVideoId: Main): { segments: SegmentLocal[]; renamed: Record<string, string> } {
   if (!rows.some(r => isShot(r, mainVideoId))) return { segments: rows, renamed: {} }
+  // Which videos were added as B-roll (ids stay the same, so this holds even when the rest of the note is void)
+  const brollIds = new Set(Array.isArray((layers as SavedLayers | null)?.broll) ? (layers as SavedLayers).broll : [])
+  const saved = (layers as SavedLayers | null)?.tracks
+  const tracks = saved && typeof saved === 'object' ? saved : {}
+  const out = restoreRows(rows, layers, mainVideoId)
+  if (!brollIds.size && !Object.keys(tracks).length) return out
+  return {
+    ...out,
+    segments: out.segments.map(s => {
+      if (!isShot(s, mainVideoId)) return s
+      const t = Number(tracks[s.id])
+      return { ...s, ...(brollIds.has(s.id) ? { lane: 'broll' as const } : {}), ...(Number.isInteger(t) && t > 0 ? { track: t } : {}) }
+    }),
+  }
+}
+
+function restoreRows(rows: SegmentLocal[], layers: unknown, mainVideoId: Main): { segments: SegmentLocal[]; renamed: Record<string, string> } {
   if (validLayers(layers)) {
     const now = rowKeys(rows)
     if (now.length === layers.rows.length && now.every((k, i) => k === layers.rows[i])) {

@@ -225,6 +225,8 @@ export interface TextOverlay {
   /** Editor controls: not shown or exported / can't be moved, trimmed or deleted */
   hidden?: boolean
   locked?: boolean
+  /** Editor: the timeline track it is on (shared with videos and photos; tracks.ts). Saved in clips.layers. */
+  track?: number
   /**
    * Width of the text box, as a share of the frame's width (dragged on the preview): the text
    * wraps inside it. Unset = one line per line typed (no wrapping).
@@ -286,6 +288,8 @@ export interface AudioTrack {
   /** Editor controls: silent / can't be moved, trimmed or deleted */
   muted?: boolean
   locked?: boolean
+  /** Editor: the audio track it is on (tracks.ts). Saved in clips.layers. */
+  track?: number
 }
 
 export interface Transition {
@@ -347,6 +351,8 @@ export interface Overlay {
   hidden?: boolean
   muted?: boolean
   locked?: boolean
+  /** Editor: the timeline track a photo is on (shared with videos and text; tracks.ts). Saved in clips.layers. */
+  track?: number
 }
 
 // ─── Editor state (client-only, not persisted as a single blob) ────────────────
@@ -362,6 +368,10 @@ export interface SegmentLocal extends Omit<Segment, 'id' | 'clip_id'> {
   crop_boxes: CropBoxLocal[]
   /** Preview only (shownSegment): a hidden added video whose sound is on — heard, not seen */
   sound_only?: { video_id: string; offset_ms: number; volume?: number }
+  /** Editor only: a video on top the user added as B-roll (uploaded in the B-roll panel). Stock footage is B-roll anyway. */
+  lane?: 'broll'
+  /** A video on top: the timeline track it is on (shared with photos and text; tracks.ts). A higher track is shown over a lower one. */
+  track?: number
 }
 
 // ─── Layout slot counts ────────────────────────────────────────────────────────
