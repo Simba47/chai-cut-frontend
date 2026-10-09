@@ -303,6 +303,37 @@ export function EditorShell({
   const [optionsOpen, setOptionsOpen] = useState(true)
   // The Preview column on the right: closed for more room to edit (remembered per browser)
   const [previewOpen, setPreviewOpen] = useState(true)
+  // Full view: the preview big, to check it properly. The browser's fullscreen when it allows it,
+  // else over the whole editor window (fullViewFallback)
+  const fullViewRef = useRef<HTMLDivElement>(null)
+  const [fullView, setFullView] = useState(false)
+  const [fullViewFallback, setFullViewFallback] = useState(false)
+  async function openFullView() {
+    setFullView(true)
+    try {
+      await fullViewRef.current?.requestFullscreen()
+      setFullViewFallback(false)
+    } catch {
+      setFullViewFallback(true)
+    }
+  }
+  function closeFullView() {
+    if (document.fullscreenElement) document.exitFullscreen().catch(() => {})
+    setFullView(false); setFullViewFallback(false)
+  }
+  useEffect(() => {
+    // Esc (or the browser's own exit) leaves fullscreen: leave full view with it
+    const onChange = () => { if (!document.fullscreenElement) { setFullView(false); setFullViewFallback(false) } }
+    document.addEventListener('fullscreenchange', onChange)
+    return () => document.removeEventListener('fullscreenchange', onChange)
+  }, [])
+  useEffect(() => {
+    // Over the window (no fullscreen): Esc leaves it too
+    if (!fullViewFallback) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.stopPropagation(); closeFullView() } }
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [fullViewFallback]) // eslint-disable-line react-hooks/exhaustive-deps
   // Widths of the two side columns, dragged at their inner edge (remembered per browser)
   const [optionsW, setOptionsW] = useState(OPTIONS_W)
   const [previewW, setPreviewW] = useState(PREVIEW_W)
@@ -1320,7 +1351,10 @@ export function EditorShell({
     const tr = pickedMusic
     if (!tr || !canTrimMusic) return
     pause()
-    const t = Math.round(currentTimeMs)
+    splitMusicAt(tr, Math.round(currentTimeMs))
+  }
+  /** Cut a music track in two at `t` (the right part plays on from the same moment of the song) */
+  function splitMusicAt(tr: AudioTrack, t: number) {
     const id = crypto.randomUUID()
     const right: AudioTrack = { ...tr, id, start_ms: t, offset_ms: (tr.offset_ms ?? 0) + (t - tr.start_ms) }
     setAudioTracks(prev => prev.flatMap(x => x.id === tr.id ? [{ ...x, end_ms: t }, right] : [x]))
@@ -1328,6 +1362,65 @@ export function EditorShell({
     if (el) { const copy = new Audio(); copy.preload = 'auto'; copy.src = el.src; musicEls.current.set(id, copy) }
     if (musicDurations[tr.id] != null) setMusicDurations(d => ({ ...d, [id]: d[tr.id] }))
   }
+  // ── Point: cut the selected media — a video on top, B-roll, music, a photo or text — at the
+  //    playhead. Two points make three parts; pick a part and Delete removes it. Each press cuts
+  //    the part of that same media under the playhead, so the next point can be anywhere along it. ──
+  type PointTarget = { kind: 'broll' | 'music' | 'photo' | 'text'; id: string; name: string }
+  const POINT_MIN_MS = 100
+  /** The part of the selected media under the playhead that a point would cut (null: nothing to cut there) */
+  function pointTarget(): PointTarget | null {
+    const sel = selTarget
+    if (!sel) return null
+    const t = liveTime.get()
+    const inside = (a: number, b: number) => t > a + POINT_MIN_MS && t < b - POINT_MIN_MS
+    if (sel.kind === 'broll') {
+      const me = shots.find(x => x.id === sel.id)
+      if (!me) return null
+      const src = me.crop_boxes[0]?.source_video_id
+      const part = inside(me.start_ms, me.end_ms) ? me
+        : shots.find(x => x.crop_boxes[0]?.source_video_id === src && (x.track ?? 0) === (me.track ?? 0) && inside(x.start_ms, x.end_ms))
+      return part ? { kind: 'broll', id: part.id, name: 'the video' } : null
+    }
+    if (sel.kind === 'music') {
+      const me = audioTracks.find(x => x.id === sel.id)
+      if (!me) return null
+      const part = inside(me.start_ms, musicEnd(me)) ? me
+        : audioTracks.find(x => x.storage_path === me.storage_path && (x.track ?? 0) === (me.track ?? 0) && inside(x.start_ms, musicEnd(x)))
+      return part ? { kind: 'music', id: part.id, name: 'the music' } : null
+    }
+    if (sel.kind === 'photo') {
+      const me = overlays.find(x => x.id === sel.id)
+      if (!me || me.type !== 'image') return null
+      const part = inside(me.start_ms, me.end_ms) ? me
+        : overlays.find(x => x.type === 'image' && x.storage_path === me.storage_path && inside(x.start_ms, x.end_ms))
+      return part ? { kind: 'photo', id: part.id, name: 'the photo' } : null
+    }
+    if (sel.kind === 'text') {
+      const me = textOverlays.find(x => x.id === sel.id)
+      if (!me) return null
+      const part = inside(me.start_ms, me.end_ms) ? me
+        : textOverlays.find(x => x.text === me.text && (x.track ?? 0) === (me.track ?? 0) && inside(x.start_ms, x.end_ms))
+      return part ? { kind: 'text', id: part.id, name: 'the text' } : null
+    }
+    return null
+  }
+  /** Point at the playhead: the selected media is cut in two there (it stays selected) */
+  function pointHere() {
+    const p = pointTarget()
+    if (!p) return
+    const ctl: CtlTarget = p.kind === 'broll' ? { kind: 'broll', id: p.id } : { kind: p.kind, id: p.id }
+    if (blocked(ctl)) return
+    pause()
+    const t = Math.round(liveTime.get())
+    if (p.kind === 'broll') { skipCanvasTransitionRef.current = true; splitAtMs(p.id, t, getPositionAt); return }
+    if (p.kind === 'music') { const tr = audioTracks.find(x => x.id === p.id); if (tr) splitMusicAt(tr, t); return }
+    if (p.kind === 'photo') {
+      setOverlays(prev => prev.flatMap(o => (o.id === p.id ? [{ ...o, end_ms: t }, { ...o, id: crypto.randomUUID(), start_ms: t }] : [o])))
+      return
+    }
+    setTextOverlays(prev => prev.flatMap(o => (o.id === p.id ? [{ ...o, end_ms: t }, { ...o, id: crypto.randomUUID(), start_ms: t }] : [o])))
+  }
+
   /**
    * A music bar's end dragged on the timeline. The start cuts into the song (the track's end stays
    * where it was; never before the song's own start), the end shortens or lengthens the track
@@ -2375,9 +2468,9 @@ export function EditorShell({
     return options.frameItem || options.music || options.overlay || options.text || options.section || null
   }
 
-  const shortcutsRef = useRef({ togglePlay, seekToMs, currentTimeMs, clipDurationMs, trimSelectedTo, splitHere, deleteSelected: () => {} })
+  const shortcutsRef = useRef({ togglePlay, seekToMs, currentTimeMs, clipDurationMs, trimSelectedTo, splitHere, pointHere, deleteSelected: () => {} })
   shortcutsRef.current = {
-    togglePlay, seekToMs, currentTimeMs, clipDurationMs, trimSelectedTo, splitHere,
+    togglePlay, seekToMs, currentTimeMs, clipDurationMs, trimSelectedTo, splitHere, pointHere,
     // Delete acts on what's selected most specifically: a view change (◆), a text overlay, then an
     // image, then the format (an overlay only counts while it's on screen at the playhead, so a
     // stale selection can't be deleted by surprise)
@@ -2427,6 +2520,8 @@ export function EditorShell({
         e.preventDefault(); s.trimSelectedTo('end')
       } else if (e.key === 's' || e.key === 'S') {
         e.preventDefault(); s.splitHere()
+      } else if (e.key === 'p' || e.key === 'P') {
+        e.preventDefault(); s.pointHere()
       } else if (e.key === 'Delete' || e.key === 'Backspace') {
         if (target?.closest('button, a, [role="button"]') && e.key === 'Backspace') return
         e.preventDefault(); s.deleteSelected()
@@ -2924,21 +3019,39 @@ export function EditorShell({
           <div className="ed-options-inner h-full flex flex-col min-h-0" style={{ width: optionsW }}>
           {/* The tools, as tabs along the top of the panel (like other editors) */}
           <ToolTabs tool={tool} onPick={id => { setTool(id); setEditingTranscript(false) }} />
-          <div className="shrink-0 pl-4 pr-2 pt-3 pb-3 flex items-start gap-2" style={{ borderBottom: '1px solid rgb(var(--ed-fg) / 0.06)' }}>
-            <div className="flex-1 min-w-0 pt-1">
+          {/* (no title: the tool's tab above already says which it is; its ⓘ explains it) */}
+          <div className="shrink-0 pl-3 pr-2 py-1.5 flex items-center gap-2" style={{ borderBottom: '1px solid rgb(var(--ed-fg) / 0.06)' }}>
+            <div className="flex-1 min-w-0">
             {tool === 'captions' && editingTranscript ? (
               <button onClick={() => setEditingTranscript(false)} className="flex items-center gap-1.5 text-sm font-semibold text-[var(--ed-text)] hover:opacity-80">
                 <svg width="12" height="12" viewBox="0 0 14 14" fill="none"><path d="M9 2.5L4.5 7 9 11.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/></svg>
                 Edit caption text
               </button>
             ) : (
-              <>
-                {/* The tool's explanation sits behind the ⓘ */}
-                <h2 className="flex items-center gap-1.5 text-sm font-semibold text-[var(--ed-text)]">
-                  {activeTool.title}
+              tool === 'media' ? (
+                // Media: its ⓘ, then the Import | Library switch
+                <div className="flex items-center gap-2">
                   <InfoTip label={`About ${activeTool.title}`}>{activeTool.hint}</InfoTip>
-                </h2>
-              </>
+                  <div role="tablist" aria-label="Media" className="flex p-0.5 rounded-lg" style={{ background: 'rgb(var(--ed-fg) / 0.06)', border: '1px solid rgb(var(--ed-fg) / 0.07)' }}>
+                    {(['media', 'library'] as const).map(sec => {
+                      const on = mediaSection === sec && !mediaFocus
+                      return (
+                        <button key={sec} type="button" role="tab" aria-selected={on} onClick={() => { setMediaSection(sec); setMediaFocus(null) }}
+                          title={sec === 'media' ? 'Your videos, photos and audio' : 'Stock footage to search'}
+                          className="h-7 px-3 rounded-md text-[12px] font-semibold transition-colors"
+                          style={on ? { background: 'rgb(var(--ed-fg) / 0.12)', color: 'var(--ed-accent-text)', boxShadow: 'inset 0 0 0 1px rgb(var(--ed-fg) / 0.08)' } : { color: 'rgb(var(--ed-fg) / 0.6)' }}>
+                          {sec === 'media' ? 'Import' : 'Library'}
+                        </button>
+                      )
+                    })}
+                  </div>
+                </div>
+              ) : (
+              // The tool's explanation sits behind the ⓘ
+              <div className="flex items-center h-7">
+                <InfoTip label={`About ${activeTool.title}`}>{activeTool.hint}</InfoTip>
+              </div>
+              )
             )}
             </div>
             <button onClick={() => toggleOptions(false)} aria-label="Close options sidebar" title="Close options sidebar"
@@ -3396,7 +3509,7 @@ export function EditorShell({
                 <MediaLibrary
                   items={libraryItems} loading={libraryLoading} used={usedMedia}
                   filter={mediaFilter} onFilter={setMediaFilter}
-                  section={mediaSection} onSection={s => { setMediaSection(s); setMediaFocus(null) }}
+                  section={mediaSection}
                   importing={importingLabel} onImport={importMedia}
                   onAdd={item => addLibraryItem(item, currentTimeMs, null)}
                   onDelete={deleteLibraryItem}
@@ -3573,6 +3686,13 @@ export function EditorShell({
                 <span style={{ display: 'inline-flex', transform: 'scaleX(-1)' }}><SidebarIcon open /></span>
               </button>
               <span className="text-sm font-semibold text-[var(--ed-text)]">Preview</span>
+              <button onClick={openFullView} aria-label="Full view: see the preview big" title="Full view (Esc to leave)"
+                className="ml-1 w-8 h-8 flex items-center justify-center rounded-lg transition-colors hover:bg-[rgb(var(--ed-fg)/0.1)]"
+                style={{ color: 'rgb(var(--ed-fg) / 0.6)' }}>
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" />
+                </svg>
+              </button>
             </span>
             <div className="flex items-center gap-1.5">
               {rendering ? (
@@ -3643,7 +3763,11 @@ export function EditorShell({
 
           {/* Preview fills the column: as wide as it can be while the full 9:16 frame fits the height */}
           <div className="flex-1 min-h-0 p-3 overflow-hidden">
-            <div className="h-full w-full flex items-start justify-center" style={{ containerType: 'size' }}>
+            <div ref={fullViewRef} className="h-full w-full flex justify-center" data-full-view={fullView || undefined}
+              style={fullView
+                ? { containerType: 'size', alignItems: 'center', background: '#000', padding: '24px 24px 84px', boxSizing: 'border-box',
+                    ...(fullViewFallback ? { position: 'fixed', inset: 0, zIndex: 200, width: '100vw', height: '100vh' } : {}) }
+                : { containerType: 'size', alignItems: 'flex-start' }}>
             <div style={{ width: 'min(100cqw, calc(100cqh * 9 / 16))' }}>
               <div className="relative">
               {rendering ? (
@@ -3692,6 +3816,9 @@ export function EditorShell({
               {!rendering && <PlatformOverlay platform={platform} />}
               </div>
             </div>
+            {fullView && (
+              <FullViewBar playing={playing} onTogglePlay={togglePlay} onSeek={seekToMs} lengthMs={clipDurationMs} onClose={closeFullView} />
+            )}
             </div>
           </div>
 
@@ -3754,6 +3881,23 @@ export function EditorShell({
                     <circle cx="6" cy="6" r="3" /><circle cx="6" cy="18" r="3" /><path d="M20 4L8.1 15.9M14.5 14.5L20 20M8.1 8.1L12 12" />
                   </svg>
                 </button>
+                {/* Point: cut the selected media at the playhead (two points = three parts) */}
+                {(() => {
+                  const p = pointTarget()
+                  return (
+                    <button onClick={pointHere} disabled={!p}
+                      aria-label={p ? `Point: cut ${p.name} at the playhead` : 'Point'}
+                      title={p
+                        ? `Point (P): cut ${p.name} in two at the playhead. Two points make three parts: pick a part and press Delete to remove it`
+                        : 'Point (P): select a video, B-roll, music, photo or text, put the playhead where to cut, then press Point'}
+                      className="ed-tl-btn ed-tl-btn-text">
+                      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                        <path d="M12 9v12" /><path d="M12 2.5l3.5 3.5L12 9.5 8.5 6z" fill="currentColor" />
+                      </svg>
+                      Point
+                    </button>
+                  )
+                })()}
                 {/* Delete: whatever is selected — a song, photo, video, text, frame item or section */}
                 {(() => {
                   const del = deleteTarget()
@@ -4043,6 +4187,40 @@ function CtlButtons({ state, can, onToggle, size, what, inert }: {
 // A music track that is the main video's own sound, detached onto the Music lane
 const MAIN_AUDIO_PREFIX = 'main-video:'
 const isMainAudio = (t: { storage_path: string }) => t.storage_path.startsWith(MAIN_AUDIO_PREFIX)
+
+/**
+ * The bottom of the preview's full view: play / pause, the time, a seek bar along the clip and the
+ * way out (Esc too). The time and the bar follow the playhead every frame.
+ */
+function FullViewBar({ playing, onTogglePlay, onSeek, lengthMs, onClose }: {
+  playing: boolean; onTogglePlay: () => void; onSeek: (ms: number) => void; lengthMs: number; onClose: () => void
+}) {
+  const now = useLiveTimeMs()
+  const len = Math.max(1, lengthMs)
+  return (
+    <div className="absolute left-0 right-0 bottom-0 flex items-center gap-3 px-5" style={{ height: 64, background: 'linear-gradient(0deg, rgba(0,0,0,0.85), rgba(0,0,0,0))' }}>
+      <button type="button" onClick={onTogglePlay} aria-label={playing ? 'Pause' : 'Play'} title={playing ? 'Pause (Space)' : 'Play (Space)'}
+        className="shrink-0 w-10 h-10 rounded-full flex items-center justify-center transition-transform active:scale-95" style={{ background: '#c8ff00', color: '#000' }}>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+          {playing ? <path d="M7 5h3.5v14H7zM13.5 5H17v14h-3.5z" /> : <path d="M8 5.5v13l11-6.5z" />}
+        </svg>
+      </button>
+      <span className="shrink-0 text-xs tabular-nums" style={{ color: 'rgba(255,255,255,0.85)' }}>
+        <span className="font-semibold">{msToHundredths(Math.min(now, len))}</span>
+        <span style={{ color: 'rgba(255,255,255,0.45)' }}> / {msToHundredths(len)}</span>
+      </span>
+      <input type="range" min={0} max={len} step={10} value={Math.min(now, len)} aria-label="Move through the clip"
+        onChange={e => onSeek(Number(e.target.value))}
+        className="ed-zoom-range flex-1 min-w-0" style={{ '--p': `${(Math.min(now, len) / len) * 100}%` } as React.CSSProperties} />
+      <button type="button" onClick={onClose} aria-label="Leave full view" title="Leave full view (Esc)"
+        className="shrink-0 w-9 h-9 rounded-lg flex items-center justify-center transition-colors hover:bg-white/15" style={{ color: '#fff' }}>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5" />
+        </svg>
+      </button>
+    </div>
+  )
+}
 
 /** The playhead's time on the play bar, every frame (the editor around it redraws less often) */
 function LiveTime() {

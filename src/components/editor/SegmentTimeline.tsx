@@ -699,7 +699,9 @@ export function SegmentTimeline({
 
   function handleTrackDrag(e: React.PointerEvent) {
     if (e.button !== 0) return
-    // A click on the film strip picks the section under it (showing its bin); anywhere else clears it
+    // A click on the film strip picks the section under it (showing its bin). A click on the ruler
+    // only moves the playhead: what's selected stays selected (pick a video, then click where to
+    // cut it — Point, Trim)
     if (onPickSegment) {
       const rect = trackRef.current?.getBoundingClientRect()
       const y = rect ? e.clientY - rect.top : -1
@@ -708,7 +710,7 @@ export function SegmentTimeline({
       // (a video on top is picked on its own lane: the strip under it is the section's. Without
       // layers the video is the part there, so the strip picks it)
       const hit = onStrip ? mains.find(m => t >= m.start_ms && t < m.end_ms) ?? (layered ? undefined : brolls.find(b => t >= b.start_ms && t < b.end_ms)) : undefined
-      onPickSegment(hit?.id ?? null)
+      if (onStrip) onPickSegment(hit?.id ?? null)
     }
     // While the playhead is dragged the editor doesn't redraw (the playhead, the time and both
     // views follow the live time); it catches up on release
@@ -944,11 +946,16 @@ export function SegmentTimeline({
     const sx = e.clientX
     const len = musicEnd(m) - m.start_ms
     setDragging(`music-${m.id}`)
+    // A click (no drag): the playhead goes where it was clicked (Point, Trim cut there)
+    const clickMs = msFromClientX(e.clientX)
+    let dragged = false
     follow(ev => {
+      if (!dragged && Math.abs(ev.clientX - sx) < 3) return
+      dragged = true
       const st = Math.max(0, Math.min(duration - 200, m.start_ms + (ev.clientX - sx) * k))
       onMusicMove?.(m.id, Math.round(snapSpanAt(st, len)))
       hoverTrack(ev, 'audio', m.track ?? 0)
-    }, () => endTrackDrag({ kind: 'music', id: m.id }, m.track ?? 0))
+    }, () => { if (dragged) endTrackDrag({ kind: 'music', id: m.id }, m.track ?? 0); else onSeek(clickMs) })
   }
 
   // Music bar ends: drag to trim; picks the track too
@@ -976,7 +983,12 @@ export function SegmentTimeline({
     const sx = e.clientX
     const len = ph.end_ms - ph.start_ms
     setDragging(`photo-${ph.id}`)
+    // A click on its body (no drag): the playhead goes where it was clicked (Point, Trim cut there)
+    const clickMs = msFromClientX(e.clientX)
+    let dragged = false
     follow(ev => {
+      if (!dragged && Math.abs(ev.clientX - sx) < 3) return
+      dragged = true
       const d = (ev.clientX - sx) * k
       if (part === 'body') {
         const st = Math.round(snapSpanAt(Math.max(0, Math.min(duration - len, ph.start_ms + d)), len))
@@ -987,7 +999,7 @@ export function SegmentTimeline({
       } else {
         onPhotoTimeChange?.(ph.id, { start_ms: ph.start_ms, end_ms: Math.round(Math.min(duration, Math.max(ph.start_ms + 200, snapEdgeAt(ph.end_ms + d)))) })
       }
-    }, () => endTrackDrag({ kind: 'photo', id: ph.id }, ph.track ?? 0))
+    }, () => { if (dragged) endTrackDrag({ kind: 'photo', id: ph.id }, ph.track ?? 0); else if (part === 'body') onSeek(clickMs) })
   }
 
   // Text bar: the body moves it, the ends trim it (at least 0.2 s, inside the clip)
@@ -1000,11 +1012,16 @@ export function SegmentTimeline({
     const len = origEnd - origStart
     const track = textOverlays.find(t => t.id === id)?.track ?? 0
     setDragging(`text-${id}`)
+    // A click (no drag): the playhead goes where it was clicked (Point cuts there)
+    const clickMs = msFromClientX(e.clientX)
+    let dragged = false
     follow(ev => {
+      if (!dragged && Math.abs(ev.clientX - sx) < 3) return
+      dragged = true
       const st = Math.round(snapSpanAt(Math.max(0, Math.min(duration - len, origStart + (ev.clientX - sx) * k)), len))
       onTextOverlayUpdate?.(id, { start_ms: st, end_ms: Math.min(duration, st + len) })
       hoverTrack(ev, 'visual', track)
-    }, () => endTrackDrag({ kind: 'text', id }, track))
+    }, () => { if (dragged) endTrackDrag({ kind: 'text', id }, track); else onSeek(clickMs) })
   }
 
   function handleTextOverlayEdgeDrag(e: React.PointerEvent, id: string, origStart: number, origEnd: number, side: 'left' | 'right') {
@@ -1191,7 +1208,7 @@ export function SegmentTimeline({
       setDragging(null)
       setBrollGhost(null)
       setSnapLine(null)
-      if (!moved) { onSeek(seg.start_ms); onPickSegment?.(seg.id); return }
+      if (!moved) { onSeek(Math.max(seg.start_ms, Math.min(seg.end_ms, seg.start_ms + grab))); onPickSegment?.(seg.id); return }
       onBrollChange?.(seg.id, Math.round(next.start), Math.round(next.end), true)
       endTrackDrag({ kind: 'shot', id: seg.id }, seg.track ?? 0)
     }
