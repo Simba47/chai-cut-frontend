@@ -134,6 +134,11 @@ export async function saveClip(userId: string, clipId: string, body: SaveClipInp
   const hasFades = await hasColumn('audio_tracks', 'fade_in')
   const hasTextW = await hasColumn('text_overlays', 'w')
   const hasTextH = await hasColumn('text_overlays', 'h')
+  // How far a text / photo is turned (its rotate handle on the preview), once the worker has added the field
+  const hasTextRot = await hasColumn('text_overlays', 'rotation')
+  const hasPhotoRot = await hasColumn('overlays', 'rotation')
+  /** Degrees, clockwise, -180..180 (nothing when it isn't turned) */
+  const turn = (r: unknown) => (typeof r === 'number' && isFinite(r) && Math.round(r * 10) % 3600 !== 0 ? (((r % 360) + 540) % 360) - 180 : null)
   // The clip's start and end, when dragged in the editor (bug #8)
   const range = clipRangeFrom(body.range, clip, body.trims)
   const keepsMadeRange = !!range && await hasColumn('clips', 'original_start_ms')
@@ -235,12 +240,13 @@ export async function saveClip(userId: string, clipId: string, body: SaveClipInp
 
     q.push(tx`DELETE FROM text_overlays WHERE clip_id = ${clipId}`)
     if (textOverlays.length > 0) {
-      q.push(tx`INSERT INTO text_overlays ${tx(textOverlays.map(({ id, text, start_ms, end_ms, x, y, font, size, color, hidden, locked, w, h }) => ({
+      q.push(tx`INSERT INTO text_overlays ${tx(textOverlays.map(({ id, text, start_ms, end_ms, x, y, font, size, color, hidden, locked, w, h, rotation }) => ({
         id, clip_id: clipId, text, start_ms: ms(start_ms), end_ms: ms(end_ms), x, y, font, size, color,
         // Box width (the text wraps inside it): a share of the frame's width, or none
         ...(hasTextW ? { w: typeof w === 'number' && w > 0 ? Math.min(1, w) : null } : {}),
         // Box height (the text sits in its middle): a share of the frame's height, or none
         ...(hasTextH ? { h: typeof h === 'number' && h > 0 ? Math.min(1, h) : null } : {}),
+        ...(hasTextRot ? { rotation: turn(rotation) } : {}),
         ...(hasControls ? { hidden: !!hidden, locked: !!locked } : {}),
       })))}`)
     }
@@ -268,10 +274,11 @@ export async function saveClip(userId: string, clipId: string, body: SaveClipInp
 
     q.push(tx`DELETE FROM overlays WHERE clip_id = ${clipId}`)
     if (overlays.length > 0) {
-      q.push(tx`INSERT INTO overlays ${tx(overlays.map(({ id, type, storage_path, source_video_id, source_offset_ms, x, y, w, h, start_ms, end_ms, z_index, hidden, muted, locked }) => ({
+      q.push(tx`INSERT INTO overlays ${tx(overlays.map(({ id, type, storage_path, source_video_id, source_offset_ms, x, y, w, h, start_ms, end_ms, z_index, hidden, muted, locked, rotation }) => ({
         id, clip_id: clipId, type, storage_path: storage_path ?? null,
         source_video_id: source_video_id ?? null, source_offset_ms: ms(source_offset_ms ?? 0),
         x, y, w, h, start_ms: ms(start_ms), end_ms: ms(end_ms), z_index,
+        ...(hasPhotoRot ? { rotation: turn(rotation) } : {}),
         ...(hasControls ? { hidden: !!hidden, muted: !!muted, locked: !!locked } : {}),
       })))}`)
     }
