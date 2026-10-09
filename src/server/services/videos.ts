@@ -29,6 +29,8 @@ export async function listVideos(userId: string, includeAssets = false) {
       -- Why processing failed (e.g. a link that isn't shared publicly). Read through to_jsonb so
       -- this works before the worker has added the column.
       to_jsonb(videos)->>'error' AS error,
+      -- Its editing copy (the worker's jobs/proxy.ts), once made: what the editor plays
+      to_jsonb(videos)->>'proxy_path' AS proxy_path,
       (SELECT COUNT(*)::int FROM clips c WHERE c.video_id = videos.id) AS clip_count
     -- Stock clips saved for auto B-roll are the user's assets, not videos they uploaded
     FROM videos WHERE user_id = ${userId} AND (${includeAssets} OR role <> 'asset') ORDER BY created_at DESC
@@ -66,6 +68,36 @@ export const MAX_BULK_DELETE = 100
 export function cleanIds(ids: unknown): string[] {
   if (!Array.isArray(ids)) return []
   return [...new Set(ids.filter((id): id is string => typeof id === 'string' && UUID.test(id)))]
+}
+
+/** Where a video's editing copy is kept (the worker's jobs/proxy.ts proxyKeyFor): deleted with it */
+export function proxyKeyFor(storagePath: string): string {
+  return storagePath.replace(/\.[^.]+$/, '') + '_proxy.mp4'
+}
+
+/**
+ * Ask the worker for a video's editing copy (a video from before copies were made, opened in the
+ * editor). Once: not when it has one, or one is queued or being made. Best effort — a worker that
+ * can't make copies yet refuses the job, and the editor keeps playing the original.
+ */
+export async function requestProxy(userId: string, videoId: string): Promise<{ queued: boolean }> {
+  const [v] = await sql`
+    SELECT id, status, storage_path, stock_ref, to_jsonb(videos)->>'proxy_path' AS proxy_path
+    FROM videos WHERE id = ${videoId} AND user_id = ${userId}`
+  if (!v) throw Object.assign(new Error('Not found'), { status: 404 })
+  if (v.status !== 'ready' || !v.storage_path || v.proxy_path || v.stock_ref) return { queued: false }
+  try {
+    const rows = await sql`
+      INSERT INTO jobs (type, payload, status)
+      SELECT 'proxy', ${sql.json({ video_id: videoId })}, 'queued'
+      WHERE NOT EXISTS (
+        SELECT 1 FROM jobs WHERE type = 'proxy' AND status IN ('queued', 'processing') AND payload->>'video_id' = ${videoId}
+      )
+      RETURNING id`
+    return { queued: rows.length > 0 }
+  } catch {
+    return { queued: false }
+  }
 }
 
 /** Remove files from R2, 1,000 keys per request (the S3 limit). Best effort: rows are what matter. */
@@ -117,7 +149,7 @@ export async function uploadsOnlyUsedBy(userId: string, clipIds: string[]): Prom
 export async function deleteUploads(uploads: Array<{ id: string; storage_path: string | null }>) {
   if (!uploads.length) return
   await deleteR2Keys(uploads.flatMap(u => u.storage_path
-    ? [u.storage_path, u.storage_path.replace(/\.[^.]+$/, '_audio.flac'), u.storage_path.replace(/\.[^.]+$/, '_reading.json')] : []))
+    ? [u.storage_path, u.storage_path.replace(/\.[^.]+$/, '_audio.flac'), u.storage_path.replace(/\.[^.]+$/, '_reading.json'), proxyKeyFor(u.storage_path)] : []))
   await sql`DELETE FROM videos WHERE id = ANY(${uploads.map(u => u.id)}) AND role = 'asset' AND stock_ref IS NULL`
 }
 
@@ -137,6 +169,8 @@ export async function deleteVideos(userId: string, videoIds: string[]) {
     keysToDelete.push(video.storage_path.replace(/\.[^.]+$/, '_audio.flac'))
     // A whole-video reading that stopped part-way (the worker deletes it itself once it finishes)
     keysToDelete.push(video.storage_path.replace(/\.[^.]+$/, '_reading.json'))
+    // Its editing copy (made by the worker for the editor)
+    keysToDelete.push(proxyKeyFor(video.storage_path))
   }
   // Rendered output for every clip of these videos
   const clipOutputs = await sql`

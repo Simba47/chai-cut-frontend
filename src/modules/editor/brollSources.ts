@@ -58,7 +58,10 @@ export function useBrollSources(
     el.volume = Math.max(0, Math.min(1, (sound ? sound.volume : box?.volume) ?? 1))
     const rel = toTimelineRef.current ? toTimelineRef.current(main.currentTime * 1000) : main.currentTime * 1000 - clipStartMs
     const want = ((sound ? sound.offset_ms : box?.source_offset_ms ?? 0) + rel - seg.start_ms) / 1000
-    if (Math.abs(el.currentTime - want) > 0.3) el.currentTime = Math.max(0, want)
+    // Playing: only re-seek on real drift (a seek stalls the picture). Paused (dragging the
+    // playhead): follow the main video's frame exactly. Never a new seek over one still running:
+    // this runs every frame, so the next frame after it lands seeks to the latest time.
+    if (!el.seeking && Math.abs(el.currentTime - want) > (main.paused ? 0.04 : 0.3)) el.currentTime = Math.max(0, want)
     if (main.paused && !el.paused) el.pause()
     if (!main.paused && el.paused) el.play().catch(() => {})
     return sound ? null : el

@@ -1,9 +1,10 @@
 'use client'
 
-import { useRef, useState, useEffect, useLayoutEffect, Fragment } from 'react'
+import { useRef, useState, useEffect, useLayoutEffect, useCallback, Fragment } from 'react'
 import type { SegmentLocal, LayoutType, TextOverlay, FrameItem, FrameLane, FrameLayout } from '@chai-cut/shared'
 import type { TrackRef } from '@/modules/editor/tracks'
 import { Waveform } from './Waveform'
+import { useLiveTimeMs, liveTime, usePlayerStore } from '@/modules/player/store'
 import { isFrameLayout, FRAME_TEMPLATES, frameLanesFor, frameOf, laneItems, itemBounds, MIN_ITEM_MS } from '@/modules/editor/frames'
 import { isShot } from '@/modules/editor/shots'
 
@@ -64,6 +65,106 @@ function nearestThumb(cache: Map<number, string>, ms: number, tol: number): stri
   return best
 }
 
+// ── Grabbing frames without slowing the editor ──
+// Every strip used to open its own hidden copy of its video, loading eagerly: they took the
+// browser's few connections to the server away from the main video, and dragging the playhead
+// lagged. Now there is one hidden copy per file, shared by every strip that shows it; it loads
+// only what each seek needs, only one file is grabbed from at a time, and a copy nobody has
+// used for a while is let go (it stops loading).
+const GRAB_AT_ONCE = 1
+const LET_GO_AFTER_MS = 15000
+let grabbing = 0
+const grabQueue: Array<() => void> = []
+async function takeGrabTurn() {
+  if (grabbing < GRAB_AT_ONCE) { grabbing++; return }
+  await new Promise<void>(r => grabQueue.push(r))  // the turn is handed over as it is (grabbing stays)
+}
+function endGrabTurn() {
+  const next = grabQueue.shift()
+  if (next) next()
+  else grabbing--
+}
+interface Grabber { el: HTMLVideoElement; chain: Promise<void>; jobs: number; idle: ReturnType<typeof setTimeout> | null }
+const grabbers = new Map<string, Grabber>()
+function grabberFor(url: string): Grabber {
+  let g = grabbers.get(url)
+  if (!g) {
+    const el = document.createElement('video')
+    el.crossOrigin = 'anonymous'
+    el.preload = 'metadata'
+    el.muted = true
+    el.src = url
+    g = { el, chain: Promise.resolve(), jobs: 0, idle: null }
+    grabbers.set(url, g)
+  }
+  if (g.idle) { clearTimeout(g.idle); g.idle = null }
+  return g
+}
+function jobDone(url: string, g: Grabber) {
+  if (--g.jobs > 0) return
+  g.idle = setTimeout(() => {
+    if (grabbers.get(url) !== g || g.jobs > 0) return
+    g.el.removeAttribute('src'); g.el.load()
+    grabbers.delete(url)
+  }, LET_GO_AFTER_MS)
+}
+/**
+ * Frames of a video at these times (ms in the video), one after another, `onFrame` with each as it
+ * is ready. `onShape` first gets the video's width / height: false stops there (the caller lays
+ * its frames out again for that shape and asks again).
+ */
+function grabFrames(url: string, times: Array<{ i: number; ms: number }>, opts: {
+  onFrame: (i: number, dataUrl: string, ms: number) => void
+  onShape?: (shape: number) => boolean
+  cancelled: () => boolean
+}) {
+  const g = grabberFor(url)
+  g.jobs++
+  g.chain = g.chain.then(async () => {
+    if (opts.cancelled()) return
+    await takeGrabTurn()
+    try {
+      const vid = g.el
+      if (vid.readyState < 1) {
+        await new Promise<void>(r => {
+          const done = () => r()
+          vid.addEventListener('loadedmetadata', done, { once: true })
+          vid.addEventListener('error', done, { once: true })
+          setTimeout(done, 15000)
+        })
+      }
+      const durSec = vid.duration
+      if (opts.cancelled() || !durSec || !isFinite(durSec)) return
+      // In the video's own shape (not squeezed), big enough to stay sharp
+      const shape = vid.videoWidth && vid.videoHeight ? vid.videoWidth / vid.videoHeight : 16 / 9
+      if (opts.onShape && !opts.onShape(shape)) return
+      const canvas = document.createElement('canvas')
+      canvas.height = CAPTURE_H
+      canvas.width = Math.round(CAPTURE_H * shape)
+      const ctx = canvas.getContext('2d')
+      if (!ctx) return
+      for (const { i, ms } of times) {
+        if (opts.cancelled()) return
+        const targetSec = Math.min(durSec, Math.max(0, ms / 1000))
+        if (!(Math.abs(vid.currentTime - targetSec) < 0.05 && vid.readyState >= 2)) {
+          await new Promise<void>(r => {
+            const tid = setTimeout(r, 3000)
+            vid.addEventListener('seeked', () => { clearTimeout(tid); r() }, { once: true })
+            vid.currentTime = targetSec
+          })
+        }
+        if (opts.cancelled()) return
+        try {
+          ctx.drawImage(vid, 0, 0, canvas.width, canvas.height)
+          opts.onFrame(i, canvas.toDataURL('image/jpeg', 0.82), Math.round(targetSec * 1000))
+        } catch { /* (a frame that can't be read is left blank) */ }
+      }
+    } finally {
+      endGrabTurn()
+    }
+  }).catch(() => {}).finally(() => jobDone(url, g))
+}
+
 // Frames sampled across the clip's own range of the source video, so each thumbnail sits under
 // the moment it shows (the video file is the whole source, not just this clip)
 export function VideoThumbnails({ videoUrl, startMs, durationMs, count = THUMB_COUNT, radius = 8, dim = true, tile = false, sourceAt, sourceKey = '' }: {
@@ -97,9 +198,6 @@ export function VideoThumbnails({ videoUrl, startMs, durationMs, count = THUMB_C
   const n = tile ? Math.max(1, Math.min(60, Math.ceil(size.w / tileW))) : count
   const sourceAtRef = useRef(sourceAt)
   sourceAtRef.current = sourceAt
-  // One hidden video per file, kept across layouts (making a new one each time reloads it)
-  const vidRef = useRef<{ url: string; el: HTMLVideoElement } | null>(null)
-
   useEffect(() => {
     if (!videoUrl || (tile && !size.w)) return
     let cancelled = false
@@ -115,66 +213,29 @@ export function VideoThumbnails({ videoUrl, startMs, durationMs, count = THUMB_C
     const tol = Math.max(250, durationMs / n / 2)
     const start = targets.map(t => nearestThumb(cache!, t, tol) ?? '')
     setThumbs(start)
-
-    if (!vidRef.current || vidRef.current.url !== videoUrl) {
-      if (vidRef.current) { vidRef.current.el.src = ''; vidRef.current.el.load() }
-      const el = document.createElement('video')
-      el.crossOrigin = 'anonymous'
-      el.preload = 'auto'
-      el.muted = true
-      el.src = videoUrl
-      vidRef.current = { url: videoUrl, el }
-    }
-    const vid = vidRef.current.el
-    const canvas = document.createElement('canvas')
-    const ctx = canvas.getContext('2d')!
-
-    async function captureMissing() {
-      // A short pause first: while a clip end is being dragged the layout changes on every frame
-      await new Promise(r => setTimeout(r, 120))
-      if (cancelled) return
-      const durSec = vid.duration
-      if (!durSec || !isFinite(durSec) || durSec < 1) return
-      // Captured in the video's own shape (not squeezed), big enough to stay sharp
-      const shape = vid.videoWidth && vid.videoHeight ? vid.videoWidth / vid.videoHeight : 16 / 9
-      if (tile && Math.abs(shape - ar) > 0.01) { setAr(shape); return }  // the tiles change: laid out again
-      canvas.height = CAPTURE_H
-      canvas.width = Math.round(CAPTURE_H * shape)
-      for (let i = 0; i < n; i++) {
-        if (cancelled) return
-        if (start[i] && nearestThumb(cache!, targets[i], tol)) continue
-        const targetSec = Math.min(durSec, Math.max(0, targets[i] / 1000))
-        vid.currentTime = targetSec
-        await new Promise<void>(r => {
-          if (Math.abs(vid.currentTime - targetSec) < 0.05 && vid.readyState >= 2) { r(); return }
-          const tid = setTimeout(r, 3000)
-          vid.addEventListener('seeked', () => { clearTimeout(tid); r() }, { once: true })
-        })
-        if (cancelled) return
-        try {
-          ctx.drawImage(vid, 0, 0, canvas.width, canvas.height)
-          const dataUrl = canvas.toDataURL('image/jpeg', 0.82)
-          cache!.set(Math.round(targetSec * 1000), dataUrl)
-          setThumbs(prev => { const next = [...prev]; next[i] = dataUrl; return next })
-        } catch { continue }
-      }
-    }
-
-    if (vid.readyState >= 1) captureMissing()
-    else vid.addEventListener('loadedmetadata', () => captureMissing(), { once: true })
-    return () => { cancelled = true }
+    const missing = targets.map((ms, i) => ({ i, ms })).filter(({ i }) => !start[i])
+    if (!missing.length) return
+    // A short pause first: while a clip end is being dragged the layout changes on every frame
+    const wait = setTimeout(() => grabFrames(videoUrl, missing, {
+      cancelled: () => cancelled,
+      // Tiles: laid out again for the video's own shape first
+      onShape: shape => { if (tile && Math.abs(shape - ar) > 0.01) { setAr(shape); return false } return true },
+      onFrame: (i, dataUrl, ms) => {
+        cache!.set(ms, dataUrl)
+        setThumbs(prev => { const next = [...prev]; next[i] = dataUrl; return next })
+      },
+    }), 120)
+    return () => { cancelled = true; clearTimeout(wait) }
   }, [videoUrl, startMs, durationMs, n, sourceKey, tile, size.w, size.h, ar]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // The hidden video stops loading when the strip goes (and is made again if it comes back:
-  // React mounts twice in development)
-  useEffect(() => () => { if (vidRef.current) { vidRef.current.el.src = ''; vidRef.current.el.load(); vidRef.current = null } }, [])
-
   return (
-    <div ref={boxRef} className="absolute inset-0 flex overflow-hidden" style={{ borderRadius: radius }}>
+    // (only a picture: never grabbed itself — an image dragged by the browser stopped the playhead
+    // from following a drag along the strip — clicks and drags go to what's under it)
+    <div ref={boxRef} className="absolute inset-0 flex overflow-hidden pointer-events-none" style={{ borderRadius: radius }}>
       {Array.from({ length: n }).map((_, i) => (
         <div key={i} style={{ ...(tile ? { width: tileW, flex: 'none' } : { flex: 1, minWidth: 0 }), overflow: 'hidden', background: 'rgb(var(--ed-fg) / 0.03)' }}>
           {thumbs[i] && (
-            <img src={thumbs[i]} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
+            <img src={thumbs[i]} alt="" draggable={false} style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
           )}
         </div>
       ))}
@@ -579,15 +640,20 @@ export function SegmentTimeline({
     el.scrollLeft = Math.max(0, a.share * el.scrollWidth - a.x)
   }, [zoom])
 
-  // Keep the playhead in view when zoomed in (after seeking or while playing)
-  useEffect(() => {
-    const el = scrollRef.current
-    if (!el || zoom === 1 || duration <= 0 || performance.now() - wheelZoomAt.current < 600) return
-    const x = (currentTimeMs / duration) * el.scrollWidth
+  // Keep the playhead in view when zoomed in (after seeking or while playing): from the live time,
+  // so it scrolls on with the playhead even while the rest of the timeline redraws less often
+  const followRef = useRef({ zoom, duration })
+  followRef.current = { zoom, duration }
+  const keepPlayheadInView = useCallback(() => {
+    const el = scrollRef.current, { zoom: z, duration: d } = followRef.current
+    if (!el || z === 1 || d <= 0 || performance.now() - wheelZoomAt.current < 600) return
+    const x = (liveTime.get() / d) * el.scrollWidth
     if (x < el.scrollLeft + 24 || x > el.scrollLeft + el.clientWidth - 24) {
       el.scrollLeft = Math.max(0, x - el.clientWidth * 0.2)
     }
-  }, [currentTimeMs, zoom, duration])
+  }, [])
+  useEffect(() => liveTime.subscribe(keepPlayheadInView), [keepPlayheadInView])
+  useEffect(() => { keepPlayheadInView() }, [zoom, duration, keepPlayheadInView])
 
 
   function msFromClientX(clientX: number): number {
@@ -644,11 +710,23 @@ export function SegmentTimeline({
       const hit = onStrip ? mains.find(m => t >= m.start_ms && t < m.end_ms) ?? (layered ? undefined : brolls.find(b => t >= b.start_ms && t < b.end_ms)) : undefined
       onPickSegment(hit?.id ?? null)
     }
+    // While the playhead is dragged the editor doesn't redraw (the playhead, the time and both
+    // views follow the live time); it catches up on release
+    const { setScrubbing } = usePlayerStore.getState()
+    setScrubbing(true)
     onSeek(msFromClientX(e.clientX))
     const move = (ev: PointerEvent) => onSeek(msFromClientX(ev.clientX))
-    const up = () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up) }
+    const up = () => {
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointerup', up)
+      window.removeEventListener('pointercancel', up)
+      window.removeEventListener('blur', up)
+      setScrubbing(false)
+    }
     window.addEventListener('pointermove', move)
     window.addEventListener('pointerup', up)
+    window.addEventListener('pointercancel', up)
+    window.addEventListener('blur', up)
   }
 
   const MIN_FORMAT_MS = 300
@@ -1037,7 +1115,6 @@ export function SegmentTimeline({
   }
 
   const pct = (ms: number) => (duration > 0 ? (ms / duration) * 100 : 0)
-  const playheadPct = pct(currentTimeMs)
   const byTime = [...segments].sort((a, b) => a.start_ms - b.start_ms)
 
   // Ruler: pick the smallest spacing that keeps labels readable at this zoom
@@ -1608,7 +1685,7 @@ export function SegmentTimeline({
                 return (
                   <div className="absolute pointer-events-none flex flex-col items-center gap-1"
                     style={{ left: `${pct(viewDragT)}%`, bottom: 'calc(100% + 6px)', transform: 'translateX(-50%)', zIndex: 60 }}>
-                    {src && <img src={src} alt="" style={{ width: 80, height: 56, objectFit: 'cover', borderRadius: 8, boxShadow: `0 0 0 2px ${ACCENT}, 0 8px 18px rgba(0,0,0,0.6)` }} />}
+                    {src && <img src={src} alt="" draggable={false} style={{ width: 80, height: 56, objectFit: 'cover', borderRadius: 8, boxShadow: `0 0 0 2px ${ACCENT}, 0 8px 18px rgba(0,0,0,0.6)` }} />}
                     <span className="px-1.5 py-0.5 rounded-md text-[10px] font-bold tabular-nums" style={{ background: ACCENT, color: '#111' }}>{msToLabel(viewDragT)}</span>
                   </div>
                 )
@@ -1715,15 +1792,19 @@ export function SegmentTimeline({
             {/* ── Playhead ─────────────────────────────────────────── */}
             {/* White line with the current time on a pill at the top (the pill stays on screen at the ends).
                 White keeps it distinct from the lime trim frame. */}
-            <div className="absolute top-0 bottom-0 pointer-events-none z-40" style={{ left: `${playheadPct}%` }}>
-              <div className="absolute" style={{ top: 18, bottom: 0, left: -1, width: 2, borderRadius: 2, background: '#fff', boxShadow: '0 0 0 1px rgba(0,0,0,0.35), 0 0 12px rgba(255,255,255,0.35)' }} />
-              <div className="absolute rounded-full" style={{ top: 15, left: -4, width: 8, height: 8, background: '#fff', boxShadow: '0 0 0 2px rgba(0,0,0,0.5)' }} />
-              <div className="absolute" style={{ top: 0, transform: playheadPct < 3 ? 'translateX(-8px)' : playheadPct > 97 ? 'translateX(calc(-100% + 8px))' : 'translateX(-50%)' }}>
-                <span className="block px-2 rounded-full text-[10px] font-bold tabular-nums leading-[16px]" style={{ background: '#fff', color: '#0a0a0a', boxShadow: '0 4px 12px rgba(0,0,0,0.5)' }}>
-                  {msToLabel(currentTimeMs)}
-                </span>
-                              </div>
-            </div>
+            <AtPlayhead pctOf={pct} className="absolute top-0 bottom-0 pointer-events-none z-40">
+              {(ms, p) => (
+                <>
+                  <div className="absolute" style={{ top: 18, bottom: 0, left: -1, width: 2, borderRadius: 2, background: '#fff', boxShadow: '0 0 0 1px rgba(0,0,0,0.35), 0 0 12px rgba(255,255,255,0.35)' }} />
+                  <div className="absolute rounded-full" style={{ top: 15, left: -4, width: 8, height: 8, background: '#fff', boxShadow: '0 0 0 2px rgba(0,0,0,0.5)' }} />
+                  <div className="absolute" style={{ top: 0, transform: p < 3 ? 'translateX(-8px)' : p > 97 ? 'translateX(calc(-100% + 8px))' : 'translateX(-50%)' }}>
+                    <span className="block px-2 rounded-full text-[10px] font-bold tabular-nums leading-[16px]" style={{ background: '#fff', color: '#0a0a0a', boxShadow: '0 4px 12px rgba(0,0,0,0.5)' }}>
+                      {msToLabel(ms)}
+                    </span>
+                  </div>
+                </>
+              )}
+            </AtPlayhead>
           </div>
 
 
@@ -1862,7 +1943,7 @@ export function SegmentTimeline({
                   )
                 })}
                 {/* Playhead through the lanes */}
-                <div className="absolute top-0 bottom-0 pointer-events-none" style={{ left: `${playheadPct}%`, width: 2, marginLeft: -1, background: 'rgba(200,255,0,0.5)', zIndex: 40 }} />
+                <AtPlayhead pctOf={pct} className="absolute top-0 bottom-0 pointer-events-none" style={{ width: 2, marginLeft: -1, background: 'rgba(200,255,0,0.5)', zIndex: 40 }} />
               </div>
             )
           })()}
@@ -1873,7 +1954,7 @@ export function SegmentTimeline({
             <div className="relative flex flex-col" style={{ gap: MEDIA_GAP, paddingTop: 6, paddingBottom: 4, borderTop: '1px solid rgb(var(--ed-fg) / 0.05)' }}>
               {laneGuide('broll-') ?? laneGuide('photo-') ?? laneGuide('music-') ?? laneGuide('text-')}
               {/* Playhead through all the media rows */}
-              <div className="absolute top-0 bottom-0 w-px pointer-events-none" style={{ left: `${playheadPct}%`, background: 'rgba(255,255,255,0.55)', zIndex: 15 }} />
+              <AtPlayhead pctOf={pct} className="absolute top-0 bottom-0 w-px pointer-events-none" style={{ background: 'rgba(255,255,255,0.55)', zIndex: 15 }} />
 
               {/* The visual tracks (highest first: drawn over the ones under it), then the audio tracks */}
               {visualTracks.map((t, i) => trackRow('visual', t, i === 0 ? 'top' : null,
@@ -1927,7 +2008,7 @@ const LANE_META: Record<string, LaneMeta> = {
 // Media rows under the strip: one colour per kind (video is the orange bar over the strip)
 const MEDIA_COLORS = { video: '#f97316', broll: '#eab308', photo: '#60a5fa', text: '#f472b6', music: '#c084fc' } as const
 /** The main video's strip on the timeline */
-const STRIP_H = 52
+const STRIP_H = 42
 /** A track's row: as tall as the main video's strip */
 const MEDIA_ROW_H = STRIP_H
 /** The name and the length on a bar's header (CapCut's tags) */
@@ -1969,6 +2050,19 @@ function MediaIcon({ kind }: { kind: 'video' | 'broll' | 'photo' | 'text' | 'mus
           : <path d="M4 7V4h16v3M9 20h6M12 4v16" />}
     </svg>
   )
+}
+
+/**
+ * Something at the playhead, moved with it every frame from the player's live feed (the timeline
+ * around it redraws less often: see the player store)
+ */
+function AtPlayhead({ pctOf, className, style, children }: {
+  pctOf: (ms: number) => number; className?: string; style?: React.CSSProperties
+  children?: (ms: number, pct: number) => React.ReactNode
+}) {
+  const ms = useLiveTimeMs()
+  const p = pctOf(ms)
+  return <div className={className} style={{ ...style, left: `${p}%` }}>{children?.(ms, p)}</div>
 }
 
 /** Trim handle at one end of a media bar: a thin strip, with a small grip line */

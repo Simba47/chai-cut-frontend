@@ -38,7 +38,7 @@ import { PlatformOverlay, PLATFORM_SAFE, type Platform } from '@/components/edit
 // ── Domain stores ──────────────────────────────────────────────────────────────
 import { useEditorStore, type KeyframeMap } from '@/modules/editor/store'
 import { startHistory, undo, redo, useHistory, editableSnapshot, sameEditable, type EditableSnapshot } from '@/modules/editor/history'
-import { usePlayerStore } from '@/modules/player/store'
+import { usePlayerStore, liveTime, useLiveTimeMs } from '@/modules/player/store'
 import { useVideoSync } from '@/modules/player/useSync'
 import { useCaptionStore } from '@/modules/captions/store'
 import { useMediaStore } from '@/modules/media/store'
@@ -605,27 +605,33 @@ export function EditorShell({
   }, [words, sourceWords, trimmed, clip.start_ms, clip.end_ms, audioTracks, originalMuted, originalVolume, playParts, mainVideoId]) // eslint-disable-line react-hooks/exhaustive-deps
   // Keep every track's audio in step with the playhead: play while the playhead is inside it,
   // re-sync if it drifts, pause otherwise; follow each track's volume
-  useEffect(() => {
+  // (every frame while playing, from the live time: the editor itself redraws only now and then)
+  const syncMusic = (t: number, isPlaying: boolean) => {
+    const muteHere = sectionMutedAt(t)
     for (const [id, el] of musicEls.current) {
-      const tr = audioTracks.find(t => t.id === id)
+      const tr = audioTracks.find(x => x.id === id)
       if (!tr) {
         el.pause(); musicEls.current.delete(id)
         if (![...musicEls.current.values()].some(o => o.src === el.src)) URL.revokeObjectURL(el.src)
         continue
       }
       // Volume, fades and the dip under speech — the same rules as the export's mix
-      el.volume = isMainAudio(tr) && sectionMuted ? 0 : musicGainAt(tr, currentTimeMs, musicDurations[id], speech, clipLengthMs)
-      const local = (currentTimeMs - tr.start_ms + (tr.offset_ms ?? 0)) / 1000
+      el.volume = isMainAudio(tr) && muteHere ? 0 : musicGainAt(tr, t, musicDurations[id], speech, clipLengthMs)
+      const local = (t - tr.start_ms + (tr.offset_ms ?? 0)) / 1000
       const stop = tr.end_ms ?? Infinity
-      const inside = currentTimeMs >= tr.start_ms && currentTimeMs < stop && (!isFinite(el.duration) || local < el.duration)
-      if (playing && inside) {
+      const inside = t >= tr.start_ms && t < stop && (!isFinite(el.duration) || local < el.duration)
+      if (isPlaying && inside) {
         if (el.paused || Math.abs(el.currentTime - local) > 0.6) el.currentTime = local
         if (el.paused) el.play().catch(() => {})
       } else if (!el.paused) {
         el.pause()
       }
     }
-  }, [playing, currentTimeMs, audioTracks, sectionMuted, musicDurations, speech]) // eslint-disable-line react-hooks/exhaustive-deps
+  }
+  const syncMusicRef = useRef(syncMusic)
+  syncMusicRef.current = syncMusic
+  useEffect(() => { syncMusic(liveTime.get(), playing) }, [playing, currentTimeMs, audioTracks, sectionMuted, musicDurations, speech]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => liveTime.subscribe(() => { if (usePlayerStore.getState().playing) syncMusicRef.current(liveTime.get(), true) }), [])
   useEffect(() => () => { for (const el of musicEls.current.values()) { el.pause(); URL.revokeObjectURL(el.src) } }, [])
   // Format panel: sections whose "what's in it" list is open, the kind of item shown, and the list
   const [openSections, setOpenSections] = useState<Set<string>>(() => new Set())
@@ -720,6 +726,23 @@ export function EditorShell({
   const playingAdded = playingSegment ? addedVideoBox(playingSegment, mainVideoId) : null
   const brollSoundOn = !!playingAdded && playingAdded.muted === false
   useEffect(() => { setSectionMuted(!!playingSegment?.muted || brollSoundOn) }, [playingSegment?.muted, brollSoundOn])
+  // The editor redraws ~10 times a second (the player store): the main video's sound switches
+  // exactly where a muted section (or a video with its own sound) starts, from the live time
+  const liveMuteRef = useRef({ parts: playParts, original: originalMuted, partAt })
+  liveMuteRef.current = { parts: playParts, original: originalMuted, partAt }
+  useEffect(() => liveTime.subscribe(() => {
+    const v = videoRef.current
+    if (!v) return
+    const m = liveMuteRef.current.original || sectionMutedAt(liveTime.get())
+    if (v.muted !== m) v.muted = m
+  }), [mainVideoId]) // eslint-disable-line react-hooks/exhaustive-deps
+  /** The main video's own sound is off at clip time `t`: its section is muted, or a video on top plays its own sound there */
+  function sectionMutedAt(t: number): boolean {
+    const { parts, partAt: at } = liveMuteRef.current
+    const part = at(parts, t)
+    const added = part ? addedVideoBox(part, mainVideoId) : null
+    return !!part?.muted || (!!added && added.muted === false)
+  }
   // Uncovered stretch under the playhead, if any
   const currentGap = useMemo(
     () => playingSection ? null : uncoveredRanges(sections, clipLengthMs).find(g => currentTimeMs >= g.start_ms && currentTimeMs <= g.end_ms) ?? null,
@@ -774,6 +797,39 @@ export function EditorShell({
   // aren't drawn, a hidden main video is black
   const shownPlaying = useMemo(() => playingSegment ? shownSegment(playingSegment, mainVideoId, getVideoAR()) : null, [playingSegment, mainVideoId]) // eslint-disable-line react-hooks/exhaustive-deps
   const viewSegment = shownPlaying ?? defaultFormat
+  /**
+   * What the canvases show at a clip time, worked out from the exact time (they ask every frame;
+   * the editor itself redraws only a few times a second): the same as viewSegment, but never late
+   * where one section (or a video on top) gives way to the next.
+   */
+  const viewAt = useMemo(() => {
+    const shown = new WeakMap<SegmentLocal, SegmentLocal>()
+    const gaps = new Map<string, SegmentLocal>()
+    return (ms: number): SegmentLocal | null => {
+      const part = partAt(playParts, ms)
+      if (part) {
+        let s = shown.get(part)
+        if (!s) {
+          const ar = getVideoAR()
+          s = shownSegment(part, mainVideoId, ar)
+          if (ar) shown.set(part, s)  // (kept once the video's shape is known: a stand-in's framing needs it)
+        }
+        return s
+      }
+      const gap = uncovered.find(g => ms >= g.start_ms && ms <= g.end_ms)
+      if (!gap) return null
+      const key = `${gap.start_ms}-${gap.end_ms}`
+      let g = gaps.get(key)
+      if (!g) {
+        g = {
+          id: DEFAULT_SEG_ID, start_ms: gap.start_ms, end_ms: gap.end_ms, layout: 'vertical', sort_order: -1,
+          crop_boxes: [{ id: DEFAULT_BOX_ID, slot_index: 0, source_video_id: null, source_offset_ms: gap.start_ms, keyframes: [] }],
+        } as SegmentLocal
+        gaps.set(key, g)
+      }
+      return g
+    }
+  }, [playParts, uncovered, mainVideoId, clipLengthMs]) // eslint-disable-line react-hooks/exhaustive-deps
   const viewGetPositionAt = useMemo(
     () => (boxId: string, t: number) => boxId === DEFAULT_BOX_ID || boxId.endsWith(STAND_IN_SUFFIX) ? defaultCropForSlot('vertical', 0, getVideoAR()) : getPositionAt(boxId, t),
     [getPositionAt], // eslint-disable-line react-hooks/exhaustive-deps
@@ -1867,6 +1923,13 @@ export function EditorShell({
     // Its settings open straight away: where it plays, which part of it, its sound
     pickShot(newId, true); seekToMs(at)
   }
+
+  // A video from before editing copies were made: ask the worker for one (used from the next
+  // time the clip is opened; until then the original plays)
+  useEffect(() => {
+    if (!(clip as unknown as { needs_proxy?: boolean }).needs_proxy || !mainVideoId) return
+    fetch(`/api/videos/${mainVideoId}/proxy`, { method: 'POST' }).catch(() => {})
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Borrowed reaction slots look ahead through the parts to start each one on time
   const trackBorrowed = borrowed.track
@@ -3427,7 +3490,7 @@ export function EditorShell({
 
           <div className="relative flex-1 min-h-0" style={{ background: 'var(--ed-canvas)' }}>
             <div className="absolute flex flex-col rounded-xl overflow-hidden" style={{ inset: 8, border: '1px solid rgb(var(--ed-fg) / 0.1)' }}>
-              <VideoPreview
+              <VideoPreview live segmentAt={viewAt} overlaySource={brollSource} mainVideoId={mainVideoId}
                 videoRef={videoRef} videoUrl={clipVideoUrl} currentTimeMs={currentTimeMs}
                 activeSegment={viewSegment} getPositionAt={viewGetPositionAt}
                 activeBoxId={activeBoxId ?? null}
@@ -3445,7 +3508,7 @@ export function EditorShell({
           <div className="ed-player shrink-0 grid items-center gap-2 px-3" style={{ gridTemplateColumns: 'minmax(0,1fr) auto minmax(0,1fr)', height: 52, borderTop: '1px solid rgb(var(--ed-fg) / 0.06)', background: 'var(--ed-panel)' }}>
             <div className="justify-self-start min-w-0">
               <span className="ed-transport-time shrink-0 whitespace-nowrap text-[11px] tabular-nums" aria-label={`${msToClock(currentTimeMs)} of ${msToClock(clipDurationMs)}`}>
-                <span className="font-semibold" style={{ color: 'rgb(var(--ed-fg) / 0.85)' }}>{msToHundredths(currentTimeMs)}</span>
+                <span className="font-semibold" style={{ color: 'rgb(var(--ed-fg) / 0.85)' }}><LiveTime /></span>
                 <span className="ed-transport-total" style={{ color: 'rgb(var(--ed-fg) / 0.38)' }}> / {msToLabel(clipDurationMs)}</span>
               </span>
             </div>
@@ -3600,7 +3663,7 @@ export function EditorShell({
                   )}
                 </div>
               ) : (
-                <OutputCanvas
+                <OutputCanvas live segmentAt={viewAt}
                   videoRef={videoRef} currentTimeMs={currentTimeMs} clipStartMs={clip.start_ms} videoToTimeline={videoToTimeline}
                   activeSegment={viewSegment} getPositionAt={viewGetPositionAt} sourceFor={brollSource} slotSourceFor={borrowed.slotSourceFor}
                   skipTransitionRef={skipCanvasTransitionRef} words={displayWords}
@@ -3980,6 +4043,11 @@ function CtlButtons({ state, can, onToggle, size, what, inert }: {
 // A music track that is the main video's own sound, detached onto the Music lane
 const MAIN_AUDIO_PREFIX = 'main-video:'
 const isMainAudio = (t: { storage_path: string }) => t.storage_path.startsWith(MAIN_AUDIO_PREFIX)
+
+/** The playhead's time on the play bar, every frame (the editor around it redraws less often) */
+function LiveTime() {
+  return <>{msToHundredths(useLiveTimeMs())}</>
+}
 
 /** The tracks of photos, text and music, saved beside the clip's rows (read back by savedLanes, tracks.ts) */
 function withLanes<L extends object>(layers: L | null, items: Array<{ id: string; track?: number }>): L | { v: 1; rows: string[]; cut: never[]; parts: string[]; lanes: Record<string, number> } | null {
