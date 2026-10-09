@@ -101,7 +101,7 @@ interface EditorActions {
   addFormat: (startMs: number, endMs: number, layout: LayoutType, videoAR?: number, pos?: BoxPosition | (BoxPosition | undefined)[]) => string
   updateBoxSource: (segId: string, boxId: string, source_video_id: string | null, source_offset_ms: number) => void
   /** A muted video on top (B-roll) over [startMs, endMs): a layer of its own. The sections under it are not touched. */
-  placeBroll: (videoId: string, startMs: number, endMs: number) => string
+  placeBroll: (videoId: string, startMs: number, endMs: number, lane?: 'broll', track?: number) => string
   /**
    * A video on top at a new time. `moved`: dragged as a whole (it shows the same pictures, its
    * views move with it); otherwise an end was trimmed (trimmed at its start, it carries on from
@@ -425,6 +425,8 @@ export const useEditorStore = create<EditorState & EditorActions>()((set, get) =
           ...s.segments.map(s => s.id === segId ? { ...s, end_ms: tMs } : s),
           {
             id: newId, start_ms: tMs, end_ms: seg.end_ms, layout: seg.layout, sort_order: seg.sort_order + 0.5, crop_boxes: newBoxes,
+            ...(seg.lane ? { lane: seg.lane } : {}),
+            ...(seg.track ? { track: seg.track } : {}),
             // Each half keeps its own copy of the frame; items are cut to each half's range when shown
             frame: seg.frame ? { ...seg.frame, items: seg.frame.items?.map(it => ({ ...it, id: crypto.randomUUID() })) } : seg.frame,
           },
@@ -491,7 +493,7 @@ export const useEditorStore = create<EditorState & EditorActions>()((set, get) =
     }),
   })),
 
-  placeBroll: (videoId, startMs, endMs) => {
+  placeBroll: (videoId, startMs, endMs, lane, track) => {
     const id = crypto.randomUUID()
     const box = {
       id: crypto.randomUUID(), slot_index: 0, source_video_id: videoId, source_offset_ms: 0,
@@ -499,7 +501,7 @@ export const useEditorStore = create<EditorState & EditorActions>()((set, get) =
       keyframes: [{ t_ms: startMs, x: 0, y: 0, w: 1, h: 1 }],
     } as CropBoxLocal
     set(s => ({
-      segments: [...s.segments, { id, start_ms: startMs, end_ms: endMs, layout: 'vertical' as LayoutType, sort_order: 0, crop_boxes: [box] }]
+      segments: [...s.segments, { id, start_ms: startMs, end_ms: endMs, layout: 'vertical' as LayoutType, sort_order: 0, crop_boxes: [box], ...(lane ? { lane } : {}), ...(track ? { track } : {}) }]
         .sort((a, b) => a.start_ms - b.start_ms),
       keyframes: withBoxes(s.keyframes, [box]),
     }))
