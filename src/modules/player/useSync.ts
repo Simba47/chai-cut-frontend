@@ -1,7 +1,7 @@
 'use client'
 
 import { useRef, useEffect, useCallback } from 'react'
-import { usePlayerStore } from './store'
+import { usePlayerStore, liveTime } from './store'
 
 type PushedSeg = { start_ms: number; end_ms: number; video_offset_ms?: number | null }
 /** A part of the source video that stays in the clip: [start, end) in ms of the video */
@@ -38,6 +38,14 @@ export function useVideoSync(clipStartMs = 0, clipEndMs?: number, segments?: Pus
   const { setCurrentTimeMs, setDurationMs, setPlaying } = usePlayerStore()
   const keptRef = useRef<KeptRange[] | undefined>(kept)
   keptRef.current = kept && kept.length ? kept : undefined
+  // One seek at a time: a seek asked for while another is still running waits, and only the
+  // latest waits (each new seek would cancel the one before, and while dragging none would finish)
+  const pendingSeekRef = useRef<number | null>(null)
+  function seekVideo(el: HTMLVideoElement, sec: number) {
+    if (el.seeking) { pendingSeekRef.current = sec; return }
+    pendingSeekRef.current = null
+    el.currentTime = sec
+  }
 
   useEffect(() => { segmentsRef.current = segments }, [segments])
 
@@ -265,7 +273,7 @@ export function useVideoSync(clipStartMs = 0, clipEndMs?: number, segments?: Pus
 
     const onPlay = () => {
       setPlaying(true)
-      const current = usePlayerStore.getState().currentTimeMs
+      const current = liveTime.get()
       const ins = insertRef.current
       // Only honour INSERT state if the playhead is actually inside the INSERT range.
       // A stale insertRef (from a previous INSERT that the user seeked away from) must
@@ -347,6 +355,14 @@ export function useVideoSync(clipStartMs = 0, clipEndMs?: number, segments?: Pus
       }
     }
 
+    // A seek finished: make the one asked for meanwhile (the latest), if any
+    const onSeeked = () => {
+      const p = pendingSeekRef.current
+      if (p == null) return
+      pendingSeekRef.current = null
+      if (Math.abs(el.currentTime - p) > 0.001) el.currentTime = p
+    }
+    el.addEventListener('seeked', onSeeked)
     el.addEventListener('play', onPlay)
     el.addEventListener('pause', onPause)
     el.addEventListener('loadedmetadata', onLoaded)
@@ -354,6 +370,7 @@ export function useVideoSync(clipStartMs = 0, clipEndMs?: number, segments?: Pus
     el.addEventListener('ended', onEnded)
     if (el.readyState >= 1) onLoaded()
     return () => {
+      el.removeEventListener('seeked', onSeeked)
       el.removeEventListener('play', onPlay)
       el.removeEventListener('pause', onPause)
       el.removeEventListener('loadedmetadata', onLoaded)
@@ -376,7 +393,7 @@ export function useVideoSync(clipStartMs = 0, clipEndMs?: number, segments?: Pus
 
   const play = useCallback(() => {
     const el = videoRef.current; if (!el) return
-    const current = usePlayerStore.getState().currentTimeMs
+    const current = liveTime.get()
     // Discard stale INSERT state when playhead is outside the INSERT range.
     if (insertRef.current) {
       const { insertStartMs, insertEndMs } = insertRef.current
@@ -427,7 +444,7 @@ export function useVideoSync(clipStartMs = 0, clipEndMs?: number, segments?: Pus
     if (k) {
       insertRef.current = null
       const at = Math.max(0, Math.min(ms, keptLength(k)))
-      el.currentTime = Math.min(keptToVideo(k, at), k[k.length - 1][1] - 1) / 1000
+      seekVideo(el, Math.min(keptToVideo(k, at), k[k.length - 1][1] - 1) / 1000)
       setCurrentTimeMs(at)
       if (usePlayerStore.getState().playing) {
         if (el.paused) safePlay(el)
@@ -439,7 +456,7 @@ export function useVideoSync(clipStartMs = 0, clipEndMs?: number, segments?: Pus
     // Seeking into INSERT range: park video at video_offset_ms, keep currentTimeMs = ms
     const insertOwner = findInsertOwner(ms)
     if (insertOwner?.video_offset_ms != null) {
-      el.currentTime = (clipStartMs + insertOwner.video_offset_ms) / 1000
+      seekVideo(el, (clipStartMs + insertOwner.video_offset_ms) / 1000)
       setCurrentTimeMs(ms)
       // Preserve INSERT state so pressing play resumes from this point within INSERT
       insertRef.current = {
@@ -461,7 +478,7 @@ export function useVideoSync(clipStartMs = 0, clipEndMs?: number, segments?: Pus
     )
     if (pushedSeg?.video_offset_ms != null) {
       const videoMs = pushedSeg.video_offset_ms + (ms - pushedSeg.start_ms)
-      el.currentTime = (clipStartMs + videoMs) / 1000
+      seekVideo(el, (clipStartMs + videoMs) / 1000)
       playingThroughRef.current = pushedSeg.video_offset_ms  // tick can play through normally
       setCurrentTimeMs(ms)
       if (usePlayerStore.getState().playing) {
@@ -475,7 +492,7 @@ export function useVideoSync(clipStartMs = 0, clipEndMs?: number, segments?: Pus
 
     // Normal segment
     insertRef.current = null
-    el.currentTime = (clipStartMs + ms) / 1000
+    seekVideo(el, (clipStartMs + ms) / 1000)
     setCurrentTimeMs(Math.max(0, ms))
     if (usePlayerStore.getState().playing) {
       // If INSERT froze the video, resume it; onPlay will call scheduleTick.

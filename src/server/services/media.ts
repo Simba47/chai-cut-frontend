@@ -64,7 +64,7 @@ export async function listMedia(userId: string): Promise<MediaItem[]> {
     .filter(v => !(v.is_asset && !v.is_upload_asset) && v.status === 'ready' && v.storage_path)
     .map(async v => ({
       kind: 'video' as const, id: v.id as string, name: (v.title as string | null)?.trim() || 'Video',
-      url: await sign(v.storage_path as string), duration_ms: v.duration_ms as number | null,
+      url: await sign(((v.proxy_path as string | null) || v.storage_path) as string), duration_ms: v.duration_ms as number | null,
       created_at: new Date(v.created_at as string).toISOString(),
     })))
   const files = [...images, ...audio].sort((a, b) => b.created_at.localeCompare(a.created_at)).slice(0, 300)
