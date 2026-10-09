@@ -1,6 +1,6 @@
 import sql from '@/lib/db'
 import { hashPassword, validatePassword, verifyPassword } from '@/modules/auth/password'
-import { deleteR2Keys } from './videos'
+import { deleteR2Keys, proxyKeyFor } from './videos'
 import { getUserPlanConfig } from './quota'
 
 /**
@@ -86,7 +86,7 @@ export async function deleteAccount(userId: string, password: unknown): Promise<
   for (const v of videos) {
     if (!v.storage_path) continue
     // (_audio.flac: the sound kept for captions; _reading.json: a whole-video reading that stopped part-way)
-    keys.push(v.storage_path, v.storage_path.replace(/\.[^.]+$/, '_audio.flac'), v.storage_path.replace(/\.[^.]+$/, '_reading.json'))
+    keys.push(v.storage_path, v.storage_path.replace(/\.[^.]+$/, '_audio.flac'), v.storage_path.replace(/\.[^.]+$/, '_reading.json'), proxyKeyFor(v.storage_path))
   }
   for (const c of clipOutputs) keys.push(c.output_storage_path)
   await deleteR2Keys(keys)

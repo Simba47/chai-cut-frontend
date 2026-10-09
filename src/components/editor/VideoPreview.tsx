@@ -11,6 +11,8 @@ import { applyCase } from './CaptionStyler'
 import { normalizedSlotAspect, fitToAspect } from '@/modules/editor/utils'
 import { isFrameLayout, frameSlotLabels, frameLanesFor, frameBandShown, frameOf, itemAt, captionBandAt, cornerGeometry, frameRows, MIN_ROW_H, mainRect, boxRect, MIN_BOX as MIN_MAIN_BOX } from '@/modules/editor/frames'
 import type { FrameMediaPool } from '@/modules/editor/frameMedia'
+import { useLiveTimeMs } from '@/modules/player/store'
+import { addedVideoBox } from '@/modules/editor/visibility'
 
 const BOX_COLORS = ['#22c55e', '#3b82f6', '#f59e0b']
 // What each slot becomes in the 9:16 output, top to bottom
@@ -35,7 +37,18 @@ interface VideoPreviewProps {
   videoRef: RefObject<HTMLVideoElement | null>
   videoUrl: string
   currentTimeMs: number
+  /** Follow the playhead's exact time every frame (the player store's live feed) instead of `currentTimeMs` */
+  live?: boolean
   activeSegment: SegmentLocal | null
+  /** With `live`: the format at a clip time, so the crop boxes change exactly where the format does */
+  segmentAt?: (clipMs: number) => SegmentLocal | null
+  /**
+   * A video on top (B-roll, one of the user's videos): the element playing it, kept in step with
+   * the main video (useBrollSources). While one shows, this view shows it, with its crop box on it.
+   */
+  overlaySource?: (seg: SegmentLocal | null) => HTMLVideoElement | null
+  /** The clip's own video (a part showing another video is a video on top) */
+  mainVideoId?: string | null
   getPositionAt: (boxId: string, t_ms: number) => BoxPosition
   activeBoxId: string | null
   onSelectBox: (segmentId: string, boxId: string) => void
@@ -43,11 +56,46 @@ interface VideoPreviewProps {
 }
 
 export function VideoPreview({
-  videoRef, videoUrl, currentTimeMs, activeSegment,
-  getPositionAt, activeBoxId, onSelectBox, onBoxChange,
+  videoRef, videoUrl, currentTimeMs: timeProp, live = false, activeSegment: segmentProp, segmentAt,
+  overlaySource, mainVideoId, getPositionAt, activeBoxId, onSelectBox, onBoxChange,
 }: VideoPreviewProps) {
-  const [videoAR, setVideoAR] = useState<number | null>(null)
+  const liveMs = useLiveTimeMs(live)
+  const currentTimeMs = live ? liveMs : timeProp
+  const activeSegment = live && segmentAt ? segmentAt(liveMs) : segmentProp
+  const [mainAR, setVideoAR] = useState<number | null>(null)
   const maskId = `crop-mask-${useId().replace(/:/g, '')}`
+
+  // ── A video on top playing here: this view shows it (and its crop box is framed on it) ──
+  // (a hidden one isn't here: shownSegment puts the main video in its place)
+  const overlayBox = activeSegment && overlaySource ? addedVideoBox(activeSegment, mainVideoId) : null
+  const showsOverlay = !!overlayBox
+  const [overlayAR, setOverlayAR] = useState<number | null>(null)
+  const overlayCanvasRef = useRef<HTMLCanvasElement>(null)
+  const overlaySegRef = useRef(activeSegment)
+  overlaySegRef.current = activeSegment
+  const overlaySourceRef = useRef(overlaySource)
+  overlaySourceRef.current = overlaySource
+  useEffect(() => {
+    if (!showsOverlay) return
+    let raf = 0
+    // Every frame: the overlay video's picture (the same element the preview draws, kept in step)
+    const draw = () => {
+      const el = overlaySourceRef.current?.(overlaySegRef.current)
+      const c = overlayCanvasRef.current
+      if (el && c && el.readyState >= 2 && el.videoWidth && el.videoHeight) {
+        const ar = el.videoWidth / el.videoHeight
+        setOverlayAR(prev => (prev && Math.abs(prev - ar) < 0.001 ? prev : ar))
+        const w = Math.min(1280, el.videoWidth), h = Math.round(w / ar)
+        if (c.width !== w || c.height !== h) { c.width = w; c.height = h }
+        c.getContext('2d')?.drawImage(el, 0, 0, w, h)
+      }
+      raf = requestAnimationFrame(draw)
+    }
+    raf = requestAnimationFrame(draw)
+    return () => cancelAnimationFrame(raf)
+  }, [showsOverlay])
+  // The shape of what this view shows: the overlay video's while it shows, else the main video's
+  const videoAR = showsOverlay ? overlayAR ?? mainAR : mainAR
 
   const isHorizontal = activeSegment?.layout === 'horizontal'
 
@@ -71,12 +119,16 @@ export function VideoPreview({
           src={videoUrl || undefined}
           crossOrigin="anonymous"
           preload="auto"
-          style={{ width: '100%', height: '100%', display: 'block' }}
+          // (still playing under a video on top: it keeps the time for everything)
+          style={{ width: '100%', height: '100%', display: 'block', ...(showsOverlay ? { opacity: 0 } : {}) }}
           onLoadedMetadata={e => {
             const v = e.currentTarget
             if (v.videoWidth && v.videoHeight) setVideoAR(v.videoWidth / v.videoHeight)
           }}
         />
+        {showsOverlay && (
+          <canvas ref={overlayCanvasRef} className="absolute inset-0 w-full h-full pointer-events-none" style={{ display: 'block', background: '#000' }} aria-hidden="true" />
+        )}
 
         {/* Crop boxes — each is locked to the shape of its slot in the output, so what's
             inside the box is exactly what gets exported */}
@@ -1068,6 +1120,8 @@ interface OutputCanvasProps {
   /** Split/trio slots that show their own picture (borrowed reactions): see useBorrowedSlots */
   slotSourceFor?: (seg: SegmentLocal | null, box: SegmentLocal['crop_boxes'][number]) => HTMLVideoElement | null | false
   currentTimeMs: number
+  /** Follow the playhead's exact time every frame (the player store's live feed) instead of `currentTimeMs` */
+  live?: boolean
   clipStartMs?: number
   /**
    * Parts of the clip were removed (lib/trims.ts): the main video's time (ms) → clip time. Without
@@ -1116,13 +1170,17 @@ interface OutputCanvasProps {
 }
 
 export function OutputCanvas({
-  videoRef, currentTimeMs, clipStartMs = 0, videoToTimeline, activeSegment, getPositionAt, segmentAt, hardCuts = false, sourceFor, slotSourceFor,
+  videoRef, currentTimeMs: timeProp, live = false, clipStartMs = 0, videoToTimeline, activeSegment: segmentProp, getPositionAt, segmentAt, hardCuts = false, sourceFor, slotSourceFor,
   overlays = [], activeOverlayId, onOverlayChange, onSelectOverlay, onDeleteOverlay,
   className, style, skipTransitionRef,
   words, captionStyle, captionTextCase = 'title', showCaptions = false,
   textOverlays = [], activeTextOverlayId, onTextOverlayChange, onSelectTextOverlay, onDeleteTextOverlay, editTextOverlayId, onEditTextDone,
   onCaptionPositionChange, frameMedia, onFrameLaneClick, onFrameItemClick, activeFrameItemId, onFrameItemChange, onFrameRowsChange, onFrameMainRectChange,
 }: OutputCanvasProps) {
+  const liveMs = useLiveTimeMs(live)
+  const currentTimeMs = live ? liveMs : timeProp
+  // With the live time, the format here too (what's drawn on the canvas already follows segmentAt every frame)
+  const activeSegment = live && segmentAt ? segmentAt(liveMs) : segmentProp
   const canvasRef = useRef<HTMLCanvasElement>(null)
   // Centre guides shown while something is dragged (see GuideContext)
   const [guides, setGuides] = useState<Guides>(null)

@@ -29,7 +29,8 @@ export default async function EditorPage({
   if (!user) redirect('/login')
 
   const [clip] = await sql`
-    SELECT c.*, v.storage_path, v.status AS video_status, v.user_id, v.title AS video_title, v.duration_ms AS video_duration_ms
+    SELECT c.*, v.storage_path, v.status AS video_status, v.user_id, v.title AS video_title, v.duration_ms AS video_duration_ms,
+      to_jsonb(v)->>'proxy_path' AS proxy_path
     FROM clips c JOIN videos v ON v.id = c.video_id
     WHERE c.id = ${clipId}
   `
@@ -46,8 +47,10 @@ export default async function EditorPage({
     transitionsRaw,
     overlaysRaw,
   ] = await Promise.all([
+    // The editor plays the video's editing copy when it has one (the worker's jobs/proxy.ts:
+    // keyframes every half second, so dragging through it is quick); the export uses the original
     clip.storage_path
-      ? getSignedUrl(r2, new GetObjectCommand({ Bucket: R2_BUCKET, Key: clip.storage_path }), { expiresIn: 43200 })
+      ? getSignedUrl(r2, new GetObjectCommand({ Bucket: R2_BUCKET, Key: clip.proxy_path || clip.storage_path }), { expiresIn: 43200 })
       : Promise.resolve(''),
     // Prefer newest transcript that has words; fall back to newest empty if none
     sql`
@@ -160,7 +163,11 @@ export default async function EditorPage({
   }))
 
   const shellProps = {
-    clip: { ...clip, output_url: outputUrl, captions_pending: !!pendingJob } as unknown as Parameters<typeof EditorShell>[0]['clip'],
+    clip: {
+      ...clip, output_url: outputUrl, captions_pending: !!pendingJob,
+      // No editing copy yet (a video from before they were made): the editor asks for one
+      needs_proxy: !clip.proxy_path && clip.video_status === 'ready' && !!clip.storage_path,
+    } as unknown as Parameters<typeof EditorShell>[0]['clip'],
     videoUrl: signedUrl,
     words,
     initialSegments: segments ?? [],

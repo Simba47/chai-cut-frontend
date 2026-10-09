@@ -95,7 +95,7 @@ export function createFrameMediaPool(getVideoUrl: (videoId: string) => string | 
         if (drift > 0.35 && drift < v.duration - 0.35) v.currentTime = target
       } else {
         if (!v.paused) v.pause()
-        if (drift > 0.04) v.currentTime = target
+        if (drift > 0.04 && !v.seeking) v.currentTime = target
       }
     }
     for (const [id, e] of videos) {

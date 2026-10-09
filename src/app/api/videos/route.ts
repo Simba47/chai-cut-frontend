@@ -14,7 +14,8 @@ export async function GET(req: NextRequest) {
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   try {
-    const rows = await listVideos(user.id, req.nextUrl.searchParams.get('assets') === '1')
+    const forEditor = req.nextUrl.searchParams.get('assets') === '1'
+    const rows = await listVideos(user.id, forEditor)
     const videos = await Promise.all(
       rows.map(async (v, i) => {
         let video_url: string | null = null
@@ -22,7 +23,8 @@ export async function GET(req: NextRequest) {
           try {
             video_url = await getSignedUrl(
               r2,
-              new GetObjectCommand({ Bucket: R2_BUCKET, Key: v.storage_path }),
+              // The editor plays a video's editing copy when it has one (quick to drag through)
+              new GetObjectCommand({ Bucket: R2_BUCKET, Key: (forEditor && v.proxy_path) || v.storage_path }),
               { expiresIn: 3600 },
             )
           } catch { /* no url */ }
