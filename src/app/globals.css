@@ -715,12 +715,13 @@ body {
    tool rail and fades, a beat after the column starts, so it never looks squeezed. Closing is quicker:
    the panel fades out first, then the column folds away. */
 .ed-options {
-  border-right: 1px solid transparent;
-  transition: width 340ms cubic-bezier(0.32, 0.72, 0, 1), border-color 240ms ease;
+  /* A card of its own (see .ed-card) while open: its border and the gap after it fold away with it */
+  border: 1px solid transparent; border-radius: 12px; margin-right: 0;
+  transition: width 340ms cubic-bezier(0.32, 0.72, 0, 1), border-color 240ms ease, margin-right 340ms cubic-bezier(0.32, 0.72, 0, 1);
   will-change: width;
 }
-.ed-options[data-open] { border-right-color: rgb(var(--ed-fg) / 0.07); }
-.ed-options:not([data-open]) { transition-duration: 260ms, 160ms; }
+.ed-options[data-open] { border-color: rgb(var(--ed-fg) / 0.09); margin-right: 8px; }
+.ed-options:not([data-open]) { border-width: 0; transition-duration: 260ms, 160ms, 260ms; }
 .ed-options-inner {
   opacity: 0;
   transform: translateX(-14px);
@@ -1448,12 +1449,13 @@ body {
 
 /* ── Editor Preview column: opens and closes like the options sidebar (EditorShell previewOpen) ── */
 .ed-preview-col {
-  border-left: 1px solid transparent;
-  transition: width 340ms cubic-bezier(0.32, 0.72, 0, 1), border-color 240ms ease;
+  /* A card of its own (see .ed-card) while open: its border and the gap before it fold away with it */
+  border: 1px solid transparent; border-radius: 12px; margin-left: 0;
+  transition: width 340ms cubic-bezier(0.32, 0.72, 0, 1), border-color 240ms ease, margin-left 340ms cubic-bezier(0.32, 0.72, 0, 1);
   will-change: width;
 }
-.ed-preview-col[data-open] { border-left-color: rgb(var(--ed-fg) / 0.07); }
-.ed-preview-col:not([data-open]) { transition-duration: 260ms, 160ms; }
+.ed-preview-col[data-open] { border-color: rgb(var(--ed-fg) / 0.09); margin-left: 8px; }
+.ed-preview-col:not([data-open]) { border-width: 0; transition-duration: 260ms, 160ms, 260ms; }
 .ed-preview-inner { opacity: 0; transform: translateX(14px); transition: opacity 160ms ease, transform 220ms cubic-bezier(0.32, 0.72, 0, 1); }
 .ed-preview-col[data-open] .ed-preview-inner { opacity: 1; transform: none; transition: opacity 260ms ease 70ms, transform 360ms cubic-bezier(0.32, 0.72, 0, 1) 40ms; }
 .ed-preview-rail { animation: ed-rail-in 260ms ease both; }
@@ -1509,19 +1511,6 @@ body {
 .ed-tool-tab[data-active] { background: rgb(var(--ed-fg) / 0.06); color: #C8FF00; box-shadow: inset 0 -2px 0 #C8FF00; }
 .ed-tool-tab[data-active]::before { display: none; }
 
-/* ── Layout unlocked (EditorShell layoutEditing): each panel outlined and named, the lines between
-   them always showing so they can be dragged ── */
-[data-layout-editing] [data-layout-panel] { outline: 2px dashed rgba(200,255,0,0.45); outline-offset: -3px; }
-[data-layout-editing] [data-layout-panel]::after {
-  content: attr(data-layout-panel); position: absolute; top: 6px; right: 8px; z-index: 45; pointer-events: none;
-  padding: 2px 8px; border-radius: 999px; font-size: 10.5px; font-weight: 700; color: #000; background: #c8ff00;
-}
-[data-layout-editing] [data-layout-panel="Editing panel"] { position: relative; }
-[data-layout-editing] .ed-col-handle::after, [data-layout-editing] .ed-row-handle::after { opacity: 0.55; width: 4px; }
-[data-layout-editing] .ed-row-handle::after { width: auto; height: 4px; }
-[data-layout-editing] .ed-col-handle:hover::after, [data-layout-editing] .ed-col-handle[data-on]::after,
-[data-layout-editing] .ed-row-handle:hover::after, [data-layout-editing] .ed-row-handle[data-on]::after { opacity: 1; }
-
 /* ── Lock / view / sound beside each timeline lane (SegmentTimeline laneCtl) ── */
 .lane-ctl { color: rgb(var(--ed-fg) / 0.42); transition: color .15s, background-color .15s; }
 .lane-ctl:not(:disabled):hover { color: rgb(var(--ed-fg) / 0.9); background: rgb(var(--ed-fg) / 0.08); }
@@ -1541,3 +1530,13 @@ body {
 .media-card:hover .media-add, .media-card .media-add:focus-visible,
 .media-card:hover .media-del, .media-card .media-del:focus-visible, .media-card .media-del[data-on] { opacity: 1; transform: none; }
 @media (hover: none) { .media-card .media-add, .media-card .media-del { opacity: 1; transform: none; } }
+
+/* ── The editor's areas as separate cards (EditorShell): the video view, the editing panel and the
+   tool rail; the options and preview columns are cards the same way while open (.ed-options,
+   .ed-preview-col). The app's background shows in the gaps between them. ── */
+.ed-card {
+  border: 1px solid rgb(var(--ed-fg) / 0.09);
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--ed-panel);
+}

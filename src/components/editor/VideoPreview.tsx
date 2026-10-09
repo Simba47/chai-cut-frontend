@@ -1606,6 +1606,57 @@ function FrameRowHandles({ seg, onChange }: { seg: SegmentLocal; onChange: (heig
   )
 }
 
+// ── Rotate handle: drag round the box's middle to turn it (Shift: 15° steps; near a right angle it
+//    snaps straight); double-click: straight again ──────────────────────────────
+
+/** Degrees in -180..180 */
+const normAngle = (d: number) => ((((d + 180) % 360) + 360) % 360) - 180
+
+function RotateHandle({ boxRef, rotation, onRotate, size = 20 }: {
+  boxRef: React.RefObject<HTMLDivElement | null>; rotation: number; onRotate: (deg: number) => void; size?: number
+}) {
+  const [turning, setTurning] = useState<number | null>(null)
+  function start(e: React.MouseEvent) {
+    e.stopPropagation(); e.preventDefault()
+    const r = boxRef.current?.getBoundingClientRect()
+    if (!r) return
+    // (the middle of a turned box is still the middle of its bounding box)
+    const cx = r.left + r.width / 2, cy = r.top + r.height / 2
+    const a0 = Math.atan2(e.clientY - cy, e.clientX - cx)
+    const r0 = rotation
+    function move(ev: MouseEvent) {
+      let deg = normAngle(r0 + ((Math.atan2(ev.clientY - cy, ev.clientX - cx) - a0) * 180) / Math.PI)
+      if (ev.shiftKey) deg = normAngle(Math.round(deg / 15) * 15)
+      else { const right = Math.round(deg / 90) * 90; if (Math.abs(deg - right) < 4) deg = normAngle(right) }
+      deg = Math.round(deg * 10) / 10
+      setTurning(deg)
+      onRotate(deg)
+    }
+    function up() { window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up); setTurning(null) }
+    window.addEventListener('mousemove', move)
+    window.addEventListener('mouseup', up)
+  }
+  return (
+    <div data-handle="1" onMouseDown={start} onDoubleClick={e => { e.stopPropagation(); onRotate(0) }}
+      title="Drag to rotate (Shift: 15° steps) · double-click to straighten" aria-label="Rotate"
+      style={{
+        position: 'absolute', top: -size / 2, left: -size / 2, width: size, height: size, borderRadius: '50%',
+        background: '#c8ff00', border: '2px solid #111', cursor: 'grab', pointerEvents: 'auto', boxSizing: 'border-box',
+        display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 2,
+      }}>
+      <svg width={size * 0.5} height={size * 0.5} viewBox="0 0 24 24" fill="none" stroke="#111" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M20 11a8 8 0 10-2.3 5.7" /><path d="M20 4v7h-7" />
+      </svg>
+      {turning != null && (
+        <span style={{ position: 'absolute', bottom: size + 4, left: '50%', transform: `translateX(-50%) rotate(${-rotation}deg)`, whiteSpace: 'nowrap',
+          background: '#111', color: '#fff', fontSize: 10, fontWeight: 700, padding: '1px 5px', borderRadius: 4, pointerEvents: 'none' }}>
+          {Math.round(turning)}°
+        </span>
+      )}
+    </div>
+  )
+}
+
 // ── OverlayBox — free-position drag+resize for image/video overlays ──────────
 
 interface OverlayBoxProps {
@@ -1685,18 +1736,24 @@ function OverlayBox({ overlay, isActive, onChange, onSelect, onDelete }: Overlay
         border: `2px solid ${isActive ? color : `${color}66`}`,
         boxSizing: 'border-box', cursor: 'move', userSelect: 'none',
         boxShadow: isActive ? `0 0 0 1px ${color}55` : 'none',
-        overflow: 'hidden',
+        // Turned round its middle (the export turns it the same way)
+        ...(overlay.rotation ? { transform: `rotate(${overlay.rotation}deg)` } : {}),
       }}
       onMouseDown={startDrag}
     >
-      {/* Image content */}
+      {/* Image content: the whole picture in its own shape (the export fits it the same way) */}
+      <div style={{ position: 'absolute', inset: 0, overflow: 'hidden', pointerEvents: 'none' }}>
       {imageUrl
         // eslint-disable-next-line @next/next/no-img-element
-        ? <img src={imageUrl} alt="" style={{ width: '100%', height: '100%', objectFit: 'contain', pointerEvents: 'none', display: 'block' }} />
+        ? <img src={imageUrl} alt="" draggable={false} style={{ width: '100%', height: '100%', objectFit: 'contain', pointerEvents: 'none', display: 'block' }} />
         : <div style={{ width: '100%', height: '100%', background: `${color}22`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             <span style={{ fontSize: 10, fontWeight: 700, color }}>IMG</span>
           </div>
       }
+      </div>
+      {isActive && overlay.type === 'image' && (
+        <RotateHandle boxRef={ref} rotation={overlay.rotation ?? 0} onRotate={deg => onChange({ rotation: deg || null })} />
+      )}
 
       {/* Delete button — top-right corner, always visible */}
       <button
@@ -1946,7 +2003,7 @@ function TextOverlayBox({ overlay, isActive, onChange, onSelect, onDelete, editi
           style={{
             ...textCss(overlay), fontSize, lineHeight: TEXT_LINE_EM,
             display: 'block', width: overlay.w ? '100%' : undefined, minWidth: '2ch',
-            whiteSpace: overlay.w ? 'pre-wrap' : 'pre', overflow: 'hidden', resize: 'none',
+            whiteSpace: overlay.w ? 'pre-wrap' : 'pre', overflowWrap: overlay.w ? 'anywhere' : undefined, overflow: 'hidden', resize: 'none',
             background: 'transparent', border: 'none', outline: 'none', padding: 0, margin: 0,
             caretColor: accent, userSelect: 'text',
             ...({ fieldSizing: 'content' } as React.CSSProperties),
@@ -1970,6 +2027,9 @@ function TextOverlayBox({ overlay, isActive, onChange, onSelect, onDelete, editi
           aria-label={`Text box height (${side} side)`}
           style={handle({ left: '50%', [side]: -5, transform: 'translateX(-50%)', width: 22, height: 8, cursor: 'ns-resize' })} />
       ))}
+      {isActive && !editing && !centred && (
+        <RotateHandle boxRef={ref} size={18} rotation={overlay.rotation ?? 0} onRotate={deg => onChange({ rotation: deg })} />
+      )}
       {isActive && !editing && (
         <button
           onMouseDown={e => { e.stopPropagation(); onDelete() }}

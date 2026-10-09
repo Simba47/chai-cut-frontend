@@ -18,7 +18,6 @@ import { useVideoUpload } from '@/modules/upload/useVideoUpload'
 import { TranscriptPanel } from '@/components/editor/TranscriptPanel'
 import { CaptionStyler } from '@/components/editor/CaptionStyler'
 import { TextOverlayPanel } from '@/components/editor/TextOverlayPanel'
-import { PhotoPanel } from '@/components/editor/PhotoPanel'
 import { AudioMixerPanel } from '@/components/editor/AudioMixerPanel'
 import { MediaPickerModal } from '@/components/editor/MediaPickerModal'
 import { shownSegment, addedVideoBox, STAND_IN_SUFFIX } from '@/modules/editor/visibility'
@@ -357,11 +356,15 @@ export function EditorShell({
     const up = () => {
       window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up)
       setResizing(null)
+      try { localStorage.setItem('editor.timelineH', String(h)) } catch { /* storage blocked */ }
     }
     window.addEventListener('pointermove', move)
     window.addEventListener('pointerup', up)
   }
-  function resetTimelineHeight() { setTimelineH(null) }
+  function resetTimelineHeight() {
+    setTimelineH(null)
+    try { localStorage.removeItem('editor.timelineH') } catch { /* storage blocked */ }
+  }
   useEffect(() => {
     try {
       const o = Number(localStorage.getItem('editor.optionsW')), pv = Number(localStorage.getItem('editor.previewW'))
@@ -387,40 +390,17 @@ export function EditorShell({
     const up = () => {
       window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up)
       setResizing(null)
+      // Kept for this browser: the editor opens with these sizes next time
+      try { localStorage.setItem(which === 'options' ? 'editor.optionsW' : 'editor.previewW', String(w)) } catch { /* storage blocked */ }
     }
     window.addEventListener('pointermove', move)
     window.addEventListener('pointerup', up)
   }
   function resetColumn(which: 'options' | 'preview') {
     if (which === 'options') setOptionsW(OPTIONS_W); else setPreviewW(PREVIEW_W)
+    try { localStorage.removeItem(which === 'options' ? 'editor.optionsW' : 'editor.previewW') } catch { /* storage blocked */ }
   }
 
-  // ── Layout: the four panels — Options, Video view, Preview and the Editing panel (timeline) —
-  //    are resized only while Layout is unlocked (the header's Layout button). Turning it off asks to
-  //    fix the layout: fixed, the sizes are kept for this browser; or put back as they were. ──
-  const [layoutEditing, setLayoutEditing] = useState(false)
-  const [confirmFixLayout, setConfirmFixLayout] = useState(false)
-  const layoutBeforeRef = useRef<{ optionsW: number; previewW: number; timelineH: number | null } | null>(null)
-  function unlockLayout() {
-    layoutBeforeRef.current = { optionsW, previewW, timelineH }
-    // Every panel shows, so each one's size can be set
-    toggleOptions(true); togglePreview(true); setTimelineHidden(false)
-    setLayoutEditing(true)
-  }
-  function fixLayout() {
-    try {
-      localStorage.setItem('editor.optionsW', String(optionsW))
-      localStorage.setItem('editor.previewW', String(previewW))
-      if (timelineH) localStorage.setItem('editor.timelineH', String(timelineH)); else localStorage.removeItem('editor.timelineH')
-    } catch { /* storage blocked */ }
-    setConfirmFixLayout(false); setLayoutEditing(false)
-  }
-  function discardLayout() {
-    const b = layoutBeforeRef.current
-    if (b) { setOptionsW(b.optionsW); setPreviewW(b.previewW); setTimelineH(b.timelineH) }
-    setConfirmFixLayout(false); setLayoutEditing(false)
-  }
-  function defaultLayout() { setOptionsW(OPTIONS_W); setPreviewW(PREVIEW_W); setTimelineH(null) }
   // First-time tour: opens once the page has settled; the header's "?" replays it
   const [tourOpen, setTourOpen] = useState(false)
   useEffect(() => {
@@ -674,16 +654,15 @@ export function EditorShell({
   // are open over it (picked on the timeline, or just added)
   const [mediaSection, setMediaSection] = useState<MediaSection>('media')
   const [mediaFilter, setMediaFilter] = useState<MediaFilter>('all')
-  const [mediaFocus, setMediaFocus] = useState<{ kind: 'shot' | 'photo'; id: string } | null>(null)
   const openMedia = (section: MediaSection, filter?: MediaFilter) => {
-    setMediaFocus(null); setMediaSection(section); if (filter) setMediaFilter(filter); openSettings('media')
+    setMediaSection(section); if (filter) setMediaFilter(filter); openSettings('media')
   }
-  const focusMediaItem = (kind: 'shot' | 'photo', id: string) => { setMediaFocus({ kind, id }); openSettings('media') }
   // (`open` false: select only — a single click on the timeline doesn't open the sidebar)
   // One thing is picked at a time — a section, a video on top, a photo, a text or music: picking
   // one lets go of the others, so Hide / Mute / Lock, Trim and Delete are always about what was
   // picked last (they used to act on an earlier pick that was still held: bug #5)
-  function pickPhoto(id: string, open = true) { setActiveOverlayId(id); setActiveTextOverlayId(null); setPickedSegIdState(null); setPickedMusicId(null); setLastPick('overlay'); if (open) focusMediaItem('photo', id) }
+  /** A photo picked (timeline, preview): selected — moved, resized and turned on the preview, trimmed on the timeline (no settings page) */
+  function pickPhoto(id: string, _open = true) { setActiveOverlayId(id); setActiveTextOverlayId(null); setPickedSegIdState(null); setPickedMusicId(null); setLastPick('overlay') }
   function pickText(id: string, open = true) { setActiveTextOverlayId(id); setActiveOverlayId(null); setPickedSegIdState(null); setPickedMusicId(null); setLastPick('text'); if (open) openSettings('text') }
   function pickMusicTrack(id: string, open = true) { pickMusic(id); if (open) openSettings('music') }
   // Timeline clicks select; the same thing clicked again quickly (a double tap) opens its settings
@@ -1919,13 +1898,11 @@ export function EditorShell({
     })
   }
 
+  /** Delete a text straight away, no question (Ctrl+Z brings it back) */
   function askDeleteTextOverlay(id: string) {
     if (blocked({ kind: 'text', id })) return
-    const o = textOverlays.find(x => x.id === id)
-    confirm({ title: o?.text?.trim() ? `Delete the text "${o.text.trim().slice(0, 40)}"?` : 'Delete this text?', body: UNDO_NOTE }, () => {
-      deleteTextOverlay(id)
-      setActiveTextOverlayId(cur => cur === id ? null : cur)
-    })
+    deleteTextOverlay(id)
+    setActiveTextOverlayId(cur => cur === id ? null : cur)
   }
 
   // ── Export: warn about empty frame slots first ─────────────────────────────
@@ -1994,13 +1971,11 @@ export function EditorShell({
     }
   }
 
+  /** Delete a photo (or video on top) straight away, no question (Ctrl+Z brings it back) */
   function askDeleteOverlay(id: string) {
     if (blocked({ kind: 'photo', id })) return
-    const o = overlays.find(x => x.id === id)
-    confirm({ title: `Delete this ${o?.type === 'video' ? 'video' : 'image'}?`, body: UNDO_NOTE }, () => {
-      deleteOverlay(id)
-      if (activeOverlayId === id) setActiveOverlayId(null)
-    })
+    deleteOverlay(id)
+    if (activeOverlayId === id) setActiveOverlayId(null)
   }
 
   async function handleInsertBroll(videoId: string) {
@@ -2207,11 +2182,33 @@ export function EditorShell({
       id, clip_id: clip.id, type: 'image' as const,
       storage_path: storagePath, preview_url: previewUrl || undefined,
       source_video_id: null, source_offset_ms: 0,
-      x: 0, y: 0, w: 1, h: 1, start_ms: at, end_ms: Math.min(clipLengthMs, at + 5000),
+      ...PHOTO_FIRST_BOX, start_ms: at, end_ms: Math.min(clipLengthMs, at + 5000),
       z_index: prev.length + 1, created_at: new Date().toISOString(),
     }])
+    fitPhotoBox(id, previewUrl)
     pickPhoto(id)
     seekToMs(at)
+  }
+  /**
+   * A photo just put in: its box takes the photo's own shape (not the whole frame) as soon as the
+   * picture has loaded — 80% of the frame's width, less for a tall photo, in the middle. Left alone
+   * if it was moved or resized meanwhile.
+   */
+  function fitPhotoBox(id: string, url: string | null | undefined) {
+    if (!url) return
+    const img = new Image()
+    img.onload = () => {
+      const ar = img.naturalWidth / img.naturalHeight
+      if (!(ar > 0) || !isFinite(ar)) return
+      const cur = useMediaStore.getState().overlays.find(o => o.id === id)
+      if (!cur || cur.x !== PHOTO_FIRST_BOX.x || cur.y !== PHOTO_FIRST_BOX.y || cur.w !== PHOTO_FIRST_BOX.w || cur.h !== PHOTO_FIRST_BOX.h) return
+      // In px of the 1080 × 1920 frame: as wide as 80% of it, at most 60% of its height
+      let wPx = 1080 * 0.8, hPx = wPx / ar
+      if (hPx > 1920 * 0.6) { hPx = 1920 * 0.6; wPx = hPx * ar }
+      const w = wPx / 1080, h = hPx / 1920
+      updateOverlay(id, { x: (1 - w) / 2, y: (1 - h) / 2, w, h })
+    }
+    img.src = url
   }
   // ── The Media library: the user's imported videos, photos and audio (api/media) ──
   const [libraryItems, setLibraryItems] = useState<LibraryItem[]>([])
@@ -2352,7 +2349,7 @@ export function EditorShell({
     onSlip: (id: string, offset: number) => patchShotBox(id, { source_offset_ms: Math.max(0, Math.round(offset)) }),
     onSound: (id: string, p: { muted?: boolean; volume?: number }) => patchShotBox(id, { ...(p.muted !== undefined ? { muted: p.muted } : {}), ...(p.volume !== undefined ? { volume: p.volume } : {}) }),
     onToggle: (id: string, k: 'hidden' | 'locked') => toggleCtl({ kind: 'broll', id }, k),
-    onRemove: (id: string) => confirm({ title: 'Delete this video?', body: `The main video shows here again. ${UNDO_NOTE}` }, () => removeBroll(id)),
+    onRemove: (id: string) => { if (!blocked({ kind: 'broll', id })) removeBroll(id) },
   }
   function panelRetime(id: string, startMs: number, endMs: number, moved: boolean) {
     if (blocked({ kind: 'broll', id })) return
@@ -2430,14 +2427,15 @@ export function EditorShell({
     // From the "+" menu a photo shows for 5 s (then drag its ends on the timeline)
     const endMs = fromPlus ? Math.min(clipLengthMs, atMs + 5000) : seg ? seg.end_ms : atMs + 5000
     const id = crypto.randomUUID()
-    if (fromPlus) { setActiveOverlayId(id); seekToMs(atMs); focusMediaItem('photo', id) }
+    if (fromPlus) { setActiveOverlayId(id); seekToMs(atMs) }
     setOverlays(prev => [...prev, {
       id, clip_id: clip.id, type: 'image' as const,
       storage_path: storagePath, preview_url: previewUrl || undefined,
       source_video_id: null, source_offset_ms: 0,
-      x: 0, y: 0, w: 1, h: 1, start_ms: atMs, end_ms: endMs,
+      ...PHOTO_FIRST_BOX, start_ms: atMs, end_ms: endMs,
       z_index: prev.length + 1, created_at: new Date().toISOString(),
     }])
+    fitPhotoBox(id, previewUrl)
   }
 
   // ── Keyboard shortcuts: Space play/pause · S split · [ ] trim · Delete · ←/→ one frame (Shift: 5 s) ──
@@ -2461,7 +2459,8 @@ export function EditorShell({
         run: () => fItem.startsWith('main:') ? askRemoveMain(frameSeg.id, Number(fItem.slice(5))) : askRemoveFrameItem(frameSeg.id, fItem),
       },
       section: seg && (brollShots.some(b => b.id === seg.id)
-        ? { label: 'the selected video', run: () => confirm({ title: 'Delete this video?', body: `The main video shows here again. ${UNDO_NOTE}` }, () => removeBroll(seg.id)) }
+        // (straight away, no question: Ctrl+Z brings it back)
+        ? { label: 'the selected video', run: () => { if (!blocked({ kind: 'broll', id: seg.id })) removeBroll(seg.id) } }
         : { label: 'the selected section', run: () => askDeleteFormat(seg.id) }),
     }
     if (lastPick && options[lastPick]) return options[lastPick] || null
@@ -2851,7 +2850,7 @@ export function EditorShell({
         : `the picked ${selTarget.kind}`
 
   return (
-    <div className="editor-theme h-screen flex flex-col overflow-hidden" data-layout-editing={layoutEditing || undefined} style={{ background: 'var(--ed-app)', color: 'var(--ed-text)' }}>
+    <div className="editor-theme h-screen flex flex-col overflow-hidden" style={{ background: 'var(--ed-app)', color: 'var(--ed-text)' }}>
 
       <EditorTour open={tourOpen} onClose={() => setTourOpen(false)} />
 
@@ -2886,49 +2885,6 @@ export function EditorShell({
         <div className="flex-1" />
 
         <div className="flex items-center gap-3 shrink-0">
-          {/* Layout: unlock to resize the panels; turning it off asks to fix the layout */}
-          <div className="relative">
-            <button type="button" onClick={() => (layoutEditing ? setConfirmFixLayout(true) : unlockLayout())}
-              aria-pressed={layoutEditing} title={layoutEditing ? 'Done adjusting the layout' : 'Adjust the layout: resize the panels'}
-              className="h-8 flex items-center gap-1.5 px-3 rounded-full text-xs font-semibold transition-colors hover:bg-[rgb(var(--ed-fg)/0.1)]"
-              style={layoutEditing
-                ? { background: '#c8ff00', color: '#000' }
-                : { color: 'rgb(var(--ed-fg) / 0.8)', boxShadow: 'inset 0 0 0 1px rgb(var(--ed-fg) / 0.14)' }}>
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                <rect x="3" y="3" width="18" height="18" rx="2" /><path d="M3 14h18M9 3v11M15 3v11" />
-              </svg>
-              Layout
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                {layoutEditing
-                  ? <><rect x="5" y="11" width="14" height="10" rx="2" /><path d="M8 11V7a4 4 0 017.6-1.7" /></>
-                  : <><rect x="5" y="11" width="14" height="10" rx="2" /><path d="M8 11V7a4 4 0 018 0v4" /></>}
-              </svg>
-            </button>
-            {confirmFixLayout && (
-              <>
-                <div className="fixed inset-0" style={{ zIndex: 140 }} onClick={() => setConfirmFixLayout(false)} aria-hidden="true" />
-                <div role="alertdialog" aria-labelledby="fix-layout-title" aria-describedby="fix-layout-desc"
-                  className="absolute right-0 top-full mt-2 flex flex-col gap-3 p-4 rounded-xl"
-                  style={{ width: 300, zIndex: 141, background: 'var(--ed-panel)', border: '1px solid rgb(var(--ed-fg) / 0.12)', boxShadow: '0 12px 32px rgba(0,0,0,0.55)' }}>
-                  <p id="fix-layout-title" className="text-sm font-semibold text-[var(--ed-text)]">Fix this layout?</p>
-                  <p id="fix-layout-desc" className="text-xs leading-relaxed" style={{ color: 'rgb(var(--ed-fg) / 0.55)' }}>
-                    The panels keep these sizes every time you open the editor on this browser. Unlock Layout again to change them.
-                  </p>
-                  <div className="flex justify-end gap-2">
-                    <button onClick={discardLayout}
-                      className="h-8 px-3 rounded-lg text-xs font-medium transition-colors hover:bg-[rgb(var(--ed-fg)/0.08)]"
-                      style={{ color: 'rgb(var(--ed-fg) / 0.75)' }}>Undo changes</button>
-                    <button onClick={() => setConfirmFixLayout(false)}
-                      className="h-8 px-3 rounded-lg text-xs font-medium transition-colors hover:bg-[rgb(var(--ed-fg)/0.08)]"
-                      style={{ color: 'rgb(var(--ed-fg) / 0.75)' }}>Keep adjusting</button>
-                    <button onClick={fixLayout} autoFocus
-                      className="h-8 px-3 rounded-lg text-xs font-semibold transition-opacity hover:opacity-90"
-                      style={{ background: '#c8ff00', color: '#000' }}>Fix layout</button>
-                  </div>
-                </div>
-              </>
-            )}
-          </div>
           <button type="button" onClick={() => setTourOpen(true)} aria-label="Show the editor tour" title="How the editor works"
             className="w-8 h-8 flex items-center justify-center rounded-full transition-colors hover:bg-[rgb(var(--ed-fg)/0.1)]"
             style={{ color: 'rgb(var(--ed-fg) / 0.7)', boxShadow: 'inset 0 0 0 1px rgb(var(--ed-fg) / 0.14)' }}>
@@ -2952,25 +2908,15 @@ export function EditorShell({
         </div>
       )}
 
-      {layoutEditing && (
-        <div role="status" className="shrink-0 flex items-center gap-3 px-4 py-2 text-xs"
-          style={{ background: 'rgba(200,255,0,0.08)', borderBottom: '1px solid rgba(200,255,0,0.25)', color: 'var(--ed-text)' }}>
-          <span className="flex-1">
-            <b style={{ color: '#c8ff00' }}>Layout unlocked.</b> Drag the lime lines between Options, Video view, Preview and the Editing panel to resize them.
-          </span>
-          <button onClick={defaultLayout} className="h-7 px-3 rounded-lg font-medium transition-colors hover:bg-[rgb(var(--ed-fg)/0.08)]" style={{ color: 'rgb(var(--ed-fg) / 0.75)' }}>Default sizes</button>
-          <button onClick={() => setConfirmFixLayout(true)} className="h-7 px-3 rounded-lg font-semibold" style={{ background: '#c8ff00', color: '#000' }}>Done</button>
-        </div>
-      )}
-
-      {/* ── Body: [tools + options · player · preview] on top, the timeline full width below ── */}
-      <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
+      {/* ── Body: [tools + options · player · preview] on top, the timeline full width below. Each
+          area is a card of its own (.ed-card), with a gap round and between them ── */}
+      <div className="flex flex-col flex-1 min-h-0 overflow-hidden p-2">
       <div className="flex flex-1 min-h-0 overflow-hidden">
 
         {/* Tool rail: only while the options panel is closed (open, the tools are its tabs) */}
         {!optionsOpen && (
-          <nav aria-label="Editor tools" data-tour="tools" className="shrink-0 flex flex-col items-center gap-1 py-3"
-            style={{ width: 72, background: 'var(--ed-panel)', borderRight: '1px solid rgb(var(--ed-fg) / 0.07)' }}>
+          <nav aria-label="Editor tools" data-tour="tools" className="ed-card shrink-0 flex flex-col items-center gap-1 py-3 mr-2"
+            style={{ width: 72 }}>
             {TOOLS.map(t => {
               const active = tool === t.id && optionsOpen
               return (
@@ -3010,7 +2956,7 @@ export function EditorShell({
             </div>
           )}
           {/* Its right edge: drag to make the column wider or narrower */}
-          {optionsOpen && layoutEditing && (
+          {optionsOpen && (
             <div role="separator" aria-orientation="vertical" aria-label="Drag to resize the options panel. Double-click to reset."
               title="Drag to resize · double-click to reset" className="ed-col-handle" style={{ right: 0 }} data-on={resizing === 'options' || undefined}
               onPointerDown={e => startColumnResize(e, 'options')} onDoubleClick={() => resetColumn('options')} />
@@ -3034,9 +2980,9 @@ export function EditorShell({
                   <InfoTip label={`About ${activeTool.title}`}>{activeTool.hint}</InfoTip>
                   <div role="tablist" aria-label="Media" className="flex p-0.5 rounded-lg" style={{ background: 'rgb(var(--ed-fg) / 0.06)', border: '1px solid rgb(var(--ed-fg) / 0.07)' }}>
                     {(['media', 'library'] as const).map(sec => {
-                      const on = mediaSection === sec && !mediaFocus
+                      const on = mediaSection === sec
                       return (
-                        <button key={sec} type="button" role="tab" aria-selected={on} onClick={() => { setMediaSection(sec); setMediaFocus(null) }}
+                        <button key={sec} type="button" role="tab" aria-selected={on} onClick={() => setMediaSection(sec)}
                           title={sec === 'media' ? 'Your videos, photos and audio' : 'Stock footage to search'}
                           className="h-7 px-3 rounded-md text-[12px] font-semibold transition-colors"
                           style={on ? { background: 'rgb(var(--ed-fg) / 0.12)', color: 'var(--ed-accent-text)', boxShadow: 'inset 0 0 0 1px rgb(var(--ed-fg) / 0.08)' } : { color: 'rgb(var(--ed-fg) / 0.6)' }}>
@@ -3469,42 +3415,8 @@ export function EditorShell({
               </>
             )}
 
-            {/* Media: the library (Import ▸ Media · Library), or the settings of the item picked on the timeline */}
+            {/* Media: the library (Import · Library) */}
             {tool === 'media' && (() => {
-              const photo = mediaFocus?.kind === 'photo' ? overlays.find(o => o.id === mediaFocus.id && o.type === 'image') : undefined
-              if (photo) return (
-                <div className="flex flex-col">
-                  <button type="button" onClick={() => setMediaFocus(null)}
-                    className="self-start flex items-center gap-1 mx-3 mt-2.5 px-2 h-7 rounded-lg text-[12px] font-semibold transition-colors hover:bg-[rgb(var(--ed-fg)/0.08)]"
-                    style={{ color: 'rgb(var(--ed-fg) / 0.75)' }}>
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6" /></svg>
-                    Media
-                  </button>
-                  {photo && (
-                    <PhotoPanel
-                      photos={[photo]}
-                      selectedId={photo.id}
-                      currentTimeMs={currentTimeMs}
-                      clipLengthMs={clipLengthMs}
-                      onSelect={pickPhoto}
-                      onAdd={() => openMedia('media', 'image')}
-                      onUpdate={(id, patch) => {
-                        if (blocked({ kind: 'photo', id })) return
-                        // "Bring to front": onto a new track over the others
-                        if ('z_index' in patch) {
-                          const { z_index: _z, ...rest } = patch
-                          if (Object.keys(rest).length) updateOverlay(id, rest)
-                          dropOnTrack({ kind: 'photo', id }, 'new')
-                          return
-                        }
-                        updateOverlay(id, patch)
-                      }}
-                      onRemove={askDeleteOverlay}
-                      onSeek={seekToMs}
-                    />
-                  )}
-                </div>
-              )
               return (
                 <MediaLibrary
                   items={libraryItems} loading={libraryLoading} used={usedMedia}
@@ -3565,7 +3477,7 @@ export function EditorShell({
         </aside>
 
         {/* The player: format bar, the video, play controls */}
-        <main data-layout-panel="Video view" className="relative flex flex-col flex-1 min-w-0 min-h-0">
+        <main data-layout-panel="Video view" className="ed-card relative flex flex-col flex-1 min-w-0 min-h-0">
           {/* Canvas toolbar: two docks, centred — Layout (a segmented switch with a sliding lime
               highlight) and Tools (Split · Motion · Delete). Styles: .ed-dock* in globals.css */}
           <div className="ed-canvas-bar shrink-0 flex items-center justify-center gap-3 px-4" style={{ minHeight: 60, borderBottom: '1px solid rgb(var(--ed-fg) / 0.06)' }}>
@@ -3672,7 +3584,7 @@ export function EditorShell({
           style={{ width: previewOpen ? previewW : 0, background: 'var(--ed-panel)' }}
           {...(!previewOpen ? { inert: true } : {})}>
           {/* Its left edge: drag to make the preview wider or narrower */}
-          {previewOpen && layoutEditing && (
+          {previewOpen && (
             <div role="separator" aria-orientation="vertical" aria-label="Drag to resize the preview. Double-click to reset."
               title="Drag to resize · double-click to reset" className="ed-col-handle" style={{ left: 0 }} data-on={resizing === 'preview' || undefined}
               onPointerDown={e => startColumnResize(e, 'preview')} onDoubleClick={() => resetColumn('preview')} />
@@ -3827,15 +3739,20 @@ export function EditorShell({
       </div>
 
       {/* The line between the video and the play bar: drag to resize (double-click resets) */}
-      {!timelineHidden && layoutEditing && (
-        <div className="relative shrink-0" style={{ height: 0, zIndex: 30 }}>
+      {!timelineHidden && (
+        <div className="relative shrink-0" style={{ height: 0, zIndex: 30, transform: 'translateY(4px)' }}>
           <div role="separator" aria-orientation="horizontal" aria-label="Drag to resize the video and the timeline. Double-click to reset."
             title="Drag to resize · double-click to reset" className="ed-row-handle" data-on={resizing === 'timeline' || undefined}
             onPointerDown={startTimelineResize} onDoubleClick={resetTimelineHeight} />
         </div>
       )}
+      {/* The editing panel: its bar and the timeline, one card. Nothing is clipped at its edges
+          (overflow visible): the bar's "Reset all edits?" box and its labels open above it — the
+          bar and the timeline round their own corners instead */}
+      <div className="ed-card shrink-0 flex flex-col" style={{ marginTop: 8, overflow: 'visible' }}>
       {/* The timeline's own bar, full width: trim · delete · hide / mute / lock · reset … undo / redo · zoom */}
-      <div className="ed-transport shrink-0 flex items-center gap-2 px-3" style={{ height: 46, borderTop: '1px solid rgb(var(--ed-fg) / 0.08)', background: 'var(--ed-panel)' }}>
+      <div className="ed-transport shrink-0 flex items-center gap-2 px-3"
+        style={{ height: 46, background: 'var(--ed-panel)', borderRadius: timelineHidden ? 11 : '11px 11px 0 0' }}>
         {/* Left: timeline tools */}
         <div className="ed-transport-tools justify-self-start min-w-0 flex items-center gap-1">
           {/* Show / hide the timeline. The icon is the editor with its bottom panel (the timeline)
@@ -3978,7 +3895,7 @@ export function EditorShell({
       {/* Timeline (hidden with "Hide timeline") */}
       {/* (it doesn't scroll as a whole: the ruler and the main video stay, the tracks under them scroll) */}
       <div ref={timelineRef} data-tour="timeline" data-layout-panel="Editing panel" hidden={timelineHidden} className="shrink-0 flex flex-col overflow-hidden px-4 pt-3 pb-4"
-        style={{ ...(timelineH ? { height: timelineH } : { maxHeight: '32vh' }), background: 'var(--ed-track)', borderTop: '1px solid rgb(var(--ed-fg) / 0.06)' }}>
+        style={{ ...(timelineH ? { height: timelineH } : { maxHeight: '32vh' }), background: 'var(--ed-track)', borderTop: '1px solid rgb(var(--ed-fg) / 0.06)', borderRadius: '0 0 11px 11px' }}>
         <SegmentTimeline
           selectedMusicId={pickedMusicId} onSelectMusic={id => pickMusicTrack(id, doubleTap(`m${id}`))}
           photos={overlays.filter(o => o.type === 'image').map(o => ({ id: o.id, start_ms: o.start_ms, end_ms: o.end_ms, url: o.preview_url, hidden: o.hidden, locked: isLocked({ kind: 'photo', id: o.id }), track: o.track }))}
@@ -4072,6 +3989,7 @@ export function EditorShell({
             seekToMs(at)
           }}
         />
+      </div>
       </div>
       </div>
 
@@ -4187,6 +4105,9 @@ function CtlButtons({ state, can, onToggle, size, what, inert }: {
 // A music track that is the main video's own sound, detached onto the Music lane
 const MAIN_AUDIO_PREFIX = 'main-video:'
 const isMainAudio = (t: { storage_path: string }) => t.storage_path.startsWith(MAIN_AUDIO_PREFIX)
+
+/** Where a photo just put in sits until its picture loads (then it takes the photo's shape: fitPhotoBox) */
+const PHOTO_FIRST_BOX = { x: 0.1, y: 0.3, w: 0.8, h: 0.4 }
 
 /**
  * The bottom of the preview's full view: play / pause, the time, a seek bar along the clip and the

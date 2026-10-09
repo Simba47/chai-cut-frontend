@@ -353,6 +353,8 @@ export interface Overlay {
   locked?: boolean
   /** Editor: the timeline track a photo is on (shared with videos and text; tracks.ts). Saved in clips.layers. */
   track?: number
+  /** Degrees, clockwise, round the box's middle (its rotate handle on the preview) */
+  rotation?: number | null
 }
 
 // ─── Editor state (client-only, not persisted as a single blob) ────────────────
