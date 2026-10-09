@@ -1276,7 +1276,9 @@ export function OutputCanvas({
   }, [videoRef])
 
   // Active overlays at current time
+  // A photo on a higher track is drawn over one on a lower track (as the export does: z_index)
   const activeOverlays = overlays.filter(o => o.start_ms <= currentTimeMs && currentTimeMs < o.end_ms)
+    .sort((a, b) => (a.track ?? 0) - (b.track ?? 0) || a.z_index - b.z_index)
   const activeTextOverlays = textOverlays.filter(o => currentTimeMs >= o.start_ms && currentTimeMs < o.end_ms)
 
   // Frame rows with nothing in them right now get a "+" that leads to their timeline lane

@@ -41,6 +41,10 @@ export async function GET(req: NextRequest) {
           error: v.status === 'failed' ? v.error ?? null : null,
           video_url,
           index: rows.length - i,
+          // (with ?assets=1) a saved stock clip (B-roll) or a video uploaded in the editor: the editor
+          // keeps stock footage on its B-roll lane and the user's own videos on the Videos lane
+          is_asset: !!v.is_asset,
+          is_upload_asset: !!v.is_upload_asset,
         }
       }),
     )

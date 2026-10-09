@@ -746,6 +746,7 @@ body {
    They're size containers: what goes first as space runs out is decided by their own width,
    not the window's. */
 .ed-transport, .ed-canvas-bar { container-type: inline-size; }
+.ed-player .ed-transport-time,
 .ed-transport .ed-transport-time {
   padding: 3px 8px; border-radius: 999px; background: rgb(var(--ed-fg) / 0.05);
 }
@@ -1501,3 +1502,43 @@ body {
   background: #c8ff00; opacity: 0; transition: opacity .15s;
 }
 .ed-row-handle:hover::after, .ed-row-handle[data-on]::after { opacity: 1; }
+
+/* ── The tools as tabs along the top of the options panel (EditorShell): smaller, with a lime line
+   under the open one instead of a filled tile ── */
+.ed-tool-tab { border-radius: 7px 7px 0 0; gap: 2px; }
+.ed-tool-tab span { font-size: 9.5px; font-weight: 600; letter-spacing: 0.01em; }
+.ed-tool-tab[data-active] { background: rgb(var(--ed-fg) / 0.06); color: #C8FF00; box-shadow: inset 0 -2px 0 #C8FF00; }
+.ed-tool-tab[data-active]::before { display: none; }
+
+/* ── Layout unlocked (EditorShell layoutEditing): each panel outlined and named, the lines between
+   them always showing so they can be dragged ── */
+[data-layout-editing] [data-layout-panel] { outline: 2px dashed rgba(200,255,0,0.45); outline-offset: -3px; }
+[data-layout-editing] [data-layout-panel]::after {
+  content: attr(data-layout-panel); position: absolute; top: 6px; right: 8px; z-index: 45; pointer-events: none;
+  padding: 2px 8px; border-radius: 999px; font-size: 10.5px; font-weight: 700; color: #000; background: #c8ff00;
+}
+[data-layout-editing] [data-layout-panel="Editing panel"] { position: relative; }
+[data-layout-editing] .ed-col-handle::after, [data-layout-editing] .ed-row-handle::after { opacity: 0.55; width: 4px; }
+[data-layout-editing] .ed-row-handle::after { width: auto; height: 4px; }
+[data-layout-editing] .ed-col-handle:hover::after, [data-layout-editing] .ed-col-handle[data-on]::after,
+[data-layout-editing] .ed-row-handle:hover::after, [data-layout-editing] .ed-row-handle[data-on]::after { opacity: 1; }
+
+/* ── Lock / view / sound beside each timeline lane (SegmentTimeline laneCtl) ── */
+.lane-ctl { color: rgb(var(--ed-fg) / 0.42); transition: color .15s, background-color .15s; }
+.lane-ctl:not(:disabled):hover { color: rgb(var(--ed-fg) / 0.9); background: rgb(var(--ed-fg) / 0.08); }
+.lane-ctl[data-on] { color: #f87171; background: rgba(239,68,68,0.12); }
+.lane-ctl[data-on][data-key="locked"] { color: #c8ff00; background: rgba(200,255,0,0.12); }
+.lane-ctl:disabled { opacity: 0.3; cursor: default; }
+.lane-ctl:focus-visible { outline: 2px solid rgba(200,255,0,0.6); outline-offset: 1px; }
+
+/* ── The + buttons under the timeline lanes: a lane appears once something is on it ── */
+.lane-add { color: rgb(var(--ed-fg) / 0.55); background: rgb(var(--ed-fg) / 0.04); box-shadow: inset 0 0 0 1px rgb(var(--ed-fg) / 0.08); transition: color .15s, background-color .15s, box-shadow .15s; }
+.lane-add:hover { color: var(--lane-c, #fff); background: rgb(var(--ed-fg) / 0.08); box-shadow: inset 0 0 0 1px var(--lane-c, rgb(var(--ed-fg) / 0.2)); }
+.lane-add:focus-visible { outline: 2px solid rgba(200,255,0,0.6); outline-offset: 1px; }
+
+/* ── Media library cards (MediaLibrary.tsx): the + shows on hover, like CapCut ── */
+.media-card { cursor: grab; }
+.media-card .media-add, .media-card .media-del { opacity: 0; transform: scale(.85); transition: opacity .15s, transform .15s; }
+.media-card:hover .media-add, .media-card .media-add:focus-visible,
+.media-card:hover .media-del, .media-card .media-del:focus-visible, .media-card .media-del[data-on] { opacity: 1; transform: none; }
+@media (hover: none) { .media-card .media-add, .media-card .media-del { opacity: 1; transform: none; } }

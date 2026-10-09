@@ -2,7 +2,7 @@
 
 import { InfoTip } from '@/components/ui/info-tip'
 import { musicGainAt, speechRangesInVideo, speechRanges, heardSpeech, type Range as SpeechRange } from '@/modules/editor/musicGain'
-import { useState, useEffect, useLayoutEffect, useRef, useMemo, Fragment } from 'react'
+import { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback, Fragment } from 'react'
 import type { Clip, Segment, CropBox, BoxKeyframe, CaptionStyle, TextOverlay, AudioTrack, Transition, TranscriptWord, LayoutType, Overlay } from '@chai-cut/shared'
 import { VideoPreview, OutputCanvas } from '@/components/editor/VideoPreview'
 import { computeCutRanges, reactionRanges, removedMs, withoutRanges } from '@/lib/cuts'
@@ -10,8 +10,11 @@ import { cleanTrims, trimMap, addTrim, wordsOnTimeline, MAX_CLIP_MS, MIN_CLIP_MS
 import { toTimelineState, toSourceState, rippleDelete, lockedInRange, insertAtStart, extendEnd, type TimedState } from '@/modules/editor/trimState'
 import { PostText, type PostTextValue } from '@/components/clips/PostText'
 import { BrollPanel, type StockResult } from '@/components/editor/BrollPanel'
+import { VideoPanel, type PanelVideo } from '@/components/editor/VideoPanel'
+import { MediaLibrary, type LibraryItem, type MediaSection } from '@/components/editor/MediaLibrary'
 import { useBrollSources, useBorrowedSlots } from '@/modules/editor/brollSources'
-import { SegmentTimeline, LAYOUT_COLORS, MAX_ZOOM, zoomStep, zoomLabel } from '@/components/editor/SegmentTimeline'
+import { SegmentTimeline, LAYOUT_COLORS, MAX_ZOOM, zoomStep, zoomLabel, STOCK_DRAG_TYPE, type LaneCtl, type LaneCtlKey } from '@/components/editor/SegmentTimeline'
+import { useVideoUpload } from '@/modules/upload/useVideoUpload'
 import { TranscriptPanel } from '@/components/editor/TranscriptPanel'
 import { CaptionStyler } from '@/components/editor/CaptionStyler'
 import { TextOverlayPanel } from '@/components/editor/TextOverlayPanel'
@@ -41,10 +44,13 @@ import { useCaptionStore } from '@/modules/captions/store'
 import { useMediaStore } from '@/modules/media/store'
 import { rowsToLocal, normalizeCoverage, uncoveredRanges, defaultCropForSlot, msToLabel } from '@/modules/editor/utils'
 import { isShot, flattenShots, toSaved, restoreLayers } from '@/modules/editor/shots'
+import { fitsOn, freeTrackIn, settleTracks, savedLanes, type TrackItem, type TrackRef } from '@/modules/editor/tracks'
 import { viewChanges } from '@/modules/editor/views'
-import type { SegmentLocal, FrameLayout, FrameLane, FrameItem } from '@chai-cut/shared'
+import type { SegmentLocal, CropBoxLocal, FrameLayout, FrameLane, FrameItem } from '@chai-cut/shared'
 
-type Tool = 'format' | 'frames' | 'captions' | 'text' | 'broll' | 'photos' | 'music' | 'cleanup' | 'post'
+type Tool = 'format' | 'frames' | 'captions' | 'text' | 'media' | 'music' | 'cleanup' | 'post'
+/** Media: the user's imported media, or Library (stock footage) */
+type MediaFilter = 'all' | 'video' | 'audio' | 'image'
 type SaveState = 'idle' | 'saving' | 'saved' | 'error' | 'retrying'
 
 interface SegmentRow extends Omit<Segment, never> {
@@ -109,14 +115,9 @@ const TOOLS: { id: Tool; label: string; title: string; hint: string; icon: React
     icon: <path d="M5 6V4h14v2M12 4v16M9 20h6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" fill="none" />,
   },
   {
-    id: 'broll', label: 'B-roll', title: 'B-roll',
-    hint: 'Short stock shots over the clip while the speaker keeps talking. Pick one, then add it at the playhead.',
-    icon: <><rect x="2.5" y="5" width="19" height="14" rx="2.5" stroke="currentColor" strokeWidth="1.8" fill="none" /><path d="M10 9.5v5l4.5-2.5z" fill="currentColor" /></>,
-  },
-  {
-    id: 'photos', label: 'Photos', title: 'Photos',
-    hint: 'Photos on top of the clip. Pick one here, on the Photos lane of the timeline or on the preview to change its size, place and timing.',
-    icon: <><rect x="3" y="3" width="18" height="18" rx="2.5" stroke="currentColor" strokeWidth="1.8" fill="none" /><circle cx="8.5" cy="8.5" r="1.6" stroke="currentColor" strokeWidth="1.6" fill="none" /><path d="M21 15l-5-5L5 21" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" fill="none" /></>,
+    id: 'media', label: 'Media', title: 'Media',
+    hint: 'Everything you put on top of the clip: your own videos, B-roll (stock footage) and photos. Add them, then set where they play, which part and their sound.',
+    icon: <><rect x="2.5" y="6.5" width="13" height="11" rx="2" stroke="currentColor" strokeWidth="1.8" fill="none" /><path d="M15.5 10.5l5-2.5v8l-5-2.5" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" fill="none" /><path d="M6 3.5h11" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" /></>,
   },
   {
     id: 'music', label: 'Music', title: 'Music',
@@ -235,6 +236,33 @@ export function EditorShell({
       overlays: initialOverlays, textOverlays: initialTextOverlays, audioTracks: initialAudioTracks, transitions: loadedTransitions,
     }
     if (savedTrims.length) loaded = toTimelineState(loaded, trimMap(savedTrims, savedClip.start_ms, savedClip.end_ms), savedClip.start_ms)
+    // Tracks (as in CapCut, tracks.ts): videos on top, photos and text share the visual tracks,
+    // music has its own. Each goes back on the track it was saved on.
+    {
+      const lanes = savedLanes((savedClip as unknown as { layers?: unknown }).layers)
+      const vis = settleTracks([
+        ...loaded.segments.filter(s => isShot(s, ownVideoId)).map(s => ({ id: s.id, start_ms: s.start_ms, end_ms: s.end_ms, track: s.track ?? 0 })),
+        ...loaded.overlays.filter(o => o.type === 'image').map(o => ({ id: o.id, start_ms: o.start_ms, end_ms: o.end_ms })),
+        ...loaded.textOverlays.map(o => ({ id: o.id, start_ms: o.start_ms, end_ms: o.end_ms })),
+      ], lanes)
+      // Music keeps its saved track (a song's own length isn't known yet); music saved without one gets the lowest with room
+      const songs = loaded.audioTracks.filter(t => !isMainAudio(t))
+        .map((t): TrackItem => ({ id: t.id, start_ms: t.start_ms, end_ms: t.end_ms ?? lenMs, ...(lanes[t.id] != null ? { track: lanes[t.id] } : {}) }))
+      const aud: Record<string, number> = {}
+      const placed = songs.filter(t => t.track != null)
+      for (const t of placed) aud[t.id] = t.track!
+      for (const t of songs.filter(x => x.track == null).sort((a, b) => a.start_ms - b.start_ms)) {
+        aud[t.id] = freeTrackIn(placed, t.start_ms, t.end_ms)
+        placed.push({ ...t, track: aud[t.id] })
+      }
+      loaded = {
+        ...loaded,
+        segments: loaded.segments.map(s => (isShot(s, ownVideoId) && vis[s.id] != null && (s.track ?? 0) !== vis[s.id] ? { ...s, track: vis[s.id] } : s)),
+        overlays: loaded.overlays.map(o => (vis[o.id] != null ? { ...o, track: vis[o.id] } : o)),
+        textOverlays: loaded.textOverlays.map(o => (vis[o.id] != null ? { ...o, track: vis[o.id] } : o)),
+        audioTracks: loaded.audioTracks.map(t => (aud[t.id] != null ? { ...t, track: aud[t.id] } : t)),
+      }
+    }
     hydrateEditor(loaded.segments, loaded.keyframes, savedTrims, ownVideoId)
 
     // Captions on/off: the saved choice when the clip has a caption style; a clip without one yet
@@ -298,15 +326,11 @@ export function EditorShell({
     const up = () => {
       window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up)
       setResizing(null)
-      try { localStorage.setItem('editor.timelineH', String(h)) } catch { /* storage blocked */ }
     }
     window.addEventListener('pointermove', move)
     window.addEventListener('pointerup', up)
   }
-  function resetTimelineHeight() {
-    setTimelineH(null)
-    try { localStorage.removeItem('editor.timelineH') } catch { /* storage blocked */ }
-  }
+  function resetTimelineHeight() { setTimelineH(null) }
   useEffect(() => {
     try {
       const o = Number(localStorage.getItem('editor.optionsW')), pv = Number(localStorage.getItem('editor.previewW'))
@@ -332,15 +356,40 @@ export function EditorShell({
     const up = () => {
       window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up)
       setResizing(null)
-      try { localStorage.setItem(which === 'options' ? 'editor.optionsW' : 'editor.previewW', String(w)) } catch { /* storage blocked */ }
     }
     window.addEventListener('pointermove', move)
     window.addEventListener('pointerup', up)
   }
   function resetColumn(which: 'options' | 'preview') {
     if (which === 'options') setOptionsW(OPTIONS_W); else setPreviewW(PREVIEW_W)
-    try { localStorage.removeItem(which === 'options' ? 'editor.optionsW' : 'editor.previewW') } catch { /* storage blocked */ }
   }
+
+  // ── Layout: the four panels — Options, Video view, Preview and the Editing panel (timeline) —
+  //    are resized only while Layout is unlocked (the header's Layout button). Turning it off asks to
+  //    fix the layout: fixed, the sizes are kept for this browser; or put back as they were. ──
+  const [layoutEditing, setLayoutEditing] = useState(false)
+  const [confirmFixLayout, setConfirmFixLayout] = useState(false)
+  const layoutBeforeRef = useRef<{ optionsW: number; previewW: number; timelineH: number | null } | null>(null)
+  function unlockLayout() {
+    layoutBeforeRef.current = { optionsW, previewW, timelineH }
+    // Every panel shows, so each one's size can be set
+    toggleOptions(true); togglePreview(true); setTimelineHidden(false)
+    setLayoutEditing(true)
+  }
+  function fixLayout() {
+    try {
+      localStorage.setItem('editor.optionsW', String(optionsW))
+      localStorage.setItem('editor.previewW', String(previewW))
+      if (timelineH) localStorage.setItem('editor.timelineH', String(timelineH)); else localStorage.removeItem('editor.timelineH')
+    } catch { /* storage blocked */ }
+    setConfirmFixLayout(false); setLayoutEditing(false)
+  }
+  function discardLayout() {
+    const b = layoutBeforeRef.current
+    if (b) { setOptionsW(b.optionsW); setPreviewW(b.previewW); setTimelineH(b.timelineH) }
+    setConfirmFixLayout(false); setLayoutEditing(false)
+  }
+  function defaultLayout() { setOptionsW(OPTIONS_W); setPreviewW(PREVIEW_W); setTimelineH(null) }
   // First-time tour: opens once the page has settled; the header's "?" replays it
   const [tourOpen, setTourOpen] = useState(false)
   useEffect(() => {
@@ -364,20 +413,29 @@ export function EditorShell({
   const [laneHighlight, setLaneHighlight] = useState<{ lane: FrameLane; n: number; focusPlus?: boolean; openMenu?: boolean } | null>(null)
   const [addMenu, setAddMenu] = useState<{ segId: string; lane: FrameLane; t: number; anchor: DOMRect } | null>(null)
   const [framePicker, setFramePicker] = useState<{ segId: string; kind: 'video' | 'photo'; lane?: FrameLane; t?: number; replaceId?: string } | null>(null)
-  const [videoLibrary, setVideoLibrary] = useState<Record<string, { url: string; title: string }>>({})
+  const [videoLibrary, setVideoLibrary] = useState<Record<string, { url: string; title: string; duration_ms?: number | null; stock?: boolean }>>({})
   const videoLibraryRef = useRef(videoLibrary)
   videoLibraryRef.current = videoLibrary
   const framePool = useMemo(() => createFrameMediaPool(id => videoLibraryRef.current[id]?.url), [])
   useEffect(() => () => framePool.dispose(), [framePool])
   async function loadVideoLibrary() {
     const res = await fetch('/api/videos?assets=1').catch(() => null)
-    if (!res?.ok) return
-    const { videos } = await res.json() as { videos: { id: string; title?: string | null; video_url?: string | null; index?: number }[] }
-    setVideoLibrary(Object.fromEntries(videos.filter(v => v.video_url).map(v => [v.id, { url: v.video_url!, title: v.title?.trim() || `Video ${v.index ?? ''}`.trim() }])))
+    if (!res?.ok) return videoLibraryRef.current
+    const { videos } = await res.json() as { videos: { id: string; title?: string | null; video_url?: string | null; index?: number; duration_ms?: number | null; is_asset?: boolean; is_upload_asset?: boolean }[] }
+    // stock: footage saved from Pexels / Pixabay (an asset that wasn't uploaded) — B-roll, not one of the user's videos
+    const lib = Object.fromEntries(videos.filter(v => v.video_url).map(v => [v.id, {
+      url: v.video_url!, title: v.title?.trim() || `Video ${v.index ?? ''}`.trim(), duration_ms: v.duration_ms ?? null,
+      stock: !!v.is_asset && !v.is_upload_asset,
+    }]))
+    videoLibraryRef.current = lib
+    setVideoLibrary(lib)
+    return lib
   }
   useEffect(() => { loadVideoLibrary() }, [])
   const videoTitles = useMemo(() => Object.fromEntries(Object.entries(videoLibrary).map(([id, v]) => [id, v.title])), [videoLibrary])
   const videoUrls = useMemo(() => Object.fromEntries(Object.entries(videoLibrary).map(([id, v]) => [id, v.url])), [videoLibrary])
+  /** Each video's full length, where known: a video on top can't be trimmed past its own ends */
+  const videoLengths = useMemo(() => Object.fromEntries(Object.entries(videoLibrary).flatMap(([id, v]) => (v.duration_ms ? [[id, v.duration_ms]] : []))), [videoLibrary])
   // B-roll shots are drawn from their own videos in the preview (muted; the speaker carries on)
   const mainVideoId = (clip as unknown as { video_id: string }).video_id
   // `segments` holds the sections (they frame the main video and never overlap) AND the videos
@@ -499,11 +557,8 @@ export function EditorShell({
     // The music starts where the playhead is (where you paused), not at the start of the clip —
     // or where the "+" menu says: the start, or so that it ends with the clip
     const startMs = typeof at === 'number' ? at : at === 'end' ? 0 : Math.max(0, Math.round(currentTimeMs))
-    // It plays until the section it starts in ends (the next section edge); drag its end on the
-    // timeline to carry it on into the next section. Added "at the end" it runs to the clip's end.
-    const lenMs = clip.end_ms - clip.start_ms
-    const edges = useEditorStore.getState().segments.flatMap(s => [s.start_ms, s.end_ms]).filter(t => t > startMs + 200 && t < lenMs)
-    const sectionEnd = at === 'end' ? undefined : Math.min(lenMs, ...edges)
+    // The whole song plays from there (to the clip's end at most): drag its ends on the timeline to trim it
+    const sectionEnd: number | undefined = undefined
     // Fades on by default (the buttons switch them off); the name stands in until the upload is stored
     setAudioTracks(prev => [...prev, { id, clip_id: clip.id, storage_path: f.name, start_ms: startMs, ...(sectionEnd !== undefined ? { end_ms: sectionEnd } : {}), volume: 0.5, duck_under_speech: true, fade_in: true, fade_out: true }])
     sendMusic(id, f)
@@ -516,8 +571,9 @@ export function EditorShell({
         const start = Math.max(0, clip.end_ms - clip.start_ms - lenMs)
         setAudioTracks(prev => prev.map(t => t.id === id ? { ...t, start_ms: start } : t))
       } else {
-        // A song shorter than its section stops where the song ends
-        setAudioTracks(prev => prev.map(t => t.id === id && t.end_ms != null && t.end_ms > t.start_ms + lenMs ? { ...t, end_ms: t.start_ms + lenMs } : t))
+        // It stops where the song ends, or at the clip's end
+        const clipLen = clip.end_ms - clip.start_ms
+        setAudioTracks(prev => prev.map(t => t.id === id ? { ...t, end_ms: Math.min(clipLen, t.start_ms + lenMs) } : t))
       }
     }
   }
@@ -577,11 +633,20 @@ export function EditorShell({
   const sectionListRef = useRef<HTMLDivElement>(null)
   // Picking a photo, text or music (timeline, preview or its panel) opens its settings on the left
   const openSettings = (t: Tool) => { setTool(t); toggleOptions(true) }
+  // Media: the library (Import ▸ Media, or Library = stock footage), and the item whose settings
+  // are open over it (picked on the timeline, or just added)
+  const [mediaSection, setMediaSection] = useState<MediaSection>('media')
+  const [mediaFilter, setMediaFilter] = useState<MediaFilter>('all')
+  const [mediaFocus, setMediaFocus] = useState<{ kind: 'shot' | 'photo'; id: string } | null>(null)
+  const openMedia = (section: MediaSection, filter?: MediaFilter) => {
+    setMediaFocus(null); setMediaSection(section); if (filter) setMediaFilter(filter); openSettings('media')
+  }
+  const focusMediaItem = (kind: 'shot' | 'photo', id: string) => { setMediaFocus({ kind, id }); openSettings('media') }
   // (`open` false: select only — a single click on the timeline doesn't open the sidebar)
   // One thing is picked at a time — a section, a video on top, a photo, a text or music: picking
   // one lets go of the others, so Hide / Mute / Lock, Trim and Delete are always about what was
   // picked last (they used to act on an earlier pick that was still held: bug #5)
-  function pickPhoto(id: string, open = true) { setActiveOverlayId(id); setActiveTextOverlayId(null); setPickedSegIdState(null); setPickedMusicId(null); setLastPick('overlay'); if (open) openSettings('photos') }
+  function pickPhoto(id: string, open = true) { setActiveOverlayId(id); setActiveTextOverlayId(null); setPickedSegIdState(null); setPickedMusicId(null); setLastPick('overlay'); if (open) focusMediaItem('photo', id) }
   function pickText(id: string, open = true) { setActiveTextOverlayId(id); setActiveOverlayId(null); setPickedSegIdState(null); setPickedMusicId(null); setLastPick('text'); if (open) openSettings('text') }
   function pickMusicTrack(id: string, open = true) { pickMusic(id); if (open) openSettings('music') }
   // Timeline clicks select; the same thing clicked again quickly (a double tap) opens its settings
@@ -811,13 +876,13 @@ export function EditorShell({
    * empty row). A video or photo lasts 5 s, text 3 s (moved back to fit before the clip's end);
    * music plays until the section ends.
    */
-  function addMediaAt(kind: 'video' | 'photo' | 'music' | 'text', atMs: number) {
+  function addMediaAt(kind: 'video' | 'broll' | 'photo' | 'music' | 'text', atMs: number) {
     pause()
+    // B-roll: stock footage is searched for in its panel, then added at the playhead
+    if (kind === 'broll') { seekToMs(Math.max(0, Math.min(atMs, clipLengthMs - 50))); openMedia('library'); return }
     const t = Math.max(0, Math.min(atMs, clipLengthMs - 50))
-    if (kind === 'video' || kind === 'photo') {
-      setPickerOnly(kind); setPickerAtMs(Math.max(0, Math.min(t, clipLengthMs - 5000)))
-      return
-    }
+    // Videos and photos: picked in the Media library, then added at the playhead (+ or drag)
+    if (kind === 'video' || kind === 'photo') { seekToMs(t); openMedia('media', kind === 'photo' ? 'image' : 'video'); return }
     if (kind === 'music') {
       musicAtRef.current = t
       musicInputRef.current?.click()
@@ -891,8 +956,10 @@ export function EditorShell({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           segments: saved.rows,
-          layers: saved.layers,
-          captionStyle, textOverlays, audioTracks, transitions, filters, overlays,
+          layers: withLanes(saved.layers, [...overlays, ...textOverlays, ...audioTracks]),
+          captionStyle, textOverlays, audioTracks, transitions, filters,
+          // A photo on a higher track is drawn over one on a lower track (the export orders photos by z_index)
+          overlays: overlays.map(o => (o.type === 'image' && o.track != null ? { ...o, z_index: o.track + 1 } : o)),
           ...(canTrim ? { trims: editor.trims } : {}),
           // Always the clip's start and end as they are now (an undo back to how it loaded must be saved too;
           // the server only writes a change)
@@ -1180,7 +1247,13 @@ export function EditorShell({
     splitAtMs(seg.id, currentTimeMs, getPositionAt)
   }
 
-  const musicName = (t: { storage_path: string }) => isMainAudio(t) ? 'Original sound' : (t.storage_path.split('/').pop() ?? 'Music').replace(/\.[a-z0-9]+$/i, '')
+  const musicName = (t: { storage_path: string }) => {
+    if (isMainAudio(t)) return 'Original sound'
+    // Stored as "<id>--<the file's name>": just the name (older files have only the id)
+    const file = (t.storage_path.split('/').pop() ?? '').replace(/\.[a-z0-9]+$/i, '')
+    const name = file.replace(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(--)?/i, '')
+    return name || 'Music'
+  }
   /** Where a music track stops on the clip's timeline */
   const musicEnd = (t: AudioTrack) => t.end_ms
     ?? (musicDurations[t.id] != null ? t.start_ms + musicDurations[t.id] - (t.offset_ms ?? 0) : clipDurationMs)
@@ -1781,14 +1854,18 @@ export function EditorShell({
     })
   }
 
-  function handleInsertBroll(videoId: string) {
+  async function handleInsertBroll(videoId: string) {
     const atMs = pickerAtMs ?? pendingBrollMs ?? currentTimeMs
     setPickerAtMs(null); setPendingBrollMs(null); setPickerOnly(null)
     // 5 s from here, across section edges if it gets there (it isn't cut off at the section's end)
     const at = Math.max(0, Math.min(atMs, clipLengthMs - 500))
-    if (rangeBlocked(at, Math.min(clipLengthMs, at + 5000))) return
-    const newId = placeBroll(videoId, at, Math.min(clipLengthMs, at + 5000))
-    pickShot(newId); seekToMs(at)
+    // The whole video goes in, up to the clip's end (its handles trim it)
+    const own = await videoLengthMs(videoId)
+    const end = Math.min(clipLengthMs, at + (own ?? clipLengthMs))
+    if (rangeBlocked(at, end)) return
+    const newId = placeBroll(videoId, at, end, undefined, freeTrack(at, end))
+    // Its settings open straight away: where it plays, which part of it, its sound
+    pickShot(newId, true); seekToMs(at)
   }
 
   // Borrowed reaction slots look ahead through the parts to start each one on time
@@ -1799,25 +1876,355 @@ export function EditorShell({
   const brollShots = useMemo(() => shots
     .map(sg => ({ id: sg.id, start_ms: sg.start_ms, end_ms: sg.end_ms, title: (videoTitles[sg.crop_boxes[0].source_video_id!] ?? 'Video').replace(/^(Pixabay|Pexels): /, '') })),
   [shots, videoTitles])
-  /** A video on top picked (on its lane, in a list): Hide / Mute / Lock, Trim and Delete act on it. The section under it is not picked. */
-  function pickShot(id: string, open = false) {
+  /** A video's full length (ms): as listed, else read from the file; null when it can't be read */
+  async function videoLengthMs(videoId: string): Promise<number | null> {
+    let lib = videoLibraryRef.current[videoId]
+    if (!lib?.duration_ms) lib = (await loadVideoLibrary())?.[videoId] ?? lib
+    if (lib?.duration_ms) return lib.duration_ms
+    if (!lib?.url) return null
+    return new Promise(resolve => {
+      const el = document.createElement('video')
+      el.preload = 'metadata'; el.muted = true
+      const done = (v: number | null) => { el.removeAttribute('src'); el.load(); resolve(v) }
+      el.onloadedmetadata = () => done(isFinite(el.duration) && el.duration > 0 ? Math.round(el.duration * 1000) : null)
+      el.onerror = () => done(null)
+      setTimeout(() => done(null), 8000)
+      el.src = lib!.url
+    })
+  }
+  /** Stock footage (B-roll) as opposed to the user's own video: they have their own lanes and panels */
+  function isStockShot(sg: SegmentLocal) {
+    // (a video uploaded in the B-roll panel is B-roll too)
+    if (sg.lane === 'broll') return true
+    const lib = videoLibraryRef.current[sg.crop_boxes[0]?.source_video_id ?? '']
+    return lib?.stock ?? /^(Pixabay|Pexels): /.test(lib?.title ?? '')
+  }
+  // ── Tracks (as in CapCut, tracks.ts): videos on top, B-roll, photos and text share the visual
+  //    tracks and can be dragged from one to another; music has its own audio tracks ──
+  /** What is on the visual tracks, fresh from the stores (photos and text not yet given a track are left out) */
+  function visualItems(): (TrackItem & { ref: TrackRef })[] {
+    const m = useMediaStore.getState()
+    return [
+      ...useEditorStore.getState().segments.filter(s => isShot(s, mainVideoId))
+        .map(s => ({ id: s.id, start_ms: s.start_ms, end_ms: s.end_ms, track: s.track ?? 0, ref: { kind: 'shot' as const, id: s.id } })),
+      ...m.overlays.filter(o => o.type === 'image' && o.track != null)
+        .map(o => ({ id: o.id, start_ms: o.start_ms, end_ms: o.end_ms, track: o.track, ref: { kind: 'photo' as const, id: o.id } })),
+      ...m.textOverlays.filter(o => o.track != null)
+        .map(o => ({ id: o.id, start_ms: o.start_ms, end_ms: o.end_ms, track: o.track, ref: { kind: 'text' as const, id: o.id } })),
+    ]
+  }
+  /** Where a song stops: its trimmed end, else the end of the song (or the clip) */
+  const songEndMs = (t: { id: string; start_ms: number; end_ms?: number; offset_ms?: number }) => t.end_ms
+    ?? Math.min(clipLengthMs, t.start_ms + (musicDurations[t.id] != null ? musicDurations[t.id] - (t.offset_ms ?? 0) : clipLengthMs))
+  /** What is on the audio tracks */
+  function audioItems(): (TrackItem & { ref: TrackRef })[] {
+    return useMediaStore.getState().audioTracks.filter(t => !isMainAudio(t) && t.track != null)
+      .map(t => ({ id: t.id, start_ms: t.start_ms, end_ms: songEndMs(t), track: t.track, ref: { kind: 'music' as const, id: t.id } }))
+  }
+  /** A track asked for by dropping something on that track's row: the next thing put in takes it (when it has room there) */
+  const preferTrackRef = useRef<{ audio: boolean; track: number; at: number } | null>(null)
+  function preferTrack(lane: string | null) {
+    const m = lane ? /^(track|audio)-(\d+)$/.exec(lane) : null
+    preferTrackRef.current = m ? { audio: m[1] === 'audio', track: Number(m[2]), at: Date.now() } : null
+  }
+  /** The track for something new at [start, end): the one it was dropped on, else the lowest with room */
+  function freeTrack(start: number, end: number, exceptId?: string, audio = false, items: TrackItem[] = audio ? audioItems() : visualItems()): number {
+    const want = preferTrackRef.current
+    if (want && want.audio === audio && Date.now() - want.at < 120_000) {
+      preferTrackRef.current = null
+      return freeTrackIn(items, start, end, exceptId, want.track)
+    }
+    return freeTrackIn(items, start, end, exceptId)
+  }
+  // Photos, text and music put in without a track (however they were added) get one
+  useEffect(() => {
+    const photos = overlays.filter(o => o.type === 'image' && o.track == null)
+    const texts = textOverlays.filter(o => o.track == null)
+    if (photos.length || texts.length) {
+      const placed: TrackItem[] = visualItems()
+      const got: Record<string, number> = {}
+      for (const it of [...photos, ...texts]) {
+        got[it.id] = freeTrack(it.start_ms, it.end_ms, undefined, false, placed)
+        placed.push({ id: it.id, start_ms: it.start_ms, end_ms: it.end_ms, track: got[it.id] })
+      }
+      if (photos.length) setOverlays(prev => prev.map(o => (o.track == null && got[o.id] != null ? { ...o, track: got[o.id] } : o)))
+      if (texts.length) setTextOverlays(prev => prev.map(o => (o.track == null && got[o.id] != null ? { ...o, track: got[o.id] } : o)))
+    }
+    const songs = audioTracks.filter(t => !isMainAudio(t) && t.track == null)
+    if (songs.length) {
+      const placed: TrackItem[] = audioItems()
+      const got: Record<string, number> = {}
+      for (const t of songs) {
+        const end = songEndMs(t)
+        got[t.id] = freeTrack(t.start_ms, end, undefined, true, placed)
+        placed.push({ id: t.id, start_ms: t.start_ms, end_ms: end, track: got[t.id] })
+      }
+      setAudioTracks(prev => prev.map(t => (t.track == null && got[t.id] != null ? { ...t, track: got[t.id] } : t)))
+    }
+  }, [overlays, textOverlays, audioTracks]) // eslint-disable-line react-hooks/exhaustive-deps
+  function setTrackOf(ref: TrackRef, track: number) {
+    if (ref.kind === 'shot') updateSegment(ref.id, { track })
+    else if (ref.kind === 'photo') updateOverlay(ref.id, { track })
+    else if (ref.kind === 'text') updateTextOverlay(ref.id, { track })
+    else setAudioTracks(prev => prev.map(t => (t.id === ref.id ? { ...t, track } : t)))
+  }
+  /**
+   * Something dragged to a track (`'new'`: a new track over the others, or under the music), or
+   * moved in time on its own: it goes on that track when it has room there. Else, like CapCut, a
+   * new track opens just above that one (the tracks above move up one); music takes the next audio
+   * track with room.
+   */
+  function dropOnTrack(ref: TrackRef, target: number | 'new') {
+    const audio = ref.kind === 'music'
+    const items = audio ? audioItems() : visualItems()
+    const me = items.find(i => i.id === ref.id)
+    if (!me) return
+    const cur = me.track ?? 0
+    const ctl: CtlTarget = ref.kind === 'shot' ? { kind: 'broll', id: ref.id } : { kind: ref.kind, id: ref.id }
+    if (target !== cur && blocked(ctl)) return
+    const others = items.filter(i => i.id !== me.id)
+    let t: number
+    const lift: TrackRef[] = []
+    if (target === 'new') t = Math.max(-1, ...others.map(i => i.track ?? 0)) + 1
+    else if (fitsOn(others, target, me.start_ms, me.end_ms)) t = target
+    else if (audio) t = freeTrackIn(others, me.start_ms, me.end_ms, undefined, target)
+    else {
+      for (const i of others) if ((i.track ?? 0) > target) lift.push(i.ref)
+      t = target + 1
+    }
+    if (t === cur && !lift.length) return
+    for (const r of lift) setTrackOf(r, (items.find(i => i.id === r.id)!.track ?? 0) + 1)
+    setTrackOf(ref, t)
+  }
+  /** B-roll uploaded from the device (B-roll panel, Upload): at the playhead, 5 s or the video's own length if shorter */
+  async function addUploadedBroll(videoId: string) { await addUploadedVideo(videoId, currentTimeMs, 'broll') }
+  /** An uploaded video put in at `atMs`: as B-roll, or as one of the user's videos (its panel opens) */
+  async function addUploadedVideo(videoId: string, atMs: number, lane: 'broll' | 'video') {
+    const at = Math.max(0, Math.min(atMs, clipLengthMs - 500))
+    // The whole video goes in, up to the clip's end (its handles trim it)
+    const own = await videoLengthMs(videoId)
+    const len = Math.min(own ?? clipLengthMs, clipLengthMs - at)
+    if (rangeBlocked(at, at + len)) return
+    const id = placeBroll(videoId, at, at + len, lane === 'broll' ? 'broll' : undefined, freeTrack(at, at + len))
+    pickShot(id, lane === 'video')
+    seekToMs(at)
+  }
+
+  // ── Drag and drop: files from the computer (on the timeline or the sidebar), stock footage
+  //    from the B-roll search (on the timeline) ──
+  const dropTargetRef = useRef<{ atMs: number; lane: 'broll' | 'video' } | null>(null)
+  const dropUpload = useVideoUpload(videoId => {
+    const t = dropTargetRef.current
+    dropTargetRef.current = null
+    if (t) addUploadedVideo(videoId, t.atMs, t.lane).catch(e => notifyLocked(e instanceof Error ? e.message : 'Could not add the video'))
+    loadLibrary()
+  }, { asset: true })
+  const dropUploading = dropUpload.state.phase === 'uploading' || dropUpload.state.phase === 'finishing'
+  useEffect(() => { if (dropUpload.state.phase === 'failed' && dropUpload.state.error) notifyLocked(`Upload failed: ${dropUpload.state.error}`) }, [dropUpload.state.phase]) // eslint-disable-line react-hooks/exhaustive-deps
+  const [sidebarDrop, setSidebarDrop] = useState(false)
+  const kindOfFile = (f: File): 'video' | 'photo' | 'music' | null => {
+    const ext = f.name.split('.').pop()?.toLowerCase() ?? ''
+    if (f.type.startsWith('image/') || ['jpg', 'jpeg', 'png', 'webp', 'gif'].includes(ext)) return 'photo'
+    if (f.type.startsWith('audio/') || ['mp3', 'wav', 'm4a', 'aac', 'ogg', 'flac'].includes(ext)) return 'music'
+    if (f.type.startsWith('video/') || ['mp4', 'mov', 'webm', 'mkv', 'm4v', 'avi'].includes(ext)) return 'video'
+    return null
+  }
+  async function uploadPhotoFile(file: File): Promise<{ storage_path: string; preview_url: string }> {
+    const form = new FormData()
+    form.append('file', file)
+    const res = await fetch('/api/overlays/upload', { method: 'POST', body: form })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) throw new Error(data.error ?? 'Could not upload the photo')
+    return data
+  }
+  /** A photo uploaded and put in at `atMs` for 5 s (its settings open) */
+  async function addPhotoFileAt(file: File, atMs: number) {
+    const data = await uploadPhotoFile(file)
+    addPhotoPathAt(data.storage_path, data.preview_url, atMs)
+    loadLibrary()
+  }
+  /** A stored photo put in at `atMs` for 5 s (its settings open) */
+  function addPhotoPathAt(storagePath: string, previewUrl: string | null, atMs: number) {
+    const at = Math.max(0, Math.min(atMs, clipLengthMs - 500))
+    const id = crypto.randomUUID()
+    setOverlays(prev => [...prev, {
+      id, clip_id: clip.id, type: 'image' as const,
+      storage_path: storagePath, preview_url: previewUrl || undefined,
+      source_video_id: null, source_offset_ms: 0,
+      x: 0, y: 0, w: 1, h: 1, start_ms: at, end_ms: Math.min(clipLengthMs, at + 5000),
+      z_index: prev.length + 1, created_at: new Date().toISOString(),
+    }])
+    pickPhoto(id)
+    seekToMs(at)
+  }
+  // ── The Media library: the user's imported videos, photos and audio (api/media) ──
+  const [libraryItems, setLibraryItems] = useState<LibraryItem[]>([])
+  const [libraryLoading, setLibraryLoading] = useState(false)
+  const [importCount, setImportCount] = useState(0)
+  const importingLabel = importCount > 0 || dropUploading
+    ? `Importing${dropUploading ? ` ${dropUpload.state.progress}%` : '…'}` : null
+  async function loadLibrary() {
+    setLibraryLoading(true)
+    try {
+      const res = await fetch('/api/media')
+      if (res.ok) setLibraryItems(((await res.json()) as { items: LibraryItem[] }).items ?? [])
+    } catch { /* offline: keep what is shown */ } finally { setLibraryLoading(false) }
+  }
+  useEffect(() => { if (tool === 'media' && optionsOpen) loadLibrary() }, [tool, optionsOpen]) // eslint-disable-line react-hooks/exhaustive-deps
+  /** What is already in this clip: the library marks it "Added" */
+  const usedMedia = useMemo(() => new Set<string>([
+    ...shots.map(s => s.crop_boxes[0]?.source_video_id ?? '').filter(Boolean),
+    ...overlays.map(o => o.storage_path ?? '').filter(Boolean),
+    ...audioTracks.map(t => t.storage_path),
+  ]), [shots, overlays, audioTracks])
+  /**
+   * Delete from the library. Not something this clip uses (it's in the clip, maybe not saved yet)
+   * or this clip's own video; the server also refuses what another clip uses.
+   */
+  async function deleteLibraryItem(item: LibraryItem) {
+    if (item.kind === 'video' && item.id === mainVideoId) { notifyLocked('This is the video this clip is made from: it can\u2019t be deleted here'); return }
+    if (usedMedia.has(item.id)) { notifyLocked('It\u2019s in this clip: take it out of the clip first'); return }
+    try {
+      const res = await fetch('/api/media', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ kind: item.kind, id: item.id }) })
+      const body = await res.json().catch(() => ({})) as { error?: string }
+      if (!res.ok) { notifyLocked(body.error || 'Could not delete it'); return }
+      setLibraryItems(list => list.filter(i => !(i.kind === item.kind && i.id === item.id)))
+    } catch { notifyLocked('Could not delete it: check your connection') }
+  }
+  /** Import: files go into the library (not onto the timeline): + or a drag puts them in */
+  async function importMedia(files: File[]) {
+    let videoStarted = false
+    for (const f of files) {
+      const kind = kindOfFile(f)
+      if (kind === 'video') {
+        if (videoStarted || dropUploading) { notifyLocked('One video at a time: import the next one when this one is in'); continue }
+        videoStarted = true
+        dropTargetRef.current = null
+        dropUpload.start(f)
+        continue
+      }
+      if (!kind) { notifyLocked(`${f.name} can\u2019t be imported: pick videos, photos or audio`); continue }
+      setImportCount(n => n + 1)
+      try {
+        if (kind === 'photo') await uploadPhotoFile(f)
+        else { if (musicTooBig(f)) continue; await uploadMusicFile(f) }
+      } catch (e) {
+        notifyLocked(e instanceof Error ? e.message : `${f.name} could not be imported`)
+      } finally { setImportCount(n => n - 1) }
+    }
+    loadLibrary()
+  }
+  /** Music already stored (from the library) put in at `atMs`: the whole song, up to the clip's end */
+  function addStoredMusic(storagePath: string, url: string | null, atMs: number) {
+    const id = crypto.randomUUID()
+    const start = Math.max(0, Math.min(Math.round(atMs), clipLengthMs - 500))
+    setAudioTracks(prev => [...prev, { id, clip_id: clip.id, storage_path: storagePath, start_ms: start, volume: 0.5, duck_under_speech: true, fade_in: true, fade_out: true }])
+    if (url) setMusicUrls(m => ({ ...m, [id]: url }))
+    pickMusicTrack(id, false)
+    seekToMs(start)
+  }
+  /** A library item put in at `atMs` (+ on it, or dragged onto the timeline: `lane` where it was dropped) */
+  function addLibraryItem(item: LibraryItem, atMs: number, lane: string | null) {
+    pause()
+    preferTrack(lane)
+    if (item.kind === 'image') { addPhotoPathAt(item.id, item.url, atMs); return }
+    if (item.kind === 'audio') { addStoredMusic(item.id, item.url, atMs); return }
+    addUploadedVideo(item.id, atMs, lane === 'broll' ? 'broll' : 'video').catch(e => notifyLocked(e instanceof Error ? e.message : 'Could not add the video'))
+  }
+  function dropMedia(json: string, atMs: number, lane: string | null) {
+    let item: LibraryItem
+    try { item = JSON.parse(json) as LibraryItem } catch { return }
+    if (item?.id && item.kind) addLibraryItem(item, atMs, lane)
+  }
+
+  /**
+   * Files dropped at `atMs`: the first one goes in. A video becomes B-roll on the B-roll lane (or
+   * when dropped on the B-roll sidebar), else one of the user's videos; a video dropped on the
+   * Music lane gives its sound. Photos and music go on their own lanes.
+   */
+  function dropFiles(files: File[], atMs: number, lane: string | null) {
+    const f = files[0]
+    if (!f) return
+    const kind = (lane === 'music' || lane?.startsWith('audio-')) && kindOfFile(f) === 'video' ? 'music' : kindOfFile(f)
+    pause()
+    preferTrack(lane)
+    if (kind === 'music') { addMusicTrack(f, Math.round(atMs)); openSettings('music'); return }
+    if (kind === 'photo') { addPhotoFileAt(f, atMs).catch(e => notifyLocked(e instanceof Error ? e.message : 'Could not add the photo')); return }
+    if (kind === 'video') {
+      if (dropUploading) { notifyLocked('Wait for the upload in progress to finish'); return }
+      const asBroll = lane === 'broll' || (lane === null && tool === 'media' && mediaSection === 'library')
+      dropTargetRef.current = { atMs, lane: asBroll ? 'broll' : 'video' }
+      openMedia(asBroll ? 'library' : 'media')
+      dropUpload.start(f)
+      return
+    }
+    notifyLocked('That kind of file can\u2019t be added: drop a video, a photo or music')
+  }
+  /** Stock footage dragged from the B-roll search onto the timeline: in at that spot, its whole length (up to the clip's end) */
+  function dropStock(json: string, atMs: number, lane?: string | null) {
+    let item: StockResult
+    try { item = JSON.parse(json) as StockResult } catch { return }
+    if (!item?.ref || !item.url) return
+    const len = item.duration > 0 ? Math.round(item.duration * 1000) : 5000
+    pause()
+    preferTrack(lane ?? null)
+    addStockBroll(item, len, atMs).catch(e => notifyLocked(e instanceof Error ? e.message : 'Could not add that video'))
+  }
+  /** A video on top picked (on its lane, in a list): Hide / Mute / Lock, Trim and Delete act on it (its ends trim it on the timeline). The section under it is not picked. */
+  function pickShot(id: string, _open = false) {
     setPickedSegId(id)
-    if (open) openSettings('broll')
+  }
+
+  // ── Video panel: one video on top, its place in the clip, which part of it plays, its sound ──
+  const panelVideos: (PanelVideo & { stock: boolean })[] = shots.map(sg => {
+    const box = sg.crop_boxes[0]
+    const lib = videoLibrary[box.source_video_id!]
+    return {
+      id: sg.id, title: (lib?.title ?? 'Video').replace(/^(Pixabay|Pexels): /, ''), url: lib?.url,
+      start_ms: sg.start_ms, end_ms: sg.end_ms, source_offset_ms: box.source_offset_ms ?? 0, source_ms: lib?.duration_ms ?? null,
+      muted: box.muted !== false, volume: box.volume ?? 1, hidden: !!box.hidden, locked: isLocked({ kind: 'broll', id: sg.id }),
+      stock: isStockShot(sg),
+    }
+  })
+  const ownVideos = panelVideos.filter(v => !v.stock), stockVideos = panelVideos.filter(v => v.stock)
+  const shotPanelProps = {
+    selectedId: pickedShot?.id ?? (playingAdded ? playingSegment?.id ?? null : null),
+    clipLengthMs, currentTimeMs,
+    onSelect: (id: string) => pickShot(id),
+    onSeek: (ms: number) => { pause(); seekToMs(ms) },
+    onRetime: panelRetime,
+    onSlip: (id: string, offset: number) => patchShotBox(id, { source_offset_ms: Math.max(0, Math.round(offset)) }),
+    onSound: (id: string, p: { muted?: boolean; volume?: number }) => patchShotBox(id, { ...(p.muted !== undefined ? { muted: p.muted } : {}), ...(p.volume !== undefined ? { volume: p.volume } : {}) }),
+    onToggle: (id: string, k: 'hidden' | 'locked') => toggleCtl({ kind: 'broll', id }, k),
+    onRemove: (id: string) => confirm({ title: 'Delete this video?', body: `The main video shows here again. ${UNDO_NOTE}` }, () => removeBroll(id)),
+  }
+  function panelRetime(id: string, startMs: number, endMs: number, moved: boolean) {
+    if (blocked({ kind: 'broll', id })) return
+    const start = Math.round(Math.max(0, startMs)), end = Math.round(Math.min(clipLengthMs, endMs))
+    if (end - start < 300 || rangeBlocked(start, end, id)) return
+    retimeShot(id, start, end, moved)
+  }
+  /** The first slot of a video on top changed (which part of its video, its sound) */
+  function patchShotBox(id: string, patch: Partial<CropBoxLocal>) {
+    if (blocked({ kind: 'broll', id })) return
+    const sg = useEditorStore.getState().segments.find(x => x.id === id)
+    if (sg) updateSegment(id, { crop_boxes: sg.crop_boxes.map((b, i) => (i === 0 ? { ...b, ...patch } : b)) })
   }
 
   /** Save the stock video as the user's asset, then put it in at the playhead as a muted cutaway */
-  async function addStockBroll(item: StockResult, lengthMs: number) {
-    { const at0 = Math.min(currentTimeMs, Math.max(0, clipLengthMs - 500)); if (rangeBlocked(at0, Math.min(clipLengthMs, at0 + lengthMs))) return }
+  async function addStockBroll(item: StockResult, lengthMs: number, atMs?: number) {
+    const at = Math.max(0, Math.min(atMs ?? currentTimeMs, clipLengthMs - 500))
+    if (rangeBlocked(at, Math.min(clipLengthMs, at + lengthMs))) return
     const res = await fetch('/api/stock/import', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ref: item.ref, url: item.url, title: item.title }),
     })
     const data = await res.json()
     if (!res.ok) throw new Error(data.error ?? 'Could not add that video')
-    videoLibraryRef.current = { ...videoLibraryRef.current, [data.video_id]: { url: data.url, title: data.title } }
+    videoLibraryRef.current = { ...videoLibraryRef.current, [data.video_id]: { url: data.url, title: data.title, stock: true } }
     setVideoLibrary(videoLibraryRef.current)
-    const at = Math.min(currentTimeMs, Math.max(0, clipLengthMs - 500))
-    const segId = placeBroll(data.video_id, at, Math.min(clipLengthMs, at + lengthMs))
+    const end = Math.min(clipLengthMs, at + lengthMs)
+    const segId = placeBroll(data.video_id, at, end, undefined, freeTrack(at, end))
     pickShot(segId)
     seekToMs(at)
   }
@@ -1827,16 +2234,22 @@ export function EditorShell({
    * they are. Dragged as a whole it keeps its length (and shows the same pictures); an end
    * dragged trims it.
    */
-  function retimeBroll(id: string, startMs: number, endMs: number) {
+  function retimeBroll(id: string, startMs: number, endMs: number, settle = true) {
     if (blocked({ kind: 'broll', id })) return
     const shot = useEditorStore.getState().segments.find(x => x.id === id)
     if (!shot) return
     const len = shot.end_ms - shot.start_ms
     const moved = Math.abs((endMs - startMs) - len) < 1
-    const start = moved ? Math.max(0, Math.min(clipLengthMs - len, startMs)) : Math.max(0, Math.min(clipLengthMs - 500, startMs))
-    const end = moved ? start + len : Math.min(clipLengthMs, Math.max(start + 500, endMs))
+    // Trimmed: never past the video's own first or last frame (`anchor`: where its first frame sits)
+    const box = shot.crop_boxes[0]
+    const anchor = shot.start_ms - (box?.source_offset_ms ?? 0)
+    const full = videoLengths[box?.source_video_id ?? '']
+    const start = moved ? Math.max(0, Math.min(clipLengthMs - len, startMs)) : Math.max(0, anchor, Math.min(clipLengthMs - 500, startMs))
+    const end = moved ? start + len : Math.min(clipLengthMs, full ? anchor + full : Infinity, Math.max(start + 500, endMs))
     if (rangeBlocked(start, end, id)) return
     retimeShot(id, Math.round(start), Math.round(end), moved)
+    // Moved or stretched onto something else on its track: a new track opens above it (once let go)
+    if (settle) dropOnTrack({ kind: 'shot', id }, shot.track ?? 0)
   }
   const moveBroll = (id: string, delta: number) => { const shot = shots.find(x => x.id === id); if (shot) retimeBroll(id, shot.start_ms + delta, shot.end_ms + delta) }
   const resizeBroll = (id: string, delta: number) => { const shot = shots.find(x => x.id === id); if (shot) retimeBroll(id, shot.start_ms, shot.end_ms + delta) }
@@ -1861,7 +2274,7 @@ export function EditorShell({
     // From the "+" menu a photo shows for 5 s (then drag its ends on the timeline)
     const endMs = fromPlus ? Math.min(clipLengthMs, atMs + 5000) : seg ? seg.end_ms : atMs + 5000
     const id = crypto.randomUUID()
-    if (fromPlus) { setActiveOverlayId(id); seekToMs(atMs); openSettings('photos') }
+    if (fromPlus) { setActiveOverlayId(id); seekToMs(atMs); focusMediaItem('photo', id) }
     setOverlays(prev => [...prev, {
       id, clip_id: clip.id, type: 'image' as const,
       storage_path: storagePath, preview_url: previewUrl || undefined,
@@ -1871,7 +2284,7 @@ export function EditorShell({
     }])
   }
 
-  // ── Keyboard shortcuts: Space play/pause · S split · [ ] trim · Delete · ←/→ 0.5 s (Shift: 5 s) ──
+  // ── Keyboard shortcuts: Space play/pause · S split · [ ] trim · Delete · ←/→ one frame (Shift: 5 s) ──
   /**
    * What the Delete button / key removes: the thing picked last — a song, a photo or video on top,
    * a text, something in a frame, an added video, or a section — if it's still there; otherwise
@@ -1956,7 +2369,8 @@ export function EditorShell({
         e.preventDefault(); s.deleteSelected()
       } else if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
         e.preventDefault()
-        const step = (e.shiftKey ? 5000 : 500) * (e.key === 'ArrowLeft' ? -1 : 1)
+        // One frame per press (Shift: 5 s)
+        const step = (e.shiftKey ? 5000 : FRAME_MS) * (e.key === 'ArrowLeft' ? -1 : 1)
         s.seekToMs(Math.max(0, Math.min(s.clipDurationMs, s.currentTimeMs + step)))
       }
     }
@@ -2035,7 +2449,12 @@ export function EditorShell({
   // ── Hide / mute / lock ──────────────────────────────────────────────────────
   /** The hide / mute / lock state of a section, photo, text or music track */
   function ctlState(t: CtlTarget): { hidden?: boolean; muted?: boolean; locked?: boolean } | undefined {
-    if (t.kind === 'section') return segments.find(x => x.id === t.id)
+    if (t.kind === 'section') {
+      // The main video's sound here: off when this section is muted, or the whole clip's sound is
+      // (the same on the timeline, in the section list, by Trim and Delete, and in the Music panel)
+      const seg = segments.find(x => x.id === t.id)
+      return seg && { hidden: seg.hidden, locked: seg.locked, muted: originalMuted || !!seg.muted }
+    }
     if (t.kind === 'broll') {
       const seg = segments.find(x => x.id === t.id)
       // Shown unless hidden; its own sound off unless switched on (then it plays instead of the main video's)
@@ -2096,7 +2515,13 @@ export function EditorShell({
   }
   function toggleCtl(t: CtlTarget, k: CtlKey) {
     const patch = { [k]: !ctlState(t)?.[k] } as Partial<Record<CtlKey, boolean>>
-    if (t.kind === 'section') updateSegment(t.id, patch)
+    if (t.kind === 'section' && k === 'muted' && originalMuted) {
+      // The whole clip's sound was off: this section's comes on, the others stay silent
+      setOriginalMuted(false)
+      for (const s of sections) if (s.id !== t.id && !s.muted) updateSegment(s.id, { muted: true })
+      updateSegment(t.id, { muted: false })
+    }
+    else if (t.kind === 'section') updateSegment(t.id, patch)
     else if (t.kind === 'broll') {
       const seg = segments.find(x => x.id === t.id)
       if (!seg) return
@@ -2107,6 +2532,104 @@ export function EditorShell({
     else if (t.kind === 'photo') updateOverlay(t.id, patch)
     else if (t.kind === 'text') updateTextOverlay(t.id, patch)
     else setAudioTracks(prev => prev.map(x => x.id === t.id ? { ...x, ...patch } : x))
+  }
+
+  // ── Lock / view / sound for a whole timeline lane: on = on for everything in it ──
+  /** What a lane holds, as Hide / Mute / Lock targets */
+  function laneTargets(kind: string): CtlTarget[] {
+    const vt = /^track-(\d+)$/.exec(kind)
+    if (vt) return visualItems().filter(i => (i.track ?? 0) === Number(vt[1]))
+      .map((i): CtlTarget => (i.ref.kind === 'shot' ? { kind: 'broll', id: i.id } : { kind: i.ref.kind as 'photo' | 'text', id: i.id }))
+    const at = /^audio-(\d+)$/.exec(kind)
+    if (at) return audioItems().filter(i => (i.track ?? 0) === Number(at[1])).map((i): CtlTarget => ({ kind: 'music', id: i.id }))
+    if (kind === 'main') return sections.map(sg => ({ kind: 'section', id: sg.id }))
+    if (kind === 'broll') return stockVideos.map(v => ({ kind: 'broll', id: v.id }))
+    if (kind === 'video') return ownVideos.map(v => ({ kind: 'broll', id: v.id }))
+    if (kind === 'photo') return overlays.filter(o => o.type === 'image').map(o => ({ kind: 'photo', id: o.id }))
+    if (kind === 'music') return audioTracks.filter(t => !isMainAudio(t)).map(t => ({ kind: 'music', id: t.id }))
+    if (kind === 'text') return textOverlays.map(o => ({ kind: 'text', id: o.id }))
+    return []
+  }
+  const LANE_CAN: Record<string, LaneCtlKey[]> = {
+    main: ['locked', 'hidden', 'muted'], broll: ['locked', 'hidden', 'muted'], video: ['locked', 'hidden', 'muted'],
+    photo: ['locked', 'hidden'], music: ['locked', 'muted'], text: ['locked', 'hidden'],
+  }
+  /**
+   * The section the main track's view and sound buttons act on: the one picked on the strip, else
+   * the one under the playhead. Each section keeps its own (the preview and the export switch as
+   * the playhead goes from one to the next).
+   */
+  function currentSection(): SegmentLocal | undefined {
+    const picked = sections.find(s => s.id === pickedSegId)
+    if (picked) return picked
+    const byTime = [...sections].sort((a, b) => a.start_ms - b.start_ms)
+    return byTime.find(s => currentTimeMs >= s.start_ms && currentTimeMs < s.end_ms) ?? byTime[byTime.length - 1]
+  }
+  /** The main track: view and sound for the current section; the lock for the whole track */
+  function mainCtl(): LaneCtl {
+    const sec = currentSection()
+    const t: CtlTarget | null = sec ? { kind: 'section', id: sec.id } : null
+    const all = laneTargets('main')
+    const n = sec ? [...sections].sort((a, b) => a.start_ms - b.start_ms).findIndex(s => s.id === sec.id) + 1 : 0
+    return {
+      // (a frame section has no view switch of its own: its slots are the frame)
+      can: t && canCtl(t).includes('hidden') ? ['locked', 'hidden', 'muted'] : ['locked', 'muted'],
+      state: {
+        locked: all.length > 0 && all.every(x => !!ctlState(x)?.locked),
+        hidden: !!t && !!ctlState(t)?.hidden,
+        muted: !!t && !!ctlState(t)?.muted,
+      },
+      empty: !sec,
+      ...(sections.length > 1 && n ? { note: `section ${n}` } : {}),
+    }
+  }
+  function toggleMain(k: LaneCtlKey) {
+    const sec = currentSection()
+    if (!sec) return
+    const t: CtlTarget = { kind: 'section', id: sec.id }
+    if (k === 'locked') {
+      // The lock switches for every section
+      const want = !mainCtl().state.locked
+      for (const x of laneTargets('main')) if (!!ctlState(x)?.locked !== want) toggleCtl(x, 'locked')
+      return
+    }
+    if (blocked(t)) return
+    toggleCtl(t, k)
+  }
+  /** The main video is silent everywhere: the whole clip's switch is off, or every section is muted */
+  const mainAllMuted = originalMuted || (sections.length > 0 && sections.every(s => s.muted))
+  const someSectionsMuted = !mainAllMuted && sections.some(s => s.muted)
+  /** The Music panel's switch: every section's sound off (or all back on) */
+  function setMainAllMuted(on: boolean) {
+    setOriginalMuted(false)
+    for (const s of sections) if (!!s.muted !== on) updateSegment(s.id, { muted: on })
+  }
+  function laneCtl(kind: string): LaneCtl | null {
+    if (kind === 'main') return mainCtl()
+    // A track with a video on it has sound too
+    const can: LaneCtlKey[] | undefined = LANE_CAN[kind]
+      ?? (kind.startsWith('track-') ? (laneTargets(kind).some(t => t.kind === 'broll') ? ['locked', 'hidden', 'muted'] : ['locked', 'hidden'])
+        : kind.startsWith('audio-') ? ['locked', 'muted'] : undefined)
+    if (!can) return null
+    const targets = laneTargets(kind)
+    const state: LaneCtl['state'] = {}
+    for (const k of can) {
+      const able = targets.filter(t => canCtl(t).includes(k))
+      state[k] = able.length > 0 && able.every(t => !!ctlState(t)?.[k])
+    }
+    return { can, state, empty: targets.length === 0 }
+  }
+  function toggleLane(kind: string, k: LaneCtlKey) {
+    if (kind === 'main') { toggleMain(k); return }
+    const cur = laneCtl(kind)
+    if (!cur) return
+    const want = !cur.state[k]
+    // Hide / mute only what isn't locked; the lock itself switches for everything
+    for (const t of laneTargets(kind)) {
+      if (!canCtl(t).includes(k) || !!ctlState(t)?.[k] === want) continue
+      if (k !== 'locked' && isLocked(t)) continue
+      toggleCtl(t, k)
+    }
   }
 
   /** Everything shown during a section — its video, photos, text and music — each one a click from its settings */
@@ -2170,7 +2693,7 @@ export function EditorShell({
         : `the picked ${selTarget.kind}`
 
   return (
-    <div className="editor-theme h-screen flex flex-col overflow-hidden" style={{ background: 'var(--ed-app)', color: 'var(--ed-text)' }}>
+    <div className="editor-theme h-screen flex flex-col overflow-hidden" data-layout-editing={layoutEditing || undefined} style={{ background: 'var(--ed-app)', color: 'var(--ed-text)' }}>
 
       <EditorTour open={tourOpen} onClose={() => setTourOpen(false)} />
 
@@ -2205,6 +2728,49 @@ export function EditorShell({
         <div className="flex-1" />
 
         <div className="flex items-center gap-3 shrink-0">
+          {/* Layout: unlock to resize the panels; turning it off asks to fix the layout */}
+          <div className="relative">
+            <button type="button" onClick={() => (layoutEditing ? setConfirmFixLayout(true) : unlockLayout())}
+              aria-pressed={layoutEditing} title={layoutEditing ? 'Done adjusting the layout' : 'Adjust the layout: resize the panels'}
+              className="h-8 flex items-center gap-1.5 px-3 rounded-full text-xs font-semibold transition-colors hover:bg-[rgb(var(--ed-fg)/0.1)]"
+              style={layoutEditing
+                ? { background: '#c8ff00', color: '#000' }
+                : { color: 'rgb(var(--ed-fg) / 0.8)', boxShadow: 'inset 0 0 0 1px rgb(var(--ed-fg) / 0.14)' }}>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <rect x="3" y="3" width="18" height="18" rx="2" /><path d="M3 14h18M9 3v11M15 3v11" />
+              </svg>
+              Layout
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                {layoutEditing
+                  ? <><rect x="5" y="11" width="14" height="10" rx="2" /><path d="M8 11V7a4 4 0 017.6-1.7" /></>
+                  : <><rect x="5" y="11" width="14" height="10" rx="2" /><path d="M8 11V7a4 4 0 018 0v4" /></>}
+              </svg>
+            </button>
+            {confirmFixLayout && (
+              <>
+                <div className="fixed inset-0" style={{ zIndex: 140 }} onClick={() => setConfirmFixLayout(false)} aria-hidden="true" />
+                <div role="alertdialog" aria-labelledby="fix-layout-title" aria-describedby="fix-layout-desc"
+                  className="absolute right-0 top-full mt-2 flex flex-col gap-3 p-4 rounded-xl"
+                  style={{ width: 300, zIndex: 141, background: 'var(--ed-panel)', border: '1px solid rgb(var(--ed-fg) / 0.12)', boxShadow: '0 12px 32px rgba(0,0,0,0.55)' }}>
+                  <p id="fix-layout-title" className="text-sm font-semibold text-[var(--ed-text)]">Fix this layout?</p>
+                  <p id="fix-layout-desc" className="text-xs leading-relaxed" style={{ color: 'rgb(var(--ed-fg) / 0.55)' }}>
+                    The panels keep these sizes every time you open the editor on this browser. Unlock Layout again to change them.
+                  </p>
+                  <div className="flex justify-end gap-2">
+                    <button onClick={discardLayout}
+                      className="h-8 px-3 rounded-lg text-xs font-medium transition-colors hover:bg-[rgb(var(--ed-fg)/0.08)]"
+                      style={{ color: 'rgb(var(--ed-fg) / 0.75)' }}>Undo changes</button>
+                    <button onClick={() => setConfirmFixLayout(false)}
+                      className="h-8 px-3 rounded-lg text-xs font-medium transition-colors hover:bg-[rgb(var(--ed-fg)/0.08)]"
+                      style={{ color: 'rgb(var(--ed-fg) / 0.75)' }}>Keep adjusting</button>
+                    <button onClick={fixLayout} autoFocus
+                      className="h-8 px-3 rounded-lg text-xs font-semibold transition-opacity hover:opacity-90"
+                      style={{ background: '#c8ff00', color: '#000' }}>Fix layout</button>
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
           <button type="button" onClick={() => setTourOpen(true)} aria-label="Show the editor tour" title="How the editor works"
             className="w-8 h-8 flex items-center justify-center rounded-full transition-colors hover:bg-[rgb(var(--ed-fg)/0.1)]"
             style={{ color: 'rgb(var(--ed-fg) / 0.7)', boxShadow: 'inset 0 0 0 1px rgb(var(--ed-fg) / 0.14)' }}>
@@ -2228,77 +2794,73 @@ export function EditorShell({
         </div>
       )}
 
-      {/* ── Body: tools · inspector · canvas + timeline · preview ────────────── */}
+      {layoutEditing && (
+        <div role="status" className="shrink-0 flex items-center gap-3 px-4 py-2 text-xs"
+          style={{ background: 'rgba(200,255,0,0.08)', borderBottom: '1px solid rgba(200,255,0,0.25)', color: 'var(--ed-text)' }}>
+          <span className="flex-1">
+            <b style={{ color: '#c8ff00' }}>Layout unlocked.</b> Drag the lime lines between Options, Video view, Preview and the Editing panel to resize them.
+          </span>
+          <button onClick={defaultLayout} className="h-7 px-3 rounded-lg font-medium transition-colors hover:bg-[rgb(var(--ed-fg)/0.08)]" style={{ color: 'rgb(var(--ed-fg) / 0.75)' }}>Default sizes</button>
+          <button onClick={() => setConfirmFixLayout(true)} className="h-7 px-3 rounded-lg font-semibold" style={{ background: '#c8ff00', color: '#000' }}>Done</button>
+        </div>
+      )}
+
+      {/* ── Body: [tools + options · player · preview] on top, the timeline full width below ── */}
+      <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
       <div className="flex flex-1 min-h-0 overflow-hidden">
 
-        {/* Tool rail */}
-        <nav aria-label="Editor tools" data-tour="tools" className="shrink-0 flex flex-col items-center gap-1 py-3"
-          style={{ width: 72, background: 'var(--ed-panel)', borderRight: '1px solid rgb(var(--ed-fg) / 0.07)' }}>
-          {TOOLS.map(t => {
-            const active = tool === t.id && optionsOpen
-            return (
-              <button key={t.id}
-                onClick={() => {
-                  if (active) { toggleOptions(false); return }
-                  setTool(t.id); setEditingTranscript(false); toggleOptions(true)
-                }}
-                aria-pressed={active}
-                title={active ? `Hide ${t.label.toLowerCase()} options` : t.title}
-                className="ed-tool" data-active={active || undefined}
-                style={{ width: 60, height: 58 }}>
-                <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true">{t.icon}</svg>
-                <span className="text-[11px] font-medium">{t.label}</span>
-              </button>
-            )
-          })}
-          <div className="flex-1" />
-          <div className="relative">
-            <button onClick={() => setConfirmResetAll(v => !v)} aria-expanded={confirmResetAll}
-              title="Reset all edits"
-              className="ed-tool ed-tool-danger" data-active={confirmResetAll || undefined}
-              style={{ width: 60, height: 52 }}>
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                <path d="M3 12a9 9 0 109-9 9.75 9.75 0 00-6.74 2.74L3 8" /><path d="M3 3v5h5" />
-              </svg>
-              <span className="text-[11px] font-medium">Reset</span>
-            </button>
-            {confirmResetAll && (
-              <>
-                <div className="fixed inset-0" style={{ zIndex: 70 }} onClick={() => setConfirmResetAll(false)} aria-hidden="true" />
-                <div role="alertdialog" aria-labelledby="reset-all-title" aria-describedby="reset-all-desc"
-                  className="absolute left-full bottom-0 ml-2 flex flex-col gap-3 p-4 rounded-xl"
-                  style={{ width: 280, zIndex: 71, background: 'var(--ed-panel)', border: '1px solid rgb(var(--ed-fg) / 0.12)', boxShadow: '0 12px 32px rgba(0,0,0,0.55)' }}>
-                  <p id="reset-all-title" className="text-sm font-semibold text-[var(--ed-text)]">Reset all edits?</p>
-                  <p id="reset-all-desc" className="text-xs leading-relaxed" style={{ color: 'rgb(var(--ed-fg) / 0.55)' }}>
-                    The clip goes back to how it was made: its original start and end, nothing cut out. Formats, frames, text, media, music, the video’s sound and the caption look go back to the start. Your captions stay. You can undo this.
-                  </p>
-                  <div className="flex justify-end gap-2">
-                    <button onClick={() => setConfirmResetAll(false)} autoFocus
-                      className="h-8 px-3 rounded-lg text-xs font-medium transition-colors hover:bg-[rgb(var(--ed-fg)/0.08)]"
-                      style={{ color: 'rgb(var(--ed-fg) / 0.75)' }}>Cancel</button>
-                    <button onClick={handleResetAll}
-                      className="h-8 px-3 rounded-lg text-xs font-semibold transition-opacity hover:opacity-90"
-                      style={{ background: '#ef4444', color: '#fff' }}>Reset everything</button>
-                  </div>
-                </div>
-              </>
-            )}
-          </div>
-        </nav>
+        {/* Tool rail: only while the options panel is closed (open, the tools are its tabs) */}
+        {!optionsOpen && (
+          <nav aria-label="Editor tools" data-tour="tools" className="shrink-0 flex flex-col items-center gap-1 py-3"
+            style={{ width: 72, background: 'var(--ed-panel)', borderRight: '1px solid rgb(var(--ed-fg) / 0.07)' }}>
+            {TOOLS.map(t => {
+              const active = tool === t.id && optionsOpen
+              return (
+                <button key={t.id}
+                  onClick={() => {
+                    if (active) { toggleOptions(false); return }
+                    setTool(t.id); setEditingTranscript(false); toggleOptions(true)
+                  }}
+                  aria-pressed={active}
+                  title={active ? `Hide ${t.label.toLowerCase()} options` : t.title}
+                  className="ed-tool" data-active={active || undefined}
+                  style={{ width: 60, height: 58 }}>
+                  <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true">{t.icon}</svg>
+                  <span className="text-[11px] font-medium">{t.label}</span>
+                </button>
+              )
+            })}
+          </nav>
+        )}
 
         {/* Options sidebar — settings for the selected tool only; collapsible */}
-        <aside id="options-sidebar" aria-label={`${activeTool.title} options`} aria-hidden={!optionsOpen}
+        <aside id="options-sidebar" data-layout-panel="Options" aria-label={`${activeTool.title} options`} aria-hidden={!optionsOpen}
           className="ed-options relative shrink-0 min-h-0 overflow-hidden" data-open={optionsOpen || undefined} data-resizing={resizing === 'options' || undefined}
           style={{ width: optionsOpen ? optionsW : 0, background: 'var(--ed-panel)' }}
-          {...(!optionsOpen ? { inert: true } : {})}>
+          {...(!optionsOpen ? { inert: true } : {})}
+          // Files from the computer dropped anywhere on the sidebar go in at the playhead (B-roll here: as B-roll)
+          onDragOver={e => { if (e.dataTransfer.types.includes('Files')) { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; if (!sidebarDrop) setSidebarDrop(true) } }}
+          onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setSidebarDrop(false) }}
+          onDrop={e => { if (!e.dataTransfer.files.length) return; e.preventDefault(); setSidebarDrop(false); dropFiles([...e.dataTransfer.files], currentTimeMs, null) }}>
+          {sidebarDrop && (
+            <div className="absolute inset-2 z-50 flex flex-col items-center justify-center gap-1 rounded-xl pointer-events-none text-center px-4"
+              style={{ border: '2px dashed #c8ff00', background: 'rgba(12,12,12,0.86)' }}>
+              <span className="text-sm font-bold" style={{ color: '#c8ff00' }}>Drop to add at {msToLabel(currentTimeMs)}</span>
+              <span className="text-[11px]" style={{ color: 'rgb(var(--ed-fg) / 0.6)' }}>
+                {tool === 'media' && mediaSection === 'library' ? 'A video goes in as B-roll' : 'Videos, photos or music'}
+              </span>
+            </div>
+          )}
           {/* Its right edge: drag to make the column wider or narrower */}
-          {optionsOpen && (
+          {optionsOpen && layoutEditing && (
             <div role="separator" aria-orientation="vertical" aria-label="Drag to resize the options panel. Double-click to reset."
               title="Drag to resize · double-click to reset" className="ed-col-handle" style={{ right: 0 }} data-on={resizing === 'options' || undefined}
               onPointerDown={e => startColumnResize(e, 'options')} onDoubleClick={() => resetColumn('options')} />
           )}
           {/* Fixed width inside, so the panel slides and fades as one piece while the column opens */}
           <div className="ed-options-inner h-full flex flex-col min-h-0" style={{ width: optionsW }}>
+          {/* The tools, as tabs along the top of the panel (like other editors) */}
+          <ToolTabs tool={tool} onPick={id => { setTool(id); setEditingTranscript(false) }} />
           <div className="shrink-0 pl-4 pr-2 pt-3 pb-3 flex items-start gap-2" style={{ borderBottom: '1px solid rgb(var(--ed-fg) / 0.06)' }}>
             <div className="flex-1 min-w-0 pt-1">
             {tool === 'captions' && editingTranscript ? (
@@ -2475,7 +3037,8 @@ export function EditorShell({
                                     Main video
                                   </span>
                                 </button>
-                                <CtlButtons size="sm" state={seg} can={isFrameLayout(seg.layout) ? ['muted'] : ['hidden', 'muted']} onToggle={k => toggleCtl({ kind: 'section', id: seg.id }, k)} what="the main video here" />
+                                <CtlButtons size="sm" state={ctlState({ kind: 'section', id: seg.id })} can={isFrameLayout(seg.layout) ? ['muted'] : ['hidden', 'muted']}
+                                  onToggle={k => { if (!blocked({ kind: 'section', id: seg.id })) toggleCtl({ kind: 'section', id: seg.id }, k) }} what="the main video here" />
                               </div>
                             )}
                             {items.length === 0 ? (
@@ -2695,27 +3258,27 @@ export function EditorShell({
                   <span className="flex-1 min-w-0 flex flex-col">
                     <span className="text-[13px] font-semibold text-[var(--ed-text)]">Original video sound</span>
                     <span className="text-[11px]" style={{ color: 'rgb(var(--ed-fg) / 0.45)' }}>
-                      {originalMuted ? 'Muted' : `${Math.round(originalVolume * 100)}%`}
+                      {mainAllMuted ? 'Muted' : someSectionsMuted ? `${Math.round(originalVolume * 100)}% · muted in some sections` : `${Math.round(originalVolume * 100)}%`}
                     </span>
                   </span>
-                  <button type="button" onClick={() => setOriginalMuted(m => !m)} aria-pressed={originalMuted}
-                    aria-label={originalMuted ? 'Turn the original sound back on' : 'Mute the original sound'}
-                    title={originalMuted ? 'Turn the original sound back on' : 'Mute the original sound'}
+                  <button type="button" onClick={() => setMainAllMuted(!mainAllMuted)} aria-pressed={mainAllMuted}
+                    aria-label={mainAllMuted ? 'Turn the original sound back on' : 'Mute the original sound'}
+                    title={mainAllMuted ? 'Turn the original sound back on (every section)' : 'Mute the original sound (every section)'}
                     className="shrink-0 w-8 h-8 flex items-center justify-center rounded-lg transition-colors"
-                    style={originalMuted
+                    style={mainAllMuted
                       ? { background: 'rgba(239,68,68,0.16)', color: '#fca5a5', boxShadow: 'inset 0 0 0 1px rgba(239,68,68,0.45)' }
                       : { background: 'rgb(var(--ed-fg) / 0.06)', color: 'rgb(var(--ed-fg) / 0.8)' }}>
                     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                       <path d="M11 5L6 9H2v6h4l5 4V5z" />
-                      {originalMuted ? <path d="M22 9l-6 6M16 9l6 6" /> : <path d="M15.5 8.5a5 5 0 010 7M19 5a10 10 0 010 14" />}
+                      {mainAllMuted ? <path d="M22 9l-6 6M16 9l6 6" /> : <path d="M15.5 8.5a5 5 0 010 7M19 5a10 10 0 010 14" />}
                     </svg>
                   </button>
                 </div>
-                <input type="range" min={0} max={100} step={1} value={originalMuted ? 0 : Math.round(originalVolume * 100)}
-                  onChange={e => { const v = Number(e.target.value) / 100; setOriginalVolume(v); setOriginalMuted(v === 0) }}
+                <input type="range" min={0} max={100} step={1} value={mainAllMuted ? 0 : Math.round(originalVolume * 100)}
+                  onChange={e => { const v = Number(e.target.value) / 100; setOriginalVolume(v); if ((v === 0) !== mainAllMuted) setMainAllMuted(v === 0) }}
                   aria-label="Original video sound volume"
                   className="ed-zoom-range w-full"
-                  style={{ '--p': `${originalMuted ? 0 : Math.round(originalVolume * 100)}%` } as React.CSSProperties} />
+                  style={{ '--p': `${mainAllMuted ? 0 : Math.round(originalVolume * 100)}%` } as React.CSSProperties} />
               </div>
               <AudioMixerPanel tracks={audioTracks} nameOf={musicName}
                 selectedId={pickedMusicId} onSelect={pickMusic}
@@ -2730,33 +3293,69 @@ export function EditorShell({
               </>
             )}
 
-            {tool === 'broll' && (
-              <BrollPanel
-                clipId={clip.id}
-                currentTimeMs={currentTimeMs}
-                shots={brollShots}
-                selectedId={pickedShot?.id ?? (playingAdded ? playingSegment?.id ?? null : null)}
-                onAdd={addStockBroll}
-                onMove={moveBroll}
-                onResize={resizeBroll}
-                onRemove={removeBroll}
-                onSeek={seekToMs}
-              />
-            )}
-
-            {tool === 'photos' && (
-              <PhotoPanel
-                photos={overlays.filter(o => o.type === 'image')}
-                selectedId={activeOverlayId}
-                currentTimeMs={currentTimeMs}
-                clipLengthMs={clipLengthMs}
-                onSelect={pickPhoto}
-                onAdd={() => { pause(); setPickerOnly('photo'); setPickerAtMs(Math.min(currentTimeMs, Math.max(0, clipLengthMs - 500))) }}
-                onUpdate={(id, patch) => { if (!blocked({ kind: 'photo', id })) updateOverlay(id, patch) }}
-                onRemove={askDeleteOverlay}
-                onSeek={seekToMs}
-              />
-            )}
+            {/* Media: the library (Import ▸ Media · Library), or the settings of the item picked on the timeline */}
+            {tool === 'media' && (() => {
+              const photo = mediaFocus?.kind === 'photo' ? overlays.find(o => o.id === mediaFocus.id && o.type === 'image') : undefined
+              if (photo) return (
+                <div className="flex flex-col">
+                  <button type="button" onClick={() => setMediaFocus(null)}
+                    className="self-start flex items-center gap-1 mx-3 mt-2.5 px-2 h-7 rounded-lg text-[12px] font-semibold transition-colors hover:bg-[rgb(var(--ed-fg)/0.08)]"
+                    style={{ color: 'rgb(var(--ed-fg) / 0.75)' }}>
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6" /></svg>
+                    Media
+                  </button>
+                  {photo && (
+                    <PhotoPanel
+                      photos={[photo]}
+                      selectedId={photo.id}
+                      currentTimeMs={currentTimeMs}
+                      clipLengthMs={clipLengthMs}
+                      onSelect={pickPhoto}
+                      onAdd={() => openMedia('media', 'image')}
+                      onUpdate={(id, patch) => {
+                        if (blocked({ kind: 'photo', id })) return
+                        // "Bring to front": onto a new track over the others
+                        if ('z_index' in patch) {
+                          const { z_index: _z, ...rest } = patch
+                          if (Object.keys(rest).length) updateOverlay(id, rest)
+                          dropOnTrack({ kind: 'photo', id }, 'new')
+                          return
+                        }
+                        updateOverlay(id, patch)
+                      }}
+                      onRemove={askDeleteOverlay}
+                      onSeek={seekToMs}
+                    />
+                  )}
+                </div>
+              )
+              return (
+                <MediaLibrary
+                  items={libraryItems} loading={libraryLoading} used={usedMedia}
+                  filter={mediaFilter} onFilter={setMediaFilter}
+                  section={mediaSection} onSection={s => { setMediaSection(s); setMediaFocus(null) }}
+                  importing={importingLabel} onImport={importMedia}
+                  onAdd={item => addLibraryItem(item, currentTimeMs, null)}
+                  onDelete={deleteLibraryItem}
+                  library={
+                    <BrollPanel searchOnly
+                      clipId={clip.id}
+                      currentTimeMs={currentTimeMs}
+                      shots={brollShots.filter(b => stockVideos.some(v => v.id === b.id))}
+                      selectedId={pickedShot?.id ?? (playingAdded ? playingSegment?.id ?? null : null)}
+                      onAdd={addStockBroll}
+                      onMove={moveBroll}
+                      onResize={resizeBroll}
+                      onRemove={removeBroll}
+                      onSeek={seekToMs}
+                      focusId={pickedShot && stockVideos.some(v => v.id === pickedShot.id) ? pickedShot.id : null}
+                      onUploaded={addUploadedBroll}
+                      settings={<VideoPanel kind="broll" videos={stockVideos} {...shotPanelProps} />}
+                    />
+                  }
+                />
+              )
+            })()}
 
             {tool === 'text' && (
               <>
@@ -2789,8 +3388,8 @@ export function EditorShell({
           </div>
         </aside>
 
-        {/* Canvas + transport + timeline */}
-        <main className="flex flex-col flex-1 min-w-0 min-h-0">
+        {/* The player: format bar, the video, play controls */}
+        <main data-layout-panel="Video view" className="relative flex flex-col flex-1 min-w-0 min-h-0">
           {/* Canvas toolbar: two docks, centred — Layout (a segmented switch with a sliding lime
               highlight) and Tools (Split · Motion · Delete). Styles: .ed-dock* in globals.css */}
           <div className="ed-canvas-bar shrink-0 flex items-center justify-center gap-3 px-4" style={{ minHeight: 60, borderBottom: '1px solid rgb(var(--ed-fg) / 0.06)' }}>
@@ -2842,102 +3441,14 @@ export function EditorShell({
             </div>
           </div>
 
-          {/* The line between the video and the play bar: drag to resize (double-click resets) */}
-          {!timelineHidden && (
-            <div className="relative shrink-0" style={{ height: 0, zIndex: 30 }}>
-              <div role="separator" aria-orientation="horizontal" aria-label="Drag to resize the video and the timeline. Double-click to reset."
-                title="Drag to resize · double-click to reset" className="ed-row-handle" data-on={resizing === 'timeline' || undefined}
-                onPointerDown={startTimelineResize} onDoubleClick={resetTimelineHeight} />
+          {/* Under the player: the time, and previous section · play · next section */}
+          <div className="ed-player shrink-0 grid items-center gap-2 px-3" style={{ gridTemplateColumns: 'minmax(0,1fr) auto minmax(0,1fr)', height: 52, borderTop: '1px solid rgb(var(--ed-fg) / 0.06)', background: 'var(--ed-panel)' }}>
+            <div className="justify-self-start min-w-0">
+              <span className="ed-transport-time shrink-0 whitespace-nowrap text-[11px] tabular-nums" aria-label={`${msToClock(currentTimeMs)} of ${msToClock(clipDurationMs)}`}>
+                <span className="font-semibold" style={{ color: 'rgb(var(--ed-fg) / 0.85)' }}>{msToHundredths(currentTimeMs)}</span>
+                <span className="ed-transport-total" style={{ color: 'rgb(var(--ed-fg) / 0.38)' }}> / {msToLabel(clipDurationMs)}</span>
+              </span>
             </div>
-          )}
-          {/* Transport */}
-          {/* Timeline bar: [show/hide timeline · trim · delete] [previous section · play · next section · time]
-              [zoom slider]. Every button has a plain-words tooltip. */}
-          <div className="ed-transport shrink-0 grid items-center gap-2 px-3" style={{ gridTemplateColumns: 'minmax(0,1fr) auto minmax(0,1fr)', height: 52, borderTop: '1px solid rgb(var(--ed-fg) / 0.06)', background: 'var(--ed-panel)' }}>
-            {/* Left: timeline tools */}
-            <div className="ed-transport-tools justify-self-start min-w-0 flex items-center gap-1">
-              {/* Show / hide the timeline. The icon is the editor with its bottom panel (the timeline)
-                  and an arrow saying what a click does (down = tuck it away, up = bring it back); a
-                  label pops up instantly on hover (.ed-tip in globals.css) */}
-              <button onClick={() => setTimelineHidden(h => !h)} aria-expanded={!timelineHidden}
-                aria-label={timelineHidden ? 'Show the timeline' : 'Hide the timeline'}
-                data-tip={timelineHidden ? 'Show timeline' : 'Hide timeline'}
-                className="ed-tl-btn ed-tip" data-active={timelineHidden || undefined}>
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                  <rect x="3" y="3" width="18" height="18" rx="3" />
-                  <path d="M3 15h18" />
-                  <path d="M3.9 15h16.2v4.1a1.9 1.9 0 01-1.9 1.9H5.8a1.9 1.9 0 01-1.9-1.9z" fill="#c8ff00" fillOpacity={timelineHidden ? 0.15 : 0.45} stroke="none" />
-                  <path d={timelineHidden ? 'M9 10.5l3-3 3 3' : 'M9 7.5l3 3 3-3'} />
-                </svg>
-              </button>
-              <span className="ed-tl-sep" aria-hidden="true" />
-              {/* What's selected — Trim and Delete act on exactly this (click video or music on the timeline) */}
-              {(() => {
-                const seg = pickedSegId ? segments.find(x => x.id === pickedSegId) ?? null : null
-                const segName = seg ? (isShot(seg, mainVideoId) ? 'Video on top' : isFrameLayout(seg.layout) ? `Frame · ${FRAME_TEMPLATES[seg.layout].name}` : LAYOUTS.find(l => l.id === seg.layout)?.label ?? 'Section') : ''
-                const kind: 'music' | 'video' | null = pickedMusic ? 'music' : seg ? 'video' : null
-                const videoCanTrim = !!seg && canSplitHere && splitSeg?.id === seg.id
-                const trimOk = kind === 'music' ? canTrimMusic : kind === 'video' ? videoCanTrim : canSplitHere
-                const trimTitle = kind === 'music'
-                  ? (canTrimMusic ? 'Trim the selected music: cut it in two at the playhead (then delete the part you don\u2019t want)' : 'Move the playhead inside the selected music to trim it')
-                  : kind === 'video'
-                    ? (videoCanTrim ? 'Trim the selected video section: cut it in two at the playhead (S)' : 'Move the playhead inside the selected video section to trim it')
-                    : (canSplitHere ? 'Trim (S): cut the video section under the playhead in two' : 'Move the playhead inside a section to trim it')
-                return (
-                  <>
-                    <button
-                      onClick={() => {
-                        setSplitPlay(n => n + 1)
-                        if (kind === 'music') trimMusicAtPlayhead(); else splitHere()
-                      }}
-                      disabled={!trimOk}
-                      aria-label={kind === 'music' ? 'Trim the selected music at the playhead' : 'Trim the video at the playhead'}
-                      title={trimTitle}
-                      className="ed-tl-btn"
-                    >
-                      <svg key={splitPlay} className={splitPlay ? 'ed-snip' : undefined} width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                        <circle cx="6" cy="6" r="3" /><circle cx="6" cy="18" r="3" /><path d="M20 4L8.1 15.9M14.5 14.5L20 20M8.1 8.1L12 12" />
-                      </svg>
-                    </button>
-                    {/* Delete: whatever is selected — a song, photo, video, text, frame item or section */}
-                    {(() => {
-                      const del = deleteTarget()
-                      return (
-                    <button
-                      onClick={() => del?.run()}
-                      disabled={!del}
-                      aria-label={del ? `Delete ${del.label}` : 'Delete'}
-                      title={del ? `Delete ${del.label} (Delete key)` : 'Select a video, photo, song, text or section to delete it'}
-                      className="ed-tl-btn ed-tl-danger"
-                    >
-                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                        <path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14M10 11v6M14 11v6" />
-                      </svg>
-                    </button>
-                      )
-                    })()}
-                    {/* Detach audio: the main video's sound onto its own Music bar */}
-                    <button onClick={detachAudio}
-                      aria-label={hasMainAudio ? 'Select the detached original sound' : 'Detach the audio from the main video'}
-                      title={hasMainAudio ? 'The original sound is on the Music lane — click to select it' : 'Detach audio: the main video\u2019s sound becomes its own bar on the Music lane (trim, move or change its volume)'}
-                      className="ed-tl-btn" data-active={hasMainAudio || undefined}>
-                      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                        <path d="M9 17V5l10-2v6" /><circle cx="6.5" cy="17" r="2.5" />
-                        <path d="M15 14v7M12 18l3 3 3-3" stroke="#c084fc" />
-                      </svg>
-                    </button>
-                    {/* Hide / mute / lock what's picked (a section, a video on top, a photo, a text, music or something in a frame) */}
-                    {selTarget && (
-                      <>
-                        <span className="ed-tl-sep" aria-hidden="true" />
-                        <CtlButtons size="md" state={ctlState(selTarget)} can={canCtl(selTarget)} onToggle={k => toggleCtl(selTarget, k)} what={selName} />
-                      </>
-                    )}
-                  </>
-                )
-              })()}
-            </div>
-
             {/* Centre: previous section · play · next section (the play button sits exactly in the middle) */}
             <div className="flex items-center gap-1.5">
               <button onClick={jumpPrevSection} aria-label="Go to the previous section" title="Previous section"
@@ -2961,113 +3472,7 @@ export function EditorShell({
               </button>
             </div>
 
-            {/* Right: the time (small) and the timeline zoom */}
-            <div className="min-w-0 flex items-center justify-between gap-2">
-              <span className="ed-transport-time shrink-0 whitespace-nowrap text-[11px] tabular-nums" aria-label={`${msToClock(currentTimeMs)} of ${msToClock(clipDurationMs)}`}>
-                <span className="font-semibold" style={{ color: 'rgb(var(--ed-fg) / 0.85)' }}>{msToTenths(currentTimeMs)}</span>
-                <span className="ed-transport-total" style={{ color: 'rgb(var(--ed-fg) / 0.38)' }}> / {msToLabel(clipDurationMs)}</span>
-              </span>
-              {/* Always at the far end of the bar, with or without the time beside it: undo / redo, then zoom */}
-              <div className="ml-auto shrink-0 flex items-center gap-1">
-                <UndoRedo />
-                <span className="ed-tl-sep" aria-hidden="true" />
-                <ZoomSlider zoom={timelineZoom} onZoom={setTimelineZoom} />
-              </div>
-            </div>
-          </div>
-
-          {/* Timeline (hidden with "Hide timeline") */}
-          <div ref={timelineRef} data-tour="timeline" hidden={timelineHidden} className="shrink-0 overflow-y-auto px-4 pt-3 pb-4"
-            style={{ ...(timelineH ? { height: timelineH } : { maxHeight: '38vh' }), background: 'var(--ed-track)', borderTop: '1px solid rgb(var(--ed-fg) / 0.06)' }}>
-            <SegmentTimeline
-              selectedMusicId={pickedMusicId} onSelectMusic={id => pickMusicTrack(id, doubleTap(`m${id}`))}
-              photos={overlays.filter(o => o.type === 'image').map(o => ({ id: o.id, start_ms: o.start_ms, end_ms: o.end_ms, url: o.preview_url, hidden: o.hidden, locked: isLocked({ kind: 'photo', id: o.id }) }))}
-              activePhotoId={activeOverlayId} onSelectPhoto={id => pickPhoto(id, doubleTap(`p${id}`))}
-              onPhotoTimeChange={(id, t) => { if (!blocked({ kind: 'photo', id })) updateOverlay(id, t) }}
-              musicTracks={audioTracks.map(t => ({
-                id: t.id, start_ms: t.start_ms,
-                duration_ms: t.end_ms != null ? t.end_ms - t.start_ms
-                  : musicDurations[t.id] != null ? musicDurations[t.id] - (t.offset_ms ?? 0) : undefined,
-                name: musicName(t), original: isMainAudio(t), muted: t.muted, locked: isLocked({ kind: 'music', id: t.id }),
-              }))}
-              onMusicTrim={trimMusicEdge}
-              onMusicMove={(id, startMs) => !blocked({ kind: 'music', id }) && setAudioTracks(prev => prev.map(t => {
-                if (t.id !== id) return t
-                // A trimmed track keeps its length when moved
-                const len = t.end_ms != null ? t.end_ms - t.start_ms : null
-                return { ...t, start_ms: startMs, ...(len != null ? { end_ms: startMs + len } : {}) }
-              }))}
-              onAddKind={kind => addMediaAt(kind, Math.round(currentTimeMs))}
-              zoom={timelineZoom} onZoomChange={setTimelineZoom} showToolbar={false}
-              segments={segments} mainVideoId={mainVideoId} clipStartMs={clip.start_ms} clipEndMs={clip.end_ms}
-              currentTimeMs={currentTimeMs} activeSegmentId={activeSegment?.id ?? null}
-              videoUrl={videoUrl} safeDurationMs={clipDurationMs} onSeek={seekToMs}
-              sourceAt={trim.toSource} sourceKey={trimsKey}
-              clipEdgeLimits={canTrim ? clipEdgeLimits : undefined} onClipEdge={moveClipEdge}
-              onSelectSegment={id => setActiveSegmentId(id)}
-              onBrollChange={retimeBroll}
-              videoUrls={videoUrls}
-              onUpdateSegment={(id, updates) => updateSegment(id, updates)}
-              onSetEdge={(id, edge, t) => { if (!blocked({ kind: 'section', id })) setSegmentEdge(id, edge, t, clipLengthMs) }}
-              onMoveJunction={(l, r, t) => { if (!blocked({ kind: 'section', id: l }) && !blocked({ kind: 'section', id: r })) moveJunction(l, r, t) }}
-              onSwallowSection={swallowSection}
-              onInsertBrollAfter={handleInsertBrollAfterSeg}
-              pickedSegmentId={pickedSegId}
-              onPickSegment={id => (id && shots.some(x => x.id === id) ? pickShot(id, doubleTap(`s${id}`)) : pickSection(id, !!id && doubleTap(`s${id}`)))}
-              textOverlays={textOverlays.map(o => o.locked || !isLocked({ kind: 'text', id: o.id }) ? o : { ...o, locked: true })} activeTextOverlayId={activeTextOverlayId}
-              onSelectTextOverlay={id => { if (id) pickText(id, doubleTap(`t${id}`)); else setActiveTextOverlayId(null) }}
-              onTextOverlayUpdate={(id, u) => { if (!blocked({ kind: 'text', id })) updateTextOverlay(id, u) }}
-              frameSeg={frameSeg}
-              activeFrameItemId={activeFrameItemId}
-              laneHighlight={laneHighlight}
-              videoTitles={videoTitles}
-              onSelectFrameItem={id => selectFrameItem(id, undefined, !!id && doubleTap(`f${id}`))}
-              onUpdateFrameItem={(id, patch) => { if (frameSeg && !sectionBlocked(frameSeg.id)) updateFrameItem(frameSeg.id, id, patch) }}
-              onJumpToFrameItem={(segId, itemId) => {
-                const sg = segments.find(x => x.id === segId)
-                const it = sg ? frameOf(sg).items?.find(x => x.id === itemId) : undefined
-                if (sg && it) selectInFrame(segId, itemId, Math.max(it.start_ms, sg.start_ms))
-              }}
-              onAddFrameItem={(lane, anchor) => {
-                if (!frameSeg) return
-                pause()
-                if (lane === 'band') { addBandText(frameSeg.id, currentTimeMs); return }
-                setAddMenu({ segId: frameSeg.id, lane, t: currentTimeMs, anchor })
-              }}
-              viewMarkers={viewMarkers}
-              selectedViewT={selectedView && viewBox && selectedView.boxId === viewBox.id ? selectedView.t : null}
-              onSelectView={t => {
-                if (!viewBox) return
-                pause()
-                setSelectedView({ boxId: viewBox.id, t })
-                seekToMs(t)
-              }}
-              onMoveView={(from, to) => {
-                if (!viewBox || !activeSegment || sectionBlocked(activeSegment.id)) return
-                moveViewChange(viewBox.id, from, to, activeSegment.start_ms, activeSegment.end_ms)
-                const moved = viewChanges(useEditorStore.getState().keyframes[viewBox.id] ?? [])
-                  .reduce((best, v) => Math.abs(v.t_ms - to) < Math.abs(best - to) ? v.t_ms : best, from)
-                setSelectedView({ boxId: viewBox.id, t: moved })
-                // The preview shows that moment, with this view: you see where the key is going
-                pause()
-                seekToMs(moved)
-                return moved
-              }}
-              onRemoveView={t => {
-                if (!viewBox || viewMarkers.length <= 1 || (activeSegment && sectionBlocked(activeSegment.id))) return
-                removeViewChange(viewBox.id, t)
-                setSelectedView(null)
-              }}
-              onDuplicateView={t => {
-                if (!viewBox || !activeSegment || sectionBlocked(activeSegment.id)) return
-                pause()
-                const at = duplicateViewChange(viewBox.id, t, activeSegment.end_ms)
-                if (at == null) { notifyLocked('No room for a copy right after this view — move the next one or pick another'); return }
-                // The copy is picked, under the playhead: drag it wherever it should go
-                setSelectedView({ boxId: viewBox.id, t: at })
-                seekToMs(at)
-              }}
-            />
+            <div />
           </div>
         </main>
 
@@ -3087,11 +3492,11 @@ export function EditorShell({
             </button>
           </div>
         )}
-        <aside data-tour="export" aria-hidden={!previewOpen} className="ed-preview-col relative shrink-0 flex flex-col min-h-0 overflow-hidden" data-open={previewOpen || undefined} data-resizing={resizing === 'preview' || undefined}
+        <aside data-tour="export" data-layout-panel="Preview" aria-hidden={!previewOpen} className="ed-preview-col relative shrink-0 flex flex-col min-h-0 overflow-hidden" data-open={previewOpen || undefined} data-resizing={resizing === 'preview' || undefined}
           style={{ width: previewOpen ? previewW : 0, background: 'var(--ed-panel)' }}
           {...(!previewOpen ? { inert: true } : {})}>
           {/* Its left edge: drag to make the preview wider or narrower */}
-          {previewOpen && (
+          {previewOpen && layoutEditing && (
             <div role="separator" aria-orientation="vertical" aria-label="Drag to resize the preview. Double-click to reset."
               title="Drag to resize · double-click to reset" className="ed-col-handle" style={{ left: 0 }} data-on={resizing === 'preview' || undefined}
               onPointerDown={e => startColumnResize(e, 'preview')} onDoubleClick={() => resetColumn('preview')} />
@@ -3174,8 +3579,9 @@ export function EditorShell({
           </div>
 
           {/* Preview fills the column: as wide as it can be while the full 9:16 frame fits the height */}
-          <div className="flex-1 min-h-0 flex items-start justify-center p-4 overflow-hidden">
-            <div style={{ width: 'min(100%, calc((100vh - 200px) * 9 / 16))' }}>
+          <div className="flex-1 min-h-0 p-3 overflow-hidden">
+            <div className="h-full w-full flex items-start justify-center" style={{ containerType: 'size' }}>
+            <div style={{ width: 'min(100cqw, calc(100cqh * 9 / 16))' }}>
               <div className="relative">
               {rendering ? (
                 <div className="flex flex-col items-center justify-center gap-4 rounded-xl" style={{ aspectRatio: '9/16', background: 'var(--ed-app)', border: '1px solid rgb(var(--ed-fg) / 0.08)' }}>
@@ -3223,15 +3629,254 @@ export function EditorShell({
               {!rendering && <PlatformOverlay platform={platform} />}
               </div>
             </div>
+            </div>
           </div>
 
           </div>
         </aside>
       </div>
 
+      {/* The line between the video and the play bar: drag to resize (double-click resets) */}
+      {!timelineHidden && layoutEditing && (
+        <div className="relative shrink-0" style={{ height: 0, zIndex: 30 }}>
+          <div role="separator" aria-orientation="horizontal" aria-label="Drag to resize the video and the timeline. Double-click to reset."
+            title="Drag to resize · double-click to reset" className="ed-row-handle" data-on={resizing === 'timeline' || undefined}
+            onPointerDown={startTimelineResize} onDoubleClick={resetTimelineHeight} />
+        </div>
+      )}
+      {/* The timeline's own bar, full width: trim · delete · hide / mute / lock · reset … undo / redo · zoom */}
+      <div className="ed-transport shrink-0 flex items-center gap-2 px-3" style={{ height: 46, borderTop: '1px solid rgb(var(--ed-fg) / 0.08)', background: 'var(--ed-panel)' }}>
+        {/* Left: timeline tools */}
+        <div className="ed-transport-tools justify-self-start min-w-0 flex items-center gap-1">
+          {/* Show / hide the timeline. The icon is the editor with its bottom panel (the timeline)
+              and an arrow saying what a click does (down = tuck it away, up = bring it back); a
+              label pops up instantly on hover (.ed-tip in globals.css) */}
+          <button onClick={() => setTimelineHidden(h => !h)} aria-expanded={!timelineHidden}
+            aria-label={timelineHidden ? 'Show the timeline' : 'Hide the timeline'}
+            data-tip={timelineHidden ? 'Show timeline' : 'Hide timeline'}
+            className="ed-tl-btn ed-tip" data-active={timelineHidden || undefined}>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <rect x="3" y="3" width="18" height="18" rx="3" />
+              <path d="M3 15h18" />
+              <path d="M3.9 15h16.2v4.1a1.9 1.9 0 01-1.9 1.9H5.8a1.9 1.9 0 01-1.9-1.9z" fill="#c8ff00" fillOpacity={timelineHidden ? 0.15 : 0.45} stroke="none" />
+              <path d={timelineHidden ? 'M9 10.5l3-3 3 3' : 'M9 7.5l3 3 3-3'} />
+            </svg>
+          </button>
+          <span className="ed-tl-sep" aria-hidden="true" />
+          {/* What's selected — Trim and Delete act on exactly this (click video or music on the timeline) */}
+          {(() => {
+            const seg = pickedSegId ? segments.find(x => x.id === pickedSegId) ?? null : null
+            const segName = seg ? (isShot(seg, mainVideoId) ? 'Video on top' : isFrameLayout(seg.layout) ? `Frame · ${FRAME_TEMPLATES[seg.layout].name}` : LAYOUTS.find(l => l.id === seg.layout)?.label ?? 'Section') : ''
+            const kind: 'music' | 'video' | null = pickedMusic ? 'music' : seg ? 'video' : null
+            const videoCanTrim = !!seg && canSplitHere && splitSeg?.id === seg.id
+            const trimOk = kind === 'music' ? canTrimMusic : kind === 'video' ? videoCanTrim : canSplitHere
+            const trimTitle = kind === 'music'
+              ? (canTrimMusic ? 'Trim the selected music: cut it in two at the playhead (then delete the part you don\u2019t want)' : 'Move the playhead inside the selected music to trim it')
+              : kind === 'video'
+                ? (videoCanTrim ? 'Trim the selected video section: cut it in two at the playhead (S)' : 'Move the playhead inside the selected video section to trim it')
+                : (canSplitHere ? 'Trim (S): cut the video section under the playhead in two' : 'Move the playhead inside a section to trim it')
+            return (
+              <>
+                <button
+                  onClick={() => {
+                    setSplitPlay(n => n + 1)
+                    if (kind === 'music') trimMusicAtPlayhead(); else splitHere()
+                  }}
+                  disabled={!trimOk}
+                  aria-label={kind === 'music' ? 'Trim the selected music at the playhead' : 'Trim the video at the playhead'}
+                  title={trimTitle}
+                  className="ed-tl-btn"
+                >
+                  <svg key={splitPlay} className={splitPlay ? 'ed-snip' : undefined} width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <circle cx="6" cy="6" r="3" /><circle cx="6" cy="18" r="3" /><path d="M20 4L8.1 15.9M14.5 14.5L20 20M8.1 8.1L12 12" />
+                  </svg>
+                </button>
+                {/* Delete: whatever is selected — a song, photo, video, text, frame item or section */}
+                {(() => {
+                  const del = deleteTarget()
+                  return (
+                <button
+                  onClick={() => del?.run()}
+                  disabled={!del}
+                  aria-label={del ? `Delete ${del.label}` : 'Delete'}
+                  title={del ? `Delete ${del.label} (Delete key)` : 'Select a video, photo, song, text or section to delete it'}
+                  className="ed-tl-btn ed-tl-danger"
+                >
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14M10 11v6M14 11v6" />
+                  </svg>
+                </button>
+                  )
+                })()}
+                {/* Detach audio: the main video's sound onto its own Music bar */}
+                <button onClick={detachAudio}
+                  aria-label={hasMainAudio ? 'Select the detached original sound' : 'Detach the audio from the main video'}
+                  title={hasMainAudio ? 'The original sound is on the Music lane — click to select it' : 'Detach audio: the main video\u2019s sound becomes its own bar on the Music lane (trim, move or change its volume)'}
+                  className="ed-tl-btn" data-active={hasMainAudio || undefined}>
+                  <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <path d="M9 17V5l10-2v6" /><circle cx="6.5" cy="17" r="2.5" />
+                    <path d="M15 14v7M12 18l3 3 3-3" stroke="#c084fc" />
+                  </svg>
+                </button>
+                {/* Hide / mute / lock what's picked (a section, a video on top, a photo, a text, music or something in a frame) */}
+                {selTarget && (
+                  <>
+                    <span className="ed-tl-sep" aria-hidden="true" />
+                    <CtlButtons size="md" state={ctlState(selTarget)} can={canCtl(selTarget)} onToggle={k => toggleCtl(selTarget, k)} what={selName} />
+                  </>
+                )}
+              </>
+            )
+          })()}
+        </div>
+        <span className="ed-tl-sep" aria-hidden="true" />
+        <div className="relative">
+          <button onClick={() => setConfirmResetAll(v => !v)} aria-expanded={confirmResetAll}
+            title="Reset all edits" data-tip="Reset all edits"
+            className="ed-tl-btn ed-tip" data-active={confirmResetAll || undefined}>
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M3 12a9 9 0 109-9 9.75 9.75 0 00-6.74 2.74L3 8" /><path d="M3 3v5h5" />
+            </svg>
+          </button>
+          {confirmResetAll && (
+            <>
+              <div className="fixed inset-0" style={{ zIndex: 70 }} onClick={() => setConfirmResetAll(false)} aria-hidden="true" />
+              <div role="alertdialog" aria-labelledby="reset-all-title" aria-describedby="reset-all-desc"
+                className="absolute left-0 bottom-full mb-2 flex flex-col gap-3 p-4 rounded-xl"
+                style={{ width: 280, zIndex: 71, background: 'var(--ed-panel)', border: '1px solid rgb(var(--ed-fg) / 0.12)', boxShadow: '0 12px 32px rgba(0,0,0,0.55)' }}>
+                <p id="reset-all-title" className="text-sm font-semibold text-[var(--ed-text)]">Reset all edits?</p>
+                <p id="reset-all-desc" className="text-xs leading-relaxed" style={{ color: 'rgb(var(--ed-fg) / 0.55)' }}>
+                  The clip goes back to how it was made: its original start and end, nothing cut out. Formats, frames, text, media, music, the video’s sound and the caption look go back to the start. Your captions stay. You can undo this.
+                </p>
+                <div className="flex justify-end gap-2">
+                  <button onClick={() => setConfirmResetAll(false)} autoFocus
+                    className="h-8 px-3 rounded-lg text-xs font-medium transition-colors hover:bg-[rgb(var(--ed-fg)/0.08)]"
+                    style={{ color: 'rgb(var(--ed-fg) / 0.75)' }}>Cancel</button>
+                  <button onClick={handleResetAll}
+                    className="h-8 px-3 rounded-lg text-xs font-semibold transition-opacity hover:opacity-90"
+                    style={{ background: '#ef4444', color: '#fff' }}>Reset everything</button>
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+        <div className="flex-1" />
+        <div className="ml-auto shrink-0 flex items-center gap-1">
+          <UndoRedo />
+          <span className="ed-tl-sep" aria-hidden="true" />
+          <ZoomSlider zoom={timelineZoom} onZoom={setTimelineZoom} />
+        </div>
+      </div>
+
+      {/* Timeline (hidden with "Hide timeline") */}
+      {/* (it doesn't scroll as a whole: the ruler and the main video stay, the tracks under them scroll) */}
+      <div ref={timelineRef} data-tour="timeline" data-layout-panel="Editing panel" hidden={timelineHidden} className="shrink-0 flex flex-col overflow-hidden px-4 pt-3 pb-4"
+        style={{ ...(timelineH ? { height: timelineH } : { maxHeight: '32vh' }), background: 'var(--ed-track)', borderTop: '1px solid rgb(var(--ed-fg) / 0.06)' }}>
+        <SegmentTimeline
+          selectedMusicId={pickedMusicId} onSelectMusic={id => pickMusicTrack(id, doubleTap(`m${id}`))}
+          photos={overlays.filter(o => o.type === 'image').map(o => ({ id: o.id, start_ms: o.start_ms, end_ms: o.end_ms, url: o.preview_url, hidden: o.hidden, locked: isLocked({ kind: 'photo', id: o.id }), track: o.track }))}
+          onTrackDrop={dropOnTrack}
+          activePhotoId={activeOverlayId} onSelectPhoto={id => pickPhoto(id, doubleTap(`p${id}`))}
+          onPhotoTimeChange={(id, t) => { if (!blocked({ kind: 'photo', id })) updateOverlay(id, t) }}
+          musicTracks={audioTracks.map(t => ({
+            id: t.id, start_ms: t.start_ms,
+            duration_ms: t.end_ms != null ? t.end_ms - t.start_ms
+              : musicDurations[t.id] != null ? musicDurations[t.id] - (t.offset_ms ?? 0) : undefined,
+            name: musicName(t), original: isMainAudio(t), muted: t.muted, locked: isLocked({ kind: 'music', id: t.id }), track: t.track,
+            url: musicUrls[t.id], key: t.storage_path, offset_ms: t.offset_ms,
+          }))}
+          onMusicTrim={trimMusicEdge}
+          onMusicMove={(id, startMs) => !blocked({ kind: 'music', id }) && setAudioTracks(prev => prev.map(t => {
+            if (t.id !== id) return t
+            // A trimmed track keeps its length when moved
+            const len = t.end_ms != null ? t.end_ms - t.start_ms : null
+            return { ...t, start_ms: startMs, ...(len != null ? { end_ms: startMs + len } : {}) }
+          }))}
+          onAddKind={kind => addMediaAt(kind, Math.round(currentTimeMs))}
+          zoom={timelineZoom} onZoomChange={setTimelineZoom} showToolbar={false}
+          segments={segments} mainVideoId={mainVideoId} isStock={isStockShot} clipStartMs={clip.start_ms} clipEndMs={clip.end_ms}
+          onDropFiles={dropFiles} onDropStock={dropStock} onDropMedia={dropMedia}
+          laneCtl={laneCtl} onLaneCtl={toggleLane} mainMuted={originalMuted}
+          currentTimeMs={currentTimeMs} activeSegmentId={activeSegment?.id ?? null}
+          videoUrl={videoUrl} safeDurationMs={clipDurationMs} onSeek={seekToMs}
+          sourceAt={trim.toSource} sourceKey={trimsKey}
+          clipEdgeLimits={canTrim ? clipEdgeLimits : undefined} onClipEdge={moveClipEdge}
+          onSelectSegment={id => setActiveSegmentId(id)}
+          onBrollChange={(id, s, e, done) => retimeBroll(id, s, e, done !== false)}
+          videoUrls={videoUrls} mediaLengths={videoLengths}
+          onUpdateSegment={(id, updates) => updateSegment(id, updates)}
+          onSetEdge={(id, edge, t) => { if (!blocked({ kind: 'section', id })) setSegmentEdge(id, edge, t, clipLengthMs) }}
+          onMoveJunction={(l, r, t) => { if (!blocked({ kind: 'section', id: l }) && !blocked({ kind: 'section', id: r })) moveJunction(l, r, t) }}
+          onSwallowSection={swallowSection}
+          onInsertBrollAfter={handleInsertBrollAfterSeg}
+          pickedSegmentId={pickedSegId}
+          onPickSegment={id => (id && shots.some(x => x.id === id) ? pickShot(id, doubleTap(`s${id}`)) : pickSection(id, !!id && doubleTap(`s${id}`)))}
+          textOverlays={textOverlays.map(o => o.locked || !isLocked({ kind: 'text', id: o.id }) ? o : { ...o, locked: true })} activeTextOverlayId={activeTextOverlayId}
+          onSelectTextOverlay={id => { if (id) pickText(id, doubleTap(`t${id}`)); else setActiveTextOverlayId(null) }}
+          onTextOverlayUpdate={(id, u) => { if (!blocked({ kind: 'text', id })) updateTextOverlay(id, u) }}
+          frameSeg={frameSeg}
+          activeFrameItemId={activeFrameItemId}
+          laneHighlight={laneHighlight}
+          videoTitles={videoTitles}
+          onSelectFrameItem={id => selectFrameItem(id, undefined, !!id && doubleTap(`f${id}`))}
+          onUpdateFrameItem={(id, patch) => { if (frameSeg && !sectionBlocked(frameSeg.id)) updateFrameItem(frameSeg.id, id, patch) }}
+          onJumpToFrameItem={(segId, itemId) => {
+            const sg = segments.find(x => x.id === segId)
+            const it = sg ? frameOf(sg).items?.find(x => x.id === itemId) : undefined
+            if (sg && it) selectInFrame(segId, itemId, Math.max(it.start_ms, sg.start_ms))
+          }}
+          onAddFrameItem={(lane, anchor) => {
+            if (!frameSeg) return
+            pause()
+            if (lane === 'band') { addBandText(frameSeg.id, currentTimeMs); return }
+            setAddMenu({ segId: frameSeg.id, lane, t: currentTimeMs, anchor })
+          }}
+          viewMarkers={viewMarkers}
+          selectedViewT={selectedView && viewBox && selectedView.boxId === viewBox.id ? selectedView.t : null}
+          onSelectView={t => {
+            if (!viewBox) return
+            pause()
+            setSelectedView({ boxId: viewBox.id, t })
+            seekToMs(t)
+          }}
+          onMoveView={(from, to) => {
+            if (!viewBox || !activeSegment || sectionBlocked(activeSegment.id)) return
+            moveViewChange(viewBox.id, from, to, activeSegment.start_ms, activeSegment.end_ms)
+            const moved = viewChanges(useEditorStore.getState().keyframes[viewBox.id] ?? [])
+              .reduce((best, v) => Math.abs(v.t_ms - to) < Math.abs(best - to) ? v.t_ms : best, from)
+            setSelectedView({ boxId: viewBox.id, t: moved })
+            // The preview shows that moment, with this view: you see where the key is going
+            pause()
+            seekToMs(moved)
+            return moved
+          }}
+          onRemoveView={t => {
+            if (!viewBox || viewMarkers.length <= 1 || (activeSegment && sectionBlocked(activeSegment.id))) return
+            removeViewChange(viewBox.id, t)
+            setSelectedView(null)
+          }}
+          onDuplicateView={t => {
+            if (!viewBox || !activeSegment || sectionBlocked(activeSegment.id)) return
+            pause()
+            const at = duplicateViewChange(viewBox.id, t, activeSegment.end_ms)
+            if (at == null) { notifyLocked('No room for a copy right after this view — move the next one or pick another'); return }
+            // The copy is picked, under the playhead: drag it wherever it should go
+            setSelectedView({ boxId: viewBox.id, t: at })
+            seekToMs(at)
+          }}
+        />
+      </div>
+      </div>
+
       {confirmDialog}
 
       {/* Why an edit didn't happen: something is locked */}
+      {dropUploading && (
+        <div role="status" className="fixed left-1/2 bottom-16 -translate-x-1/2 flex items-center gap-2 px-3.5 h-9 rounded-full text-xs font-medium pointer-events-none"
+          style={{ zIndex: 130, background: 'var(--ed-popover)', color: 'var(--ed-text)', boxShadow: '0 0 0 1px rgba(200,255,0,0.35), 0 12px 32px -8px rgba(0,0,0,0.7)' }}>
+          {dropUpload.state.phase === 'finishing' ? 'Adding' : 'Uploading'} {dropUpload.state.fileName} · {dropUpload.state.progress}%
+        </div>
+      )}
       {lockNote && (
         <div role="status" className="fixed left-1/2 bottom-6 -translate-x-1/2 flex items-center gap-2 px-3.5 h-9 rounded-full text-xs font-medium pointer-events-none"
           style={{ zIndex: 130, background: 'var(--ed-popover)', color: 'var(--ed-text)', boxShadow: '0 0 0 1px rgba(200,255,0,0.35), 0 12px 32px -8px rgba(0,0,0,0.7)' }}>
@@ -3335,6 +3980,14 @@ function CtlButtons({ state, can, onToggle, size, what, inert }: {
 // A music track that is the main video's own sound, detached onto the Music lane
 const MAIN_AUDIO_PREFIX = 'main-video:'
 const isMainAudio = (t: { storage_path: string }) => t.storage_path.startsWith(MAIN_AUDIO_PREFIX)
+
+/** The tracks of photos, text and music, saved beside the clip's rows (read back by savedLanes, tracks.ts) */
+function withLanes<L extends object>(layers: L | null, items: Array<{ id: string; track?: number }>): L | { v: 1; rows: string[]; cut: never[]; parts: string[]; lanes: Record<string, number> } | null {
+  const lanes: Record<string, number> = {}
+  for (const x of items) if (x.track != null) lanes[x.id] = x.track
+  if (!Object.keys(lanes).length) return layers
+  return { ...(layers ?? { v: 1 as const, rows: [], cut: [], parts: [] }), lanes } as L & { lanes: Record<string, number> }
+}
 
 // ── What's in a section (Format panel) ─────────────────────────────────────────
 
@@ -3615,12 +4268,74 @@ function ZoomSlider({ zoom, onZoom }: { zoom: number; onZoom: (z: number) => voi
   )
 }
 
-function msToTenths(ms: number) {
-  const tenths = Math.floor(Math.max(0, ms) / 100)
-  const s = Math.floor(tenths / 10)
-  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}.${tenths % 10}`
+/** One frame at 30 fps: the arrow keys step the playhead by this */
+const FRAME_MS = 1000 / 30
+
+/** m:ss.hh — to the hundredth, so a one-frame step with the arrow keys shows */
+function msToHundredths(ms: number) {
+  const cs = Math.floor(Math.max(0, ms) / 10)
+  const s = Math.floor(cs / 100)
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}.${String(cs % 100).padStart(2, '0')}`
 }
 
 function formatElapsed(sec: number) {
   return `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`
+}
+
+/**
+ * The tools as tabs along the top of the options panel. When they don't all fit, ‹ › at the ends
+ * scroll them (the open one is always scrolled into view).
+ */
+function ToolTabs({ tool, onPick }: { tool: Tool; onPick: (t: Tool) => void }) {
+  const ref = useRef<HTMLElement>(null)
+  const [more, setMore] = useState({ left: false, right: false })
+  const measure = useCallback(() => {
+    const el = ref.current
+    if (!el) return
+    const left = el.scrollLeft > 2, right = el.scrollLeft + el.clientWidth < el.scrollWidth - 2
+    setMore(m => (m.left === left && m.right === right ? m : { left, right }))
+  }, [])
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    measure()
+    const ro = new ResizeObserver(measure)
+    ro.observe(el)
+    el.addEventListener('scroll', measure, { passive: true })
+    return () => { ro.disconnect(); el.removeEventListener('scroll', measure) }
+  }, [measure])
+  useEffect(() => {
+    ref.current?.querySelector('[data-active]')?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+  }, [tool])
+  const scroll = (dir: -1 | 1) => ref.current?.scrollBy({ left: dir * 160, behavior: 'smooth' })
+  const arrow = (dir: -1 | 1) => (
+    <button type="button" onClick={() => scroll(dir)} aria-label={dir < 0 ? 'More tools on the left' : 'More tools on the right'}
+      className="absolute top-0 bottom-0 z-10 flex items-center justify-center transition-colors hover:text-white"
+      style={{
+        [dir < 0 ? 'left' : 'right']: 0, width: 22, color: 'rgb(var(--ed-fg) / 0.75)',
+        background: `linear-gradient(${dir < 0 ? '90deg' : '270deg'}, var(--ed-panel) 55%, transparent)`,
+      }}>
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d={dir < 0 ? 'M15 18l-6-6 6-6' : 'M9 18l6-6-6-6'} />
+      </svg>
+    </button>
+  )
+  return (
+    <div className="relative shrink-0" style={{ borderBottom: '1px solid rgb(var(--ed-fg) / 0.07)' }}>
+      {more.left && arrow(-1)}
+      <nav ref={ref} aria-label="Editor tools" data-tour="tools" className="ed-tool-tabs flex items-stretch gap-0.5 px-1 pt-1 overflow-x-auto no-scrollbar">
+        {TOOLS.map(t => {
+          const active = tool === t.id
+          return (
+            <button key={t.id} type="button" onClick={() => onPick(t.id)} aria-pressed={active} title={t.title}
+              className="ed-tool ed-tool-tab shrink-0" data-active={active || undefined} style={{ width: 46, height: 40 }}>
+              <svg width="15" height="15" viewBox="0 0 24 24" aria-hidden="true">{t.icon}</svg>
+              <span className="font-medium">{t.label}</span>
+            </button>
+          )
+        })}
+      </nav>
+      {more.right && arrow(1)}
+    </div>
+  )
 }
