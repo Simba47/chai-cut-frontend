@@ -22,9 +22,10 @@ export type MediaSection = 'media' | 'library'
 
 type Filter = 'all' | 'video' | 'audio' | 'image'
 type SortBy = 'time' | 'name' | 'type' | 'duration'
-type View = 'grid' | 'list' | 'large'
+type View = 'grid-sm' | 'grid' | 'list' | 'large'
 const VIEWS: Array<{ id: View; label: string; icon: React.ReactNode }> = [
-  { id: 'grid', label: 'Grid', icon: <><rect x="3" y="4" width="7" height="7" rx="1.5" /><rect x="14" y="4" width="7" height="7" rx="1.5" /><rect x="3" y="14" width="7" height="6" rx="1.5" /><rect x="14" y="14" width="7" height="6" rx="1.5" /></> },
+  { id: 'grid-sm', label: 'Small grid', icon: <><rect x="3" y="3" width="5" height="5" rx="1" /><rect x="9.5" y="3" width="5" height="5" rx="1" /><rect x="16" y="3" width="5" height="5" rx="1" /><rect x="3" y="9.5" width="5" height="5" rx="1" /><rect x="9.5" y="9.5" width="5" height="5" rx="1" /><rect x="16" y="9.5" width="5" height="5" rx="1" /><rect x="3" y="16" width="5" height="5" rx="1" /><rect x="9.5" y="16" width="5" height="5" rx="1" /><rect x="16" y="16" width="5" height="5" rx="1" /></> },
+  { id: 'grid', label: 'Medium grid', icon: <><rect x="3" y="4" width="7" height="7" rx="1.5" /><rect x="14" y="4" width="7" height="7" rx="1.5" /><rect x="3" y="14" width="7" height="6" rx="1.5" /><rect x="14" y="14" width="7" height="6" rx="1.5" /></> },
   { id: 'list', label: 'List', icon: <><path d="M8 6h13M8 12h13M8 18h13" /><path d="M3 6h.01M3 12h.01M3 18h.01" /></> },
   { id: 'large', label: 'Large list', icon: <><rect x="3" y="4" width="7" height="6" rx="1.5" /><rect x="3" y="14" width="7" height="6" rx="1.5" /><path d="M13 6h8M13 9h5M13 16h8M13 19h5" /></> },
 ]
@@ -177,9 +178,11 @@ export function MediaLibrary({ items, loading, used, filter, onFilter, section, 
                   <span className="text-[12.5px] font-semibold" style={{ color: 'var(--ed-text)' }}>{filter === 'all' ? 'No media yet' : `No ${filter === 'image' ? 'images' : filter} yet`}</span>
                   <span className="text-[11px]">Import videos, photos or audio, or drop files here</span>
                 </button>
-              ) : view === 'grid' ? (
-                <div className="grid gap-x-2 gap-y-2.5" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(96px, 1fr))' }}>
-                  {shown.map(item => <Card key={`${item.kind}:${item.id}`} item={item} added={used.has(item.id)} onAdd={() => onAdd(item)} onDelete={() => onDelete(item)} />)}
+              ) : view === 'grid' || view === 'grid-sm' ? (
+                // Medium: about 96 px cards; small: about 64 px, more to a row
+                <div className={`grid ${view === 'grid-sm' ? 'gap-x-1.5 gap-y-2' : 'gap-x-2 gap-y-2.5'}`}
+                  style={{ gridTemplateColumns: `repeat(auto-fill, minmax(${view === 'grid-sm' ? 64 : 96}px, 1fr))` }}>
+                  {shown.map(item => <Card key={`${item.kind}:${item.id}`} small={view === 'grid-sm'} item={item} added={used.has(item.id)} onAdd={() => onAdd(item)} onDelete={() => onDelete(item)} />)}
                 </div>
               ) : (
                 <div className="flex flex-col gap-1">
@@ -238,9 +241,32 @@ function Thumb({ item, size }: { item: LibraryItem; size: 'card' | 'row' }) {
   )
 }
 
+/** Each kind's name and colour (the timeline's colours: video orange, photo blue, audio purple) */
+const KIND: Record<LibraryItem['kind'], { label: string; color: string }> = {
+  video: { label: 'Video', color: '#f97316' }, image: { label: 'Photo', color: '#60a5fa' }, audio: { label: 'Audio', color: '#c084fc' },
+}
+
 const dragStart = (item: LibraryItem) => (e: React.DragEvent) => {
   e.dataTransfer.setData(MEDIA_DRAG_TYPE, JSON.stringify(item))
   e.dataTransfer.effectAllowed = 'copy'
+  // What follows the pointer: a small file (its kind and name), not the whole big card
+  const k = KIND[item.kind]
+  const chip = document.createElement('div')
+  chip.style.cssText = 'position:fixed;top:-200px;left:-200px;display:flex;align-items:center;gap:6px;padding:5px 9px 5px 6px;'
+    + 'border-radius:8px;background:#1c1c1f;border:1px solid rgba(255,255,255,0.14);box-shadow:0 6px 18px rgba(0,0,0,0.5);'
+    + 'font:600 11px system-ui,sans-serif;color:#fff;max-width:180px;white-space:nowrap;'
+  const icon = document.createElement('span')
+  icon.style.cssText = `flex:none;width:18px;height:22px;border-radius:3px 7px 3px 3px;background:${k.color};position:relative;`
+  const fold = document.createElement('span')
+  fold.style.cssText = 'position:absolute;top:0;right:0;width:7px;height:7px;background:rgba(255,255,255,0.45);border-radius:0 0 0 3px;'
+  icon.appendChild(fold)
+  const name = document.createElement('span')
+  name.style.cssText = 'overflow:hidden;text-overflow:ellipsis;'
+  name.textContent = item.name
+  chip.append(icon, name)
+  document.body.appendChild(chip)
+  e.dataTransfer.setDragImage(chip, 14, 14)
+  setTimeout(() => chip.remove(), 0)
 }
 
 function AddButton({ onAdd, name }: { onAdd: () => void; name: string }) {
@@ -285,7 +311,8 @@ function DeleteButton({ onDelete, name }: { onDelete: () => Promise<void>; name:
   )
 }
 
-function Card({ item, added, onAdd, onDelete }: { item: LibraryItem; added: boolean; onAdd: () => void; onDelete: () => Promise<void> }) {
+/** A grid card; `small` (the small grid): smaller, its name in smaller type */
+function Card({ item, added, onAdd, onDelete, small = false }: { item: LibraryItem; added: boolean; onAdd: () => void; onDelete: () => Promise<void>; small?: boolean }) {
   return (
     <div className="media-card flex flex-col gap-1 min-w-0" draggable onDragStart={dragStart(item)} title={tip(item)}>
       <div className="relative w-full rounded-[10px] overflow-hidden" style={{ aspectRatio: '1 / 1', background: 'rgb(var(--ed-fg) / 0.07)' }}>
@@ -295,7 +322,7 @@ function Card({ item, added, onAdd, onDelete }: { item: LibraryItem; added: bool
         <span className="absolute right-1 top-1"><DeleteButton onDelete={onDelete} name={item.name} /></span>
         <span className="absolute right-1 bottom-1"><AddButton onAdd={onAdd} name={item.name} /></span>
       </div>
-      <span className="text-[11px] truncate" style={{ color: muted(0.65) }}>{item.name}</span>
+      <span className={`${small ? 'text-[10px]' : 'text-[11px]'} truncate`} style={{ color: muted(0.65) }}>{item.name}</span>
     </div>
   )
 }
