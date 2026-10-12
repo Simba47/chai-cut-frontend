@@ -54,11 +54,17 @@ interface VideoPreviewProps {
   activeBoxId: string | null
   onSelectBox: (segmentId: string, boxId: string) => void
   onBoxChange: (boxId: string, pos: BoxPosition) => void
+  /** Subjects tool: clicks on the video mark a person (x, y: fractions of the frame) instead of moving views */
+  marking?: boolean
+  onMark?: (x: number, y: number) => void
+  /** Subjects tool: where each tracked person's face is at the playhead (fractions of the frame) */
+  subjectsAt?: (clipMs: number) => Array<{ id: string; label: string; color: string; box: BoxPosition }>
 }
 
 export function VideoPreview({
   videoRef, videoUrl, currentTimeMs: timeProp, live = false, activeSegment: segmentProp, segmentAt,
   overlaySource, mainVideoId, getPositionAt, activeBoxId, onSelectBox, onBoxChange,
+  marking = false, onMark, subjectsAt,
 }: VideoPreviewProps) {
   const liveMs = useLiveTimeMs(live)
   const currentTimeMs = live ? liveMs : timeProp
@@ -180,6 +186,36 @@ export function VideoPreview({
             </div>
           )
         })()}
+
+        {/* Subjects: each tracked person's face at this moment (on the main video only) */}
+        {subjectsAt && !showsOverlay && subjectsAt(currentTimeMs).map(s => (
+          <div key={s.id} aria-hidden="true" className="absolute pointer-events-none" style={{
+            zIndex: 15, left: `${s.box.x * 100}%`, top: `${s.box.y * 100}%`, width: `${s.box.w * 100}%`, height: `${s.box.h * 100}%`,
+            border: `2px solid ${s.color}`, borderRadius: 6, boxShadow: '0 0 0 1px rgba(0,0,0,0.45)',
+          }}>
+            <span style={{
+              position: 'absolute', left: -2, bottom: '100%', marginBottom: 3, whiteSpace: 'nowrap',
+              fontSize: 10, fontWeight: 700, lineHeight: 1.4, padding: '1px 6px', borderRadius: 4, background: s.color, color: '#111',
+            }}>{s.label}</span>
+          </div>
+        ))}
+
+        {/* Subjects: marking a person — a click anywhere on the picture, nothing else reacts */}
+        {marking && onMark && !showsOverlay && (
+          <div role="button" tabIndex={0} aria-label="Click on a person to mark them"
+            className="absolute inset-0" style={{ zIndex: 30, cursor: 'crosshair', boxShadow: 'inset 0 0 0 2px rgba(200,255,0,0.75)' }}
+            onClick={e => {
+              const r = e.currentTarget.getBoundingClientRect()
+              onMark(Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)), Math.max(0, Math.min(1, (e.clientY - r.top) / r.height)))
+            }}>
+            <span className="absolute left-1/2 -translate-x-1/2 top-2 px-2.5 py-1 rounded-md text-[11px] font-semibold pointer-events-none"
+              style={{ background: 'rgba(0,0,0,0.75)', color: '#c8ff00' }}>Click on a person to mark them</span>
+          </div>
+        )}
+        {marking && showsOverlay && (
+          <span className="absolute left-1/2 -translate-x-1/2 top-2 px-2.5 py-1 rounded-md text-[11px] font-semibold pointer-events-none"
+            style={{ zIndex: 30, background: 'rgba(0,0,0,0.75)', color: '#fbbf24' }}>A video on top is showing here — move to the main video to mark</span>
+        )}
       </div>
     </div>
   )
