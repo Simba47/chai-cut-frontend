@@ -2,7 +2,7 @@
 
 import { InfoTip } from '@/components/ui/info-tip'
 import { musicGainAt, speechRangesInVideo, speechRanges, heardSpeech, type Range as SpeechRange } from '@/modules/editor/musicGain'
-import { useState, useEffect, useLayoutEffect, useRef, useMemo, Fragment } from 'react'
+import { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback, Fragment } from 'react'
 import type { Clip, Segment, CropBox, BoxKeyframe, CaptionStyle, TextOverlay, AudioTrack, Transition, TranscriptWord, LayoutType, Overlay } from '@chai-cut/shared'
 import { VideoPreview, OutputCanvas } from '@/components/editor/VideoPreview'
 import { computeCutRanges, reactionRanges, removedMs, withoutRanges } from '@/lib/cuts'
@@ -46,9 +46,14 @@ import { rowsToLocal, normalizeCoverage, uncoveredRanges, defaultCropForSlot, ms
 import { isShot, flattenShots, toSaved, restoreLayers } from '@/modules/editor/shots'
 import { fitsOn, freeTrackIn, settleTracks, savedLanes, type TrackItem, type TrackRef } from '@/modules/editor/tracks'
 import { viewChanges } from '@/modules/editor/views'
+import { subjectBoxAt, seenShare, followChanges, autoDirectChanges, type SubjectPoint } from '@/modules/editor/subjects'
+import { buildKeyframes } from '@/modules/editor/views'
+import { frameSlotSize } from '@/modules/editor/frames'
+import { getBoxPositionAtLerp } from '@/lib/interpolation'
+import { SubjectsPanel, type SubjectItem } from '@/components/editor/SubjectsPanel'
 import type { SegmentLocal, CropBoxLocal, FrameLayout, FrameLane, FrameItem } from '@chai-cut/shared'
 
-type Tool = 'format' | 'frames' | 'captions' | 'text' | 'media' | 'music' | 'cleanup' | 'post'
+type Tool = 'format' | 'subjects' | 'frames' | 'captions' | 'text' | 'media' | 'music' | 'cleanup' | 'post'
 /** Media: the user's imported media, or Library (stock footage) */
 type MediaFilter = 'all' | 'video' | 'audio' | 'image'
 type SaveState = 'idle' | 'saving' | 'saved' | 'error' | 'retrying'
@@ -98,6 +103,11 @@ const TOOLS: { id: Tool; label: string; title: string; hint: string; icon: React
     id: 'format', label: 'Format', title: 'Formats',
     hint: 'Pick a layout and it starts at the playhead. Drag the view to reframe — each change is a ◆.',
     icon: <path d="M6 2v14a2 2 0 002 2h14M2 6h14a2 2 0 012 2v14" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" fill="none" />,
+  },
+  {
+    id: 'subjects', label: 'Subjects', title: 'Subjects',
+    hint: 'Mark the people in the clip and track them, then frame any view on any of them — from the playhead or for a whole section.',
+    icon: <><circle cx="9" cy="8" r="3.2" stroke="currentColor" strokeWidth="1.8" fill="none" /><path d="M3.5 19.5c.6-3 2.8-5 5.5-5s4.9 2 5.5 5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" fill="none" /><path d="M16 5.5a3 3 0 010 5.6M18 14.6c1.4.7 2.3 2.4 2.6 4.9" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" fill="none" /></>,
   },
   {
     id: 'frames', label: 'Frames', title: 'Frames',
@@ -1528,6 +1538,161 @@ export function EditorShell({
     const t = Math.max(seg.start_ms, Math.min(seg.end_ms - 1, frameStartAt(liveTime.get())))
     setViewAt(boxId, t, pos, seg.start_ms)
   }
+  // ── Subjects (SubjectsPanel, modules/editor/subjects.ts) ─────────────────────
+  // People marked in the clip and tracked by the worker. Marking starts the tracking by itself;
+  // when it's done every section's view switches between them through the clip, to whoever is
+  // talking (one undo step, saved like any edit).
+  type SubjectRow = SubjectItem & { mark_ms: number; mark_x: number; mark_y: number; path: SubjectPoint[] | null; scan_start_ms: number | null; scan_end_ms: number | null }
+  const [subjects, setSubjects] = useState<SubjectRow[]>([])
+  const [subjectsLoaded, setSubjectsLoaded] = useState(false)
+  const [subjectsLoading, setSubjectsLoading] = useState(false)
+  const [subjectsError, setSubjectsError] = useState<string | null>(null)
+  const [marking, setMarking] = useState(false)
+  const [showSubjects, setShowSubjects] = useState(true)
+  const [subjectNotice, setSubjectNotice] = useState<string | null>(null)
+  const subjectsUrl = `/api/clips/${savedClip.id}/subjects`
+  const takeSubjects = useCallback((list: unknown) => {
+    if (!Array.isArray(list)) return
+    setSubjects(list.map((r: SubjectRow) => ({ ...r, seen: null, stale: false })))
+  }, [])
+  const loadSubjects = useCallback(async () => {
+    setSubjectsLoading(true)
+    try {
+      const res = await fetch(subjectsUrl)
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.error ?? 'Could not load the subjects')
+      takeSubjects(data.subjects)
+      setSubjectsError(null)
+    } catch (e) {
+      setSubjectsError(e instanceof Error ? e.message : 'Could not load the subjects')
+    } finally {
+      setSubjectsLoading(false); setSubjectsLoaded(true)
+    }
+  }, [subjectsUrl, takeSubjects])
+  useEffect(() => { if (tool === 'subjects' && !subjectsLoaded) loadSubjects() }, [tool, subjectsLoaded, loadSubjects])
+  // While tracking: check every few seconds
+  const subjectsBusy = subjects.some(s => s.status === 'queued' || s.status === 'running')
+  useEffect(() => {
+    if (!subjectsBusy) return
+    const id = setInterval(loadSubjects, 2500)
+    return () => clearInterval(id)
+  }, [subjectsBusy, loadSubjects])
+  // Marking stops with Esc, or when the Subjects tool closes
+  useEffect(() => {
+    if (!marking) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.stopPropagation(); setMarking(false) } }
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [marking])
+  useEffect(() => { if (tool !== 'subjects') setMarking(false) }, [tool])
+  async function subjectsCall(url: string, init: RequestInit) {
+    const res = await fetch(url, { ...init, headers: { 'Content-Type': 'application/json' } })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) throw new Error(data.error ?? 'Something went wrong')
+    return data
+  }
+  async function markSubject(x: number, y: number) {
+    pause()
+    setMarking(false)
+    setSubjectNotice(null)
+    // The moment on screen, in the source video's time
+    const mark_ms = Math.round(trim.toSource(Math.max(0, liveTime.get())))
+    try {
+      const { subject } = await subjectsCall(subjectsUrl, { method: 'POST', body: JSON.stringify({ mark_ms, x, y }) })
+      setSubjects(list => [...list, { ...subject, seen: null, stale: false }])
+      setSubjectsError(null)
+      // Everyone marked is tracked again together (who is who, and who is talking, is worked out
+      // between all of them)
+      await trackSubjectsNow(true)
+    } catch (e) { setSubjectsError(e instanceof Error ? e.message : 'Could not mark them') }
+  }
+  async function trackSubjectsNow(all: boolean) {
+    setSubjectNotice(null)
+    try {
+      const { subjects: list } = await subjectsCall(`${subjectsUrl}/track`, { method: 'POST', body: JSON.stringify({ start_ms: rawClip.start_ms, end_ms: rawClip.end_ms, all }) })
+      takeSubjects(list)
+      setSubjectsError(null)
+    } catch (e) { setSubjectsError(e instanceof Error ? e.message : 'Could not start tracking') }
+  }
+  async function removeSubject(id: string) {
+    setSubjects(list => list.filter(s => s.id !== id))
+    try { await subjectsCall(`${subjectsUrl}?id=${encodeURIComponent(id)}`, { method: 'DELETE' }) }
+    catch (e) { setSubjectsError(e instanceof Error ? e.message : 'Could not remove them'); loadSubjects() }
+  }
+  async function renameSubject(id: string, label: string) {
+    setSubjects(list => list.map(s => (s.id === id ? { ...s, label } : s)))
+    try { await subjectsCall(subjectsUrl, { method: 'PATCH', body: JSON.stringify({ id, label }) }) }
+    catch (e) { setSubjectsError(e instanceof Error ? e.message : 'Could not rename them'); loadSubjects() }
+  }
+  // How much of the clip each is seen in, and whether the clip has grown past what was tracked
+  const subjectItems = useMemo<SubjectItem[]>(() => subjects.map(s => ({
+    ...s,
+    seen: s.status === 'done' && s.path ? seenShare(s.path, 0, clipLengthMs, trim.toSource) : null,
+    stale: s.status === 'done' && s.scan_start_ms !== null && s.scan_end_ms !== null
+      && (rawClip.start_ms < s.scan_start_ms - 500 || rawClip.end_ms > s.scan_end_ms + 500),
+  })), [subjects, clipLengthMs, trim, rawClip.start_ms, rawClip.end_ms])
+  /**
+   * Frame the whole clip on the tracked people: in every section, a view showing the main video
+   * switches between them — to whoever is talking (autoDirectChanges); a section with two or three
+   * such views (split, trio, a frame) puts one person in each. Views keep their size. Locked
+   * sections, photos and other videos are left alone. One undo step.
+   */
+  function frameClipOnSubjects(list: SubjectRow[]) {
+    const tracked = list.filter(s => s.status === 'done' && s.path?.length) as Array<SubjectRow & { path: SubjectPoint[] }>
+    if (!tracked.length) return
+    const { segments: segs, keyframes: kfs } = useEditorStore.getState()
+    const next = { ...kfs }
+    let framed = 0
+    for (const seg of segs.filter(x => !isShot(x, mainVideoId) && x.end_ms - x.start_ms > 250).sort((a, b) => a.start_ms - b.start_ms)) {
+      if (seg.locked || seg.layout === 'horizontal') continue
+      const frame = isFrameLayout(seg.layout)
+      const mainSlots = frame ? frameOf(seg).main_slots ?? [0] : null
+      // The views that show the main video (in a frame: its main slots, not one shown whole)
+      const views = [...seg.crop_boxes].sort((a, b) => a.slot_index - b.slot_index).filter(b => !b.image_path
+        && !(b.source_video_id && b.source_video_id !== mainVideoId)
+        && (!mainSlots || (mainSlots.includes(b.slot_index) && frameSlotSize(seg.layout as FrameLayout, true, b.slot_index, seg.frame?.row_h) !== null)))
+      views.forEach((box, i) => {
+        const size = getBoxPositionAtLerp(seg.start_ms, kfs[box.id] ?? box.keyframes ?? [])
+        const view = { w: size.w, h: size.h }
+        const changes = views.length === 1
+          ? autoDirectChanges(tracked, seg.start_ms, seg.end_ms, trim.toSource, view)
+          : followChanges(tracked[i % tracked.length].path, seg.start_ms, seg.end_ms, trim.toSource, view, 'smooth')
+        if (!changes?.length) return
+        next[box.id] = buildKeyframes(changes.map((c, k) => (k === 0 ? { ...c, t_ms: seg.start_ms } : c)))
+          .map(k => ({ id: crypto.randomUUID(), box_id: box.id, t_ms: k.t_ms, x: k.x, y: k.y, w: k.w, h: k.h }))
+        framed++
+      })
+    }
+    if (!framed) { setSubjectNotice('They aren’t seen in the parts of the clip that can be framed on them.'); return }
+    useEditorStore.setState({ keyframes: next })
+    const names = tracked.map(s => s.label)
+    setSubjectNotice(names.length > 1
+      ? `The view now switches between ${names.slice(0, -1).join(', ')} and ${names[names.length - 1]} through the clip — to whoever is talking. Undo takes it back.`
+      : `The view now follows ${names[0]} through the clip. Undo takes it back.`)
+  }
+  // When tracking finishes, the clip is framed on them
+  const wasBusyRef = useRef(false)
+  useEffect(() => {
+    const busy = subjects.some(s => s.status === 'new' || s.status === 'queued' || s.status === 'running')
+    if (wasBusyRef.current && !busy) frameClipOnSubjects(subjects)
+    wasBusyRef.current = busy
+  }, [subjects]) // eslint-disable-line react-hooks/exhaustive-deps
+  // The clip grew past what was tracked: track everyone again (the view is framed again after)
+  const restaleRef = useRef(false)
+  useEffect(() => {
+    if (restaleRef.current || subjectsBusy) return
+    if (subjectItems.some(s => s.status === 'done' && s.stale)) { restaleRef.current = true; trackSubjectsNow(true) }
+  }, [subjectItems, subjectsBusy]) // eslint-disable-line react-hooks/exhaustive-deps
+  // The tracked people on the video, at a clip time (while the Subjects tool is open)
+  const subjectsAt = useMemo(() => {
+    const tracked = subjects.filter(s => s.status === 'done' && s.path?.length)
+    if (tool !== 'subjects' || !showSubjects || !tracked.length) return undefined
+    return (ms: number) => tracked.flatMap(s => {
+      const box = subjectBoxAt(s.path!, trim.toSource(ms))
+      return box ? [{ id: s.id, label: s.label, color: s.color, box }] : []
+    })
+  }, [subjects, tool, showSubjects, trim])
+
   // The frame on screen: its own time in the video (see frameStartAt)
   const shownFrameRef = useRef<number | null>(null)
   useEffect(() => {
@@ -3207,6 +3372,16 @@ export function EditorShell({
               </div>
             )}
 
+            {tool === 'subjects' && (
+              <SubjectsPanel
+                subjects={subjectItems} loading={subjectsLoading} error={subjectsError}
+                marking={marking} onToggleMarking={() => { setSubjectNotice(null); setMarking(m => !m) }}
+                onRemove={removeSubject} onRename={renameSubject}
+                onShowMark={id => { const s = subjects.find(x => x.id === id); if (s) { pause(); seekToMs(Math.max(0, trim.toTimeline(s.mark_ms))) } }}
+                showOnVideo={showSubjects} onShowOnVideo={setShowSubjects} notice={subjectNotice}
+              />
+            )}
+
             {tool === 'frames' && (
               <FramesPanel
                 frames={cropPositions.filter(x => isFrameLayout(x.layout))}
@@ -3525,6 +3700,7 @@ export function EditorShell({
                 activeBoxId={activeBoxId ?? null}
                 onSelectBox={(segId, boxId) => { setActiveSegmentId(segId); setActiveBoxId(boxId) }}
                 onBoxChange={handleBoxChange}
+                marking={marking} onMark={markSubject} subjectsAt={subjectsAt}
               />
               {playingAdded && !playingAdded.hidden && (
                 <div className="absolute top-3 left-3 flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold pointer-events-none"
