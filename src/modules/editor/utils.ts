@@ -1,6 +1,6 @@
 import type { CropBoxLocal, BoxKeyframeLocal, LayoutType, SegmentLocal, Segment, CropBox, BoxKeyframe } from '@chai-cut/shared'
 import type { BoxPosition } from '@/lib/interpolation'
-import { isFrameLayout, frameSlotHeight, frameOf } from './frames'
+import { isFrameLayout, frameSlotSize, frameOf } from './frames'
 
 // ── Crop geometry ─────────────────────────────────────────────────────────────
 // Crop boxes are stored normalised to the source frame (0–1 on each axis). The renderer
@@ -14,7 +14,11 @@ const DEFAULT_SOURCE_AR = 16 / 9
 
 /** Pixel aspect (w/h) of one output slot, or null when the slot takes the whole frame letterboxed. */
 export function slotPixelAspect(layout: LayoutType, frameBand = false, slot = 0, rowH?: number[] | null): number | null {
-  if (isFrameLayout(layout)) return OUT_W / (OUT_H * frameSlotHeight(layout, frameBand, slot, rowH))
+  if (isFrameLayout(layout)) {
+    // A slot that shows the video whole (contain) takes it uncropped, like Horizontal
+    const size = frameSlotSize(layout, frameBand, slot, rowH)
+    return size ? (OUT_W * size.w) / (OUT_H * size.h) : null
+  }
   switch (layout) {
     case 'horizontal': return null
     case 'split': return OUT_W / (OUT_H / 2)   // 9:8
@@ -55,6 +59,8 @@ export function defaultCropForSlot(layout: LayoutType, slotIdx: number, videoAR 
   const a = isFrameLayout(layout) ? normalizedSlotAspect(layout, videoAR, true, slotIdx) : normalizedSlotAspect(layout, videoAR)
   if (a === null) return { x: 0, y: 0, w: 1, h: 1 }
   const portrait = a > 1 // source narrower than the slot: stack slots vertically instead
+  // Close-up + wide: the top slot starts as a close-up (the middle of the picture, zoomed in)
+  if (layout === 'frame_two_crops' && slotIdx === 0) return rectAt(a, 0.5, 0.42, 0.5)
   // Frame slots each show their own media, so every slot starts centred on it
   if (isFrameLayout(layout)) return rectAt(a, 0.5, 0.5, 1)
   switch (layout) {

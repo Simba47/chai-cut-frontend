@@ -7,6 +7,9 @@ export type JobStatus = 'queued' | 'processing' | 'done' | 'failed'
 export type SourceType = 'upload' | 'link'
 export type FrameLayout = 'frame_single' | 'frame_video_photo' | 'frame_dual' | 'frame_dual_letterbox' | 'frame_triple'
   | 'frame_title_caption' | 'frame_big_small' | 'frame_photo_story'
+  | 'frame_blur_fill' | 'frame_gameplay' | 'frame_pip' | 'frame_screenshot' | 'frame_comment' | 'frame_letterbox_wide'
+  | 'frame_two_crops' | 'frame_side_by_side' | 'frame_name_tags' | 'frame_brand_card' | 'frame_top_list'
+  | 'frame_screen_face' | 'frame_audiogram' | 'frame_grid' | 'frame_news'
 export type LayoutType = 'vertical' | 'split' | 'trio' | 'spotlight' | 'centered' | 'horizontal' | FrameLayout
 /** How a photo slot moves over its format's duration */
 export type SlotMotion = 'none' | 'zoom_in' | 'zoom_out' | 'pan_left' | 'pan_right'
@@ -25,7 +28,8 @@ export interface FrameBand {
 export type CornerStyle = number
 
 /** A lane of a frame: one of its media slots (0 = top) or the letterbox band */
-export type FrameLane = number | 'band'
+/** A media slot (0–3), the text band, or a frame's second text area (a name tag, a badge, a ticker) */
+export type FrameLane = number | 'band' | 'band2'
 export type FrameItemKind = 'video' | 'photo' | 'text'
 
 /**
@@ -47,6 +51,8 @@ export interface FrameItem {
   muted?: boolean
   /** Not shown (or heard) in the preview or the export */
   hidden?: boolean
+  /** Can't be moved, trimmed, cut, changed or deleted until unlocked */
+  locked?: boolean
   /** Video / photo: its box inside its slot when resized / moved (shares of the slot; absent = the whole slot) */
   rect?: { x: number; y: number; w: number; h: number } | null
   // Photo
@@ -65,6 +71,12 @@ export interface FrameItem {
   /** Text: where its centre sits in its band/slot, as shares of the row (default 0.5, 0.5 = centred) */
   x?: number
   y?: number
+  /** Text: its box's width as a share of the frame's (the text wraps inside it; absent = 0.88) */
+  w?: number
+  /** Text: its box's height as a share of the frame's, when made taller than its lines (the text stays in its middle) */
+  h?: number
+  /** Text: turned this many degrees clockwise round its centre */
+  rotation?: number | null
   /** Band only: show the clip's captions here instead of fixed text */
   captions?: boolean
 }
@@ -353,6 +365,8 @@ export interface Overlay {
   locked?: boolean
   /** Editor: the timeline track a photo is on (shared with videos and text; tracks.ts). Saved in clips.layers. */
   track?: number
+  /** Degrees, clockwise, round the box's middle (its rotate handle on the preview) */
+  rotation?: number | null
 }
 
 // ─── Editor state (client-only, not persisted as a single blob) ────────────────
@@ -391,4 +405,19 @@ export const LAYOUT_SLOT_COUNT: Record<LayoutType, number> = {
   frame_title_caption: 1,
   frame_big_small: 2,
   frame_photo_story: 2,
+  frame_blur_fill: 1,
+  frame_gameplay: 2,
+  frame_pip: 2,
+  frame_screenshot: 2,
+  frame_comment: 1,
+  frame_letterbox_wide: 1,
+  frame_two_crops: 2,
+  frame_side_by_side: 2,
+  frame_name_tags: 2,
+  frame_brand_card: 1,
+  frame_top_list: 1,
+  frame_screen_face: 2,
+  frame_audiogram: 1,
+  frame_grid: 4,
+  frame_news: 1,
 }

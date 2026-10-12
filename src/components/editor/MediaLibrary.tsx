@@ -22,7 +22,13 @@ export type MediaSection = 'media' | 'library'
 
 type Filter = 'all' | 'video' | 'audio' | 'image'
 type SortBy = 'time' | 'name' | 'type' | 'duration'
-type View = 'grid' | 'list'
+type View = 'grid-sm' | 'grid' | 'list' | 'large'
+const VIEWS: Array<{ id: View; label: string; icon: React.ReactNode }> = [
+  { id: 'grid-sm', label: 'Small grid', icon: <><rect x="3" y="3" width="5" height="5" rx="1" /><rect x="9.5" y="3" width="5" height="5" rx="1" /><rect x="16" y="3" width="5" height="5" rx="1" /><rect x="3" y="9.5" width="5" height="5" rx="1" /><rect x="9.5" y="9.5" width="5" height="5" rx="1" /><rect x="16" y="9.5" width="5" height="5" rx="1" /><rect x="3" y="16" width="5" height="5" rx="1" /><rect x="9.5" y="16" width="5" height="5" rx="1" /><rect x="16" y="16" width="5" height="5" rx="1" /></> },
+  { id: 'grid', label: 'Medium grid', icon: <><rect x="3" y="4" width="7" height="7" rx="1.5" /><rect x="14" y="4" width="7" height="7" rx="1.5" /><rect x="3" y="14" width="7" height="6" rx="1.5" /><rect x="14" y="14" width="7" height="6" rx="1.5" /></> },
+  { id: 'list', label: 'List', icon: <><path d="M8 6h13M8 12h13M8 18h13" /><path d="M3 6h.01M3 12h.01M3 18h.01" /></> },
+  { id: 'large', label: 'Large list', icon: <><rect x="3" y="4" width="7" height="6" rx="1.5" /><rect x="3" y="14" width="7" height="6" rx="1.5" /><path d="M13 6h8M13 9h5M13 16h8M13 19h5" /></> },
+]
 const FILTERS: Array<{ id: Filter; label: string }> = [{ id: 'all', label: 'All' }, { id: 'video', label: 'Video' }, { id: 'audio', label: 'Audio' }, { id: 'image', label: 'Image' }]
 const SORTS: Array<{ id: SortBy; label: string }> = [{ id: 'time', label: 'Time imported' }, { id: 'name', label: 'Name' }, { id: 'type', label: 'Type' }, { id: 'duration', label: 'Duration' }]
 const PREFS_KEY = 'editor.mediaLibrary'
@@ -34,20 +40,21 @@ const clock = (ms: number | null) => {
 }
 
 /**
- * Media, laid out like CapCut's: a narrow menu (Import · Library) and, for Import, a bar with
- * Import, grid / list, sort and filter over the user's videos, photos and audio. Each item shows a
- * picture, its length and "Added" when it is in this clip; + adds it at the playhead, or drag it
- * onto the timeline; the bin (top right) deletes it. Library is the stock footage search (`library`).
+ * Media, laid out like CapCut's. Import (the panel's header switches between Import and Library):
+ * a bar with Import, the view (grid, list, large list), sort and filter over the user's videos,
+ * photos and audio. Each item shows a picture, its length and "Added" when it is in this clip; +
+ * adds it at the playhead, or drag it onto the timeline; the bin deletes it. Library is the stock
+ * footage search (`library`).
  */
-export function MediaLibrary({ items, loading, used, filter, onFilter, section, onSection, importing, onImport, onAdd, onDelete, library }: {
+export function MediaLibrary({ items, loading, used, filter, onFilter, section, importing, onImport, onAdd, onDelete, library }: {
   items: LibraryItem[]
   loading: boolean
   /** Ids (videos) and storage paths (photos, audio) already in this clip */
   used: Set<string>
   filter: Filter
   onFilter: (f: Filter) => void
+  /** Import or Library (switched in the panel's header) */
   section: MediaSection
-  onSection: (s: MediaSection) => void
   /** What is being imported right now (shown on the Import button) */
   importing: string | null
   onImport: (files: File[]) => void
@@ -59,13 +66,13 @@ export function MediaLibrary({ items, loading, used, filter, onFilter, section, 
   const [view, setView] = useState<View>('grid')
   const [sortBy, setSortBy] = useState<SortBy>('time')
   const [latestFirst, setLatestFirst] = useState(true)
-  const [menu, setMenu] = useState<'sort' | 'filter' | null>(null)
+  const [menu, setMenu] = useState<'view' | 'sort' | 'filter' | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   // The view and sort are remembered per browser
   useEffect(() => {
     try {
       const p = JSON.parse(localStorage.getItem(PREFS_KEY) ?? 'null') as { view?: View; sortBy?: SortBy; latestFirst?: boolean } | null
-      if (p?.view === 'grid' || p?.view === 'list') setView(p.view)
+      if (VIEWS.some(x => x.id === p?.view)) setView(p!.view!)
       if (SORTS.some(x => x.id === p?.sortBy)) setSortBy(p!.sortBy!)
       if (typeof p?.latestFirst === 'boolean') setLatestFirst(p.latestFirst)
     } catch { /* storage blocked */ }
@@ -84,10 +91,6 @@ export function MediaLibrary({ items, loading, used, filter, onFilter, section, 
     return [...list].sort(by[sortBy])
   }, [items, filter, sortBy, latestFirst])
 
-  const navBtn = (on: boolean) => ({
-    className: 'w-full text-left px-2.5 py-1.5 rounded-lg text-[12px] font-semibold transition-colors hover:bg-[rgb(var(--ed-fg)/0.06)]',
-    style: on ? { color: ACCENT, background: 'rgb(var(--ed-fg) / 0.07)' } : { color: muted(0.8) },
-  })
   const chevron = (open: boolean) => (
     <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <path d={open ? 'M6 15l6-6 6 6' : 'M6 9l6 6 6-6'} />
@@ -97,12 +100,6 @@ export function MediaLibrary({ items, loading, used, filter, onFilter, section, 
 
   return (
     <div className="flex h-full min-h-0">
-      {/* ── The menu: Import · Library ── */}
-      <nav aria-label="Media" className="shrink-0 flex flex-col gap-1 p-1.5" style={{ width: 92, borderRight: `1px solid ${muted(0.07)}` }}>
-        <button type="button" onClick={() => onSection('media')} aria-pressed={section === 'media'} {...navBtn(section === 'media')}>Import</button>
-        <button type="button" onClick={() => onSection('library')} aria-pressed={section === 'library'} {...navBtn(section === 'library')}>Library</button>
-      </nav>
-
       <div className="flex-1 min-w-0 min-h-0 flex flex-col">
         {section === 'library' ? (
           <div className="flex-1 min-h-0 overflow-y-auto">{library}</div>
@@ -121,14 +118,26 @@ export function MediaLibrary({ items, loading, used, filter, onFilter, section, 
                 {importing ?? 'Import'}
               </button>
               <div className="flex-1" />
-              <button type="button" onClick={() => setView(v => (v === 'grid' ? 'list' : 'grid'))} className={toolBtn}
-                aria-label={view === 'grid' ? 'Show as a list' : 'Show as a grid'} title={view === 'grid' ? 'List view' : 'Grid view'}>
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                  {view === 'grid'
-                    ? <><rect x="3" y="4" width="7" height="7" rx="1.5" /><rect x="14" y="4" width="7" height="7" rx="1.5" /><rect x="3" y="14" width="7" height="6" rx="1.5" /><rect x="14" y="14" width="7" height="6" rx="1.5" /></>
-                    : <><path d="M8 6h13M8 12h13M8 18h13" /><path d="M3 6h.01M3 12h.01M3 18h.01" /></>}
-                </svg>
-              </button>
+              <div className="relative">
+                <button type="button" onClick={() => setMenu(m => (m === 'view' ? null : 'view'))} aria-expanded={menu === 'view'}
+                  aria-label={`View: ${VIEWS.find(v => v.id === view)?.label}`} title="View" className={toolBtn}
+                  style={menu === 'view' ? { background: muted(0.1) } : undefined}>
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    {VIEWS.find(v => v.id === view)?.icon}
+                  </svg>
+                  {chevron(menu === 'view')}
+                </button>
+                {menu === 'view' && (
+                  <Menu onClose={() => setMenu(null)}>
+                    {VIEWS.map(o => (
+                      <MenuItem key={o.id} on={view === o.id} onClick={() => { setView(o.id); setMenu(null) }}>
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ color: muted(0.7) }}>{o.icon}</svg>
+                        {o.label}
+                      </MenuItem>
+                    ))}
+                  </Menu>
+                )}
+              </div>
               <div className="relative">
                 <button type="button" onClick={() => setMenu(m => (m === 'sort' ? null : 'sort'))} aria-expanded={menu === 'sort'} aria-label="Sort" title="Sort" className={toolBtn}
                   style={menu === 'sort' ? { background: muted(0.1) } : undefined}>
@@ -157,7 +166,6 @@ export function MediaLibrary({ items, loading, used, filter, onFilter, section, 
                 )}
               </div>
             </div>
-            <p className="shrink-0 px-3 pb-1.5 text-[12px] font-semibold" style={{ color: muted(0.8) }}>{FILTERS.find(f => f.id === filter)?.label}</p>
 
             {/* ── The items ── */}
             <div className="flex-1 min-h-0 overflow-y-auto px-2 pb-3">
@@ -170,13 +178,15 @@ export function MediaLibrary({ items, loading, used, filter, onFilter, section, 
                   <span className="text-[12.5px] font-semibold" style={{ color: 'var(--ed-text)' }}>{filter === 'all' ? 'No media yet' : `No ${filter === 'image' ? 'images' : filter} yet`}</span>
                   <span className="text-[11px]">Import videos, photos or audio, or drop files here</span>
                 </button>
-              ) : view === 'grid' ? (
-                <div className="grid gap-x-2 gap-y-2.5" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(96px, 1fr))' }}>
-                  {shown.map(item => <Card key={`${item.kind}:${item.id}`} item={item} added={used.has(item.id)} onAdd={() => onAdd(item)} onDelete={() => onDelete(item)} />)}
+              ) : view === 'grid' || view === 'grid-sm' ? (
+                // Medium: about 96 px cards; small: about 64 px, more to a row
+                <div className={`grid ${view === 'grid-sm' ? 'gap-x-1.5 gap-y-2' : 'gap-x-2 gap-y-2.5'}`}
+                  style={{ gridTemplateColumns: `repeat(auto-fill, minmax(${view === 'grid-sm' ? 64 : 96}px, 1fr))` }}>
+                  {shown.map(item => <Card key={`${item.kind}:${item.id}`} small={view === 'grid-sm'} item={item} added={used.has(item.id)} onAdd={() => onAdd(item)} onDelete={() => onDelete(item)} />)}
                 </div>
               ) : (
                 <div className="flex flex-col gap-1">
-                  {shown.map(item => <Row key={`${item.kind}:${item.id}`} item={item} added={used.has(item.id)} onAdd={() => onAdd(item)} onDelete={() => onDelete(item)} />)}
+                  {shown.map(item => <Row key={`${item.kind}:${item.id}`} big={view === 'large'} item={item} added={used.has(item.id)} onAdd={() => onAdd(item)} onDelete={() => onDelete(item)} />)}
                 </div>
               )}
             </div>
@@ -231,9 +241,32 @@ function Thumb({ item, size }: { item: LibraryItem; size: 'card' | 'row' }) {
   )
 }
 
+/** Each kind's name and colour (the timeline's colours: video orange, photo blue, audio purple) */
+const KIND: Record<LibraryItem['kind'], { label: string; color: string }> = {
+  video: { label: 'Video', color: '#f97316' }, image: { label: 'Photo', color: '#60a5fa' }, audio: { label: 'Audio', color: '#c084fc' },
+}
+
 const dragStart = (item: LibraryItem) => (e: React.DragEvent) => {
   e.dataTransfer.setData(MEDIA_DRAG_TYPE, JSON.stringify(item))
   e.dataTransfer.effectAllowed = 'copy'
+  // What follows the pointer: a small file (its kind and name), not the whole big card
+  const k = KIND[item.kind]
+  const chip = document.createElement('div')
+  chip.style.cssText = 'position:fixed;top:-200px;left:-200px;display:flex;align-items:center;gap:6px;padding:5px 9px 5px 6px;'
+    + 'border-radius:8px;background:#1c1c1f;border:1px solid rgba(255,255,255,0.14);box-shadow:0 6px 18px rgba(0,0,0,0.5);'
+    + 'font:600 11px system-ui,sans-serif;color:#fff;max-width:180px;white-space:nowrap;'
+  const icon = document.createElement('span')
+  icon.style.cssText = `flex:none;width:18px;height:22px;border-radius:3px 7px 3px 3px;background:${k.color};position:relative;`
+  const fold = document.createElement('span')
+  fold.style.cssText = 'position:absolute;top:0;right:0;width:7px;height:7px;background:rgba(255,255,255,0.45);border-radius:0 0 0 3px;'
+  icon.appendChild(fold)
+  const name = document.createElement('span')
+  name.style.cssText = 'overflow:hidden;text-overflow:ellipsis;'
+  name.textContent = item.name
+  chip.append(icon, name)
+  document.body.appendChild(chip)
+  e.dataTransfer.setDragImage(chip, 14, 14)
+  setTimeout(() => chip.remove(), 0)
 }
 
 function AddButton({ onAdd, name }: { onAdd: () => void; name: string }) {
@@ -278,7 +311,8 @@ function DeleteButton({ onDelete, name }: { onDelete: () => Promise<void>; name:
   )
 }
 
-function Card({ item, added, onAdd, onDelete }: { item: LibraryItem; added: boolean; onAdd: () => void; onDelete: () => Promise<void> }) {
+/** A grid card; `small` (the small grid): smaller, its name in smaller type */
+function Card({ item, added, onAdd, onDelete, small = false }: { item: LibraryItem; added: boolean; onAdd: () => void; onDelete: () => Promise<void>; small?: boolean }) {
   return (
     <div className="media-card flex flex-col gap-1 min-w-0" draggable onDragStart={dragStart(item)} title={tip(item)}>
       <div className="relative w-full rounded-[10px] overflow-hidden" style={{ aspectRatio: '1 / 1', background: 'rgb(var(--ed-fg) / 0.07)' }}>
@@ -288,18 +322,20 @@ function Card({ item, added, onAdd, onDelete }: { item: LibraryItem; added: bool
         <span className="absolute right-1 top-1"><DeleteButton onDelete={onDelete} name={item.name} /></span>
         <span className="absolute right-1 bottom-1"><AddButton onAdd={onAdd} name={item.name} /></span>
       </div>
-      <span className="text-[11px] truncate" style={{ color: muted(0.65) }}>{item.name}</span>
+      <span className={`${small ? 'text-[10px]' : 'text-[11px]'} truncate`} style={{ color: muted(0.65) }}>{item.name}</span>
     </div>
   )
 }
 
-function Row({ item, added, onAdd, onDelete }: { item: LibraryItem; added: boolean; onAdd: () => void; onDelete: () => Promise<void> }) {
+/** A list row; `big` (the large list): a taller row with a bigger picture */
+function Row({ item, added, onAdd, onDelete, big = false }: { item: LibraryItem; added: boolean; onAdd: () => void; onDelete: () => Promise<void>; big?: boolean }) {
   return (
-    <div className="media-card flex items-center gap-2 p-1 rounded-lg transition-colors hover:bg-[rgb(var(--ed-fg)/0.05)]" draggable onDragStart={dragStart(item)}
+    <div className={`media-card flex items-center ${big ? 'gap-3 p-1.5' : 'gap-2 p-1'} rounded-lg transition-colors hover:bg-[rgb(var(--ed-fg)/0.05)]`} draggable onDragStart={dragStart(item)}
       title={tip(item)}>
-      <span className="relative shrink-0 rounded-md overflow-hidden" style={{ width: 44, height: 32, background: 'rgb(var(--ed-fg) / 0.07)' }}><Thumb item={item} size="row" /></span>
-      <span className="flex-1 min-w-0 flex flex-col">
-        <span className="text-[12px] truncate text-[var(--ed-text)]">{item.name}</span>
+      <span className={`relative shrink-0 ${big ? 'rounded-lg' : 'rounded-md'} overflow-hidden`}
+        style={{ width: big ? 112 : 44, height: big ? 63 : 32, background: 'rgb(var(--ed-fg) / 0.07)' }}><Thumb item={item} size={big ? 'card' : 'row'} /></span>
+      <span className={`flex-1 min-w-0 flex flex-col ${big ? 'gap-1' : ''}`}>
+        <span className={big ? 'text-[13px] font-medium leading-snug line-clamp-2 text-[var(--ed-text)]' : 'text-[12px] truncate text-[var(--ed-text)]'}>{item.name}</span>
         <span className="text-[10.5px] tabular-nums" style={{ color: muted(0.45) }}>
           {item.kind === 'image' ? 'Image' : item.kind === 'audio' ? 'Audio' : 'Video'}{item.duration_ms != null ? ` · ${clock(item.duration_ms)}` : ''}{added ? ' · Added' : ''}
         </span>

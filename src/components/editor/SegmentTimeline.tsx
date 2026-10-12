@@ -5,7 +5,7 @@ import type { SegmentLocal, LayoutType, TextOverlay, FrameItem, FrameLane, Frame
 import type { TrackRef } from '@/modules/editor/tracks'
 import { Waveform } from './Waveform'
 import { useLiveTimeMs, liveTime, usePlayerStore } from '@/modules/player/store'
-import { isFrameLayout, FRAME_TEMPLATES, frameLanesFor, frameOf, laneItems, itemBounds, MIN_ITEM_MS } from '@/modules/editor/frames'
+import { isFrameLayout, FRAME_TEMPLATES, frameLanesFor, frameOf, laneItems, itemBounds, MIN_ITEM_MS, isTextLane, frameSlotCount } from '@/modules/editor/frames'
 import { isShot } from '@/modules/editor/shots'
 
 export const LAYOUT_COLORS: Record<LayoutType, string> = {
@@ -24,14 +24,27 @@ export const LAYOUT_COLORS: Record<LayoutType, string> = {
   frame_title_caption: '#2dd4bf',
   frame_big_small: '#2dd4bf',
   frame_photo_story: '#2dd4bf',
+  frame_blur_fill: '#2dd4bf',
+  frame_gameplay: '#2dd4bf',
+  frame_pip: '#2dd4bf',
+  frame_screenshot: '#2dd4bf',
+  frame_comment: '#2dd4bf',
+  frame_letterbox_wide: '#2dd4bf',
+  frame_two_crops: '#2dd4bf',
+  frame_side_by_side: '#2dd4bf',
+  frame_name_tags: '#2dd4bf',
+  frame_brand_card: '#2dd4bf',
+  frame_top_list: '#2dd4bf',
+  frame_screen_face: '#2dd4bf',
+  frame_audiogram: '#2dd4bf',
+  frame_grid: '#2dd4bf',
+  frame_news: '#2dd4bf',
 }
 
 // Frame lane items: one colour per kind of media
 export const FRAME_ITEM_COLORS = { video: '#60a5fa', photo: '#34d399', text: '#f472b6', captions: '#facc15', main: '#2dd4bf' } as const
 export const frameItemColor = (it: FrameItem) => it.captions ? FRAME_ITEM_COLORS.captions : FRAME_ITEM_COLORS[it.kind]
 const FRAME_LANE_H = 26
-// Frames not under the playhead keep their lanes, shrunk to thin lines
-const THIN_H = 4, THIN_GAP = 2
 
 /**
  * The lanes a frame shows on the timeline. The band's lane appears once text is on it (the band
@@ -42,10 +55,10 @@ const THIN_H = 4, THIN_GAP = 2
 function visibleLanes(seg: SegmentLocal) {
   const frame = frameOf(seg)
   const main = frame.main_slots ?? [0]
-  const slots = FRAME_TEMPLATES[seg.layout as FrameLayout].rows.filter(r => r.kind === 'slot').length
+  const slots = frameSlotCount(seg.layout as FrameLayout)
   return frameLanesFor(seg).filter(r => {
     const empty = laneItems(frame, r.lane, seg).length === 0
-    if (r.lane === 'band') return !empty
+    if (isTextLane(r.lane)) return !empty
     return !(slots === 1 && main.includes(r.lane) && empty)
   })
 }
@@ -257,6 +270,10 @@ function durLabel(ms: number): string {
 }
 
 const ACCENT = '#c8ff00'
+/** What's selected on the timeline: a lime outline with a soft glow, the same on every bar and section */
+const SELECTED_RING = `inset 0 0 0 2px ${ACCENT}, 0 0 0 1px rgba(0,0,0,0.55), 0 0 12px rgba(200,255,0,0.45)`
+/** The playhead's line down through the frame lanes and the media tracks (as over the main video) */
+const PLAYHEAD_LINE: React.CSSProperties = { width: 2, marginLeft: -1, borderRadius: 2, background: '#fff', boxShadow: '0 0 0 1px rgba(0,0,0,0.35), 0 0 10px rgba(255,255,255,0.3)', zIndex: 30 }
 const iconProps = { width: 14, height: 14, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 2, strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const, 'aria-hidden': true }
 
 function msToLabel(ms: number): string {
@@ -344,7 +361,7 @@ interface Props {
   onUpdateFrameItem?: (id: string, patch: Partial<Pick<FrameItem, 'start_ms' | 'end_ms' | 'source_offset_ms'>>) => void
   /** "+" on a lane: open the add menu next to it */
   onAddFrameItem?: (lane: FrameLane, anchor: DOMRect) => void
-  /** A thin line of another frame clicked: go there and select it */
+  /** An item of another frame (not the one being edited) clicked: go there and select it */
   onJumpToFrameItem?: (segId: string, itemId: string) => void
   /** View changes (◆) of the selected crop box in the format under the playhead (see views.ts) */
   viewMarkers?: { t_ms: number; cut: boolean }[]
@@ -372,6 +389,12 @@ interface Props {
   onDeleteSegment?: (id: string) => void
   /** The section the user clicked on the film strip (its bin shows only then); null when none */
   pickedSegmentId?: string | null
+  /**
+   * What is selected (its id: a section, a video on top, a photo, text, music or a frame's item —
+   * `main:<slot>` for the main video in a frame's slot). Exactly that gets the lime selection
+   * outline; given, it decides alone which bar shows as selected.
+   */
+  selectedId?: string | null
   /** Clicking the strip picks the section under the pointer; clicking anywhere else clears it */
   onPickSegment?: (id: string | null) => void
   /** A join dragged onto the next one: the section between goes, the one dragged from takes its time */
@@ -483,6 +506,7 @@ export function SegmentTimeline({
   mainMuted = false,
   onTrackDrop,
   pickedSegmentId = null,
+  selectedId,
   onPickSegment,
   showToolbar = true,
 }: Props) {
@@ -699,7 +723,9 @@ export function SegmentTimeline({
 
   function handleTrackDrag(e: React.PointerEvent) {
     if (e.button !== 0) return
-    // A click on the film strip picks the section under it (showing its bin); anywhere else clears it
+    // A click on the film strip picks the section under it (showing its bin). A click on the ruler
+    // only moves the playhead: what's selected stays selected (pick a video, then click where to
+    // cut it — Split)
     if (onPickSegment) {
       const rect = trackRef.current?.getBoundingClientRect()
       const y = rect ? e.clientY - rect.top : -1
@@ -708,7 +734,7 @@ export function SegmentTimeline({
       // (a video on top is picked on its own lane: the strip under it is the section's. Without
       // layers the video is the part there, so the strip picks it)
       const hit = onStrip ? mains.find(m => t >= m.start_ms && t < m.end_ms) ?? (layered ? undefined : brolls.find(b => t >= b.start_ms && t < b.end_ms)) : undefined
-      onPickSegment(hit?.id ?? null)
+      if (onStrip) onPickSegment(hit?.id ?? null)
     }
     // While the playhead is dragged the editor doesn't redraw (the playhead, the time and both
     // views follow the live time); it catches up on release
@@ -938,17 +964,22 @@ export function SegmentTimeline({
     if (e.button !== 0) return
     e.stopPropagation(); e.preventDefault()
     onSelectMusic?.(m.id)
-    if (m.locked) return
+    if (m.locked) { onSeek(msFromClientX(e.clientX)); return }
     const k = msPerPx()
     if (!k) return
     const sx = e.clientX
     const len = musicEnd(m) - m.start_ms
     setDragging(`music-${m.id}`)
+    // A click (no drag): the playhead goes where it was clicked (Split cuts there)
+    const clickMs = msFromClientX(e.clientX)
+    let dragged = false
     follow(ev => {
+      if (!dragged && Math.abs(ev.clientX - sx) < 3) return
+      dragged = true
       const st = Math.max(0, Math.min(duration - 200, m.start_ms + (ev.clientX - sx) * k))
       onMusicMove?.(m.id, Math.round(snapSpanAt(st, len)))
       hoverTrack(ev, 'audio', m.track ?? 0)
-    }, () => endTrackDrag({ kind: 'music', id: m.id }, m.track ?? 0))
+    }, () => { if (dragged) endTrackDrag({ kind: 'music', id: m.id }, m.track ?? 0); else onSeek(clickMs) })
   }
 
   // Music bar ends: drag to trim; picks the track too
@@ -970,13 +1001,18 @@ export function SegmentTimeline({
     if (e.button !== 0) return
     e.stopPropagation(); e.preventDefault()
     onSelectPhoto?.(ph.id)
-    if (ph.locked) return
+    if (ph.locked) { if (part === 'body') onSeek(msFromClientX(e.clientX)); return }
     const k = msPerPx()
     if (!k) return
     const sx = e.clientX
     const len = ph.end_ms - ph.start_ms
     setDragging(`photo-${ph.id}`)
+    // A click on its body (no drag): the playhead goes where it was clicked (Split cuts there)
+    const clickMs = msFromClientX(e.clientX)
+    let dragged = false
     follow(ev => {
+      if (!dragged && Math.abs(ev.clientX - sx) < 3) return
+      dragged = true
       const d = (ev.clientX - sx) * k
       if (part === 'body') {
         const st = Math.round(snapSpanAt(Math.max(0, Math.min(duration - len, ph.start_ms + d)), len))
@@ -987,24 +1023,29 @@ export function SegmentTimeline({
       } else {
         onPhotoTimeChange?.(ph.id, { start_ms: ph.start_ms, end_ms: Math.round(Math.min(duration, Math.max(ph.start_ms + 200, snapEdgeAt(ph.end_ms + d)))) })
       }
-    }, () => endTrackDrag({ kind: 'photo', id: ph.id }, ph.track ?? 0))
+    }, () => { if (dragged) endTrackDrag({ kind: 'photo', id: ph.id }, ph.track ?? 0); else if (part === 'body') onSeek(clickMs) })
   }
 
   // Text bar: the body moves it, the ends trim it (at least 0.2 s, inside the clip)
   function handleTextOverlayBodyDrag(e: React.PointerEvent, id: string, origStart: number, origEnd: number) {
     e.stopPropagation()
-    if (textOverlays.find(t => t.id === id)?.locked) return
+    if (textOverlays.find(t => t.id === id)?.locked) { onSeek(msFromClientX(e.clientX)); return }
     const k = msPerPx()
     if (!k) return
     const sx = e.clientX
     const len = origEnd - origStart
     const track = textOverlays.find(t => t.id === id)?.track ?? 0
     setDragging(`text-${id}`)
+    // A click (no drag): the playhead goes where it was clicked (Split cuts there)
+    const clickMs = msFromClientX(e.clientX)
+    let dragged = false
     follow(ev => {
+      if (!dragged && Math.abs(ev.clientX - sx) < 3) return
+      dragged = true
       const st = Math.round(snapSpanAt(Math.max(0, Math.min(duration - len, origStart + (ev.clientX - sx) * k)), len))
       onTextOverlayUpdate?.(id, { start_ms: st, end_ms: Math.min(duration, st + len) })
       hoverTrack(ev, 'visual', track)
-    }, () => endTrackDrag({ kind: 'text', id }, track))
+    }, () => { if (dragged) endTrackDrag({ kind: 'text', id }, track); else onSeek(clickMs) })
   }
 
   function handleTextOverlayEdgeDrag(e: React.PointerEvent, id: string, origStart: number, origEnd: number, side: 'left' | 'right') {
@@ -1035,7 +1076,9 @@ export function SegmentTimeline({
     e.stopPropagation()
     e.preventDefault()
     onSelectFrameItem?.(item.id)
-    if (frameSeg.locked) return
+    // A click on its body (no drag): the playhead goes where it was clicked (Split cuts there)
+    const clickMs = msFromClientX(e.clientX)
+    if (frameSeg.locked || item.locked) { if (mode === 'move') onSeek(clickMs); return }
     const rect = trackRef.current?.getBoundingClientRect()
     if (!rect || duration <= 0) return
     const frame = frameOf(frameSeg)
@@ -1080,6 +1123,7 @@ export function SegmentTimeline({
       window.removeEventListener('pointerup', up)
       setDragging(null)
       setSnapLine(null)
+      if (!moved && mode === 'move') onSeek(clickMs)
     }
     window.addEventListener('pointermove', move)
     window.addEventListener('pointerup', up)
@@ -1191,7 +1235,7 @@ export function SegmentTimeline({
       setDragging(null)
       setBrollGhost(null)
       setSnapLine(null)
-      if (!moved) { onSeek(seg.start_ms); onPickSegment?.(seg.id); return }
+      if (!moved) { onSeek(Math.max(seg.start_ms, Math.min(seg.end_ms, seg.start_ms + grab))); onPickSegment?.(seg.id); return }
       onBrollChange?.(seg.id, Math.round(next.start), Math.round(next.end), true)
       endTrackDrag({ kind: 'shot', id: seg.id }, seg.track ?? 0)
     }
@@ -1248,12 +1292,16 @@ export function SegmentTimeline({
     borderRadius: 2, backgroundColor: `${color}b3`, cursor: 'pointer', touchAction: 'none',
   })
   /** A media bar on its row: tinted with its kind's colour, a solid edge on the left; picked = white ring */
+  /** Whether a bar is the selected thing: `selectedId` when the editor gives it, else the bar's own pick */
+  const isSel = (id: string, own: boolean) => (selectedId !== undefined ? id === selectedId : own)
   const mediaBar = (color: string, startMs: number, endMs: number, sel: boolean, on: boolean, fits: boolean, st?: { hidden?: boolean; locked?: boolean }): React.CSSProperties => ({
     left: `${pct(startMs)}%`, width: `max(12px, ${pct(endMs - startMs)}%)`, borderRadius: 5, paddingRight: 8,
     backgroundColor: `${color}${sel || on ? '55' : '30'}`,
+    // Selected: a lime outline, the same on every kind of bar (and on the main video's sections)
     boxShadow: fits && on ? `inset 0 0 0 1.5px ${ACCENT}, 0 0 10px rgba(200,255,0,0.35)`
-      : sel ? `inset 0 0 0 1.5px #fff, 0 0 8px ${color}88`
+      : sel ? SELECTED_RING
         : `inset 0 0 0 1px ${color}80`,
+    zIndex: sel ? 3 : undefined,
     cursor: on ? 'grabbing' : 'grab', touchAction: 'none',
     ...(st?.hidden ? { opacity: 0.45, backgroundImage: 'repeating-linear-gradient(135deg, rgba(0,0,0,0.35) 0 4px, transparent 4px 8px)' } : {}),
     ...(st?.locked ? { cursor: 'pointer' } : {}),
@@ -1282,7 +1330,7 @@ export function SegmentTimeline({
   const shotBar = (seg: SegmentLocal) => {
     const kind = isStock?.(seg) ? 'broll' as const : 'video' as const
     const color = MEDIA_COLORS[kind], what = kind === 'broll' ? 'B-roll' : 'Video'
-    const sel = seg.id === activeSegmentId || seg.id === pickedSegmentId
+    const sel = isSel(seg.id, seg.id === activeSegmentId || seg.id === pickedSegmentId)
     const on = !!dragging?.startsWith('broll-') && dragging.endsWith(seg.id)
     const at = brollGhost?.id === seg.id ? { start_ms: brollGhost.start, end_ms: brollGhost.end } : seg
     const box = seg.crop_boxes[0]
@@ -1301,7 +1349,7 @@ export function SegmentTimeline({
     )
   }
   const photoBar = (ph: (typeof photos)[number]) => {
-    const sel = ph.id === activePhotoId
+    const sel = isSel(ph.id, ph.id === activePhotoId)
     const on = dragging === `photo-${ph.id}`
     const fits = fitLabel(ph.start_ms, ph.end_ms)
     return (
@@ -1318,7 +1366,7 @@ export function SegmentTimeline({
     )
   }
   const textBar = (o: TextOverlay) => {
-    const sel = o.id === activeTextOverlayId
+    const sel = isSel(o.id, o.id === activeTextOverlayId)
     const on = dragging === `text-${o.id}`
     const fits = fitLabel(o.start_ms, o.end_ms)
     return (
@@ -1338,7 +1386,7 @@ export function SegmentTimeline({
   const musicBar = (m: (typeof musicTracks)[number]) => {
     const end = musicEnd(m)
     const on = dragging === `music-${m.id}`
-    const sel = selectedMusicId === m.id
+    const sel = isSel(m.id, selectedMusicId === m.id)
     const fits = fitLabel(m.start_ms, end)
     return (
       <div key={m.id} onPointerDown={e => handleMusicDrag(e, m)}
@@ -1548,7 +1596,7 @@ export function SegmentTimeline({
                   {originals.map(m => {
                     const end = musicEnd(m)
                     const on = dragging === `music-${m.id}`
-                    const sel = selectedMusicId === m.id
+                    const sel = isSel(m.id, selectedMusicId === m.id)
                     return (
                       <div key={m.id} onPointerDown={e => handleMusicDrag(e, m)}
                         title={`Original sound · ${msToLabel(m.start_ms)}–${msToLabel(end)} · click to change it, drag to move, drag the ends to trim`}
@@ -1587,21 +1635,22 @@ export function SegmentTimeline({
                 </div>
               ))}
 
-              {/* Each format: the selected one stays bright inside a lime trim frame (its handles are the
-                  frame's sides), the others are dimmed. Its colour only shows as the dot on its chip. */}
+              {/* Each format (or frame): the selected one stays bright inside the lime selection outline,
+                  the others are dimmed while one is selected. Its colour only shows as the dot on its chip. */}
               {mains.map(seg => {
-                const isActive = seg.id === (pickedSegmentId ?? (selectedMusicId ? null : activeSegmentId))
+                const own = seg.id === (pickedSegmentId ?? (selectedMusicId ? null : activeSegmentId))
+                const isActive = isSel(seg.id, own)
+                const otherPicked = selectedId !== undefined ? !isActive && mains.some(m => m.id === selectedId) : !isActive
                 const widthPx = (pct(seg.end_ms - seg.start_ms) / 100) * contentW
                 return (
                   <div key={seg.id} className="absolute inset-y-0 pointer-events-none"
                     style={{
                       left: `${pct(seg.start_ms)}%`, width: `${pct(seg.end_ms - seg.start_ms)}%`,
-                      background: isActive
-                        ? 'linear-gradient(180deg, transparent 55%, rgba(0,0,0,0.45))'
-                        : 'linear-gradient(180deg, rgba(0,0,0,0.3), rgba(0,0,0,0.5))',
-                      boxShadow: isActive
-                        ? `inset 0 2px 0 ${ACCENT}, inset 0 -2px 0 ${ACCENT}, 0 0 10px -3px rgba(200,255,0,0.4)`
-                        : 'inset 0 0 0 1px rgba(255,255,255,0.12)',
+                      background: otherPicked
+                        ? 'linear-gradient(180deg, rgba(0,0,0,0.3), rgba(0,0,0,0.5))'
+                        : 'linear-gradient(180deg, transparent 55%, rgba(0,0,0,0.45))',
+                      boxShadow: isActive ? SELECTED_RING : 'inset 0 0 0 1px rgba(255,255,255,0.12)',
+                      zIndex: isActive ? 2 : undefined,
                       borderRadius: 12,
                       transition: 'box-shadow .25s, background .25s',
                     }}>
@@ -1616,42 +1665,31 @@ export function SegmentTimeline({
               const dragging = clipDrag?.edge === edge
               const lim = clipEdgeLimits
               const can = edge === 'start' ? lim.startEarlier + lim.startLater > 0 : lim.endEarlier + lim.endLater > 0
-              const label = edge === 'start' ? 'Drag to start the clip earlier or later' : 'Drag to end the clip earlier or later'
+              const label = edge === 'start' ? 'Drag to extend the clip at its start, or shorten it' : 'Drag to extend the clip at its end, or shorten it'
               return (
                 <span key={edge} role="slider" aria-label={label} title={`${label} (up to 5 min)`}
                   aria-valuenow={dragging ? clipDrag!.delta : 0}
                   onPointerDown={e => handleClipEdgeDown(e, edge)}
                   className="group/ce absolute flex items-center justify-center"
                   style={{
-                    top: STRIP_TOP, height: STRIP_H, width: 12, zIndex: 40,
-                    ...(edge === 'start' ? { left: -13 } : { right: -13 }),
+                    top: STRIP_TOP, height: STRIP_H, width: 14, zIndex: 40,
+                    ...(edge === 'start' ? { left: -15 } : { right: -15 }),
                     cursor: can ? 'ew-resize' : 'not-allowed',
                   }}>
-                  <span className="block rounded-full transition-[background,height,box-shadow]"
+                  <span className="flex items-center justify-center rounded-full transition-[background,height,box-shadow]"
                     style={{
-                      width: 5, height: dragging ? STRIP_H : STRIP_H - 16,
+                      width: 12, height: dragging ? STRIP_H : STRIP_H - 10,
                       background: can ? ACCENT : 'rgb(var(--ed-fg) / 0.25)',
                       boxShadow: dragging ? '0 0 12px rgba(200,255,0,0.6)' : undefined,
-                    }} />
+                    }}>
+                    {/* Arrows both ways: out extends the clip, in shortens it */}
+                    <svg width="9" height="12" viewBox="0 0 9 12" fill="none" stroke="#111" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                      <path d="M3 3L1 6l2 3M6 3l2 3-2 3" />
+                    </svg>
+                  </span>
                 </span>
               )
             })}
-            {clipDrag && clipDrag.delta !== 0 && (() => {
-              const { edge, delta } = clipDrag
-              const more = edge === 'start' ? delta < 0 : delta > 0
-              const secs = `${(Math.abs(delta) / 1000).toFixed(1)} s`
-              const text = edge === 'start' ? (more ? `Starts ${secs} earlier` : `Starts ${secs} later`) : (more ? `Ends ${secs} later` : `Ends ${secs} earlier`)
-              // (the clip already shows the change: the strip, the sections and the length follow the drag)
-              return (
-                <span className="absolute pointer-events-none px-2 py-0.5 rounded-full text-[10px] font-bold whitespace-nowrap"
-                  style={{
-                    ...(edge === 'start' ? { left: 0 } : { right: 0 }), top: RULER_H + LANE_H / 2, transform: 'translateY(-50%)', zIndex: 45,
-                    background: more ? ACCENT : '#ef4444', color: more ? '#111' : '#fff',
-                  }}>
-                  {text} · {msToLabel(duration)} long
-                </span>
-              )
-            })()}
 
             {/* A section about to go (its join dragged onto the next one): red, with what releasing does */}
             {doomed && (
@@ -1740,15 +1778,19 @@ export function SegmentTimeline({
               })}
             </div>
 
-            {/* ── Trim handles: the start and end of every format ── */}
+            {/* ── Trim handles: the start and end of every format. At the clip's own two ends there is
+                one handle only — the clip's (above): it extends the clip and shortens it, and the
+                format there follows it ── */}
             {mains.flatMap((seg, i) => {
-              const selected = seg.id === activeSegmentId
+              const selected = isSel(seg.id, seg.id === activeSegmentId)
               const label = formatName(seg)
-              return (['start', 'end'] as const).map(edge => {
+              const clipEnds = !!clipEdgeLimits && !!onClipEdge
+              return (['start', 'end'] as const).flatMap(edge => {
+                if (clipEnds && (edge === 'start' ? seg.start_ms <= 1 : seg.end_ms >= duration - 1)) return []
                 const t = edge === 'start' ? seg.start_ms : seg.end_ms
                 const key = `${edge}-${seg.id}`
                 const active = dragging === key
-                return (
+                return [
                   <button key={key}
                     onPointerDown={e => handleEdgeDown(e, seg, edge)}
                     onKeyDown={e => {
@@ -1779,8 +1821,8 @@ export function SegmentTimeline({
                     ) : (
                       <span className="transition-colors group-hover:bg-white" style={{ width: 2, height: 14, borderRadius: 2, background: 'rgba(255,255,255,0.45)' }} />
                     )}
-                  </button>
-                )
+                  </button>,
+                ]
               })
             })}
 
@@ -1808,142 +1850,183 @@ export function SegmentTimeline({
           </div>
 
 
-          {/* ── Frame lanes: what each slot and the text band shows over this frame's time ── */}
+          {/* ── Frame lanes: what each slot and the text band shows, at full size for every frame on
+              the clip. The frame under the playhead (or picked) can be edited here; another frame's
+              video, photo or text is a click away (the playhead goes there and picks it). ── */}
           {(() => {
             const active = frameSeg && isFrameLayout(frameSeg.layout) ? frameSeg : null
-            const others = byTime.filter(x => isFrameLayout(x.layout) && x.id !== active?.id)
-            const activeRows = active ? visibleLanes(active) : []
-            const thinRows = Math.max(0, ...others.map(x => visibleLanes(x).length))
-            if (!activeRows.length && !thinRows) return null
+            const frames = byTime.filter(x => isFrameLayout(x.layout))
+            // Every lane any frame has, in the order the frames show them (the picked frame's first)
+            const rows: ReturnType<typeof visibleLanes> = []
+            for (const f of active ? [active, ...frames.filter(x => x.id !== active.id)] : frames) {
+              for (const r of visibleLanes(f)) if (!rows.some(x => x.lane === r.lane)) rows.push(r)
+            }
+            if (!rows.length) return null
             const seg = active
             const frame = seg ? frameOf(seg) : null
             const main = frame?.main_slots ?? [0]
             const inSection = !!seg && currentTimeMs >= seg.start_ms && currentTimeMs < seg.end_ms
             const plusAt = seg ? (inSection ? currentTimeMs : seg.start_ms) : 0
+            /** Another frame's stretch of a lane: its main video and items, full size; a click goes there */
+            const otherFrame = (o: SegmentLocal, lane: (typeof rows)[number]['lane']) => {
+              const row = visibleLanes(o).find(r => r.lane === lane)
+              if (!row) return null
+              const of = frameOf(o)
+              const isMain = !isTextLane(row.lane) && (of.main_slots ?? [0]).includes(row.lane)
+              return (
+                <Fragment key={o.id}>
+                  <div className="absolute inset-y-0.5 pointer-events-none" style={{
+                    left: `${pct(o.start_ms)}%`, width: `${pct(o.end_ms - o.start_ms)}%`, borderRadius: 5,
+                    background: 'rgb(var(--ed-fg) / 0.045)', boxShadow: 'inset 0 0 0 1px rgb(var(--ed-fg) / 0.06)',
+                  }}>
+                    <span className="absolute top-1/2 -translate-y-1/2 text-[10px] font-semibold whitespace-nowrap" style={{ left: 8, color: 'rgb(var(--ed-fg) / 0.3)' }}>
+                      {row.label}{row.lane === 'band' && row.label === 'Text' ? ' band' : ''}
+                    </span>
+                  </div>
+                  {isMain && (
+                    <button type="button" className="absolute inset-y-0.5 flex items-center overflow-hidden"
+                      aria-label={`${row.label} · Main video, ${msToLabel(o.start_ms)}–${msToLabel(o.end_ms)}: go there`}
+                      title={`${row.label} · Main video · ${msToLabel(o.start_ms)}–${msToLabel(o.end_ms)} · click to go there`}
+                      onPointerDown={e => e.stopPropagation()}
+                      onClick={e => { e.stopPropagation(); onSeek(o.start_ms) }}
+                      style={{
+                        left: `${pct(o.start_ms)}%`, width: `${pct(o.end_ms - o.start_ms)}%`, borderRadius: 5,
+                        background: `${FRAME_ITEM_COLORS.main}24`, boxShadow: `inset 2px 0 0 ${FRAME_ITEM_COLORS.main}`,
+                      }}>
+                      <span className="px-2 truncate text-[10px] font-semibold pointer-events-none" style={{ color: 'rgb(var(--ed-fg) / 0.75)' }}>{row.label} · Main video</span>
+                    </button>
+                  )}
+                  {laneItems(of, row.lane, o).map(it => {
+                    const from = Math.max(it.start_ms, o.start_ms), to = Math.min(it.end_ms, o.end_ms)
+                    const color = frameItemColor(it)
+                    const name = it.kind === 'video' ? (videoTitles[it.source_video_id ?? ''] ?? 'Video')
+                      : it.kind === 'photo' ? 'Photo' : it.captions ? 'Captions' : (it.text?.trim() || 'Text')
+                    return (
+                      <button key={it.id} type="button" className="absolute inset-y-0.5 flex items-center overflow-hidden"
+                        aria-label={`${name}, ${row.label}, ${msToLabel(from)}–${msToLabel(to)}: go there and pick it`}
+                        title={`${name} · ${msToLabel(from)}–${msToLabel(to)} · click to go there and pick it`}
+                        onPointerDown={e => e.stopPropagation()}
+                        onClick={e => { e.stopPropagation(); onJumpToFrameItem?.(o.id, it.id) }}
+                        style={{
+                          left: `${pct(from)}%`, width: `max(8px, ${pct(to - from)}%)`, borderRadius: 5, zIndex: 2,
+                          background: `${color}38`, boxShadow: `inset 0 0 0 1px ${color}88`,
+                        }}>
+                        {it.kind === 'photo' && it.image_url && (
+                          <img src={it.image_url} alt="" crossOrigin="anonymous" className="h-full w-7 object-cover shrink-0 pointer-events-none" style={{ marginLeft: 8, opacity: 0.9 }} />
+                        )}
+                        <span className="px-2.5 truncate text-[10px] font-semibold pointer-events-none" style={{ color: 'rgb(var(--ed-fg) / 0.92)' }}>
+                          {it.kind === 'text' && !it.captions ? 'T · ' : ''}{name}
+                        </span>
+                      </button>
+                    )
+                  })}
+                </Fragment>
+              )
+            }
             return (
               <div ref={lanesRef} data-lane="frame" className="relative flex flex-col pb-1.5"
-                style={{ gap: 2, paddingTop: 4, borderTop: '1px solid rgb(var(--ed-fg) / 0.05)', minHeight: 4 + thinRows * (THIN_H + THIN_GAP) + 6 }}>
-                {/* Other frames: the same lanes as thin lines (blue video, green photo, pink text) */}
-                {others.flatMap(o => {
-                  const of = frameOf(o)
-                  const om = of.main_slots ?? [0]
-                  return visibleLanes(o).flatMap((row, li) => {
-                    const top = 4 + li * (THIN_H + THIN_GAP)
-                    const bars: React.ReactNode[] = []
-                    if (row.lane !== 'band' && om.includes(row.lane)) {
-                      bars.push(
-                        <button key={`${o.id}-main-${row.lane}`} aria-label={`${row.label} · Main video, ${msToLabel(o.start_ms)}–${msToLabel(o.end_ms)}`}
-                          title={`${row.label} · Main video · ${msToLabel(o.start_ms)}–${msToLabel(o.end_ms)}`}
-                          onPointerDown={e => e.stopPropagation()}
-                          onClick={e => { e.stopPropagation(); onSeek(o.start_ms) }}
-                          className="absolute rounded-full hover:brightness-150"
-                          style={{ top, height: THIN_H, left: `${pct(o.start_ms)}%`, width: `${pct(o.end_ms - o.start_ms)}%`, background: `${FRAME_ITEM_COLORS.main}66`, zIndex: 5 }} />,
-                      )
-                    }
-                    for (const it of laneItems(of, row.lane, o)) {
-                      const from = Math.max(it.start_ms, o.start_ms), to = Math.min(it.end_ms, o.end_ms)
-                      const name = it.kind === 'video' ? (videoTitles[it.source_video_id ?? ''] ?? 'Video')
-                        : it.kind === 'photo' ? 'Photo' : it.captions ? 'Captions' : (it.text?.trim() || 'Text')
-                      bars.push(
-                        <button key={`${o.id}-${it.id}`} aria-label={`${name}, ${row.label}, ${msToLabel(from)}–${msToLabel(to)}`}
-                          title={`${name} · ${row.label} · ${msToLabel(from)}–${msToLabel(to)}`}
-                          onPointerDown={e => e.stopPropagation()}
-                          onClick={e => { e.stopPropagation(); onJumpToFrameItem?.(o.id, it.id) }}
-                          className="absolute rounded-full hover:brightness-125"
-                          style={{ top, height: THIN_H, left: `${pct(from)}%`, width: `max(4px, ${pct(to - from)}%)`, background: frameItemColor(it), zIndex: 6 }} />,
-                      )
-                    }
-                    return bars
-                  })
-                })}
-                {seg && frame && activeRows.map(row => {
-                  const laneKey = String(row.lane)
-                  const isMain = row.lane !== 'band' && main.includes(row.lane)
-                  const mainId = `main:${row.lane}`
-                  const pulsing = pulseLane === row.lane
+                style={{ gap: 2, paddingTop: 4, borderTop: '1px solid rgb(var(--ed-fg) / 0.05)' }}>
+                {rows.map(lane => {
+                  const laneKey = String(lane.lane)
+                  const row = seg ? visibleLanes(seg).find(r => r.lane === lane.lane) : undefined
+                  const isMain = !!row && !isTextLane(row.lane) && main.includes(row.lane)
+                  const mainId = `main:${lane.lane}`
+                  const pulsing = pulseLane === lane.lane
                   return (
-                    <div key={laneKey} className="relative" style={{ height: FRAME_LANE_H, cursor: 'pointer' }}
+                    <div key={laneKey} className="group/lane relative" style={{ height: FRAME_LANE_H, cursor: 'pointer' }}
                       onPointerDown={e => { onSelectFrameItem?.(null); handleTrackDrag(e) }}>
-                      {/* This frame's stretch of the lane */}
-                      <div className="absolute inset-y-0.5 pointer-events-none" style={{
-                        left: `${pct(seg.start_ms)}%`, width: `${pct(seg.end_ms - seg.start_ms)}%`, borderRadius: 5,
-                        background: pulsing ? 'rgba(200,255,0,0.12)' : 'rgb(var(--ed-fg) / 0.045)',
-                        boxShadow: pulsing ? 'inset 0 0 0 1.5px #c8ff00' : 'inset 0 0 0 1px rgb(var(--ed-fg) / 0.06)',
-                        transition: 'background 0.3s, box-shadow 0.3s',
-                      }}>
-                        <span className="absolute top-1/2 -translate-y-1/2 text-[10px] font-semibold whitespace-nowrap" style={{ left: 8, color: 'rgb(var(--ed-fg) / 0.3)' }}>
-                          {row.label}{row.lane === 'band' ? ' band' : ''}
-                        </span>
-                      </div>
-                      {/* The main video under this slot's items */}
-                      {isMain && (() => {
-                        const on = activeFrameItemId === mainId
-                        return (
-                          <div className="absolute inset-y-0.5 flex items-center overflow-hidden"
-                            onPointerDown={e => { e.stopPropagation(); onSelectFrameItem?.(mainId); handleTrackDrag(e) }}
-                            title="Main video · select it to change its sound or take it out of this slot"
-                            style={{
-                              left: `${pct(seg.start_ms)}%`, width: `${pct(seg.end_ms - seg.start_ms)}%`, borderRadius: 5,
-                              background: `${FRAME_ITEM_COLORS.main}${on ? '40' : '24'}`,
-                              boxShadow: on ? `inset 0 0 0 1.5px ${FRAME_ITEM_COLORS.main}` : `inset 2px 0 0 ${FRAME_ITEM_COLORS.main}`,
-                            }}>
-                            <span className="px-2 truncate text-[10px] font-semibold pointer-events-none" style={{ color: 'rgb(var(--ed-fg) / 0.75)' }}>{row.label} · Main video</span>
-                          </div>
-                        )
-                      })()}
-                      {/* Items */}
-                      {laneItems(frame, row.lane, seg).map(it => {
-                        const from = Math.max(it.start_ms, seg.start_ms), to = Math.min(it.end_ms, seg.end_ms)
-                        const on = it.id === activeFrameItemId
-                        const color = frameItemColor(it)
-                        const name = it.kind === 'video' ? (videoTitles[it.source_video_id ?? ''] ?? 'Video')
-                          : it.kind === 'photo' ? 'Photo'
-                          : it.captions ? 'Captions' : (it.text?.trim() || 'Text')
-                        return (
-                          <div key={it.id} className="absolute inset-y-0.5 flex items-center overflow-hidden"
-                            onPointerDown={e => handleFrameItemDown(e, it, 'move')}
-                            title={`${name} · ${msToLabel(from)}–${msToLabel(to)} · drag to move, drag the ends to trim`}
-                            style={{
-                              left: `${pct(from)}%`, width: `max(8px, ${pct(to - from)}%)`, borderRadius: 5, zIndex: on ? 3 : 2,
-                              background: `${color}${on ? '55' : '38'}`,
-                              boxShadow: on ? `inset 0 0 0 1.5px ${color}, 0 0 0 1px rgba(0,0,0,0.5)` : `inset 0 0 0 1px ${color}88`,
-                              cursor: dragging === `item-${it.id}` ? 'grabbing' : 'grab', touchAction: 'none',
-                            }}>
-                            <div className="absolute left-0 inset-y-0 w-2 cursor-col-resize z-10" style={{ background: 'rgba(0,0,0,0.25)' }}
-                              onPointerDown={e => handleFrameItemDown(e, it, 'start')} />
-                            {it.kind === 'photo' && it.image_url && (
-                              // crossOrigin must match FrameMediaPool's <img> for the same URL (frameMedia.ts) —
-                              // a mismatched second request for the same URL fails as a CORS error, not a fresh fetch.
-                              <img src={it.image_url} alt="" crossOrigin="anonymous" className="h-full w-7 object-cover shrink-0 pointer-events-none" style={{ marginLeft: 8, opacity: 0.9 }} />
-                            )}
-                            <span className="px-2.5 truncate text-[10px] font-semibold pointer-events-none" style={{ color: 'rgb(var(--ed-fg) / 0.92)' }}>
-                              {it.kind === 'text' && !it.captions ? 'T · ' : ''}{name}
-                            </span>
-                            <div className="absolute right-0 inset-y-0 w-2 cursor-col-resize z-10" style={{ background: 'rgba(0,0,0,0.25)' }}
-                              onPointerDown={e => handleFrameItemDown(e, it, 'end')} />
-                          </div>
-                        )
-                      })}
-                      {/* "+" rides on the playhead: adds from here (splitting an item that's showing) */}
-                      <button
-                        ref={el => { if (el) plusRefs.current.set(laneKey, el); else plusRefs.current.delete(laneKey) }}
-                        onPointerDown={e => e.stopPropagation()}
-                        onClick={e => { e.stopPropagation(); onAddFrameItem?.(row.lane, e.currentTarget.getBoundingClientRect()) }}
-                        aria-label={`Add to the ${row.label.toLowerCase()} ${row.lane === 'band' ? 'band' : 'slot'} at ${msToLabel(plusAt)}`}
-                        title={row.lane === 'band' ? 'Add text or captions here' : 'Add a photo, video or text here'}
-                        className="absolute top-1/2 flex items-center justify-center rounded-full transition-transform hover:scale-110 focus-visible:outline-none"
-                        style={{
-                          left: `${pct(plusAt)}%`, transform: 'translate(-50%, -50%)', width: 18, height: 18, zIndex: 41,
-                          background: '#c8ff00', color: '#000', border: '1.5px solid rgba(0,0,0,0.7)',
-                          boxShadow: pulsing ? '0 0 0 4px rgba(200,255,0,0.35), 0 0 12px rgba(200,255,0,0.8)' : '0 1px 4px rgba(0,0,0,0.6)',
+                      {frames.filter(o => o.id !== seg?.id).map(o => otherFrame(o, lane.lane))}
+                      {seg && frame && row && (<>
+                        {/* This frame's stretch of the lane */}
+                        <div className="absolute inset-y-0.5 pointer-events-none" style={{
+                          left: `${pct(seg.start_ms)}%`, width: `${pct(seg.end_ms - seg.start_ms)}%`, borderRadius: 5,
+                          background: pulsing ? 'rgba(200,255,0,0.12)' : 'rgb(var(--ed-fg) / 0.045)',
+                          boxShadow: pulsing ? 'inset 0 0 0 1.5px #c8ff00' : 'inset 0 0 0 1px rgb(var(--ed-fg) / 0.06)',
+                          transition: 'background 0.3s, box-shadow 0.3s',
                         }}>
-                        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3.5" strokeLinecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
-                      </button>
+                          <span className="absolute top-1/2 -translate-y-1/2 text-[10px] font-semibold whitespace-nowrap" style={{ left: 8, color: 'rgb(var(--ed-fg) / 0.3)' }}>
+                            {row.label}{row.lane === 'band' && row.label === 'Text' ? ' band' : ''}
+                          </span>
+                        </div>
+                        {/* The main video under this slot's items */}
+                        {isMain && (() => {
+                          const on = isSel(mainId, activeFrameItemId === mainId)
+                          return (
+                            <div className="absolute inset-y-0.5 flex items-center overflow-hidden"
+                              onPointerDown={e => { e.stopPropagation(); onSelectFrameItem?.(mainId); handleTrackDrag(e) }}
+                              title="Main video · select it to change its sound or take it out of this slot"
+                              style={{
+                                left: `${pct(seg.start_ms)}%`, width: `${pct(seg.end_ms - seg.start_ms)}%`, borderRadius: 5,
+                                background: `${FRAME_ITEM_COLORS.main}${on ? '40' : '24'}`,
+                                boxShadow: on ? SELECTED_RING : `inset 2px 0 0 ${FRAME_ITEM_COLORS.main}`, zIndex: on ? 3 : undefined,
+                              }}>
+                              <span className="px-2 truncate text-[10px] font-semibold pointer-events-none" style={{ color: 'rgb(var(--ed-fg) / 0.75)' }}>{row.label} · Main video</span>
+                            </div>
+                          )
+                        })()}
+                        {/* Items */}
+                        {laneItems(frame, row.lane, seg).map(it => {
+                          const from = Math.max(it.start_ms, seg.start_ms), to = Math.min(it.end_ms, seg.end_ms)
+                          const on = isSel(it.id, it.id === activeFrameItemId)
+                          const color = frameItemColor(it)
+                          const name = it.kind === 'video' ? (videoTitles[it.source_video_id ?? ''] ?? 'Video')
+                            : it.kind === 'photo' ? 'Photo'
+                            : it.captions ? 'Captions' : (it.text?.trim() || 'Text')
+                          return (
+                            <div key={it.id} className="absolute inset-y-0.5 flex items-center overflow-hidden"
+                              onPointerDown={e => handleFrameItemDown(e, it, 'move')}
+                              title={`${name} · ${msToLabel(from)}–${msToLabel(to)} · drag to move, drag the ends to trim`}
+                              style={{
+                                left: `${pct(from)}%`, width: `max(8px, ${pct(to - from)}%)`, borderRadius: 5, zIndex: on ? 3 : 2,
+                                background: `${color}${on ? '55' : '38'}`,
+                                boxShadow: on ? SELECTED_RING : `inset 0 0 0 1px ${color}88`,
+                                cursor: dragging === `item-${it.id}` ? 'grabbing' : 'grab', touchAction: 'none',
+                              }}>
+                              <div className="absolute left-0 inset-y-0 w-2 cursor-col-resize z-10" style={{ background: 'rgba(0,0,0,0.25)' }}
+                                onPointerDown={e => handleFrameItemDown(e, it, 'start')} />
+                              {it.kind === 'photo' && it.image_url && (
+                                // crossOrigin must match FrameMediaPool's <img> for the same URL (frameMedia.ts) —
+                                // a mismatched second request for the same URL fails as a CORS error, not a fresh fetch.
+                                <img src={it.image_url} alt="" crossOrigin="anonymous" className="h-full w-7 object-cover shrink-0 pointer-events-none" style={{ marginLeft: 8, opacity: 0.9 }} />
+                              )}
+                              <span className="px-2.5 truncate text-[10px] font-semibold pointer-events-none" style={{ color: 'rgb(var(--ed-fg) / 0.92)' }}>
+                                {it.kind === 'text' && !it.captions ? 'T · ' : ''}{name}
+                              </span>
+                              <span className="shrink-0 pr-2.5 pointer-events-none"><StateBadges st={it} /></span>
+                              <div className="absolute right-0 inset-y-0 w-2 cursor-col-resize z-10" style={{ background: 'rgba(0,0,0,0.25)' }}
+                                onPointerDown={e => handleFrameItemDown(e, it, 'end')} />
+                            </div>
+                          )
+                        })}
+                        {/* "+" rides on the playhead: adds from here — only where the lane is empty at the
+                            playhead (over the main video in its slot: while the pointer is on the lane) */}
+                        {(() => {
+                          const taken = laneItems(frame, row.lane, seg).some(it => it.start_ms <= plusAt && plusAt < it.end_ms)
+                          if (taken && !pulsing) return null
+                          const onHover = isMain && !pulsing
+                          return (
+                        <button
+                          ref={el => { if (el) plusRefs.current.set(laneKey, el); else plusRefs.current.delete(laneKey) }}
+                          onPointerDown={e => e.stopPropagation()}
+                          onClick={e => { e.stopPropagation(); onAddFrameItem?.(row.lane, e.currentTarget.getBoundingClientRect()) }}
+                          aria-label={`Add to the ${row.label.toLowerCase()} ${isTextLane(row.lane) ? 'area' : 'slot'} at ${msToLabel(plusAt)}`}
+                          title={isTextLane(row.lane) ? 'Add text here' : 'Add a photo, video or text here'}
+                          className={`absolute top-1/2 flex items-center justify-center rounded-full transition-[transform,opacity] hover:scale-110 focus-visible:outline-none${onHover ? ' opacity-0 group-hover/lane:opacity-100 focus-visible:opacity-100' : ''}`}
+                          style={{
+                            left: `${pct(plusAt)}%`, transform: 'translate(-50%, -50%)', width: 18, height: 18, zIndex: 41,
+                            background: '#c8ff00', color: '#000', border: '1.5px solid rgba(0,0,0,0.7)',
+                            boxShadow: pulsing ? '0 0 0 4px rgba(200,255,0,0.35), 0 0 12px rgba(200,255,0,0.8)' : '0 1px 4px rgba(0,0,0,0.6)',
+                          }}>
+                          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3.5" strokeLinecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+                        </button>
+                          )
+                        })()}
+                      </>)}
                     </div>
                   )
                 })}
-                {/* Playhead through the lanes */}
-                <AtPlayhead pctOf={pct} className="absolute top-0 bottom-0 pointer-events-none" style={{ width: 2, marginLeft: -1, background: 'rgba(200,255,0,0.5)', zIndex: 40 }} />
+                {/* Playhead through the lanes: the same line as over the main video, over every bar */}
+                <AtPlayhead pctOf={pct} className="absolute top-0 bottom-0 pointer-events-none" style={PLAYHEAD_LINE} />
               </div>
             )
           })()}
@@ -1953,8 +2036,9 @@ export function SegmentTimeline({
           {(visual.length > 0 || songs.length > 0) && (
             <div className="relative flex flex-col" style={{ gap: MEDIA_GAP, paddingTop: 6, paddingBottom: 4, borderTop: '1px solid rgb(var(--ed-fg) / 0.05)' }}>
               {laneGuide('broll-') ?? laneGuide('photo-') ?? laneGuide('music-') ?? laneGuide('text-')}
-              {/* Playhead through all the media rows */}
-              <AtPlayhead pctOf={pct} className="absolute top-0 bottom-0 w-px pointer-events-none" style={{ background: 'rgba(255,255,255,0.55)', zIndex: 15 }} />
+              {/* Playhead through all the media rows: the same line as over the main video, over every bar
+                  (so where a split will cut a selected video, photo, text or song is plain to see) */}
+              <AtPlayhead pctOf={pct} className="absolute top-0 bottom-0 pointer-events-none" style={PLAYHEAD_LINE} />
 
               {/* The visual tracks (highest first: drawn over the ones under it), then the audio tracks */}
               {visualTracks.map((t, i) => trackRow('visual', t, i === 0 ? 'top' : null,

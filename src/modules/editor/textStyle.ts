@@ -89,7 +89,8 @@ export const MIN_TEXT_H = 0.03
 /**
  * The lines a text is shown in: each line typed (Enter), and with a box width set (`maxW` > 0),
  * words wrapped onto the next line when the line would be wider than the box. A word wider than
- * the box keeps a line of its own. `measure` gives a string's width in the same units as `maxW`.
+ * the box is broken across lines (as many letters as fit on each), so nothing runs out of the box.
+ * `measure` gives a string's width in the same units as `maxW`.
  * The export (render.py _wrap_text_lines) breaks lines by exactly this rule, measuring with the
  * same font file — so lines break in the same places in the preview and the video.
  */
@@ -104,6 +105,16 @@ export function wrapTextLines(text: string, maxW: number, measure: (s: string) =
       const probe = i === 0 ? word : `${line} ${word}`
       if (i > 0 && line && measure(probe) > maxW) { lines.push(line); line = word }
       else line = probe
+      // A word wider than the box on its own line: broken across lines, as many letters as fit
+      // on each (else it would run out of the box)
+      if (line === word && measure(word) > maxW) {
+        let piece = ''
+        for (const ch of [...word]) {
+          if (piece && measure(piece + ch) > maxW) { lines.push(piece); piece = ch }
+          else piece += ch
+        }
+        line = piece
+      }
     }
     lines.push(line)
   }
