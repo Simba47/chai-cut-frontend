@@ -1,4 +1,4 @@
-import { ListObjectsV2Command } from '@aws-sdk/client-s3'
+import { GetObjectCommand, ListObjectsV2Command, PutObjectCommand } from '@aws-sdk/client-s3'
 import sql from '@/lib/db'
 import { r2, R2_BUCKET } from '@/lib/r2'
 import { hashPassword, validatePassword, verifyPassword } from '@/modules/auth/password'
@@ -6,15 +6,25 @@ import { deleteR2Keys, proxyKeyFor } from './videos'
 import { getUserPlanConfig } from './quota'
 
 /**
- * Account settings: read the profile, change the name, change the password, delete the account.
- * Used by /api/account and /api/account/password, and the /settings page.
+ * Account settings: read the profile, change the name, the profile photo and the password, delete
+ * the account. Used by /api/account, /api/account/photo and /api/account/password, and the /settings page.
  */
 
 const MAX_NAME = 60
+/** The settings page sends a 256 px square JPEG (about 20 KB); this is only the ceiling */
+const MAX_PHOTO_BYTES = 2 * 1024 * 1024
+
+/**
+ * Where the browser gets the photo from: our own route (the file itself stays private in storage).
+ * users.image keeps the storage key; its file name goes in ?v= so a new photo is a new address.
+ */
+export const photoUrl = (key: string | null) => (key?.startsWith('avatars/') ? `/api/account/photo?v=${key.split('/').pop()!.slice(0, 8)}` : null)
 
 export interface AccountInfo {
   email: string
   name: string | null
+  /** The profile photo's address, when one was added */
+  image: string | null
   /** When the email was confirmed (signup OTP) */
   emailVerified: string | null
   planName: string
@@ -23,14 +33,15 @@ export interface AccountInfo {
 }
 
 export async function getAccount(userId: string): Promise<AccountInfo> {
-  const [row] = await sql<{ email: string; name: string | null; emailVerified: Date | null; password_hash: string | null }[]>`
-    SELECT email, name, "emailVerified", password_hash FROM users WHERE id = ${userId}
+  const [row] = await sql<{ email: string; name: string | null; image: string | null; emailVerified: Date | null; password_hash: string | null }[]>`
+    SELECT email, name, image, "emailVerified", password_hash FROM users WHERE id = ${userId}
   `
   if (!row) throw Object.assign(new Error('Account not found'), { status: 404 })
   const plan = await getUserPlanConfig(userId)
   return {
     email: row.email,
     name: row.name,
+    image: photoUrl(row.image),
     emailVerified: row.emailVerified ? new Date(row.emailVerified).toISOString() : null,
     planName: plan.name,
     hasPassword: !!row.password_hash,
@@ -46,6 +57,57 @@ export async function updateName(userId: string, raw: unknown): Promise<string |
   const value = name || null
   await sql`UPDATE users SET name = ${value} WHERE id = ${userId}`
   return value
+}
+
+/** The picture's real type, read from its first bytes (the browser's word for it isn't trusted) */
+function photoType(b: Buffer): { ext: string; contentType: string } | null {
+  if (b.length > 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return { ext: 'jpg', contentType: 'image/jpeg' }
+  if (b.length > 8 && b.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return { ext: 'png', contentType: 'image/png' }
+  if (b.length > 12 && b.toString('latin1', 0, 4) === 'RIFF' && b.toString('latin1', 8, 12) === 'WEBP') return { ext: 'webp', contentType: 'image/webp' }
+  return null
+}
+
+/** Set the profile photo: stored under avatars/<user>/, the one before it deleted. Returns its address. */
+export async function savePhoto(userId: string, file: File): Promise<string> {
+  if (file.size > MAX_PHOTO_BYTES) throw Object.assign(new Error('That photo is too large. Choose one under 2 MB.'), { status: 400 })
+  const body = Buffer.from(await file.arrayBuffer())
+  const type = photoType(body)
+  if (!type) throw Object.assign(new Error('Choose a JPG, PNG or WebP photo'), { status: 400 })
+
+  const key = `avatars/${userId}/${crypto.randomUUID()}.${type.ext}`
+  await r2.send(new PutObjectCommand({ Bucket: R2_BUCKET, Key: key, Body: body, ContentType: type.contentType }))
+  const [old] = await sql<{ image: string | null }[]>`SELECT image FROM users WHERE id = ${userId}`
+  await sql`UPDATE users SET image = ${key} WHERE id = ${userId}`
+  if (old?.image?.startsWith(`avatars/${userId}/`)) await deleteR2Keys([old.image])
+  return photoUrl(key)!
+}
+
+/** Remove the profile photo */
+export async function removePhoto(userId: string): Promise<void> {
+  const [old] = await sql<{ image: string | null }[]>`SELECT image FROM users WHERE id = ${userId}`
+  await sql`UPDATE users SET image = NULL WHERE id = ${userId}`
+  if (old?.image?.startsWith(`avatars/${userId}/`)) await deleteR2Keys([old.image])
+}
+
+/** The profile photo's address as saved now (null: none added) — the profile button checks it against the session's */
+export async function getPhotoUrl(userId: string): Promise<string | null> {
+  const [row] = await sql<{ image: string | null }[]>`SELECT image FROM users WHERE id = ${userId}`
+  return photoUrl(row?.image ?? null)
+}
+
+/** The profile photo's bytes, for /api/account/photo (null: none added) */
+export async function readPhoto(userId: string): Promise<{ body: Uint8Array; contentType: string } | null> {
+  const [row] = await sql<{ image: string | null }[]>`SELECT image FROM users WHERE id = ${userId}`
+  // Only our own stored photos: never fetch an address that got into the column some other way
+  if (!row?.image?.startsWith(`avatars/${userId}/`)) return null
+  try {
+    const obj = await r2.send(new GetObjectCommand({ Bucket: R2_BUCKET, Key: row.image }))
+    if (!obj.Body) return null
+    return { body: await obj.Body.transformToByteArray(), contentType: obj.ContentType ?? 'image/jpeg' }
+  } catch (err) {
+    if ((err as { name?: string }).name === 'NoSuchKey') return null
+    throw err
+  }
 }
 
 /** Change the password: the current one must be right, and the new one must pass the same rules as signup */
@@ -91,7 +153,7 @@ export async function deleteAccount(userId: string, password: unknown): Promise<
     keys.push(v.storage_path, v.storage_path.replace(/\.[^.]+$/, '_audio.flac'), v.storage_path.replace(/\.[^.]+$/, '_reading.json'), proxyKeyFor(v.storage_path))
   }
   for (const c of clipOutputs) keys.push(c.output_storage_path)
-  keys.push(...await listR2Keys(`overlays/${userId}/`))
+  keys.push(...await listR2Keys(`overlays/${userId}/`), ...await listR2Keys(`avatars/${userId}/`))
   await deleteR2Keys(keys)
 
   // Then every row pointing at the user, found from the database's own foreign keys (so a table

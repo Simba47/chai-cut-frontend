@@ -142,8 +142,8 @@ body {
    sweeps across the letters of the name */
 .acct-btn {
   flex-shrink: 0; cursor: pointer;
-  display: inline-flex; align-items: center;
-  height: 40px; padding: 0 18px; border-radius: 12px;
+  display: inline-flex; align-items: center; gap: 9px;
+  height: 40px; padding: 0 16px 0 8px; border-radius: 12px;
   font: inherit; background: #000;
   border: 1px solid rgba(255,255,255,0.12);                   /* faint edge so it reads on the dark nav */
   transition: border-color .2s, scale .15s;
@@ -151,6 +151,16 @@ body {
 .acct-btn:hover, .acct-btn[aria-expanded="true"] { border-color: rgba(255,255,255,0.22); }
 .acct-btn:active { scale: .97; }
 .acct-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* Small round profile photo before the name: the picture, or the first letter on lime */
+.acct-avatar {
+  flex-shrink: 0; display: grid; place-items: center; overflow: hidden;
+  width: 26px; height: 26px; border-radius: 50%;
+  font-size: 12.5px; font-weight: 800; line-height: 1; color: #0a0a0a; background: #C8FF00;
+  box-shadow: 0 0 0 1px rgba(255,255,255,0.14);
+}
+.acct-avatar img { width: 100%; height: 100%; object-fit: cover; }
+/* …larger at the top of the menu, beside the name and email */
+.am-head .acct-avatar { width: 38px; height: 38px; font-size: 17px; }
 .acct-name {
   font-size: 14px; font-weight: 700; letter-spacing: -0.01em; white-space: nowrap;
   max-width: 180px; overflow: hidden; text-overflow: ellipsis;
@@ -163,7 +173,7 @@ body {
 }
 .acct-btn:hover .acct-name { background-position: 0% 0; transition: background-position .8s ease; }
 @media (max-width: 560px) {
-  .acct-btn { padding: 0 12px; }
+  .acct-btn { padding: 0 12px 0 7px; gap: 7px; }
   .acct-name { max-width: 90px; }
 }
 @media (prefers-reduced-motion: reduce) {
@@ -907,8 +917,8 @@ body {
 .cap-swatch[data-on] { box-shadow: 0 0 0 2px #141414, 0 0 0 4px #c8ff00; }
 
 /* ── Full-screen loader (components/ui/brand-loader.tsx: BrandLoaderScreen) ──
-   Dark page with a faint dot grid and a lime glow; the mark inside a turning lime arc and a slow
-   pulse ring; the label, a thin bar sweeping like progress, and a rotating tip. */
+   Dark page with a faint dot grid and a lime glow behind the mark; the label, a thin bar sweeping
+   like progress, and a rotating tip. */
 /* No position here: the component adds "fixed inset-0" (overlay) or "relative h-dvh" (page) */
 .bls {
   overflow: hidden; display: flex; flex-direction: column; align-items: center; justify-content: center;
@@ -926,23 +936,8 @@ body {
   background: radial-gradient(circle, rgba(200,255,0,0.12), rgba(200,255,0,0.04) 40%, transparent 68%);
   animation: bls-breathe 3.2s ease-in-out infinite;
 }
-.bls-center { position: relative; display: grid; place-items: center; width: 124px; height: 124px; }
+.bls-center { position: relative; display: grid; place-items: center; width: 96px; height: 96px; }
 .bls-center .brand-loader { position: relative; z-index: 1; }
-.bls-orbit { position: absolute; inset: 0; }
-/* A lime arc turning around the mark */
-.bls-ring {
-  position: absolute; inset: 0; border-radius: 50%;
-  background: conic-gradient(from 0deg, transparent 0 62%, rgba(200,255,0,0.08) 70%, #c8ff00 96%, transparent 100%);
-  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 2px), #000 calc(100% - 1.5px));
-          mask: radial-gradient(farthest-side, transparent calc(100% - 2px), #000 calc(100% - 1.5px));
-  animation: bls-spin 1.6s linear infinite;
-}
-/* …and a faint full ring that slowly pulses out */
-.bls-ring-2 {
-  background: none; -webkit-mask: none; mask: none;
-  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.08);
-  animation: bls-pulse 2.4s ease-out infinite;
-}
 .bls-label { position: relative; margin: 22px 0 0; font-size: 15px; font-weight: 600; letter-spacing: -0.005em; color: rgba(244,244,245,0.9); }
 .bls-bar { position: relative; width: 180px; height: 3px; margin-top: 14px; border-radius: 999px; overflow: hidden; background: rgba(255,255,255,0.08); }
 .bls-bar span {
@@ -958,13 +953,11 @@ body {
   flex-shrink: 0; padding: 2px 7px; border-radius: 999px; font-size: 10px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase;
   color: #c8ff00; background: rgba(200,255,0,0.1); box-shadow: inset 0 0 0 1px rgba(200,255,0,0.25);
 }
-@keyframes bls-spin { to { rotate: 360deg; } }
-@keyframes bls-pulse { 0% { transform: scale(1); opacity: .9; } 100% { transform: scale(1.45); opacity: 0; } }
 @keyframes bls-breathe { 0%, 100% { opacity: .75; scale: 1; } 50% { opacity: 1; scale: 1.06; } }
 @keyframes bls-sweep { from { left: -40%; } to { left: 100%; } }
 @keyframes bls-tip { from { opacity: 0; transform: translateY(6px); } }
 @media (prefers-reduced-motion: reduce) {
-  .bls-ring, .bls-ring-2, .bls-glow, .bls-bar span, .bls-tip { animation: none; }
+  .bls-glow, .bls-bar span, .bls-tip { animation: none; }
 }
 
 /* Clip card time chip (clip board): a lime play dot, the time range in a clean tabular figure
@@ -1154,6 +1147,85 @@ body {
 .st-field { display: flex; flex-direction: column; gap: 7px; }
 .st-label { font-size: 12.5px; font-weight: 600; color: rgba(244,244,245,0.7); }
 .st-hint { font-size: 12px; color: rgba(244,244,245,0.4); }
+/* Profile card: a header with the photo, who you are and the photo buttons over a soft lime glow,
+   then the name box and the email / plan tiles */
+.st-profile { padding: 0; gap: 0; overflow: hidden; }
+.st-hero {
+  position: relative; display: flex; align-items: center; flex-wrap: wrap; gap: 16px 18px; padding: 26px 22px 22px;
+  background:
+    radial-gradient(70% 130% at 0% 0%, rgba(200,255,0,0.16), transparent 62%),
+    radial-gradient(50% 100% at 100% 0%, rgba(200,255,0,0.05), transparent 70%),
+    linear-gradient(180deg, rgba(255,255,255,0.035), transparent);
+  border-bottom: 1px solid rgba(255,255,255,0.07);
+}
+/* The photo: a lime ring around it, a camera badge on its corner */
+.st-ava {
+  flex-shrink: 0; position: relative; width: 88px; height: 88px; padding: 5px; border: 0; border-radius: 50%; cursor: pointer;
+  background: conic-gradient(from 210deg, #C8FF00, rgba(200,255,0,0.15) 40%, #C8FF00 70%, rgba(200,255,0,0.3));
+  box-shadow: 0 10px 30px -10px rgba(200,255,0,0.45);
+  transition: transform .2s cubic-bezier(0.32, 0.72, 0, 1), box-shadow .2s;
+}
+.st-ava:hover:not(:disabled) { transform: scale(1.04); box-shadow: 0 12px 34px -8px rgba(200,255,0,0.6); }
+.st-ava:focus-visible { outline: 2px solid #C8FF00; outline-offset: 3px; }
+.st-ava:disabled { cursor: default; }
+.st-ava-pic {
+  display: grid; place-items: center; overflow: hidden; width: 100%; height: 100%; border-radius: 50%;
+  font-size: 32px; font-weight: 800; line-height: 1; color: #0a0a0a; background: #C8FF00;
+  box-shadow: 0 0 0 2.5px #0a0a0a; transition: opacity .2s;
+}
+.st-ava-pic img { width: 100%; height: 100%; object-fit: cover; }
+.st-ava[data-busy] .st-ava-pic { opacity: 0.45; }
+.st-ava-badge {
+  position: absolute; right: -2px; bottom: -2px; display: grid; place-items: center; width: 28px; height: 28px; border-radius: 50%;
+  color: #0a0a0a; background: #C8FF00; box-shadow: 0 0 0 3px #0a0a0a;
+}
+.st-hero-id { flex: 1 1 180px; min-width: 0; }
+.st-hero-name { margin: 0; font-size: 21px; font-weight: 800; letter-spacing: -0.02em; color: #fff; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.st-hero-mail { margin: 2px 0 0; font-size: 13px; color: rgba(244,244,245,0.5); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.st-hero-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.st-chip { display: inline-flex; align-items: center; gap: 4px; height: 22px; padding: 0 9px; border-radius: 999px; font-size: 11px; font-weight: 700; white-space: nowrap; }
+.st-chip-lime { color: #C8FF00; background: rgba(200,255,0,0.1); box-shadow: inset 0 0 0 1px rgba(200,255,0,0.3); }
+.st-chip-green { color: #4ade80; background: rgba(74,222,128,0.1); box-shadow: inset 0 0 0 1px rgba(74,222,128,0.3); }
+.st-hero-actions { display: flex; flex-direction: column; align-items: flex-start; gap: 7px; }
+/* Photo buttons: small glass pills */
+.st-pill {
+  display: inline-flex; align-items: center; gap: 6px; height: 34px; padding: 0 14px; border: 0; border-radius: 999px; cursor: pointer;
+  font: inherit; font-size: 12.5px; font-weight: 700; white-space: nowrap; color: rgba(244,244,245,0.9);
+  background: rgba(255,255,255,0.06); box-shadow: inset 0 0 0 1px rgba(255,255,255,0.12);
+  backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+  transition: color .15s, background-color .15s, box-shadow .15s, transform .12s;
+}
+.st-pill:active:not(:disabled) { transform: scale(.96); }
+.st-pill:disabled { opacity: .5; cursor: default; }
+.st-pill:focus-visible { outline: 2px solid #C8FF00; outline-offset: 2px; }
+.st-pill-lime:hover:not(:disabled) { color: #0a0a0a; background: #C8FF00; box-shadow: none; }
+.st-pill-red:hover:not(:disabled) { color: #fca5a5; background: rgba(239,68,68,0.12); box-shadow: inset 0 0 0 1px rgba(239,68,68,0.4); }
+.st-profile-body { display: flex; flex-direction: column; gap: 16px; padding: 20px 22px 22px; }
+/* The name box, with Save inside its right end */
+.st-inset {
+  display: flex; align-items: center; gap: 6px; height: 48px; padding: 0 5px 0 14px; border-radius: 13px;
+  background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.1); transition: border-color .15s, box-shadow .15s;
+}
+.st-inset:focus-within { border-color: rgba(200,255,0,0.6); box-shadow: 0 0 0 3px rgba(200,255,0,0.15); }
+.st-inset input { flex: 1; min-width: 0; height: 100%; font: inherit; font-size: 14.5px; font-weight: 500; color: #fff; background: none; border: 0; outline: none; }
+.st-inset .st-btn { height: 36px; padding: 0 16px; border-radius: 9px; }
+/* Email and plan: two tiles side by side (one under the other on a phone) */
+.st-tiles { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.st-tile {
+  display: flex; align-items: center; gap: 11px; min-width: 0; padding: 12px 13px; border-radius: 13px;
+  background: rgba(255,255,255,0.025); border: 1px solid rgba(255,255,255,0.07); transition: border-color .15s, background-color .15s;
+}
+.st-tile:hover { background: rgba(255,255,255,0.04); border-color: rgba(255,255,255,0.12); }
+.st-tile-ico { flex-shrink: 0; display: grid; place-items: center; width: 34px; height: 34px; border-radius: 10px; color: rgba(244,244,245,0.7); background: rgba(255,255,255,0.06); }
+.st-tile-ico[data-lime] { color: #C8FF00; background: rgba(200,255,0,0.1); }
+.st-tile-label { display: block; font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: rgba(244,244,245,0.4); }
+.st-tile-value { display: block; margin-top: 1px; font-size: 13.5px; font-weight: 600; color: rgba(244,244,245,0.92); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (max-width: 640px) {
+  .st-tiles { grid-template-columns: 1fr; }
+  .st-hero { padding: 22px 18px 18px; }
+  .st-profile-body { padding: 18px; }
+}
+@media (prefers-reduced-motion: reduce) { .st-ava, .st-pill { transition: none; } }
 .st-input {
   height: 42px; padding: 0 13px; border-radius: 11px; font: inherit; font-size: 14px; color: #fff; outline: none;
   background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.1); transition: border-color .15s, box-shadow .15s;
@@ -1535,3 +1607,55 @@ body {
   overflow: hidden;
   background: var(--ed-panel);
 }
+
+/* ── Caption colour chooser (CaptionStyler: ColourChooser / ColourField) ──
+   A live sample, theme tiles (two dots + a name), and a field per colour (chip + name) that
+   opens a palette of named colours, a rainbow slider for any colour, and a hex code box. */
+.cp-sample {
+  display: grid; place-items: center; height: 56px; border-radius: 12px; font-size: 17px; font-weight: 800; letter-spacing: -0.01em;
+  background: radial-gradient(120% 100% at 50% 0%, #2c2c31, #0e0e10); box-shadow: inset 0 0 0 1px rgba(255,255,255,0.06);
+  text-shadow: 0 2px 6px rgba(0,0,0,0.6);
+}
+.cp-sample > span { display: inline; }
+.cp-sample { display: flex; align-items: center; justify-content: center; white-space: pre; }
+.cp-theme {
+  display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 9px 2px 7px; border-radius: 11px;
+  background: rgb(var(--ed-fg) / 0.03); box-shadow: inset 0 0 0 1px rgb(var(--ed-fg) / 0.07);
+  transition: background-color .15s, box-shadow .15s, transform .12s;
+}
+.cp-theme:hover { background: rgb(var(--ed-fg) / 0.07); }
+.cp-theme:active { transform: scale(.96); }
+.cp-theme[data-on] { background: rgba(200,255,0,0.07); box-shadow: inset 0 0 0 1.5px #c8ff00; }
+.cp-theme-dots { display: flex; }
+.cp-theme-dots > span { width: 18px; height: 18px; border-radius: 50%; box-shadow: 0 0 0 2px #17171a, inset 0 0 0 1px rgba(0,0,0,0.15); }
+.cp-theme-dots > span + span { margin-left: -6px; }
+.cp-theme-name { font-size: 10.5px; font-weight: 500; color: rgb(var(--ed-fg) / 0.6); }
+.cp-theme[data-on] .cp-theme-name { color: #fff; font-weight: 600; }
+.cp-field { border-radius: 12px; background: rgb(var(--ed-fg) / 0.03); box-shadow: inset 0 0 0 1px rgb(var(--ed-fg) / 0.08); transition: box-shadow .2s; }
+.cp-field[data-open] { box-shadow: inset 0 0 0 1px rgba(200,255,0,0.4); }
+.cp-field-head { display: flex; align-items: center; gap: 10px; width: 100%; height: 44px; padding: 0 10px 0 9px; border-radius: 12px; text-align: left; }
+.cp-field-head:hover .ed-collapse { color: #0a0a0a; background: #c8ff00; }
+.cp-chip { flex-shrink: 0; width: 26px; height: 26px; border-radius: 8px; box-shadow: inset 0 0 0 1px rgba(255,255,255,0.2), 0 2px 6px rgba(0,0,0,0.4); }
+.cp-field-label { font-size: 12.5px; font-weight: 600; color: var(--ed-text); }
+.cp-field-name { flex: 1; min-width: 0; text-align: right; font-size: 12px; color: rgb(var(--ed-fg) / 0.5); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cp-panel { display: flex; flex-direction: column; gap: 12px; padding: 4px 10px 12px; }
+.cp-cell { aspect-ratio: 1; border-radius: 7px; box-shadow: inset 0 0 0 1px rgba(255,255,255,0.14); transition: transform .12s, box-shadow .15s; }
+.cp-cell:hover { transform: scale(1.12); }
+.cp-cell[data-on] { box-shadow: 0 0 0 2px #17171a, 0 0 0 4px #c8ff00; }
+.cp-mini { font-size: 11px; font-weight: 600; color: rgb(var(--ed-fg) / 0.5); }
+.cp-hue {
+  -webkit-appearance: none; appearance: none; width: 100%; height: 10px; border-radius: 999px; cursor: pointer;
+  background: linear-gradient(90deg, #f00, #ff0, #0f0, #0ff, #00f, #f0f, #f00);
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.12);
+}
+.cp-hue::-webkit-slider-thumb { -webkit-appearance: none; width: 18px; height: 18px; border-radius: 50%; background: #fff; box-shadow: 0 0 0 2px rgba(0,0,0,0.5), 0 2px 6px rgba(0,0,0,0.5); }
+.cp-hue::-moz-range-thumb { width: 18px; height: 18px; border: 0; border-radius: 50%; background: #fff; box-shadow: 0 0 0 2px rgba(0,0,0,0.5); }
+.cp-hex { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.cp-hex input {
+  width: 96px; height: 30px; padding: 0 9px; border-radius: 8px; font: inherit; font-size: 12px; font-weight: 600; letter-spacing: .04em;
+  text-transform: uppercase; color: var(--ed-text); outline: none;
+  background: rgb(var(--ed-fg) / 0.05); border: 1px solid rgb(var(--ed-fg) / 0.1);
+}
+.cp-hex input:focus { border-color: rgba(200,255,0,0.6); }
+/* Sliders asked to fill their row do so (the base style gives them a fixed width) */
+.ed-zoom-range.w-full { width: 100%; }

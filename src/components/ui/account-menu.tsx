@@ -5,7 +5,7 @@ import { createPortal } from 'react-dom'
 import { useSession, signOut } from 'next-auth/react'
 
 /**
- * Profile button and menu. The button: the name on a black rounded rectangle. The menu:
+ * Profile button and menu. The button: a small profile photo and the name on a black rounded rectangle. The menu:
  * who you are, plan usage with Upgrade, account links, help
  * (keyboard shortcuts, support, what's new) and Sign out. Used in the dashboard, clip board, AI
  * edits and editor headers. (styles: .acct-* / .am-* / .dash-popover in app/globals.css)
@@ -35,6 +35,9 @@ const SHORTCUTS: { keys: string[]; what: string }[] = [
   { keys: ['Esc'], what: 'Close a menu or dialog' },
 ]
 
+/** The saved photo is checked against the session once per page load, not once per menu */
+let photoChecked = false
+
 const Icon = ({ d }: { d: React.ReactNode }) => (
   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{d}</svg>
 )
@@ -44,12 +47,33 @@ export function AccountMenu({ planInfo, onNavigate, onSignOut }: {
   onNavigate?: (href: string) => void
   onSignOut?: () => void
 }) {
-  const { data: session } = useSession()
+  const { data: session, status, update } = useSession()
   const email = session?.user?.email ?? ''
   const fullName = session?.user?.name ?? ''
   // No name on the account: "narasimham.m@x.com" → "Narasimham"
   const first = email.split('@')[0].split(/[._+-]/)[0]
   const name = fullName || (first ? first.charAt(0).toUpperCase() + first.slice(1) : 'Account')
+  // Profile photo: the account's picture when it has one, otherwise the first letter of the name
+  // (added in Account settings; a photo that won't load — removed on another device — falls back to the letter)
+  const photo = session?.user?.image
+  const [brokenPhoto, setBrokenPhoto] = useState<string | null>(null)
+  // The session can be behind (a photo added or removed on another device, or before this sign-in
+  // knew about photos): ask what's saved, and bring the session in line when it differs
+  useEffect(() => {
+    if (status !== 'authenticated' || photoChecked) return
+    photoChecked = true
+    fetch('/api/account/photo?info')
+      .then(r => (r.ok ? r.json() : null))
+      .then(d => { if (d && (d.image ?? null) !== (photo ?? null)) update({ image: d.image ?? null }) })
+      .catch(() => { photoChecked = false })
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status])
+  const avatar = (
+    <span className="acct-avatar" aria-hidden="true">
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      {photo && photo !== brokenPhoto ? <img src={photo} alt="" onError={() => setBrokenPhoto(photo)} /> : name.charAt(0).toUpperCase()}
+    </span>
+  )
 
   const [fetched, setFetched] = useState<PlanSummary | null>(null)
   useEffect(() => {
@@ -104,8 +128,9 @@ export function AccountMenu({ planInfo, onNavigate, onSignOut }: {
 
   return (
     <div ref={ref} style={{ position: 'relative' }}>
-      {/* The button stays as it always was: a black rounded rectangle with the name */}
+      {/* The button: a black rounded rectangle with the profile photo and the name */}
       <button className="acct-btn" aria-label={`Account menu for ${name}`} aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen(o => !o)}>
+        {avatar}
         <span className="acct-name">{name}</span>
       </button>
 
@@ -113,6 +138,7 @@ export function AccountMenu({ planInfo, onNavigate, onSignOut }: {
         <div className={`dash-popover dash-account-menu am-menu${open ? '' : ' is-closing'}`} role="menu">
           {/* Who you are */}
           <div className="am-head">
+            {avatar}
             <div className="min-w-0 flex-1">
               <p className="am-name">{name}</p>
               <p className="am-email" title={email}>{email}</p>
