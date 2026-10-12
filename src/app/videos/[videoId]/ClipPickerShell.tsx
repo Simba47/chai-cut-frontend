@@ -2,7 +2,7 @@
 
 import { InfoTip } from '@/components/ui/info-tip'
 import { useFrameAt } from '@/modules/clips/thumbs'
-import { useState, useRef, useEffect, useSyncExternalStore } from 'react'
+import { useState, useRef, useEffect, useCallback, useSyncExternalStore } from 'react'
 import { useRouter } from 'next/navigation'
 import { Breadcrumbs } from '@/components/ui/breadcrumbs'
 import { AccountMenu } from '@/components/ui/account-menu'
@@ -1445,6 +1445,7 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: P
                 reason={clip.reason ?? null}
                 onFavorite={() => toggleFavorite(clip.id)}
                 onDelete={() => deleteOne(clip.id)}
+                onSubEdited={() => router.refresh()}
                 title={clip.title ?? `Clip ${clip.index}`}
                 startMs={clip.start_ms}
                 endMs={clip.end_ms}
@@ -1555,12 +1556,17 @@ function TimeField({ id, label, value, onChange, onUseNow }: { id: string; label
   }
   const join = (p: Parts) => (p.every(x => !x) ? '' : `${Number(p[0] || 0)}:${pad(Number(p[1] || 0))}:${pad(Number(p[2] || 0))}`)
   const [parts, setParts] = useState<Parts>(() => split(value))
+  // The parts as they are right now. Every handler reads this, never `parts` from its render: a part
+  // completed by a key moves the focus on at once, and the blur that follows (which pads a single
+  // digit) ran with the parts from before that key — it turned a typed 23 back into 02.
+  const live = useRef<Parts>(parts)
   // A new time from outside (Now, a picked moment): shown in the parts
   const sent = useRef(value)
   useEffect(() => {
     if (value === sent.current) return
     sent.current = value
-    setParts(split(value))
+    live.current = split(value)
+    setParts(live.current)
   }, [value]) // eslint-disable-line react-hooks/exhaustive-deps
   const refs = [useRef<HTMLInputElement>(null), useRef<HTMLInputElement>(null), useRef<HTMLInputElement>(null)]
   const go = (i: number, at: 'all' | 'end' = 'all') => {
@@ -1570,12 +1576,35 @@ function TimeField({ id, label, value, onChange, onUseNow }: { id: string; label
     requestAnimationFrame(() => (at === 'all' ? el.select() : el.setSelectionRange(el.value.length, el.value.length)))
   }
   const put = (next: Parts) => {
+    live.current = next
     setParts(next)
     const out = join(next)
     sent.current = out
     onChange(out)
   }
   const max = (i: number) => (i === 0 ? 99 : 59)
+  // What's been typed into a part since it was entered: its first digit always starts it afresh
+  // (whatever the part held, wherever a click put the cursor); the second completes it and moves on
+  const typing = useRef<{ i: number; buf: string } | null>(null)
+  function digit(i: number, d: string) {
+    const buf = (typing.current?.i === i ? typing.current.buf : '') + d
+    const next = [...live.current] as Parts
+    let done = false
+    if (buf.length === 1) {
+      // Minutes and seconds: a first digit 6–9 can only be 06–09, so it's complete
+      if (i > 0 && Number(d) > 5) { next[i] = pad(Number(d)); done = true }
+      else { next[i] = buf; typing.current = { i, buf } }
+    } else {
+      next[i] = pad(Math.min(max(i), Number(buf)))
+      done = true
+    }
+    put(next)
+    if (done) {
+      typing.current = null
+      if (i < 2) go(i + 1)
+      else requestAnimationFrame(() => refs[i].current?.select())
+    }
+  }
 
   function type(i: number, raw: string) {
     let d = raw.replace(/\D/g, '')
@@ -1584,7 +1613,7 @@ function TimeField({ id, label, value, onChange, onUseNow }: { id: string; label
     // Minutes and seconds never go past 59: a first digit 6–9 is that many, and moves on
     if (i > 0 && d.length === 1 && Number(d) > 5) { d = `0${d}`; done = true }
     if (d.length === 2 && Number(d) > max(i)) d = pad(max(i))
-    const next = [...parts] as Parts
+    const next = [...live.current] as Parts
     next[i] = d
     put(next)
     if (done && i < 2) go(i + 1)
@@ -1593,14 +1622,24 @@ function TimeField({ id, label, value, onChange, onUseNow }: { id: string; label
     const el = e.currentTarget
     const atStart = el.selectionStart === 0 && el.selectionEnd === 0
     const atEnd = el.selectionStart === el.value.length && el.selectionEnd === el.value.length
+    // Digits are taken here (two make the part), not left to the browser's cursor
+    if (/^[0-9]$/.test(e.key) && !e.ctrlKey && !e.metaKey && !e.altKey) { e.preventDefault(); digit(i, e.key); return }
+    if (e.key === 'Backspace' && typing.current?.i === i) {
+      e.preventDefault()
+      typing.current = null
+      const next = [...live.current] as Parts
+      next[i] = ''
+      put(next)
+      return
+    }
     if (e.key === ':' || e.key === '.' || e.key === ' ') { e.preventDefault(); if (i < 2) go(i + 1); return }
     if (e.key === 'Backspace' && (!el.value || atStart) && i > 0) { e.preventDefault(); go(i - 1, 'end'); return }
     if (e.key === 'ArrowLeft' && atStart && i > 0) { e.preventDefault(); go(i - 1, 'end'); return }
     if (e.key === 'ArrowRight' && atEnd && i < 2) { e.preventDefault(); go(i + 1); return }
     if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
       e.preventDefault()
-      const n = (Number(parts[i] || 0) + (e.key === 'ArrowUp' ? 1 : -1) + max(i) + 1) % (max(i) + 1)
-      const next = [...parts] as Parts
+      const n = (Number(live.current[i] || 0) + (e.key === 'ArrowUp' ? 1 : -1) + max(i) + 1) % (max(i) + 1)
+      const next = [...live.current] as Parts
       next[i] = pad(n)
       put(next)
       requestAnimationFrame(() => el.select())
@@ -1624,8 +1663,10 @@ function TimeField({ id, label, value, onChange, onUseNow }: { id: string; label
               <input ref={refs[i]} id={`${id}-${'hms'[i]}`} type="text" inputMode="numeric" autoComplete="off"
                 aria-label={`${label} ${names[i]}`} placeholder="00" value={p}
                 onChange={e => type(i, e.target.value)} onKeyDown={e => key(i, e)} onPaste={paste}
-                onFocus={e => e.currentTarget.select()}
-                onBlur={() => { if (parts[i].length === 1) { const next = [...parts] as Parts; next[i] = pad(Number(parts[i])); put(next) } }}
+                onFocus={e => { typing.current = null; e.currentTarget.select() }}
+                // (the click that focused it would otherwise drop the selection and leave the cursor in the old digits)
+                onMouseUp={e => e.preventDefault()}
+                onBlur={() => { const cur = live.current; if (cur[i].length === 1) { const next = [...cur] as Parts; next[i] = pad(Number(cur[i])); put(next) } }}
                 className="bg-transparent outline-none text-center rounded placeholder:text-white/30 focus:bg-white/10"
                 style={{ width: '2.4ch' }} />
             </span>
@@ -1777,8 +1818,108 @@ function ResultCard({ s, rank, videoUrl, busy, inClips, open, onOpen, onClose, o
   )
 }
 
-function ClipCard({ id, focused, number, origin, title, startMs, endMs, status, outputUrl, playing, onSeek, onEdit, onPreview, previewing, open, onClose, disabled, selecting, selected, onToggle, videoUrl, favorite, reason, onFavorite, onDelete, onDownload, download }: {
+/**
+ * Sub-edit of one clip: start it, and follow it until the worker is done (every few seconds).
+ * A Sub-edit already running when the board opens is picked up.
+ */
+function useSubEdit(clipId: string, onDone?: () => void) {
+  const [state, setState] = useState<'none' | 'queued' | 'processing' | 'done' | 'failed'>('none')
+  const [error, setError] = useState<string | null>(null)
+  // About how long it takes, and when it started (this browser's clock: from the server's elapsed)
+  const [estimate, setEstimate] = useState<number | null>(null)
+  const [startedAt, setStartedAt] = useState<number | null>(null)
+  const busy = state === 'queued' || state === 'processing'
+  const url = `/api/clips/${clipId}/subjects/auto`
+  const doneRef = useRef(onDone)
+  doneRef.current = onDone
+  const check = useCallback(async () => {
+    try {
+      const res = await fetch(url)
+      if (!res.ok) return
+      const data = await res.json() as { status: typeof state; error: string | null; elapsed_ms: number | null; estimate_ms: number }
+      setState(prev => {
+        if ((prev === 'queued' || prev === 'processing') && data.status === 'done') doneRef.current?.()
+        return data.status
+      })
+      setError(data.status === 'failed' ? data.error : null)
+      setEstimate(data.estimate_ms)
+      if (data.elapsed_ms !== null) setStartedAt(Date.now() - data.elapsed_ms)
+    } catch { /* offline for a moment: the next check */ }
+  }, [url])
+  useEffect(() => { check() }, [check])
+  useEffect(() => {
+    if (!busy) return
+    const t = setInterval(check, 3000)
+    return () => clearInterval(t)
+  }, [busy, check])
+  async function start() {
+    setError(null)
+    setState('queued')
+    setStartedAt(Date.now())
+    try {
+      const res = await fetch(url, { method: 'POST' })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) { setState('failed'); setError(data.error ?? 'Sub-edit could not start. Try again.'); return }
+      setState(data.status ?? 'queued')
+      if (data.estimate_ms) setEstimate(data.estimate_ms)
+      if (typeof data.elapsed_ms === 'number') setStartedAt(Date.now() - data.elapsed_ms)
+    } catch { setState('failed'); setError('Sub-edit could not start. Check the connection and try again.') }
+  }
+  return { state, busy, error, start, estimate, startedAt }
+}
+
+/** "about 45 s" / "about 1 min 20 s" */
+function aboutLabel(ms: number) {
+  const s = Math.max(5, Math.round(ms / 5000) * 5)
+  return s < 60 ? `${s} s` : `${Math.floor(s / 60)} min${s % 60 ? ` ${s % 60} s` : ''}`
+}
+
+/** The slim card's line while Sub-edit runs: "Sub-editing · about 40 s left" */
+function SubEditInline({ startedAt, estimate }: { startedAt: number | null; estimate: number | null }) {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => { const t = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(t) }, [])
+  const left = (estimate ?? 60_000) - (startedAt === null ? 0 : Math.max(0, now - startedAt))
+  return (
+    <span className="flex items-center gap-1" style={{ color: ACCENT }}>
+      · <Spinner /> Sub-editing{left > 4000 ? ` · about ${aboutLabel(left)} left` : ' · almost done'}
+    </span>
+  )
+}
+
+/**
+ * Over the clip card while Sub-edit runs: what it's doing, the time left (from the estimate) and a
+ * bar that fills with it. Past the estimate it says it's nearly there.
+ */
+function SubEditOverlay({ startedAt, estimate }: { startedAt: number | null; estimate: number | null }) {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => { const t = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(t) }, [])
+  const total = estimate ?? 60_000
+  const elapsed = startedAt === null ? 0 : Math.max(0, now - startedAt)
+  const share = Math.min(0.97, elapsed / total)
+  const left = total - elapsed
+  const step = share < 0.3 ? 'Reading the video' : share < 0.75 ? 'Finding the people and who talks when' : 'Framing the clip on whoever is talking'
+  return (
+    <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-2 rounded-[inherit] px-4 text-center"
+      style={{ background: 'rgba(10,10,10,0.86)', backdropFilter: 'blur(2px)' }} role="status" aria-live="polite"
+      onClick={e => e.stopPropagation()}>
+      <div className="flex items-center gap-2 text-sm font-bold" style={{ color: ACCENT }}>
+        <Spinner /> Sub-editing
+      </div>
+      <p className="text-[11.5px]" style={{ color: 'rgba(255,255,255,0.75)' }}>{step}…</p>
+      <div className="w-full max-w-[220px] h-1.5 rounded-full overflow-hidden" style={{ background: 'rgba(255,255,255,0.12)' }}>
+        <div className="h-full rounded-full transition-[width] duration-1000 ease-linear" style={{ width: `${Math.round(share * 100)}%`, background: ACCENT }} />
+      </div>
+      <p className="text-[11px] tabular-nums" style={{ color: 'rgba(255,255,255,0.55)' }}>
+        {left > 4000 ? `About ${aboutLabel(left)} left` : 'Almost done…'} · you can keep working
+      </p>
+    </div>
+  )
+}
+
+function ClipCard({ id, focused, number, origin, title, startMs, endMs, status, outputUrl, playing, onSeek, onEdit, onPreview, previewing, open, onClose, disabled, selecting, selected, onToggle, videoUrl, favorite, reason, onFavorite, onDelete, onDownload, download, onSubEdited }: {
   id: string
+  /** Sub-edit finished: the clip's framing changed (the board reloads it) */
+  onSubEdited?: () => void
   /** Download: saves the file, exporting it first if it isn't exported yet (e.g. AI's clips) */
   onDownload: () => void
   /** preparing: exporting, saves by itself when ready · failed: the last try didn't work */
@@ -1815,6 +1956,7 @@ function ClipCard({ id, focused, number, origin, title, startMs, endMs, status, 
   onToggle?: () => void
 }) {
   const [menu, setMenu] = useState<false | 'open' | 'confirm'>(false)
+  const sub = useSubEdit(id, onSubEdited)
   const chip =
     status === 'rendering' ? { label: 'Rendering', color: ACCENT } :
     status === 'done' ? { label: 'Exported', color: '#4ade80' } :
@@ -1844,6 +1986,7 @@ function ClipCard({ id, focused, number, origin, title, startMs, endMs, status, 
           <span className="flex items-center gap-1.5 text-[11px] tabular-nums" style={{ color: 'rgba(255,255,255,0.5)' }}>
             <ClockIcon />{durLabel(startMs, endMs)}
             {status === 'rendering' && <span className="flex items-center gap-1" style={{ color: ACCENT }}>· <Spinner /> Exporting</span>}
+            {sub.busy && <SubEditInline startedAt={sub.startedAt} estimate={sub.estimate} />}
           </span>
         </span>
         {heart}
@@ -1852,7 +1995,7 @@ function ClipCard({ id, focused, number, origin, title, startMs, endMs, status, 
   }
 
   return (
-    <div id={`clip-${id}`} className={`rounded-xl p-2.5 transition-all duration-300 ${focused ? 'shadow-[0_0_0_3px_rgba(200,255,0,0.25)]' : ''} ${selecting ? 'cursor-pointer select-none hover:bg-white/[0.06] focus-visible:outline focus-visible:outline-2' : 'cursor-pointer hover:bg-white/[0.04]'}`}
+    <div id={`clip-${id}`} className={`relative rounded-xl p-2.5 transition-all duration-300 ${focused ? 'shadow-[0_0_0_3px_rgba(200,255,0,0.25)]' : ''} ${selecting ? 'cursor-pointer select-none hover:bg-white/[0.06] focus-visible:outline focus-visible:outline-2' : 'cursor-pointer hover:bg-white/[0.04]'}`}
       style={{ background: selected ? 'rgba(200,255,0,0.06)' : 'rgba(255,255,255,0.03)', border: `1px solid ${border}`, outlineColor: ACCENT }}
       {...(selecting ? {
         role: 'checkbox',
@@ -1869,6 +2012,7 @@ function ClipCard({ id, focused, number, origin, title, startMs, endMs, status, 
         },
         title: open ? 'Click to close' : 'Click to preview this clip',
       })}>
+      {sub.busy && !selecting && <SubEditOverlay startedAt={sub.startedAt} estimate={sub.estimate} />}
       <div className="flex items-start gap-3">
         {selecting ? (
           <span aria-hidden="true" className="shrink-0 mt-1 w-6 h-6 rounded-full flex items-center justify-center transition-colors"
@@ -1933,14 +2077,31 @@ function ClipCard({ id, focused, number, origin, title, startMs, endMs, status, 
         </div>
       </div>
       {reason && !selecting && <p className="mt-2 text-[11px] leading-relaxed line-clamp-2" style={{ color: 'rgba(255,255,255,0.5)' }}>{reason}</p>}
-      {/* Preview · Edit · Download */}
+      {/* Sub-edit · Edit · Download (a click on the card itself previews it) */}
+      {!selecting && sub.error && <p role="alert" className="mt-2 text-[11px]" style={{ color: '#f87171' }}>{sub.error}</p>}
       {!selecting && (
         <div className="mt-2.5 grid grid-cols-3 gap-1.5">
-          <button onClick={e => { e.stopPropagation(); onPreview() }} aria-pressed={!!previewing} title="Play this clip as edited, in 9:16"
-            className="h-8 flex items-center justify-center gap-1.5 rounded-lg text-xs font-semibold transition-colors hover:bg-white/10"
-            style={{ color: previewing ? ACCENT : 'rgba(255,255,255,0.85)', border: `1px solid ${previewing ? 'rgba(200,255,0,0.5)' : 'rgba(255,255,255,0.14)'}` }}>
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" aria-hidden="true"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z" /><circle cx="12" cy="12" r="3" /></svg>
-            {previewing ? 'Previewing' : 'Preview'}
+          <button onClick={e => { e.stopPropagation(); sub.start() }} disabled={sub.busy || disabled}
+            title={sub.busy ? 'Finding the people and framing the clip on whoever is talking — you can keep working'
+              : sub.state === 'done' ? 'Framed on whoever is talking. Press again to do it afresh'
+              : `Sub-edit: finds everyone in this clip and frames it on whoever is talking, by itself${sub.estimate ? ` — takes about ${aboutLabel(sub.estimate)}` : ''}`}
+            className="h-8 flex items-center justify-center gap-1.5 rounded-lg text-xs font-semibold transition-colors hover:bg-white/10 disabled:cursor-default"
+            style={{
+              color: sub.state === 'done' ? '#4ade80' : sub.busy ? ACCENT : 'rgba(255,255,255,0.9)',
+              border: `1px solid ${sub.busy ? 'rgba(200,255,0,0.5)' : sub.state === 'done' ? 'rgba(74,222,128,0.45)' : 'rgba(255,255,255,0.14)'}`,
+            }}>
+            {sub.busy ? <Spinner /> : sub.state === 'done' ? (
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5" /></svg>
+            ) : (
+              // People with a frame round them
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M3 7V4h3M21 7V4h-3M3 17v3h3M21 17v3h-3" /><circle cx="12" cy="10" r="2.6" /><path d="M7.5 17c.7-2.2 2.4-3.4 4.5-3.4s3.8 1.2 4.5 3.4" />
+              </svg>
+            )}
+            {sub.busy ? 'Sub-editing' : sub.state === 'done' ? 'Sub-edited' : 'Sub-edit'}
+            {!sub.busy && sub.state !== 'done' && sub.estimate && (
+              <span className="font-medium tabular-nums" style={{ color: 'rgba(255,255,255,0.45)' }}>~{aboutLabel(sub.estimate)}</span>
+            )}
           </button>
           <button onClick={e => { e.stopPropagation(); onEdit() }} disabled={disabled} title="Open in the editor"
             className="h-8 flex items-center justify-center gap-1.5 rounded-lg text-xs font-semibold transition-colors hover:bg-white/10 disabled:opacity-40"

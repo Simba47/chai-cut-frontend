@@ -387,7 +387,7 @@ function clipRangeFrom(raw: unknown, clip: Record<string, unknown>, newTrims?: u
 
 // Columns the backend adds when it starts (remembered once seen): saving works before and after
 const knownColumns = new Set<string>()
-async function hasColumn(table: string, column: string): Promise<boolean> {
+export async function hasColumn(table: string, column: string): Promise<boolean> {
   const key = `${table}.${column}`
   if (knownColumns.has(key)) return true
   const rows = await sql`SELECT 1 FROM information_schema.columns WHERE table_name = ${table} AND column_name = ${column}`.catch(() => [])
