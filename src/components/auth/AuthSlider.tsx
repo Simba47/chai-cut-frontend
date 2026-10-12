@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { signIn } from 'next-auth/react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
@@ -9,6 +9,9 @@ import { BRAND_BOTTOM, BRAND_TOP, BrandLogo } from '@/components/ui/brand-logo'
 import { FillButtonContent } from '@/components/ui/fill-button'
 
 type Mode = 'signin' | 'signup'
+
+/** Set by app/api/auth/signed-out for the sign-in form to say why */
+const SIGNED_OUT_NOTE = 'signed_out'
 
 /**
  * Double-slider sign in / sign up card (styles: app/auth.css). On desktop a lime
@@ -64,12 +67,21 @@ function SignInForm({ onSwitch }: { onSwitch: () => void }) {
   const [password, setPassword] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
   const router = useRouter()
+
+  // Signed out here because the account signed in on another device (app/api/auth/signed-out)
+  useEffect(() => {
+    if (!document.cookie.split('; ').includes(`${SIGNED_OUT_NOTE}=elsewhere`)) return
+    setNotice('You were signed out because your account signed in on another device. One device can be signed in at a time.')
+    document.cookie = `${SIGNED_OUT_NOTE}=; Max-Age=0; path=/`
+  }, [])
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     setLoading(true)
     setError(null)
+    setNotice(null)
     const res = await signIn('credentials', { email, password, redirect: false })
     if (res?.error) {
       setError('Incorrect email or password')
@@ -93,6 +105,7 @@ function SignInForm({ onSwitch }: { onSwitch: () => void }) {
           required placeholder="••••••••" autoComplete="current-password"
         />
       </Field>
+      {notice && <p className="auth-sub" role="status">{notice}</p>}
       {error && <p className="auth-error" role="alert">{error}</p>}
       <button type="submit" disabled={loading} className="fill-btn auth-submit">
         <FillButtonContent>{loading ? 'Signing in…' : 'Sign in'}</FillButtonContent>
