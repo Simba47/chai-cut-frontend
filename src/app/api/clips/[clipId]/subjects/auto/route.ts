@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { requireUser } from '@/server/auth'
-import { startSubEdit, subEditStatus } from '@/server/services/subjects'
+import { startSubEdit, subEditStatus, stopSubEdit } from '@/server/services/subjects'
 import { apiError } from '@/lib/api-error'
 
 export const runtime = 'nodejs'
@@ -25,6 +25,18 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ cli
   const { clipId } = await params
   try {
     return NextResponse.json(await subEditStatus(user.id, clipId))
+  } catch (err) {
+    return apiError(err)
+  }
+}
+
+// Stop it
+export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ clipId: string }> }) {
+  const user = await requireUser()
+  if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  const { clipId } = await params
+  try {
+    return NextResponse.json(await stopSubEdit(user.id, clipId))
   } catch (err) {
     return apiError(err)
   }
