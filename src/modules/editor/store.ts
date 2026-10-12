@@ -90,6 +90,8 @@ interface EditorActions {
   addFrameItem: (segId: string, lane: FrameLane, t: number, item: Omit<FrameItem, 'id' | 'lane' | 'start_ms' | 'end_ms'>) => string | null
   updateFrameItem: (segId: string, itemId: string, patch: Partial<Omit<FrameItem, 'id'>>) => void
   removeFrameItem: (segId: string, itemId: string) => void
+  /** Cut a frame item in two at `t` (a video's right part plays on from the same moment) */
+  splitFrameItem: (segId: string, itemId: string, t: number) => void
   /** Move one edge of a format. Formats are independent: the neighbour never moves, the edge
    *  just stops at it (no overlap). Uncovered time uses the default framing. */
   setSegmentEdge: (segId: string, edge: 'start' | 'end', tMs: number, durationMs: number) => void
@@ -475,6 +477,19 @@ export const useEditorStore = create<EditorState & EditorActions>()((set, get) =
       if (seg.id !== segId) return seg
       const frame = frameOf(seg)
       return { ...seg, frame: { ...frame, items: (frame.items ?? []).map(it => it.id === itemId ? { ...it, ...patch } : it) } }
+    }),
+  })),
+
+  splitFrameItem: (segId, itemId, t) => set(s => ({
+    segments: s.segments.map(seg => {
+      if (seg.id !== segId) return seg
+      const frame = frameOf(seg)
+      return { ...seg, frame: { ...frame, items: (frame.items ?? []).flatMap(it => {
+        if (it.id !== itemId || t <= it.start_ms || t >= it.end_ms) return [it]
+        const right: FrameItem = { ...it, id: crypto.randomUUID(), start_ms: t }
+        if (it.kind === 'video') right.source_offset_ms = (it.source_offset_ms ?? 0) + (t - it.start_ms)
+        return [{ ...it, end_ms: t }, right]
+      }) } }
     }),
   })),
 

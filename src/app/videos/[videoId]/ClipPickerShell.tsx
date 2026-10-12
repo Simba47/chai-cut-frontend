@@ -510,8 +510,8 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: P
 
   /** `open`: open the new clip in the editor (Create & edit); otherwise just add it to the board */
   function submitForm(open = true) {
-    if (formStartMs === null) { setFormError('Start time looks wrong. Use m:ss, e.g. 0:30'); return }
-    if (formEndMs === null) { setFormError('End time looks wrong. Use m:ss, e.g. 1:45'); return }
+    if (formStartMs === null) { setFormError('Type a start time (hours : minutes : seconds)'); return }
+    if (formEndMs === null) { setFormError('Type an end time (hours : minutes : seconds)'); return }
     if (formEndMs <= formStartMs) { setFormError('End must be after start'); return }
     if (maxMs > 0 && formEndMs > maxMs) { setFormError(`The video is only ${msToDisplay(maxMs)} long`); return }
     setFormError(null)
@@ -942,7 +942,7 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: P
         </div>
       </div>
       <p className="text-xs" style={{ color: formError ? '#f87171' : 'rgba(255,255,255,0.45)' }}>
-        {formError ?? (formRangeValid ? `Length: ${durLabel(formStartMs!, formEndMs!)}` : 'Use m:ss, e.g. 1:45')}
+        {formError ?? (formRangeValid ? `Length: ${durLabel(formStartMs!, formEndMs!)}` : 'Type hours, minutes and seconds: two digits move you on')}
       </p>
     </form>
   ) : (
@@ -1538,13 +1538,99 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: P
 
 // ── Pieces ────────────────────────────────────────────────────────────────────
 
+/**
+ * A time box in three fixed parts — hours : minutes : seconds. The colons belong to the box: they
+ * can't be typed or deleted. Two digits move on to the next part (hours → minutes → seconds), as
+ * does ":" or "."; Backspace in an empty part goes back; ↑ / ↓ step a part; a pasted time
+ * (1:42:08 or 4:05) fills all three. Empty parts count as 00.
+ */
 function TimeField({ id, label, value, onChange, onUseNow }: { id: string; label: string; value: string; onChange: (v: string) => void; onUseNow: () => void }) {
+  type Parts = [string, string, string]
+  const pad = (n: number) => String(n).padStart(2, '0')
+  const split = (v: string): Parts => {
+    const ms = v.trim() ? parseTime(v) : null
+    if (ms == null) return ['', '', '']
+    const t = Math.floor(ms / 1000)
+    return [pad(Math.floor(t / 3600)), pad(Math.floor((t % 3600) / 60)), pad(t % 60)]
+  }
+  const join = (p: Parts) => (p.every(x => !x) ? '' : `${Number(p[0] || 0)}:${pad(Number(p[1] || 0))}:${pad(Number(p[2] || 0))}`)
+  const [parts, setParts] = useState<Parts>(() => split(value))
+  // A new time from outside (Now, a picked moment): shown in the parts
+  const sent = useRef(value)
+  useEffect(() => {
+    if (value === sent.current) return
+    sent.current = value
+    setParts(split(value))
+  }, [value]) // eslint-disable-line react-hooks/exhaustive-deps
+  const refs = [useRef<HTMLInputElement>(null), useRef<HTMLInputElement>(null), useRef<HTMLInputElement>(null)]
+  const go = (i: number, at: 'all' | 'end' = 'all') => {
+    const el = refs[i]?.current
+    if (!el) return
+    el.focus()
+    requestAnimationFrame(() => (at === 'all' ? el.select() : el.setSelectionRange(el.value.length, el.value.length)))
+  }
+  const put = (next: Parts) => {
+    setParts(next)
+    const out = join(next)
+    sent.current = out
+    onChange(out)
+  }
+  const max = (i: number) => (i === 0 ? 99 : 59)
+
+  function type(i: number, raw: string) {
+    let d = raw.replace(/\D/g, '')
+    if (d.length > 2) d = d.slice(-2)
+    let done = d.length === 2
+    // Minutes and seconds never go past 59: a first digit 6–9 is that many, and moves on
+    if (i > 0 && d.length === 1 && Number(d) > 5) { d = `0${d}`; done = true }
+    if (d.length === 2 && Number(d) > max(i)) d = pad(max(i))
+    const next = [...parts] as Parts
+    next[i] = d
+    put(next)
+    if (done && i < 2) go(i + 1)
+  }
+  function key(i: number, e: React.KeyboardEvent<HTMLInputElement>) {
+    const el = e.currentTarget
+    const atStart = el.selectionStart === 0 && el.selectionEnd === 0
+    const atEnd = el.selectionStart === el.value.length && el.selectionEnd === el.value.length
+    if (e.key === ':' || e.key === '.' || e.key === ' ') { e.preventDefault(); if (i < 2) go(i + 1); return }
+    if (e.key === 'Backspace' && (!el.value || atStart) && i > 0) { e.preventDefault(); go(i - 1, 'end'); return }
+    if (e.key === 'ArrowLeft' && atStart && i > 0) { e.preventDefault(); go(i - 1, 'end'); return }
+    if (e.key === 'ArrowRight' && atEnd && i < 2) { e.preventDefault(); go(i + 1); return }
+    if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+      e.preventDefault()
+      const n = (Number(parts[i] || 0) + (e.key === 'ArrowUp' ? 1 : -1) + max(i) + 1) % (max(i) + 1)
+      const next = [...parts] as Parts
+      next[i] = pad(n)
+      put(next)
+      requestAnimationFrame(() => el.select())
+    }
+  }
+  function paste(e: React.ClipboardEvent<HTMLInputElement>) {
+    const text = e.clipboardData.getData('text').trim()
+    if (!text.includes(':') || parseTime(text) == null) return
+    e.preventDefault()
+    put(split(text))
+  }
+  const names = ['hours', 'minutes', 'seconds']
   return (
     <div className="flex flex-col gap-1">
-      <label htmlFor={id} className="text-[11px] font-medium" style={{ color: 'rgba(255,255,255,0.5)' }}>{label}</label>
-      <div className="flex items-center rounded-lg overflow-hidden" style={{ background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.12)' }}>
-        <input id={id} type="text" inputMode="numeric" value={value} onChange={e => onChange(e.target.value)}
-          className="min-w-0 flex-1 px-2.5 py-2 bg-transparent text-sm text-white outline-none font-mono tabular-nums" />
+      <label htmlFor={`${id}-h`} className="text-[11px] font-medium" style={{ color: 'rgba(255,255,255,0.5)' }}>{label}</label>
+      <div className="flex items-center rounded-lg overflow-hidden focus-within:border-[#c8ff00]" style={{ background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.12)' }}>
+        <div className="min-w-0 flex-1 flex items-center px-2 py-2 font-mono tabular-nums text-sm text-white">
+          {parts.map((p, i) => (
+            <span key={i} className="flex items-center">
+              {i > 0 && <span aria-hidden="true" className="px-px select-none" style={{ color: 'rgba(255,255,255,0.45)' }}>:</span>}
+              <input ref={refs[i]} id={`${id}-${'hms'[i]}`} type="text" inputMode="numeric" autoComplete="off"
+                aria-label={`${label} ${names[i]}`} placeholder="00" value={p}
+                onChange={e => type(i, e.target.value)} onKeyDown={e => key(i, e)} onPaste={paste}
+                onFocus={e => e.currentTarget.select()}
+                onBlur={() => { if (parts[i].length === 1) { const next = [...parts] as Parts; next[i] = pad(Number(parts[i])); put(next) } }}
+                className="bg-transparent outline-none text-center rounded placeholder:text-white/30 focus:bg-white/10"
+                style={{ width: '2.4ch' }} />
+            </span>
+          ))}
+        </div>
         <button type="button" onClick={onUseNow} title="Use the video's current time"
           className="shrink-0 px-2 self-stretch text-[11px] font-medium transition-colors hover:bg-white/10" style={{ color: ACCENT }}>
           Now
