@@ -157,47 +157,63 @@ export async function trackSubjects(userId: string, clipId: string, body: { star
 // the clip on whoever is talking — written into the clip (jobs/track_subjects.ts, payload auto).
 
 export interface SubEditState {
-  status: 'none' | 'queued' | 'processing' | 'done' | 'failed'
+  /** stopped: the user pressed Stop */
+  status: 'none' | 'queued' | 'processing' | 'done' | 'failed' | 'stopped'
   error: string | null
-  /** How long it has been going (ms), while it runs */
+  /** While it works: how long since the worker started on it (ms) */
   elapsed_ms: number | null
-  /** About how long it takes for this clip (ms) */
+  /** While it waits for the worker: how many jobs are ahead of it */
+  ahead: number | null
+  /** About how long the work itself takes for this clip (ms), not counting waiting for the worker */
   estimate_ms: number
 }
 
+/** What the worker writes on a stopped Sub-edit (track_subjects.ts STOPPED) */
+const STOPPED = 'Stopped by the user'
+
 /**
- * About how long a Sub-edit of a clip this long takes: a first guess (fetching the video, reading
- * its faces 4× a second with their lips, following everyone), scaled by how the last Sub-edits
- * compared with that guess once there are a few to learn from.
+ * About how long the worker takes on a clip this long: fetching the editing copy, reading its
+ * faces 4× a second with their lips, following everyone and writing the framing. Measured on QA's
+ * worker (2026-10-12): 8–11 s for a 32 s clip, 21 s for a 2 min one. Waiting for the worker (other
+ * jobs ahead) is shown on its own, never guessed into this.
  */
-const guessMs = (clipMs: number) => 25_000 + 0.8 * clipMs
-async function estimateMs(clipMs: number): Promise<number> {
-  const past = await sql<{ took: number; len: number }[]>`
-    SELECT EXTRACT(EPOCH FROM (updated_at - created_at)) * 1000 AS took,
-      (payload->>'end_ms')::numeric - (payload->>'start_ms')::numeric AS len
-    FROM jobs
-    WHERE type = 'track_subjects' AND status = 'done' AND payload->>'auto' = 'true'
-    ORDER BY updated_at DESC LIMIT 20
-  `.catch(() => [])
-  const ratios = past.map(p => Number(p.took) / guessMs(Number(p.len))).filter(r => isFinite(r) && r > 0.1 && r < 20).sort((a, b) => a - b)
-  const scale = ratios.length >= 3 ? ratios[Math.floor(ratios.length / 2)] : 1
-  return Math.round(guessMs(clipMs) * scale)
-}
+const estimateMs = (clipMs: number) => Math.round(6000 + 0.14 * clipMs)
 
 /** The latest Sub-edit of the clip, and how long one takes */
 export async function subEditStatus(userId: string, clipId: string): Promise<SubEditState> {
   const clip = await ownClip(userId, clipId)
-  const estimate_ms = await estimateMs(Number(clip.end_ms) - Number(clip.start_ms))
-  const [job] = await sql<{ status: SubEditState['status']; error: string | null; elapsed: number }[]>`
-    SELECT status, error, EXTRACT(EPOCH FROM (now() - created_at)) * 1000 AS elapsed FROM jobs
-    WHERE type = 'track_subjects' AND payload->>'clip_id' = ${clipId} AND payload->>'auto' = 'true'
-    ORDER BY created_at DESC LIMIT 1
+  const estimate_ms = estimateMs(Number(clip.end_ms) - Number(clip.start_ms))
+  const [job] = await sql<{ status: string; error: string | null; working: number; ahead: number }[]>`
+    SELECT j.status, j.error,
+      -- the claim (status → processing) sets updated_at (the jobs_updated_at trigger)
+      EXTRACT(EPOCH FROM (now() - j.updated_at)) * 1000 AS working,
+      (SELECT count(*) FROM jobs o WHERE o.status IN ('queued', 'processing') AND o.type <> 'proxy'
+        AND o.id <> j.id AND (o.status = 'processing' OR o.created_at < j.created_at))::int AS ahead
+    FROM jobs j
+    WHERE j.type = 'track_subjects' AND j.payload->>'clip_id' = ${clipId} AND j.payload->>'auto' = 'true'
+    ORDER BY j.created_at DESC LIMIT 1
   `.catch(() => [])
-  if (!job) return { status: 'none', error: null, elapsed_ms: null, estimate_ms }
+  if (!job) return { status: 'none', error: null, elapsed_ms: null, ahead: null, estimate_ms }
+  if (job.status === 'failed' && job.error === STOPPED) return { status: 'stopped', error: null, elapsed_ms: null, ahead: null, estimate_ms }
+  const status = job.status as SubEditState['status']
   // The worker's error is for the logs; the user gets the reason in plain words when there is one
-  const error = job.status === 'failed' ? plainError(job.error) : null
-  const running = job.status === 'queued' || job.status === 'processing'
-  return { status: job.status, error, elapsed_ms: running ? Math.round(Number(job.elapsed)) : null, estimate_ms }
+  const error = status === 'failed' ? plainError(job.error) : null
+  return {
+    status, error, estimate_ms,
+    elapsed_ms: status === 'processing' ? Math.round(Number(job.working)) : null,
+    ahead: status === 'queued' ? Number(job.ahead) : null,
+  }
+}
+
+/** Stop the clip's Sub-edit: one waiting never starts; one running stops within a couple of seconds */
+export async function stopSubEdit(userId: string, clipId: string): Promise<SubEditState> {
+  await ownClip(userId, clipId)
+  await sql`
+    UPDATE jobs SET status = 'failed', error = ${STOPPED}
+    WHERE type = 'track_subjects' AND payload->>'clip_id' = ${clipId} AND payload->>'auto' = 'true'
+      AND status IN ('queued', 'processing')
+  `
+  return subEditStatus(userId, clipId)
 }
 
 function plainError(e: string | null): string {
@@ -219,5 +235,5 @@ export async function startSubEdit(userId: string, clipId: string): Promise<SubE
     }
     throw e
   }
-  return { status: 'queued', error: null, elapsed_ms: 0, estimate_ms: now.estimate_ms }
+  return subEditStatus(userId, clipId)
 }
