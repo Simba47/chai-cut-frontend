@@ -230,6 +230,138 @@ function PresetDemo({ id, hl }: { id: AnimationType; hl: string }) {
   )
 }
 
+// ── Colour chooser ────────────────────────────────────────────────────────────
+// One-click pairs (text + highlight) that read well on video
+const COLOUR_THEMES: { name: string; text: string; highlight: string }[] = [
+  { name: 'Classic', text: '#FFFFFF', highlight: '#FFE700' },
+  { name: 'Lime', text: '#FFFFFF', highlight: '#C8FF00' },
+  { name: 'Aqua', text: '#FFFFFF', highlight: '#22D3EE' },
+  { name: 'Candy', text: '#FFFFFF', highlight: '#EC4899' },
+  { name: 'Fire', text: '#FFFFFF', highlight: '#F97316' },
+  { name: 'Royal', text: '#FFFFFF', highlight: '#8B5CF6' },
+  { name: 'Sunshine', text: '#FFE700', highlight: '#FFFFFF' },
+  { name: 'Mint', text: '#C8FF00', highlight: '#FFFFFF' },
+]
+// Named colours of the palette (the name shows on the field, so no one has to read a hex code)
+const PALETTE: { hex: string; name: string }[] = [
+  { hex: '#FFFFFF', name: 'White' }, { hex: '#D4D4D8', name: 'Silver' }, { hex: '#71717A', name: 'Grey' }, { hex: '#000000', name: 'Black' },
+  { hex: '#FFE700', name: 'Yellow' }, { hex: '#FACC15', name: 'Gold' }, { hex: '#F97316', name: 'Orange' }, { hex: '#EF4444', name: 'Red' },
+  { hex: '#EC4899', name: 'Pink' }, { hex: '#D946EF', name: 'Magenta' }, { hex: '#8B5CF6', name: 'Purple' }, { hex: '#3B82F6', name: 'Blue' },
+  { hex: '#22D3EE', name: 'Aqua' }, { hex: '#14B8A6', name: 'Teal' }, { hex: '#22C55E', name: 'Green' }, { hex: '#C8FF00', name: 'Lime' },
+]
+const sameHex = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase()
+const colourName = (hex: string) => PALETTE.find(c => sameHex(c.hex, hex))?.name ?? hex.toUpperCase()
+
+function hueToHex(h: number): string {
+  const f = (n: number) => {
+    const k = (n + h / 30) % 12
+    const c = 0.55 - 0.45 * Math.max(-1, Math.min(k - 3, 9 - k, 1))
+    return Math.round(255 * c).toString(16).padStart(2, '0')
+  }
+  return `#${f(0)}${f(8)}${f(4)}`
+}
+function hexToHue(hex: string): number {
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex.trim())
+  if (!m) return 0
+  const n = parseInt(m[1], 16)
+  const r = ((n >> 16) & 255) / 255, g = ((n >> 8) & 255) / 255, b = (n & 255) / 255
+  const max = Math.max(r, g, b), d = max - Math.min(r, g, b)
+  if (d === 0) return 0
+  const h = max === r ? ((g - b) / d) % 6 : max === g ? (b - r) / d + 2 : (r - g) / d + 4
+  return Math.round(((h * 60) + 360) % 360)
+}
+
+function ColourChooser({ text, highlight, showHighlight, highlightLabel, onText, onHighlight }: {
+  text: string; highlight: string; showHighlight: boolean; highlightLabel: string
+  onText: (c: string) => void; onHighlight: (c: string) => void
+}) {
+  const [open, setOpen] = useState<'text' | 'highlight' | null>(null)
+  const theme = COLOUR_THEMES.find(t => sameHex(t.text, text) && (!showHighlight || sameHex(t.highlight, highlight)))?.name
+  return (
+    <div className="flex flex-col gap-3">
+      {/* Live sample of the two colours together */}
+      <div className="cp-sample" aria-hidden="true">
+        <span style={{ color: text }}>Hey there </span>
+        <span style={{ color: showHighlight ? highlight : text }}>friend</span>
+      </div>
+
+      {/* Themes: both colours in one click */}
+      <div className="flex flex-col gap-2">
+        <span className="cap-label">Colour theme</span>
+        <div className="grid grid-cols-4 gap-1.5">
+          {COLOUR_THEMES.map(t => (
+            <button key={t.name} type="button" className="cp-theme" data-on={theme === t.name || undefined}
+              onClick={() => { onText(t.text); if (showHighlight) onHighlight(t.highlight) }}
+              aria-pressed={theme === t.name} title={`${t.name}: ${colourName(t.text)} text, ${colourName(t.highlight)} ${highlightLabel.toLowerCase()}`}>
+              <span className="cp-theme-dots" aria-hidden="true">
+                <span style={{ background: t.text }} /><span style={{ background: t.highlight }} />
+              </span>
+              <span className="cp-theme-name">{t.name}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Each colour on its own: a field that opens its palette */}
+      <div className="flex flex-col gap-2">
+        <ColourField label="Text" value={text} onChange={onText}
+          open={open === 'text'} onToggle={() => setOpen(o => (o === 'text' ? null : 'text'))} />
+        {showHighlight && (
+          <ColourField label={highlightLabel} value={highlight} onChange={onHighlight}
+            open={open === 'highlight'} onToggle={() => setOpen(o => (o === 'highlight' ? null : 'highlight'))} />
+        )}
+      </div>
+    </div>
+  )
+}
+
+/** A labelled colour: its chip and name, and (opened) a palette, a rainbow slider and a hex box */
+function ColourField({ label, value, onChange, open, onToggle }: {
+  label: string; value: string; onChange: (c: string) => void; open: boolean; onToggle: () => void
+}) {
+  const [hexDraft, setHexDraft] = useState<string | null>(null)
+  const hue = hexToHue(value)
+  return (
+    <div className="cp-field" data-open={open || undefined}>
+      <button type="button" className="cp-field-head" onClick={onToggle} aria-expanded={open}>
+        <span className="cp-chip" style={{ background: value }} aria-hidden="true" />
+        <span className="cp-field-label">{label}</span>
+        <span className="cp-field-name">{colourName(value)}</span>
+        <span className="ed-collapse" data-open={open || undefined} aria-hidden="true">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M6 9l6 6 6-6" /></svg>
+        </span>
+      </button>
+      {open && (
+        <div className="cp-panel">
+          <div className="grid grid-cols-8 gap-1.5">
+            {PALETTE.map(c => (
+              <button key={c.hex} type="button" onClick={() => onChange(c.hex)} title={c.name}
+                aria-label={`${label} colour ${c.name}`} aria-pressed={sameHex(c.hex, value)}
+                className="cp-cell" data-on={sameHex(c.hex, value) || undefined} style={{ background: c.hex }} />
+            ))}
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <span className="cp-mini">Any colour</span>
+            <input type="range" min={0} max={359} step={1} value={hue} aria-label={`${label} colour hue`}
+              onChange={e => onChange(hueToHex(Number(e.target.value)))} className="cp-hue" />
+          </div>
+          <label className="cp-hex">
+            <span className="cp-mini">Code</span>
+            <input value={hexDraft ?? value.toUpperCase()} maxLength={7} spellCheck={false} aria-label={`${label} colour code`}
+              onChange={e => {
+                const v = e.target.value.trim()
+                setHexDraft(v)
+                const full = v.startsWith('#') ? v : `#${v}`
+                if (/^#[0-9a-f]{6}$/i.test(full)) onChange(full)
+              }}
+              onBlur={() => setHexDraft(null)} />
+          </label>
+        </div>
+      )}
+    </div>
+  )
+}
+
 function applyCase(text: string, tc: TextCase): string {
   if (tc === 'upper') return text.toUpperCase()
   if (tc === 'lower') return text.toLowerCase()
@@ -243,7 +375,6 @@ export function CaptionStyler({
   hasWords = false, hasRoman = false, romanize = false, romanizeLabel = 'Romanize', onRomanizeChange,
 }: Props) {
   const color = style.color ?? DEFAULT_CAPTION_STYLE.color
-  const isPreset = PRESET_COLORS.includes(color)
   const animation = style.animation ?? DEFAULT_CAPTION_STYLE.animation
   const hl = style.highlight_color ?? '#FFE700'
 
@@ -307,45 +438,17 @@ export function CaptionStyler({
       <section className="flex flex-col gap-4">
         <h3 className="cap-heading">Look</h3>
 
-      {/* Highlight colour (animated presets) */}
-      {ANIMATED.includes(animation) && (
-        <div className="flex flex-col gap-2">
-          <span className="cap-label">{animation === 'highlight' ? 'Box colour' : 'Highlight colour'}</span>
-          <div className="flex flex-wrap items-center gap-2">
-            {HIGHLIGHT_COLORS.map(c => (
-              <button key={c} onClick={() => onChange({ highlight_color: c })}
-                aria-label={`Highlight colour ${c}`} aria-pressed={hl === c}
-                className="cap-swatch" data-on={hl === c || undefined} style={{ background: c }} />
-            ))}
-          </div>
-        </div>
-      )}
+      {/* Colours: a live sample, one-click themes, then a field per colour that opens a palette */}
+      <ColourChooser
+        text={color} highlight={hl}
+        showHighlight={ANIMATED.includes(animation)}
+        highlightLabel={animation === 'highlight' ? 'Box' : 'Highlight'}
+        onText={c => onChange({ color: c })}
+        onHighlight={c => onChange({ highlight_color: c })}
+      />
 
       {/* Font */}
       <FontPicker value={style.font ?? null} onChange={family => onChange({ font: family })} />
-
-      {/* Color swatches */}
-      <div className="flex flex-col gap-2">
-        <span className="cap-label">Text colour</span>
-        <div className="flex flex-wrap items-center gap-2">
-          {PRESET_COLORS.map(c => (
-            <button key={c} onClick={() => onChange({ color: c })}
-              aria-label={`Caption colour ${c}`} aria-pressed={color === c}
-              className="cap-swatch" data-on={color === c || undefined} style={{ background: c }} />
-          ))}
-          {/* Custom colour */}
-          <label title="Pick any colour" className="cap-swatch" data-on={!isPreset || undefined}
-            style={{ position: 'relative', cursor: 'pointer', background: 'conic-gradient(red 0deg, yellow 60deg, lime 120deg, cyan 180deg, blue 240deg, magenta 300deg, red 360deg)' }}>
-            <input
-              type="color"
-              value={color}
-              onChange={e => onChange({ color: e.target.value })}
-              aria-label="Pick any caption colour"
-              style={{ position: 'absolute', inset: 0, opacity: 0, cursor: 'pointer', width: '100%', height: '100%' }}
-            />
-          </label>
-        </div>
-      </div>
 
       {/* Size */}
       <div className="flex flex-col gap-2.5">

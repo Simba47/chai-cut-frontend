@@ -1,16 +1,19 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useSession, signOut } from 'next-auth/react'
 import { Breadcrumbs } from '@/components/ui/breadcrumbs'
 import { AccountMenu } from '@/components/ui/account-menu'
 import { BrandLoaderScreen } from '@/components/ui/brand-loader'
 
-type Account = { email: string; name: string | null; emailVerified: string | null; planName: string; hasPassword: boolean }
+type Account = { email: string; name: string | null; image: string | null; emailVerified: string | null; planName: string; hasPassword: boolean }
+
+/** Profile photos are sent as a square this many pixels wide */
+const PHOTO_SIZE = 256
 
 /**
- * Account settings: your name, email and plan; change your password; delete your account.
- * Talks to /api/account (GET, PATCH, DELETE) and /api/account/password. (styles: .st-* in globals.css)
+ * Account settings: your profile photo, name, email and plan; change your password; delete your account.
+ * Talks to /api/account (GET, PATCH, DELETE), /api/account/photo and /api/account/password. (styles: .st-* in globals.css)
  */
 export default function SettingsPage() {
   const { update } = useSession()
@@ -38,14 +41,15 @@ export default function SettingsPage() {
       <main className="flex-1 w-full max-w-2xl mx-auto px-4 sm:px-6 py-10 flex flex-col gap-6">
         <header>
           <h1 className="st-title">Account settings</h1>
-          <p className="st-sub">Your name, password and account. Changes save straight away.</p>
+          <p className="st-sub">Your photo, name, password and account. Changes save straight away.</p>
         </header>
 
         {loadError && <div className="st-alert st-alert-red" role="alert">{loadError}</div>}
 
         {account && (
           <>
-            <ProfileCard account={account} onSaved={async name => { setAccount(a => a && { ...a, name }); await update({ name }) }} />
+            <ProfileCard account={account} onSaved={async name => { setAccount(a => a && { ...a, name }); await update({ name }) }}
+              onPhoto={async image => { setAccount(a => a && { ...a, image }); await update({ image }) }} />
             {account.hasPassword && <PasswordCard />}
             <DangerCard hasPassword={account.hasPassword} />
           </>
@@ -55,8 +59,120 @@ export default function SettingsPage() {
   )
 }
 
+/** A picked picture, cut to a centred square and shrunk to 256 px: small to send, sharp at any size we show it */
+async function squarePhoto(file: File): Promise<Blob> {
+  const url = URL.createObjectURL(file)
+  try {
+    const img = new Image()
+    await new Promise<void>((resolve, reject) => {
+      img.onload = () => resolve()
+      img.onerror = () => reject(new Error('That file could not be opened as a picture'))
+      img.src = url
+    })
+    const side = Math.min(img.naturalWidth, img.naturalHeight)
+    if (!side) throw new Error('That file could not be opened as a picture')
+    const canvas = document.createElement('canvas')
+    canvas.width = canvas.height = PHOTO_SIZE
+    const ctx = canvas.getContext('2d')
+    if (!ctx) throw new Error('Your browser could not prepare the photo')
+    ctx.imageSmoothingQuality = 'high'
+    ctx.drawImage(img, (img.naturalWidth - side) / 2, (img.naturalHeight - side) / 2, side, side, 0, 0, PHOTO_SIZE, PHOTO_SIZE)
+    const blob = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.9))
+    if (!blob) throw new Error('Your browser could not prepare the photo')
+    return blob
+  } finally { URL.revokeObjectURL(url) }
+}
+
+/** Profile photo: the picture (or the first letter), with Upload / Change and Remove */
+function PhotoRow({ account, onPhoto }: { account: Account; onPhoto: (image: string | null) => Promise<void> }) {
+  const input = useRef<HTMLInputElement>(null)
+  const [busy, setBusy] = useState<'saving' | 'removing' | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const letter = (account.name || account.email).charAt(0).toUpperCase()
+
+  async function pick(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0]
+    e.target.value = ''   // so choosing the same file again still fires
+    if (!file || busy) return
+    setBusy('saving'); setError(null)
+    try {
+      const form = new FormData()
+      form.append('file', await squarePhoto(file), 'photo.jpg')
+      const r = await fetch('/api/account/photo', { method: 'POST', body: form })
+      const d = await r.json().catch(() => ({}))
+      if (!r.ok) throw new Error(d.error ?? 'Could not save your photo')
+      await onPhoto(d.image)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not save your photo')
+    } finally { setBusy(null) }
+  }
+
+  async function remove() {
+    if (busy) return
+    setBusy('removing'); setError(null)
+    try {
+      const r = await fetch('/api/account/photo', { method: 'DELETE' })
+      const d = await r.json().catch(() => ({}))
+      if (!r.ok) throw new Error(d.error ?? 'Could not remove your photo')
+      await onPhoto(null)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not remove your photo')
+    } finally { setBusy(null) }
+  }
+
+  const camera = (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.1" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M4 8h3l2-3h6l2 3h3a1 1 0 011 1v9a1 1 0 01-1 1H4a1 1 0 01-1-1V9a1 1 0 011-1z" /><circle cx="12" cy="13" r="3.5" />
+    </svg>
+  )
+  return (
+    <div className="st-hero">
+      {/* The photo is a button too: click it to choose one */}
+      <button type="button" className="st-ava" data-busy={busy ? '' : undefined} disabled={!!busy} onClick={() => input.current?.click()}
+        aria-label={account.image ? 'Change your profile photo' : 'Upload a profile photo'}>
+        <span className="st-ava-pic">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          {account.image ? <img src={account.image} alt="" /> : letter}
+        </span>
+        <span className="st-ava-badge">{camera}</span>
+      </button>
+
+      <div className="st-hero-id">
+        <p className="st-hero-name">{account.name || account.email.split('@')[0]}</p>
+        <p className="st-hero-mail" title={account.email}>{account.email}</p>
+        <div className="st-hero-chips">
+          <span className="st-chip st-chip-lime">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M13 2L4 14h7l-1 8 9-12h-7z" /></svg>
+            {account.planName} plan
+          </span>
+          {account.emailVerified && <span className="st-chip st-chip-green">✓ Verified</span>}
+        </div>
+      </div>
+
+      <div className="st-hero-actions">
+        <div className="flex flex-wrap gap-2">
+          <button type="button" className="st-pill st-pill-lime" disabled={!!busy} onClick={() => input.current?.click()}>
+            {camera}{busy === 'saving' ? 'Saving…' : account.image ? 'Change photo' : 'Upload photo'}
+          </button>
+          {account.image && (
+            <button type="button" className="st-pill st-pill-red" disabled={!!busy} onClick={remove}>
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.1" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3" />
+              </svg>
+              {busy === 'removing' ? 'Removing…' : 'Remove'}
+            </button>
+          )}
+        </div>
+        <span className="st-hint">JPG, PNG or WebP</span>
+        {error && <p className="st-err" role="alert">{error}</p>}
+      </div>
+      <input ref={input} type="file" accept="image/jpeg,image/png,image/webp" hidden onChange={pick} aria-label="Choose a profile photo" />
+    </div>
+  )
+}
+
 /** Name (editable), email and plan */
-function ProfileCard({ account, onSaved }: { account: Account; onSaved: (name: string | null) => Promise<void> }) {
+function ProfileCard({ account, onSaved, onPhoto }: { account: Account; onSaved: (name: string | null) => Promise<void>; onPhoto: (image: string | null) => Promise<void> }) {
   const [name, setName] = useState(account.name ?? '')
   const [state, setState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
   const [error, setError] = useState<string | null>(null)
@@ -80,35 +196,42 @@ function ProfileCard({ account, onSaved }: { account: Account; onSaved: (name: s
   }
 
   return (
-    <section className="st-card">
-      <h2 className="st-card-title">Profile</h2>
-      <form onSubmit={save} className="flex flex-col gap-4">
+    <section className="st-card st-profile">
+      <h2 className="sr-only">Profile</h2>
+      <PhotoRow account={account} onPhoto={onPhoto} />
+      <form onSubmit={save} className="st-profile-body">
         <label className="st-field">
           <span className="st-label">Name</span>
-          <div className="flex gap-2">
-            <input className="st-input flex-1" value={name} maxLength={60} placeholder="Your name"
+          {/* Save sits inside the box, at its right end */}
+          <div className="st-inset">
+            <input value={name} maxLength={60} placeholder="Your name"
               onChange={e => { setName(e.target.value); if (state !== 'saving') setState('idle') }} autoComplete="name" />
             <button type="submit" className="st-btn st-btn-lime" disabled={!changed || state === 'saving'}>
-              {state === 'saving' ? 'Saving…' : 'Save'}
+              {state === 'saving' ? 'Saving…' : state === 'saved' ? '✓ Saved' : 'Save'}
             </button>
           </div>
           <span className="st-hint">Shown on your profile button.</span>
         </label>
-        {state === 'saved' && <p className="st-ok">✓ Name saved</p>}
         {error && <p className="st-err" role="alert">{error}</p>}
 
-        <div className="st-field">
-          <span className="st-label">Email</span>
-          <div className="st-readonly">
-            <span className="truncate">{account.email}</span>
-            {account.emailVerified && <span className="st-badge st-badge-green">Verified</span>}
+        <div className="st-tiles">
+          <div className="st-tile">
+            <span className="st-tile-ico" aria-hidden="true">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="5" width="18" height="14" rx="2" /><path d="M3 7l9 6 9-6" /></svg>
+            </span>
+            <div className="min-w-0 flex-1">
+              <span className="st-tile-label">Email</span>
+              <span className="st-tile-value" title={account.email}>{account.email}</span>
+            </div>
           </div>
-        </div>
-
-        <div className="st-field">
-          <span className="st-label">Plan</span>
-          <div className="st-readonly">
-            <span>{account.planName}</span>
+          <div className="st-tile">
+            <span className="st-tile-ico" data-lime="" aria-hidden="true">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M13 2L4 14h7l-1 8 9-12h-7z" /></svg>
+            </span>
+            <div className="min-w-0 flex-1">
+              <span className="st-tile-label">Plan</span>
+              <span className="st-tile-value">{account.planName}</span>
+            </div>
             <a href="/pricing" className="st-link">Plans &amp; billing →</a>
           </div>
         </div>
