@@ -1,0 +1,50 @@
+/* Legal pages (Privacy, Terms, Support, Delete account): back link, badge + title, then one card of icon rows */
+.legal-card-wrap { width: 100%; max-width: 768px; margin: 0 auto; padding: 32px 16px 80px; }
+.legal-card-back { display: inline-flex; align-items: center; gap: 8px; font-size: 14px; color: var(--muted); text-decoration: none; transition: color .15s; }
+.legal-card-back:hover { color: var(--text); }
+.legal-card-back svg { width: 16px; height: 16px; }
+
+.legal-card-head { padding: 24px 0 40px; }
+.legal-card-badge {
+  display: inline-flex; align-items: center; gap: 8px; margin-bottom: 16px; padding: 6px 12px;
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent); border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  font-size: 12px; font-weight: 600; color: var(--accent);
+}
+.legal-card-badge svg { width: 14px; height: 14px; }
+.legal-card-head h1 { margin: 0 0 8px; font-size: clamp(36px, 7vw, 48px); font-weight: 900; line-height: 1.1; letter-spacing: -.02em; }
+.legal-card-head p { margin: 0; font-size: 14px; color: var(--muted); }
+.legal-card-head strong { font-weight: 600; color: var(--text); }
+
+.legal-card { overflow: hidden; border: 1px solid var(--border); border-radius: 16px; background: var(--card); box-shadow: 0 1px 2px rgba(0,0,0,.05); }
+.legal-card-row { display: flex; gap: 24px; padding: 32px; }
+.legal-card-row + .legal-card-row { border-top: 1px solid var(--border); }
+.legal-card-icon {
+  display: flex; flex-shrink: 0; align-items: center; justify-content: center;
+  width: 44px; height: 44px; margin-top: 2px; border-radius: 50%;
+  background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent);
+}
+.legal-card-icon svg { width: 20px; height: 20px; }
+.legal-card-row h2 { margin: 0 0 12px; font-size: 16px; font-weight: 700; color: var(--text); }
+.legal-card-row p { margin: 0; font-size: 14px; line-height: 1.7; color: var(--muted); }
+.legal-card-row a { color: var(--accent); text-underline-offset: 3px; }
+
+/* Delete account: badge and icons in red instead of the brand lime */
+.legal-card-danger :is(.legal-card-badge, .legal-card-icon) { --accent: #F87171; }
+[data-theme="light"] .legal-card-danger :is(.legal-card-badge, .legal-card-icon) { --accent: #DC2626; }
+
+.legal-card-copy { margin: 32px 0 0; text-align: center; font-size: 12px; color: var(--dim); }
+
+.legal-card-top {
+  position: fixed; right: 24px; bottom: 24px; z-index: 10;
+  display: flex; align-items: center; justify-content: center; width: 40px; height: 40px;
+  border: 0; border-radius: 50%; background: var(--btn-bg, var(--text)); color: var(--btn-text, var(--bg));
+  box-shadow: 0 6px 16px rgba(0,0,0,.2); cursor: pointer; transition: opacity .15s;
+}
+.legal-card-top:hover { opacity: .85; }
+.legal-card-top svg { width: 16px; height: 16px; }
+
+@media (max-width: 600px) {
+  .legal-card-row { gap: 16px; padding: 24px 20px; }
+  .legal-card-icon { width: 38px; height: 38px; }
+}
