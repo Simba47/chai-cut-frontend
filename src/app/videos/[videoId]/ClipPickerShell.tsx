@@ -1823,27 +1823,34 @@ function ResultCard({ s, rank, videoUrl, busy, inClips, open, onOpen, onClose, o
  * A Sub-edit already running when the board opens is picked up.
  */
 function useSubEdit(clipId: string, onDone?: () => void) {
-  const [state, setState] = useState<'none' | 'queued' | 'processing' | 'done' | 'failed'>('none')
+  const [state, setState] = useState<'none' | 'queued' | 'processing' | 'done' | 'failed' | 'stopped'>('none')
   const [error, setError] = useState<string | null>(null)
-  // About how long it takes, and when it started (this browser's clock: from the server's elapsed)
+  // About how long the work takes, when the worker started on it (this browser's clock, from the
+  // server's elapsed), and how many jobs are ahead while it waits for the worker
   const [estimate, setEstimate] = useState<number | null>(null)
   const [startedAt, setStartedAt] = useState<number | null>(null)
+  const [ahead, setAhead] = useState<number | null>(null)
   const busy = state === 'queued' || state === 'processing'
   const url = `/api/clips/${clipId}/subjects/auto`
   const doneRef = useRef(onDone)
   doneRef.current = onDone
+  // The state as last seen (to notice it finishing outside a state update: the board's refresh
+  // must never run while React is rendering)
+  const stateRef = useRef(state)
+  stateRef.current = state
   const check = useCallback(async () => {
     try {
       const res = await fetch(url)
       if (!res.ok) return
-      const data = await res.json() as { status: typeof state; error: string | null; elapsed_ms: number | null; estimate_ms: number }
-      setState(prev => {
-        if ((prev === 'queued' || prev === 'processing') && data.status === 'done') doneRef.current?.()
-        return data.status
-      })
+      const data = await res.json() as { status: typeof state; error: string | null; elapsed_ms: number | null; ahead: number | null; estimate_ms: number }
+      const was = stateRef.current
+      stateRef.current = data.status
+      setState(data.status)
+      if ((was === 'queued' || was === 'processing') && data.status === 'done') doneRef.current?.()
       setError(data.status === 'failed' ? data.error : null)
       setEstimate(data.estimate_ms)
-      if (data.elapsed_ms !== null) setStartedAt(Date.now() - data.elapsed_ms)
+      setAhead(data.ahead)
+      setStartedAt(data.elapsed_ms !== null ? Date.now() - data.elapsed_ms : null)
     } catch { /* offline for a moment: the next check */ }
   }, [url])
   useEffect(() => { check() }, [check])
@@ -1855,33 +1862,53 @@ function useSubEdit(clipId: string, onDone?: () => void) {
   async function start() {
     setError(null)
     setState('queued')
-    setStartedAt(Date.now())
+    setStartedAt(null)
     try {
       const res = await fetch(url, { method: 'POST' })
       const data = await res.json().catch(() => ({}))
       if (!res.ok) { setState('failed'); setError(data.error ?? 'Sub-edit could not start. Try again.'); return }
       setState(data.status ?? 'queued')
       if (data.estimate_ms) setEstimate(data.estimate_ms)
-      if (typeof data.elapsed_ms === 'number') setStartedAt(Date.now() - data.elapsed_ms)
+      setAhead(typeof data.ahead === 'number' ? data.ahead : null)
+      setStartedAt(typeof data.elapsed_ms === 'number' ? Date.now() - data.elapsed_ms : null)
     } catch { setState('failed'); setError('Sub-edit could not start. Check the connection and try again.') }
   }
-  return { state, busy, error, start, estimate, startedAt }
+  /** Stop it: one waiting never starts, one running stops within a couple of seconds */
+  async function stop() {
+    const was = stateRef.current
+    stateRef.current = 'stopped'
+    setState('stopped')
+    setError(null)
+    try {
+      const res = await fetch(url, { method: 'DELETE' })
+      if (!res.ok) throw new Error()
+    } catch {
+      stateRef.current = was
+      setState(was)
+      setError('Sub-edit could not be stopped. Try again.')
+    }
+  }
+  return { state, busy, error, start, stop, estimate, startedAt, ahead }
 }
 
 /** "about 45 s" / "about 1 min 20 s" */
 function aboutLabel(ms: number) {
-  const s = Math.max(5, Math.round(ms / 5000) * 5)
+  const s = ms < 30_000 ? Math.max(1, Math.round(ms / 1000)) : Math.round(ms / 5000) * 5
   return s < 60 ? `${s} s` : `${Math.floor(s / 60)} min${s % 60 ? ` ${s % 60} s` : ''}`
 }
 
 /** The slim card's line while Sub-edit runs: "Sub-editing · about 40 s left" */
-function SubEditInline({ startedAt, estimate }: { startedAt: number | null; estimate: number | null }) {
+function SubEditInline({ startedAt, estimate, ahead, onStop }: { startedAt: number | null; estimate: number | null; ahead: number | null; onStop: () => void }) {
   const [now, setNow] = useState(() => Date.now())
   useEffect(() => { const t = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(t) }, [])
-  const left = (estimate ?? 60_000) - (startedAt === null ? 0 : Math.max(0, now - startedAt))
+  const left = (estimate ?? 30_000) - (startedAt === null ? 0 : Math.max(0, now - startedAt))
   return (
     <span className="flex items-center gap-1" style={{ color: ACCENT }}>
-      · <Spinner /> Sub-editing{left > 4000 ? ` · about ${aboutLabel(left)} left` : ' · almost done'}
+      · <Spinner /> {startedAt === null
+        ? `Waiting for the worker${ahead ? ` · ${ahead} ahead` : ''}`
+        : `Sub-editing${left > 3000 ? ` · about ${aboutLabel(left)} left` : ' · almost done'}`}
+      <button type="button" onClick={e => { e.stopPropagation(); onStop() }} title="Stop the Sub-edit"
+        className="ml-1 px-1.5 rounded text-[10.5px] font-semibold hover:bg-white/10" style={{ color: '#f87171' }}>Stop</button>
     </span>
   )
 }
@@ -1890,14 +1917,17 @@ function SubEditInline({ startedAt, estimate }: { startedAt: number | null; esti
  * Over the clip card while Sub-edit runs: what it's doing, the time left (from the estimate) and a
  * bar that fills with it. Past the estimate it says it's nearly there.
  */
-function SubEditOverlay({ startedAt, estimate }: { startedAt: number | null; estimate: number | null }) {
+function SubEditOverlay({ startedAt, estimate, ahead, onStop }: { startedAt: number | null; estimate: number | null; ahead: number | null; onStop: () => void }) {
   const [now, setNow] = useState(() => Date.now())
   useEffect(() => { const t = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(t) }, [])
-  const total = estimate ?? 60_000
-  const elapsed = startedAt === null ? 0 : Math.max(0, now - startedAt)
-  const share = Math.min(0.97, elapsed / total)
+  const total = estimate ?? 30_000
+  // Waiting for the worker (other jobs ahead): no countdown until it starts on this one
+  const waiting = startedAt === null
+  const elapsed = waiting ? 0 : Math.max(0, now - startedAt)
+  const share = waiting ? 0 : Math.min(0.97, elapsed / total)
   const left = total - elapsed
-  const step = share < 0.3 ? 'Reading the video' : share < 0.75 ? 'Finding the people and who talks when' : 'Framing the clip on whoever is talking'
+  const step = waiting ? `Waiting for the worker${ahead ? ` · ${ahead} job${ahead === 1 ? '' : 's'} ahead` : ''}`
+    : share < 0.3 ? 'Reading the video' : share < 0.75 ? 'Finding the people and who talks when' : 'Framing the clip on whoever is talking'
   return (
     <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-2 rounded-[inherit] px-4 text-center"
       style={{ background: 'rgba(10,10,10,0.86)', backdropFilter: 'blur(2px)' }} role="status" aria-live="polite"
@@ -1910,8 +1940,13 @@ function SubEditOverlay({ startedAt, estimate }: { startedAt: number | null; est
         <div className="h-full rounded-full transition-[width] duration-1000 ease-linear" style={{ width: `${Math.round(share * 100)}%`, background: ACCENT }} />
       </div>
       <p className="text-[11px] tabular-nums" style={{ color: 'rgba(255,255,255,0.55)' }}>
-        {left > 4000 ? `About ${aboutLabel(left)} left` : 'Almost done…'} · you can keep working
+        {waiting ? `Then about ${aboutLabel(total)}` : left > 3000 ? `About ${aboutLabel(left)} left` : 'Almost done…'} · you can keep working
       </p>
+      <button type="button" onClick={e => { e.stopPropagation(); onStop() }}
+        className="mt-1 h-7 px-3 rounded-lg text-[11.5px] font-semibold transition-colors hover:bg-[rgba(239,68,68,0.15)]"
+        style={{ color: '#f87171', border: '1px solid rgba(239,68,68,0.45)' }}>
+        Stop
+      </button>
     </div>
   )
 }
@@ -1986,7 +2021,7 @@ function ClipCard({ id, focused, number, origin, title, startMs, endMs, status, 
           <span className="flex items-center gap-1.5 text-[11px] tabular-nums" style={{ color: 'rgba(255,255,255,0.5)' }}>
             <ClockIcon />{durLabel(startMs, endMs)}
             {status === 'rendering' && <span className="flex items-center gap-1" style={{ color: ACCENT }}>· <Spinner /> Exporting</span>}
-            {sub.busy && <SubEditInline startedAt={sub.startedAt} estimate={sub.estimate} />}
+            {sub.busy && <SubEditInline startedAt={sub.startedAt} estimate={sub.estimate} ahead={sub.ahead} onStop={sub.stop} />}
           </span>
         </span>
         {heart}
@@ -2012,7 +2047,7 @@ function ClipCard({ id, focused, number, origin, title, startMs, endMs, status, 
         },
         title: open ? 'Click to close' : 'Click to preview this clip',
       })}>
-      {sub.busy && !selecting && <SubEditOverlay startedAt={sub.startedAt} estimate={sub.estimate} />}
+      {sub.busy && !selecting && <SubEditOverlay startedAt={sub.startedAt} estimate={sub.estimate} ahead={sub.ahead} onStop={sub.stop} />}
       <div className="flex items-start gap-3">
         {selecting ? (
           <span aria-hidden="true" className="shrink-0 mt-1 w-6 h-6 rounded-full flex items-center justify-center transition-colors"
@@ -2081,9 +2116,9 @@ function ClipCard({ id, focused, number, origin, title, startMs, endMs, status, 
       {!selecting && sub.error && <p role="alert" className="mt-2 text-[11px]" style={{ color: '#f87171' }}>{sub.error}</p>}
       {!selecting && (
         <div className="mt-2.5 grid grid-cols-3 gap-1.5">
-          <button onClick={e => { e.stopPropagation(); sub.start() }} disabled={sub.busy || disabled}
+          <button onClick={e => { e.stopPropagation(); if (sub.state === 'done') onEdit(); else sub.start() }} disabled={sub.busy || disabled}
             title={sub.busy ? 'Finding the people and framing the clip on whoever is talking — you can keep working'
-              : sub.state === 'done' ? 'Framed on whoever is talking. Press again to do it afresh'
+              : sub.state === 'done' ? 'Sub-edited: framed on whoever is talking. Open it in the editor'
               : `Sub-edit: finds everyone in this clip and frames it on whoever is talking, by itself${sub.estimate ? ` — takes about ${aboutLabel(sub.estimate)}` : ''}`}
             className="h-8 flex items-center justify-center gap-1.5 rounded-lg text-xs font-semibold transition-colors hover:bg-white/10 disabled:cursor-default"
             style={{
