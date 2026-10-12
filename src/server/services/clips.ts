@@ -441,7 +441,7 @@ function cleanFrame(frame: FrameSettings): FrameSettings {
     const lane = it.lane === 'band' ? 'band' as const : num(it.lane, 0, 2)
     const start = num(it.start_ms, 0, 1e9), end = num(it.end_ms, 0, 1e9)
     if (lane === undefined || start === undefined || end === undefined || end <= start) return []
-    const base: FrameItem = { id: it.id.slice(0, 64), lane: lane === 'band' ? lane : Math.round(lane), kind: it.kind, start_ms: Math.round(start), end_ms: Math.round(end), ...(it.hidden ? { hidden: true } : {}) }
+    const base: FrameItem = { id: it.id.slice(0, 64), lane: lane === 'band' ? lane : Math.round(lane), kind: it.kind, start_ms: Math.round(start), end_ms: Math.round(end), ...(it.hidden ? { hidden: true } : {}), ...(it.locked ? { locked: true } : {}) }
     if (it.kind === 'video') {
       if (typeof it.source_video_id !== 'string') return []
       return [{ ...base, source_video_id: it.source_video_id, source_offset_ms: Math.round(num(it.source_offset_ms, 0, 1e9) ?? 0), volume: num(it.volume, 0, 1) ?? 1, muted: !!it.muted, corners: corner(it.corners), ...rectOf(it.rect) }]
@@ -453,7 +453,9 @@ function cleanFrame(frame: FrameSettings): FrameSettings {
     return [{
       ...base, text: typeof it.text === 'string' ? it.text.slice(0, 500) : '', captions: !!it.captions,
       bg: hex(it.bg), color: hex(it.color), size: num(it.size, 16, 200),
-      x: num(it.x, 0, 1), y: num(it.y, 0, 1),
+      x: num(it.x, 0, 1), y: num(it.y, 0, 1), w: num(it.w, 0.05, 1),
+      ...(typeof it.rotation === 'number' && isFinite(it.rotation) && Math.round(it.rotation * 10) % 3600 !== 0
+        ? { rotation: Math.round(((((it.rotation % 360) + 540) % 360) - 180) * 10) / 10 } : {}),
     }]
   })
   return {

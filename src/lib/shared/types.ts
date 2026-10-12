@@ -47,6 +47,8 @@ export interface FrameItem {
   muted?: boolean
   /** Not shown (or heard) in the preview or the export */
   hidden?: boolean
+  /** Can't be moved, trimmed, cut, changed or deleted until unlocked */
+  locked?: boolean
   /** Video / photo: its box inside its slot when resized / moved (shares of the slot; absent = the whole slot) */
   rect?: { x: number; y: number; w: number; h: number } | null
   // Photo
@@ -65,6 +67,10 @@ export interface FrameItem {
   /** Text: where its centre sits in its band/slot, as shares of the row (default 0.5, 0.5 = centred) */
   x?: number
   y?: number
+  /** Text: its box's width as a share of the frame's (the text wraps inside it; absent = 0.88) */
+  w?: number
+  /** Text: turned this many degrees clockwise round its centre */
+  rotation?: number | null
   /** Band only: show the clip's captions here instead of fixed text */
   captions?: boolean
 }

@@ -2,7 +2,7 @@
 
 import { InfoTip } from '@/components/ui/info-tip'
 import { musicGainAt, speechRangesInVideo, speechRanges, heardSpeech, type Range as SpeechRange } from '@/modules/editor/musicGain'
-import { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback, Fragment } from 'react'
+import { useState, useEffect, useLayoutEffect, useRef, useMemo, Fragment } from 'react'
 import type { Clip, Segment, CropBox, BoxKeyframe, CaptionStyle, TextOverlay, AudioTrack, Transition, TranscriptWord, LayoutType, Overlay } from '@chai-cut/shared'
 import { VideoPreview, OutputCanvas } from '@/components/editor/VideoPreview'
 import { computeCutRanges, reactionRanges, removedMs, withoutRanges } from '@/lib/cuts'
@@ -38,6 +38,7 @@ import { PlatformOverlay, PLATFORM_SAFE, type Platform } from '@/components/edit
 import { useEditorStore, type KeyframeMap } from '@/modules/editor/store'
 import { startHistory, undo, redo, useHistory, editableSnapshot, sameEditable, type EditableSnapshot } from '@/modules/editor/history'
 import { usePlayerStore, liveTime, useLiveTimeMs } from '@/modules/player/store'
+import { trackPresentedFrame } from '@/modules/player/presentedFrame'
 import { useVideoSync } from '@/modules/player/useSync'
 import { useCaptionStore } from '@/modules/captions/store'
 import { useMediaStore } from '@/modules/media/store'
@@ -176,7 +177,7 @@ export function EditorShell({
     neighbourFraming, joinSameLayoutNeighbours, setViewAt, recordMotionAt, removeViewChange, moveViewChange,
     placeBroll, retimeBroll: retimeShot, removeBroll: removeBrollShot, duplicateViewChange,
     upsertKeyframe, setBoxKeyframes, getPositionAt, updateFrameBand,
-    updateFrame, addFrameItem, updateFrameItem, removeFrameItem,
+    updateFrame, addFrameItem, updateFrameItem, removeFrameItem, splitFrameItem,
     setActiveSegmentId, setActiveBoxId,
   } = useEditorStore()
 
@@ -299,8 +300,10 @@ export function EditorShell({
   )
   const [isFreePlan, setIsFreePlan] = useState(false)
   const [tool, setTool] = useState<Tool>('format')
-  const [optionsOpen, setOptionsOpen] = useState(true)
-  // The Preview column on the right: closed for more room to edit (remembered per browser)
+  // The editor always opens the same way: the tool rail with the options panel closed (a tool opens
+  // it), the video, the Preview column on the right and the timeline
+  const [optionsOpen, setOptionsOpen] = useState(false)
+  // The Preview column on the right: can be closed for more room to edit
   const [previewOpen, setPreviewOpen] = useState(true)
   // Full view: the preview big, to check it properly. The browser's fullscreen when it allows it,
   // else over the whole editor window (fullViewFallback)
@@ -923,12 +926,10 @@ export function EditorShell({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [segments, keyframes, trims, clipRange, captionStyle, textOverlays, audioTracks, transitions, filters, overlays])
 
-  // Options sidebar open/closed and the social media preview choice are remembered per browser
+  // The social media preview choice is remembered per browser
   const [platform, setPlatformState] = useState<Platform>('off')
   useEffect(() => {
     try {
-      if (localStorage.getItem('editor.optionsOpen') === 'false') setOptionsOpen(false)
-      if (localStorage.getItem('editor.previewOpen') === 'false') setPreviewOpen(false)
       const p = localStorage.getItem('editor.platformPreview')
       if (p === 'instagram' || p === 'youtube') setPlatformState(p)
     } catch { /* storage blocked */ }
@@ -966,14 +967,8 @@ export function EditorShell({
     seekToMs(start)
     setTool('text'); toggleOptions(true)
   }
-  function togglePreview(open: boolean) {
-    setPreviewOpen(open)
-    try { localStorage.setItem('editor.previewOpen', String(open)) } catch { /* storage blocked */ }
-  }
-  function toggleOptions(open: boolean) {
-    setOptionsOpen(open)
-    try { localStorage.setItem('editor.optionsOpen', String(open)) } catch { /* storage blocked */ }
-  }
+  function togglePreview(open: boolean) { setPreviewOpen(open) }
+  function toggleOptions(open: boolean) { setOptionsOpen(open) }
 
 
   // ── Save / export ─────────────────────────────────────────────────────────────
@@ -1323,15 +1318,6 @@ export function EditorShell({
   /** Where a music track stops on the clip's timeline */
   const musicEnd = (t: AudioTrack) => t.end_ms
     ?? (musicDurations[t.id] != null ? t.start_ms + musicDurations[t.id] - (t.offset_ms ?? 0) : clipDurationMs)
-  const pickedMusic = audioTracks.find(t => t.id === pickedMusicId) ?? null
-  const canTrimMusic = !!pickedMusic && currentTimeMs > pickedMusic.start_ms + 200 && currentTimeMs < musicEnd(pickedMusic) - 200
-  /** Trim music: cut the selected track in two at the playhead (the right part plays on from the same moment of the song) */
-  function trimMusicAtPlayhead() {
-    const tr = pickedMusic
-    if (!tr || !canTrimMusic) return
-    pause()
-    splitMusicAt(tr, Math.round(currentTimeMs))
-  }
   /** Cut a music track in two at `t` (the right part plays on from the same moment of the song) */
   function splitMusicAt(tr: AudioTrack, t: number) {
     const id = crypto.randomUUID()
@@ -1341,9 +1327,9 @@ export function EditorShell({
     if (el) { const copy = new Audio(); copy.preload = 'auto'; copy.src = el.src; musicEls.current.set(id, copy) }
     if (musicDurations[tr.id] != null) setMusicDurations(d => ({ ...d, [id]: d[tr.id] }))
   }
-  // ── Point: cut the selected media — a video on top, B-roll, music, a photo or text — at the
-  //    playhead. Two points make three parts; pick a part and Delete removes it. Each press cuts
-  //    the part of that same media under the playhead, so the next point can be anywhere along it. ──
+  // ── Split on media (see splitSelected): cut the selected media — a video on top, B-roll, music, a photo or text — at the
+  //    playhead. Two splits make three parts; pick a part and Delete removes it. Each press cuts
+  //    the part of that same media under the playhead, so the next split can be anywhere along it. ──
   type PointTarget = { kind: 'broll' | 'music' | 'photo' | 'text'; id: string; name: string }
   const POINT_MIN_MS = 100
   /** The part of the selected media under the playhead that a point would cut (null: nothing to cut there) */
@@ -1383,7 +1369,7 @@ export function EditorShell({
     }
     return null
   }
-  /** Point at the playhead: the selected media is cut in two there (it stays selected) */
+  /** Cut the selected media in two at the playhead (it stays selected) */
   function pointHere() {
     const p = pointTarget()
     if (!p) return
@@ -1398,6 +1384,34 @@ export function EditorShell({
       return
     }
     setTextOverlays(prev => prev.flatMap(o => (o.id === p.id ? [{ ...o, end_ms: t }, { ...o, id: crypto.randomUUID(), start_ms: t }] : [o])))
+  }
+  /** The picked item in a frame's lanes, when the playhead is inside it (where a split would cut it) */
+  function frameItemCut(): { segId: string; id: string } | null {
+    const sel = selTarget
+    if (sel?.kind !== 'frameItem' || !sel.segId) return null
+    const seg = segments.find(x => x.id === sel.segId)
+    const it = seg ? frameOf(seg).items?.find(x => x.id === sel.id) : undefined
+    if (!seg || !it) return null
+    const t = liveTime.get()
+    return t > Math.max(it.start_ms, seg.start_ms) + POINT_MIN_MS && t < Math.min(it.end_ms, seg.end_ms) - POINT_MIN_MS ? { segId: seg.id, id: it.id } : null
+  }
+  /**
+   * Split (S): every cut at the playhead is this one button. With media selected — a video on
+   * top, B-roll, music, a photo, text or an item in a frame — that media is cut in two, and it
+   * stays selected so the next split can follow (two splits make three parts: pick one, Delete).
+   * With a section of the main video selected (a format or a frame), or nothing selected, the
+   * section under the playhead is cut.
+   */
+  function splitSelected() {
+    if (selTarget && selTarget.kind !== 'section') {
+      if (pointTarget()) { pointHere(); return }
+      const f = frameItemCut()
+      if (!f || frameItemBlocked(f.segId, f.id)) return
+      pause()
+      splitFrameItem(f.segId, f.id, Math.round(liveTime.get()))
+      return
+    }
+    splitHere()
   }
 
   /**
@@ -1509,8 +1523,25 @@ export function EditorShell({
     if (!seg || sectionBlocked(seg.id)) return
     // One drag = one view change at one moment: stop playback so the playhead can't run on
     if (vid && !vid.paused) pause()
-    const t = Math.max(seg.start_ms, Math.min(seg.end_ms - 1, currentTimeMs))
+    // At the start of the frame on screen: a change at a camera cut starts on the new shot's first
+    // frame (the playhead can sit inside a frame: the arrow keys step 1/30 s, videos are often 25 fps)
+    const t = Math.max(seg.start_ms, Math.min(seg.end_ms - 1, frameStartAt(liveTime.get())))
     setViewAt(boxId, t, pos, seg.start_ms)
+  }
+  // The frame on screen: its own time in the video (see frameStartAt)
+  const shownFrameRef = useRef<number | null>(null)
+  useEffect(() => {
+    const v = videoRef.current
+    if (!v) return
+    return trackPresentedFrame(v, ms => { shownFrameRef.current = ms })
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  /** The start of the frame on screen at clip time `t` (ms, on the clip's timeline), or `t` when not known */
+  function frameStartAt(t: number): number {
+    const src = shownFrameRef.current
+    if (src == null) return t
+    const shown = Math.floor(videoToTimeline ? videoToTimeline(src) : src - clip.start_ms)
+    // (only the frame that covers the playhead: a frame lasts well under 0.1 s)
+    return shown <= t + 0.5 && t - shown < 100 ? Math.max(0, shown) : t
   }
 
   // Frames work like the Format layouts: picking one mid-section starts a new frame at the playhead
@@ -1869,22 +1900,14 @@ export function EditorShell({
       () => removeFrame(segId))
   }
 
-  function frameItemName(segId: string, id: string) {
-    const seg = segments.find(x => x.id === segId)
-    const it = seg ? frameOf(seg).items?.find(x => x.id === id) : undefined
-    if (!it) return 'this'
-    if (it.kind === 'video') return `the video "${videoTitles[it.source_video_id ?? ''] ?? 'Video'}"`
-    if (it.kind === 'photo') return 'this photo'
-    if (it.captions) return 'the captions from the band'
-    return it.text?.trim() ? `the text "${it.text.trim().slice(0, 40)}"` : 'this text'
-  }
 
+  /** A frame item's edit: blocked (with a note why) when it, or its frame's section, is locked */
+  function frameItemBlocked(segId: string, id: string) { return blocked({ kind: 'frameItem', id, segId }) }
+  /** Remove an item from a frame: straight away, as other media (Undo brings it back) */
   function askRemoveFrameItem(segId: string, id: string) {
-    if (sectionBlocked(segId)) return
-    confirm({ title: `Remove ${frameItemName(segId, id)}?`, body: UNDO_NOTE, confirmLabel: 'Remove' }, () => {
-      removeFrameItem(segId, id)
-      setActiveFrameItemId(cur => cur === id ? null : cur)
-    })
+    if (frameItemBlocked(segId, id)) return
+    removeFrameItem(segId, id)
+    setActiveFrameItemId(cur => cur === id ? null : cur)
   }
 
   function askRemoveMain(segId: string, slot: number) {
@@ -2467,9 +2490,9 @@ export function EditorShell({
     return options.frameItem || options.music || options.overlay || options.text || options.section || null
   }
 
-  const shortcutsRef = useRef({ togglePlay, seekToMs, currentTimeMs, clipDurationMs, trimSelectedTo, splitHere, pointHere, deleteSelected: () => {} })
+  const shortcutsRef = useRef({ togglePlay, seekToMs, currentTimeMs, clipDurationMs, trimSelectedTo, splitSelected, deleteSelected: () => {} })
   shortcutsRef.current = {
-    togglePlay, seekToMs, currentTimeMs, clipDurationMs, trimSelectedTo, splitHere, pointHere,
+    togglePlay, seekToMs, currentTimeMs, clipDurationMs, trimSelectedTo, splitSelected,
     // Delete acts on what's selected most specifically: a view change (◆), a text overlay, then an
     // image, then the format (an overlay only counts while it's on screen at the playhead, so a
     // stale selection can't be deleted by surprise)
@@ -2518,9 +2541,7 @@ export function EditorShell({
       } else if (e.key === ']') {
         e.preventDefault(); s.trimSelectedTo('end')
       } else if (e.key === 's' || e.key === 'S') {
-        e.preventDefault(); s.splitHere()
-      } else if (e.key === 'p' || e.key === 'P') {
-        e.preventDefault(); s.pointHere()
+        e.preventDefault(); s.splitSelected()
       } else if (e.key === 'Delete' || e.key === 'Backspace') {
         if (target?.closest('button, a, [role="button"]') && e.key === 'Backspace') return
         e.preventDefault(); s.deleteSelected()
@@ -2619,7 +2640,7 @@ export function EditorShell({
     }
     if (t.kind === 'frameItem') {
       const it = frameOf(segments.find(x => x.id === t.segId) ?? ({} as SegmentLocal)).items?.find(x => x.id === t.id)
-      return it && { hidden: it.hidden, muted: it.muted }
+      return it && { hidden: it.hidden, muted: it.muted, locked: it.locked }
     }
     if (t.kind === 'photo') return overlays.find(x => x.id === t.id)
     if (t.kind === 'text') return textOverlays.find(x => x.id === t.id)
@@ -2665,7 +2686,7 @@ export function EditorShell({
     if (t.kind === 'broll') return ['hidden', 'muted', 'locked']
     if (t.kind === 'frameItem') {
       const it = frameOf(segments.find(x => x.id === t.segId) ?? ({} as SegmentLocal)).items?.find(x => x.id === t.id)
-      return it?.kind === 'video' ? ['hidden', 'muted'] : ['hidden']
+      return it?.kind === 'video' ? ['hidden', 'muted', 'locked'] : ['hidden', 'locked']
     }
     if (t.kind === 'photo') return overlays.find(o => o.id === t.id)?.type === 'video' ? ['hidden', 'muted', 'locked'] : ['hidden', 'locked']
     return t.kind === 'music' ? ['muted', 'locked'] : ['hidden', 'locked']
@@ -2913,29 +2934,12 @@ export function EditorShell({
       <div className="flex flex-col flex-1 min-h-0 overflow-hidden p-2">
       <div className="flex flex-1 min-h-0 overflow-hidden">
 
-        {/* Tool rail: only while the options panel is closed (open, the tools are its tabs) */}
-        {!optionsOpen && (
-          <nav aria-label="Editor tools" data-tour="tools" className="ed-card shrink-0 flex flex-col items-center gap-1 py-3 mr-2"
-            style={{ width: 72 }}>
-            {TOOLS.map(t => {
-              const active = tool === t.id && optionsOpen
-              return (
-                <button key={t.id}
-                  onClick={() => {
-                    if (active) { toggleOptions(false); return }
-                    setTool(t.id); setEditingTranscript(false); toggleOptions(true)
-                  }}
-                  aria-pressed={active}
-                  title={active ? `Hide ${t.label.toLowerCase()} options` : t.title}
-                  className="ed-tool" data-active={active || undefined}
-                  style={{ width: 60, height: 58 }}>
-                  <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true">{t.icon}</svg>
-                  <span className="text-[11px] font-medium">{t.label}</span>
-                </button>
-              )
-            })}
-          </nav>
-        )}
+        {/* Tool rail: always there, down the left (open or closed, the options panel sits beside it) */}
+        <ToolRail tool={tool} open={optionsOpen}
+          onPick={id => {
+            if (id === tool && optionsOpen) { toggleOptions(false); return }
+            setTool(id); setEditingTranscript(false); toggleOptions(true)
+          }} />
 
         {/* Options sidebar — settings for the selected tool only; collapsible */}
         <aside id="options-sidebar" data-layout-panel="Options" aria-label={`${activeTool.title} options`} aria-hidden={!optionsOpen}
@@ -2963,8 +2967,6 @@ export function EditorShell({
           )}
           {/* Fixed width inside, so the panel slides and fades as one piece while the column opens */}
           <div className="ed-options-inner h-full flex flex-col min-h-0" style={{ width: optionsW }}>
-          {/* The tools, as tabs along the top of the panel (like other editors) */}
-          <ToolTabs tool={tool} onPick={id => { setTool(id); setEditingTranscript(false) }} />
           {/* (no title: the tool's tab above already says which it is; its ⓘ explains it) */}
           <div className="shrink-0 pl-3 pr-2 py-1.5 flex items-center gap-2" style={{ borderBottom: '1px solid rgb(var(--ed-fg) / 0.06)' }}>
             <div className="flex-1 min-w-0">
@@ -3217,7 +3219,7 @@ export function EditorShell({
                 onToggleLock={segId => toggleCtl({ kind: 'section', id: segId }, 'locked')}
                 onUpdateItem={(segId, id, patch) => {
                   const switchOnly = Object.keys(patch).every(k => k === 'hidden' || k === 'muted')
-                  if (switchOnly || !sectionBlocked(segId)) updateFrameItem(segId, id, patch)
+                  if (switchOnly || !frameItemBlocked(segId, id)) updateFrameItem(segId, id, patch)
                 }}
                 onRemoveItem={askRemoveFrameItem}
                 onUpdateFrame={(segId, patch) => { if (!sectionBlocked(segId)) updateFrame(segId, patch) }}
@@ -3453,7 +3455,7 @@ export function EditorShell({
                 selectedId={activeFrameItemId}
                 onSelect={setActiveFrameItemId}
                 onAdd={lane => { if (frameSeg && lane === 'band') addBandText(frameSeg.id, currentTimeMs) }}
-                onUpdate={(id, patch) => { if (frameSeg && !sectionBlocked(frameSeg.id)) updateFrameItem(frameSeg.id, id, patch) }}
+                onUpdate={(id, patch) => { if (frameSeg && !frameItemBlocked(frameSeg.id, id)) updateFrameItem(frameSeg.id, id, patch) }}
                 onRemove={id => { if (frameSeg) askRemoveFrameItem(frameSeg.id, id) }}
                 onUpdateBand={patch => { if (frameSeg && !sectionBlocked(frameSeg.id)) updateFrameBand(frameSeg.id, patch) }}
               />
@@ -3598,13 +3600,6 @@ export function EditorShell({
                 <span style={{ display: 'inline-flex', transform: 'scaleX(-1)' }}><SidebarIcon open /></span>
               </button>
               <span className="text-sm font-semibold text-[var(--ed-text)]">Preview</span>
-              <button onClick={openFullView} aria-label="Full view: see the preview big" title="Full view (Esc to leave)"
-                className="ml-1 w-8 h-8 flex items-center justify-center rounded-lg transition-colors hover:bg-[rgb(var(--ed-fg)/0.1)]"
-                style={{ color: 'rgb(var(--ed-fg) / 0.6)' }}>
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                  <path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" />
-                </svg>
-              </button>
             </span>
             <div className="flex items-center gap-1.5">
               {rendering ? (
@@ -3714,7 +3709,8 @@ export function EditorShell({
                   onFrameLaneClick={focusLane}
                   activeFrameItemId={activeFrameItemId}
                   onFrameItemClick={selectFrameItem}
-                  onFrameItemChange={(id, patch) => { if (frameSeg && !sectionBlocked(frameSeg.id)) updateFrameItem(frameSeg.id, id, patch) }}
+                  onFrameItemChange={(id, patch) => { if (frameSeg && !frameItemBlocked(frameSeg.id, id)) updateFrameItem(frameSeg.id, id, patch) }}
+                  onDeleteFrameItem={id => { if (frameSeg) askRemoveFrameItem(frameSeg.id, id) }}
                   onFrameRowsChange={heights => { if (frameSeg && !sectionBlocked(frameSeg.id)) updateFrame(frameSeg.id, { row_h: heights }) }}
                   onFrameMainRectChange={(slot, rect) => {
                     if (!frameSeg || sectionBlocked(frameSeg.id)) return
@@ -3733,6 +3729,16 @@ export function EditorShell({
             )}
             </div>
           </div>
+          {/* Full view: in the preview box's bottom-right corner */}
+          {!fullView && (
+            <button onClick={openFullView} aria-label="Full view: see the preview big" title="Full view (Esc to leave)"
+              className="absolute w-8 h-8 flex items-center justify-center rounded-lg transition-colors hover:bg-black/80"
+              style={{ right: 12, bottom: 12, zIndex: 20, color: '#fff', background: 'rgba(0,0,0,0.6)', border: '1px solid rgba(255,255,255,0.14)', backdropFilter: 'blur(4px)' }}>
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" />
+              </svg>
+            </button>
+          )}
 
           </div>
         </aside>
@@ -3772,49 +3778,27 @@ export function EditorShell({
           <span className="ed-tl-sep" aria-hidden="true" />
           {/* What's selected — Trim and Delete act on exactly this (click video or music on the timeline) */}
           {(() => {
-            const seg = pickedSegId ? segments.find(x => x.id === pickedSegId) ?? null : null
-            const segName = seg ? (isShot(seg, mainVideoId) ? 'Video on top' : isFrameLayout(seg.layout) ? `Frame · ${FRAME_TEMPLATES[seg.layout].name}` : LAYOUTS.find(l => l.id === seg.layout)?.label ?? 'Section') : ''
-            const kind: 'music' | 'video' | null = pickedMusic ? 'music' : seg ? 'video' : null
-            const videoCanTrim = !!seg && canSplitHere && splitSeg?.id === seg.id
-            const trimOk = kind === 'music' ? canTrimMusic : kind === 'video' ? videoCanTrim : canSplitHere
-            const trimTitle = kind === 'music'
-              ? (canTrimMusic ? 'Trim the selected music: cut it in two at the playhead (then delete the part you don\u2019t want)' : 'Move the playhead inside the selected music to trim it')
-              : kind === 'video'
-                ? (videoCanTrim ? 'Trim the selected video section: cut it in two at the playhead (S)' : 'Move the playhead inside the selected video section to trim it')
-                : (canSplitHere ? 'Trim (S): cut the video section under the playhead in two' : 'Move the playhead inside a section to trim it')
+            // Split cuts what's selected (media, or a frame's item) — or, with nothing selected or a
+            // section picked, the main video's section under the playhead
+            const media = !!selTarget && selTarget.kind !== 'section'
+            const cutName = pointTarget()?.name ?? (frameItemCut() ? selName.replace('picked ', '') : null)
+            const splitOk = media ? !!cutName : canSplitHere
+            const splitTitle = media
+              ? (cutName ? `Split (S): cut ${cutName} in two at the playhead. Split again for three parts, then pick a part and press Delete` : `Move the playhead inside ${selName} to split it`)
+              : (canSplitHere ? 'Split (S): cut the video section under the playhead in two' : 'Move the playhead inside a section to split it')
             return (
               <>
                 <button
-                  onClick={() => {
-                    setSplitPlay(n => n + 1)
-                    if (kind === 'music') trimMusicAtPlayhead(); else splitHere()
-                  }}
-                  disabled={!trimOk}
-                  aria-label={kind === 'music' ? 'Trim the selected music at the playhead' : 'Trim the video at the playhead'}
-                  title={trimTitle}
+                  onClick={() => { setSplitPlay(n => n + 1); splitSelected() }}
+                  disabled={!splitOk}
+                  aria-label={media && cutName ? `Split: cut ${cutName} at the playhead` : 'Split the video at the playhead'}
+                  title={splitTitle}
                   className="ed-tl-btn"
                 >
                   <svg key={splitPlay} className={splitPlay ? 'ed-snip' : undefined} width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                     <circle cx="6" cy="6" r="3" /><circle cx="6" cy="18" r="3" /><path d="M20 4L8.1 15.9M14.5 14.5L20 20M8.1 8.1L12 12" />
                   </svg>
                 </button>
-                {/* Point: cut the selected media at the playhead (two points = three parts) */}
-                {(() => {
-                  const p = pointTarget()
-                  return (
-                    <button onClick={pointHere} disabled={!p}
-                      aria-label={p ? `Point: cut ${p.name} at the playhead` : 'Point'}
-                      title={p
-                        ? `Point (P): cut ${p.name} in two at the playhead. Two points make three parts: pick a part and press Delete to remove it`
-                        : 'Point (P): select a video, B-roll, music, photo or text, put the playhead where to cut, then press Point'}
-                      className="ed-tl-btn ed-tl-btn-text">
-                      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                        <path d="M12 9v12" /><path d="M12 2.5l3.5 3.5L12 9.5 8.5 6z" fill="currentColor" />
-                      </svg>
-                      Point
-                    </button>
-                  )
-                })()}
                 {/* Delete: whatever is selected — a song, photo, video, text, frame item or section */}
                 {(() => {
                   const del = deleteTarget()
@@ -3942,8 +3926,9 @@ export function EditorShell({
           activeFrameItemId={activeFrameItemId}
           laneHighlight={laneHighlight}
           videoTitles={videoTitles}
+          selectedId={selTarget?.id ?? (activeFrameItemId?.startsWith('main:') ? activeFrameItemId : null)}
           onSelectFrameItem={id => selectFrameItem(id, undefined, !!id && doubleTap(`f${id}`))}
-          onUpdateFrameItem={(id, patch) => { if (frameSeg && !sectionBlocked(frameSeg.id)) updateFrameItem(frameSeg.id, id, patch) }}
+          onUpdateFrameItem={(id, patch) => { if (frameSeg && !frameItemBlocked(frameSeg.id, id)) updateFrameItem(frameSeg.id, id, patch) }}
           onJumpToFrameItem={(segId, itemId) => {
             const sg = segments.find(x => x.id === segId)
             const it = sg ? frameOf(sg).items?.find(x => x.id === itemId) : undefined
@@ -4450,59 +4435,65 @@ function formatElapsed(sec: number) {
 }
 
 /**
- * The tools as tabs along the top of the options panel. When they don't all fit, ‹ › at the ends
- * scroll them (the open one is always scrolled into view).
+ * The tools down the left. Each tool shares the rail's height (up to its full size); when the
+ * screen is too short for them all, the rail scrolls: an arrow at the bottom shows there are more
+ * below (click: scroll down), one at the top once scrolled down. The open tool is kept in view.
  */
-function ToolTabs({ tool, onPick }: { tool: Tool; onPick: (t: Tool) => void }) {
-  const ref = useRef<HTMLElement>(null)
-  const [more, setMore] = useState({ left: false, right: false })
-  const measure = useCallback(() => {
-    const el = ref.current
-    if (!el) return
-    const left = el.scrollLeft > 2, right = el.scrollLeft + el.clientWidth < el.scrollWidth - 2
-    setMore(m => (m.left === left && m.right === right ? m : { left, right }))
-  }, [])
+function ToolRail({ tool, open, onPick }: { tool: Tool; open: boolean; onPick: (t: Tool) => void }) {
+  const ref = useRef<HTMLDivElement>(null)
+  const [more, setMore] = useState({ up: false, down: false })
   useEffect(() => {
     const el = ref.current
     if (!el) return
+    const measure = () => {
+      const up = el.scrollTop > 2, down = el.scrollTop + el.clientHeight < el.scrollHeight - 2
+      setMore(m => (m.up === up && m.down === down ? m : { up, down }))
+    }
     measure()
+    el.addEventListener('scroll', measure, { passive: true })
     const ro = new ResizeObserver(measure)
     ro.observe(el)
-    el.addEventListener('scroll', measure, { passive: true })
-    return () => { ro.disconnect(); el.removeEventListener('scroll', measure) }
-  }, [measure])
+    return () => { el.removeEventListener('scroll', measure); ro.disconnect() }
+  }, [])
+  // The open tool stays in view
   useEffect(() => {
-    ref.current?.querySelector('[data-active]')?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
-  }, [tool])
-  const scroll = (dir: -1 | 1) => ref.current?.scrollBy({ left: dir * 160, behavior: 'smooth' })
-  const arrow = (dir: -1 | 1) => (
-    <button type="button" onClick={() => scroll(dir)} aria-label={dir < 0 ? 'More tools on the left' : 'More tools on the right'}
-      className="absolute top-0 bottom-0 z-10 flex items-center justify-center transition-colors hover:text-white"
+    ref.current?.querySelector<HTMLElement>('[data-active]')?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+  }, [tool, open])
+  const page = (dir: 1 | -1) => ref.current?.scrollBy({ top: dir * Math.max(60, ref.current.clientHeight * 0.7), behavior: 'smooth' })
+  const arrow = (dir: 1 | -1) => (
+    <button type="button" onClick={() => page(dir)} aria-label={dir > 0 ? 'More tools below' : 'More tools above'} title={dir > 0 ? 'More tools' : 'Back up'}
+      className="absolute left-0 right-0 z-10 flex justify-center transition-colors hover:text-white"
       style={{
-        [dir < 0 ? 'left' : 'right']: 0, width: 22, color: 'rgb(var(--ed-fg) / 0.75)',
-        background: `linear-gradient(${dir < 0 ? '90deg' : '270deg'}, var(--ed-panel) 55%, transparent)`,
+        [dir > 0 ? 'bottom' : 'top']: 0, height: 30, alignItems: dir > 0 ? 'flex-end' : 'flex-start', padding: '4px 0',
+        color: 'rgb(var(--ed-fg) / 0.75)',
+        background: `linear-gradient(${dir > 0 ? '0deg' : '180deg'}, var(--ed-panel) 45%, transparent)`,
       }}>
-      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-        <path d={dir < 0 ? 'M15 18l-6-6 6-6' : 'M9 18l6-6-6-6'} />
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d={dir > 0 ? 'M6 9l6 6 6-6' : 'M6 15l6-6 6 6'} />
       </svg>
     </button>
   )
   return (
-    <div className="relative shrink-0" style={{ borderBottom: '1px solid rgb(var(--ed-fg) / 0.07)' }}>
-      {more.left && arrow(-1)}
-      <nav ref={ref} aria-label="Editor tools" data-tour="tools" className="ed-tool-tabs flex items-stretch gap-0.5 px-1 pt-1 overflow-x-auto no-scrollbar">
+    <nav aria-label="Editor tools" data-tour="tools" className="ed-card relative shrink-0 flex flex-col mr-2" style={{ width: 72 }}>
+      {more.up && arrow(-1)}
+      <div ref={ref} className="flex-1 min-h-0 overflow-y-auto no-scrollbar flex flex-col items-center py-2"
+        style={{ containerType: 'size', gap: 'clamp(2px, 0.8cqh, 4px)' }}>
         {TOOLS.map(t => {
-          const active = tool === t.id
+          const active = tool === t.id && open
           return (
-            <button key={t.id} type="button" onClick={() => onPick(t.id)} aria-pressed={active} title={t.title}
-              className="ed-tool ed-tool-tab shrink-0" data-active={active || undefined} style={{ width: 46, height: 40 }}>
-              <svg width="15" height="15" viewBox="0 0 24 24" aria-hidden="true">{t.icon}</svg>
-              <span className="font-medium">{t.label}</span>
+            <button key={t.id} type="button" onClick={() => onPick(t.id)}
+              aria-pressed={active}
+              title={active ? `Hide ${t.label.toLowerCase()} options` : t.title}
+              className="ed-tool shrink-0" data-active={active || undefined}
+              // Each tool a share of the rail's height: full size when there's room, never smaller than 48 px
+              style={{ width: 60, height: `clamp(48px, calc((100cqh - 16px) / ${TOOLS.length} - 4px), 58px)`, gap: 'clamp(2px, 0.6cqh, 4px)' }}>
+              <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true">{t.icon}</svg>
+              <span className="text-[11px] font-medium">{t.label}</span>
             </button>
           )
         })}
-      </nav>
-      {more.right && arrow(1)}
-    </div>
+      </div>
+      {more.down && arrow(1)}
+    </nav>
   )
 }
