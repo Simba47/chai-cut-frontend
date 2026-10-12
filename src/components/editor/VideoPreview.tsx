@@ -13,6 +13,7 @@ import { isFrameLayout, frameSlotLabels, frameLanesFor, frameBandShown, frameOf,
 import type { FrameMediaPool } from '@/modules/editor/frameMedia'
 import { useLiveTimeMs } from '@/modules/player/store'
 import { addedVideoBox } from '@/modules/editor/visibility'
+import { trackPresentedFrame } from '@/modules/player/presentedFrame'
 
 const BOX_COLORS = ['#22c55e', '#3b82f6', '#f59e0b']
 // What each slot becomes in the 9:16 output, top to bottom
@@ -239,138 +240,219 @@ function photoMotion(motion: string | null | undefined, p: number): { zoom: numb
   }
 }
 
+// Frame text: the text box's width when its sides were never dragged (shares of the frame's width),
+// and its line height (em). render.py _frame_text_chain uses the same.
+const FRAME_TEXT_W = 0.88
+const FRAME_TEXT_LINE = 1.2
+
+/** The export's font for frame text (render.py _frame_text_font): Montserrat Bold, or the Noto font of an Indian script */
+function frameTextFont(text: string) {
+  const scripts: [string, string, string][] = [['\u0c00', '\u0c7f', 'noto-sans-telugu'], ['\u0900', '\u097f', 'noto-sans-devanagari']]
+  const hit = scripts.find(([lo, hi]) => [...text].some(c => c >= lo && c <= hi))
+  return exportFont(hit ? hit[2] : 'montserrat-bold')
+}
+
 /**
- * Line breaks for frame text. Counts characters rather than measuring, exactly like render.py's
- * wrap_band_text, so the preview breaks lines in the same places as the export.
+ * Frame text's lines: wrapped inside its box's width (a word too long for the box broken across
+ * lines), measured at the export's 1080-wide scale with the export's own font file — render.py
+ * wraps by the same rule (_wrap_text_lines), so lines break in the same places in the video.
  */
-function wrapFrameText(text: string, widthPx: number, sizePx: number): string[] {
-  const maxChars = Math.max(8, Math.floor((widthPx * 0.88) / Math.max(1, sizePx * 0.56)))
-  const lines: string[] = []
-  for (const para of (text || '').split('\n')) {
-    let line = ''
-    for (const word of para.split(/\s+/).filter(Boolean)) {
-      const probe = line ? `${line} ${word}` : word
-      if (line && probe.length > maxChars) { lines.push(line); line = word } else line = probe
-    }
-    lines.push(line)
-  }
+function frameTextLines(it: Pick<FrameItem, 'text' | 'size' | 'w'>): string[] {
+  const text = (it.text ?? '').trim()
+  if (!text) return []
+  const ctx = measurer()
+  if (!ctx) return text.split('\n')
+  ctx.save()
+  ctx.font = `400 ${it.size ?? 64}px ${emojiFamily()}, "${frameTextFont(text).family}", sans-serif`
+  const lines = wrapTextLines(text, (it.w ?? FRAME_TEXT_W) * 1080, s => ctx.measureText(s).width)
+  ctx.restore()
   while (lines.length && !lines[lines.length - 1]) lines.pop()
   return lines
 }
 
-// Frame text is drawn in Montserrat Bold on export; make sure the preview has it too
-let frameFontRequested = false
-function ensureFrameFont() {
-  if (frameFontRequested || typeof document === 'undefined') return
-  frameFontRequested = true
-  const href = 'https://fonts.googleapis.com/css2?family=Montserrat:wght@700&display=swap'
-  if (document.querySelector(`link[href="${href}"]`)) return
-  const link = document.createElement('link')
-  link.rel = 'stylesheet'
-  link.href = href
-  document.head.appendChild(link)
-}
+/** The frame text being typed in on the preview: the canvas leaves its words out (its text field shows them) */
+let frameTextEditing: string | null = null
 
-/** A text item: its background filling the row, its text centred */
+/** A text item: its background filling the row, its text centred on its spot (turned, when rotated) */
 function paintFrameText(ctx: CanvasRenderingContext2D, it: FrameItem, fallbackBg: string, y: number, h: number) {
   const W = ctx.canvas.width
   ctx.fillStyle = it.bg || fallbackBg
   ctx.fillRect(0, y, W, h)
-  const text = it.text?.trim()
-  if (!text) return
-  ensureFrameFont()
-  const size1080 = it.size ?? 64
-  const size = Math.round((size1080 / 1080) * W)
-  // Wrap at export scale (1080 wide) so the breaks don't depend on the preview's size
-  const lines = wrapFrameText(text, 1080, size1080)
-  const lh = size * 1.2
+  if (it.id === frameTextEditing) return
+  const lines = frameTextLines(it)
+  if (!lines.length) return
+  const size = Math.round(((it.size ?? 64) / 1080) * W)
+  const lh = size * FRAME_TEXT_LINE
   ctx.save()
   ctx.beginPath(); ctx.rect(0, y, W, h); ctx.clip()
-  ctx.font = `700 ${size}px ${emojiFamily()}, Montserrat, ${it.font || 'sans-serif'}`
+  ctx.font = `400 ${size}px ${emojiFamily()}, "${frameTextFont(it.text ?? '').family}", sans-serif`
   ctx.fillStyle = it.color || '#ffffff'
   ctx.textAlign = 'center'
   ctx.textBaseline = 'middle'
-  const cx = (it.x ?? 0.5) * W, cy = y + (it.y ?? 0.5) * h
-  lines.forEach((ln, i) => ctx.fillText(ln, cx, cy + (i - (lines.length - 1) / 2) * lh))
+  ctx.translate((it.x ?? 0.5) * W, y + (it.y ?? 0.5) * h)
+  if (it.rotation) ctx.rotate((it.rotation * Math.PI) / 180)
+  lines.forEach((ln, i) => ctx.fillText(ln, 0, (i - (lines.length - 1) / 2) * lh))
   ctx.restore()
 }
 
-// Size of a text block as shares of the 1080×1920 frame, measured with the same font as the preview
-let measureCtx: CanvasRenderingContext2D | null = null
-function frameTextBlock(text: string, size1080: number): { lines: string[]; w: number; h: number } {
-  const lines = text.trim() ? wrapFrameText(text, 1080, size1080) : ['Your text']
-  if (!measureCtx && typeof document !== 'undefined') measureCtx = document.createElement('canvas').getContext('2d')
-  let widest = 0
-  if (measureCtx) {
-    measureCtx.font = `700 ${size1080}px ${emojiFamily()}, Montserrat, sans-serif`
-    for (const ln of lines) widest = Math.max(widest, measureCtx.measureText(ln).width)
-  } else widest = Math.max(...lines.map(l => l.length)) * size1080 * 0.56
-  const pad = size1080 * 0.4
-  return { lines, w: Math.min(1, (widest + pad) / 1080), h: (lines.length * size1080 * 1.2 + pad) / 1920 }
-}
-
 /**
- * A frame's text in the preview: drag it to move it around its band (or slot), drag the corner to
- * make it bigger or smaller. Position and size are saved on the text, and the export uses them.
+ * A frame's text in the preview — the same text field as a positioned text: drag it to move it
+ * round its band (or slot), its sides to make the box wider or narrower (the text wraps inside
+ * it), the corner to make the text bigger or smaller; turn it, delete it, double-click to type.
+ * Everything is saved on the text, and the export uses it.
  */
-function FrameTextBox({ row, item, selected, onSelect, onChange }: {
+function FrameTextBox({ row, item, selected, editing, onSelect, onChange, onDelete, onStartEdit, onEndEdit }: {
   row: { y: number; h: number }
   item: FrameItem
   selected: boolean
+  editing: boolean
   onSelect: () => void
-  onChange: (patch: Partial<Pick<FrameItem, 'x' | 'y' | 'size'>>) => void
+  onChange: (patch: Partial<Pick<FrameItem, 'x' | 'y' | 'size' | 'w' | 'rotation' | 'text'>>) => void
+  onDelete?: () => void
+  onStartEdit: () => void
+  onEndEdit: () => void
 }) {
   const ref = useRef<HTMLDivElement>(null)
+  const areaRef = useRef<HTMLTextAreaElement>(null)
   const setGuides = useContext(GuideContext)
   const size = item.size ?? 64
   const empty = !item.text?.trim()
-  const block = frameTextBlock(item.text ?? '', size)
+  const lines = frameTextLines(item)
+  const boxW = item.w ?? FRAME_TEXT_W
+  // The text's height, as a share of the frame's (1080×1920)
+  const textH = (Math.max(1, lines.length) * size * FRAME_TEXT_LINE) / 1920
   const x = item.x ?? 0.5, y = item.y ?? 0.5
-  // Keep the whole block inside its row
-  const clampX = (v: number) => block.w >= 1 ? 0.5 : Math.max(block.w / 2, Math.min(1 - block.w / 2, v))
-  const halfH = block.h / 2 / row.h
+  const cy = row.y + row.h * y
+  const accent = '#c8ff00'
+  const fontSize = `${size / 10.8}cqw`
+  const fontFamily = `${emojiFamily()}, "${frameTextFont(item.text ?? '').family}", sans-serif`
+  const r3 = (v: number) => Math.round(v * 1000) / 1000
+  // The whole box stays inside its row
+  const clampX = (v: number, w = boxW) => w >= 1 ? 0.5 : Math.max(w / 2, Math.min(1 - w / 2, v))
+  const halfH = textH / 2 / row.h
   const clampY = (v: number) => halfH >= 0.5 ? 0.5 : Math.max(halfH, Math.min(1 - halfH, v))
-  const cx = clampX(x), cy = row.y + row.h * clampY(y)
 
-  function start(e: React.PointerEvent, mode: 'move' | 'resize') {
+  // Typing on the preview: the cursor goes in with the words selected; Enter makes a new line
+  useEffect(() => {
+    if (!editing) return
+    areaRef.current?.focus()
+    areaRef.current?.select()
+  }, [editing])
+
+  function frameRect() {
+    const r = ref.current?.parentElement?.getBoundingClientRect()
+    return r ? { w: r.width, h: r.height } : { w: 1, h: 1 }
+  }
+  function drag(e: React.MouseEvent, move: (dx: number, dy: number, ev: MouseEvent) => void) {
     e.stopPropagation(); e.preventDefault()
     onSelect()
-    const rect = ref.current?.parentElement?.getBoundingClientRect()
-    if (!rect) return
-    const sx = e.clientX, sy = e.clientY, x0 = cx, y0 = clampY(y), size0 = size, w0 = block.w * rect.width
-    const move = (ev: PointerEvent) => {
-      const dx = (ev.clientX - sx) / rect.width, dy = (ev.clientY - sy) / rect.height
-      if (mode === 'move') {
-        // Centre guides: the frame's middle left-to-right, its row's middle top-to-bottom
-        const [nx, onV] = snapTo(clampX(x0 + dx), 0.5)
-        const [ny, onH] = snapTo(clampY(y0 + dy / row.h), 0.5, GUIDE_SNAP / row.h)
-        setGuides(onV || onH ? { ...(onV ? { v: 0.5 } : {}), ...(onH ? { h: row.y + row.h / 2 } : {}) } : null)
-        onChange({ x: nx, y: ny })
-      }
-      else onChange({ size: Math.round(Math.max(24, Math.min(200, size0 * (w0 + 2 * (ev.clientX - sx)) / w0))) })
-    }
-    const up = () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); setGuides(null) }
-    window.addEventListener('pointermove', move)
-    window.addEventListener('pointerup', up)
+    const sx = e.clientX, sy = e.clientY
+    const mv = (ev: MouseEvent) => { const { w, h } = frameRect(); move((ev.clientX - sx) / w, (ev.clientY - sy) / h, ev) }
+    const up = () => { window.removeEventListener('mousemove', mv); window.removeEventListener('mouseup', up); setGuides(null) }
+    window.addEventListener('mousemove', mv)
+    window.addEventListener('mouseup', up)
+  }
+  function startMove(e: React.MouseEvent) {
+    if (editing) return
+    const x0 = clampX(x), y0 = clampY(y)
+    drag(e, (dx, dy) => {
+      // Centre guides: the frame's middle left-to-right, its row's middle top-to-bottom
+      const [nx, onV] = snapTo(clampX(x0 + dx), 0.5)
+      const [ny, onH] = snapTo(clampY(y0 + dy / row.h), 0.5, GUIDE_SNAP / row.h)
+      setGuides(onV || onH ? { ...(onV ? { v: 0.5 } : {}), ...(onH ? { h: row.y + row.h / 2 } : {}) } : null)
+      onChange({ x: r3(nx), y: r3(ny) })
+    })
+  }
+  /** Drag a side: the box's width (the text wraps inside it). The other side stays where it is. */
+  function startWidth(e: React.MouseEvent, side: 'left' | 'right') {
+    const left0 = Math.max(0, x - boxW / 2), right0 = Math.min(1, x + boxW / 2)
+    drag(e, dx => {
+      const left = side === 'left' ? Math.max(0, Math.min(right0 - MIN_TEXT_W, left0 + dx)) : left0
+      const right = side === 'right' ? Math.min(1, Math.max(left0 + MIN_TEXT_W, right0 + dx)) : right0
+      onChange({ w: r3(right - left), x: r3((left + right) / 2) })
+    })
+  }
+  /** Drag the corner: the text's size */
+  function startSize(e: React.MouseEvent) {
+    const size0 = size
+    drag(e, dx => onChange({ size: Math.max(24, Math.min(200, Math.round(size0 + dx * 270))) }))
   }
 
+  const handle = (extra: React.CSSProperties): React.CSSProperties => ({
+    position: 'absolute', background: accent, border: '2px solid #111', borderRadius: 4, pointerEvents: 'auto', ...extra,
+  })
+  const tools = selected && !editing
+
   return (
-    <div ref={ref} role="button" tabIndex={-1} aria-label="Text in the frame: drag to move, drag the corner to resize"
-      onPointerDown={e => start(e, 'move')} onClick={e => e.stopPropagation()}
-      className="group absolute flex items-center justify-center"
+    <div ref={ref}
+      onMouseDown={startMove}
+      onClick={e => { e.stopPropagation(); if (!editing) onSelect() }}
+      onDoubleClick={e => { e.stopPropagation(); onStartEdit() }}
+      title={editing ? undefined : 'Double-click to edit the text'}
+      aria-label="Text in the frame: drag to move, double-click to edit"
       style={{
-        left: `${(cx - block.w / 2) * 100}%`, top: `${(cy - block.h / 2) * 100}%`, width: `${block.w * 100}%`, height: `${block.h * 100}%`,
-        cursor: 'move', touchAction: 'none', borderRadius: 4,
-        outline: selected ? '1.5px dashed #c8ff00' : undefined,
+        position: 'absolute',
+        left: `${(x - boxW / 2) * 100}%`, top: `${(cy - textH / 2) * 100}%`, width: `${boxW * 100}%`, height: `${textH * 100}%`,
+        transform: item.rotation ? `rotate(${item.rotation}deg)` : undefined,
+        cursor: editing ? 'text' : 'move', userSelect: 'none', touchAction: 'none',
+        // (an outline, not a border: the box's inside stays exactly the width the text wraps in)
+        outline: `1.5px solid ${selected || editing ? accent : 'transparent'}`,
+        borderRadius: 3,
+        background: editing ? 'rgba(0,0,0,0.25)' : selected ? 'rgba(200,255,0,0.12)' : 'transparent',
+        boxShadow: selected ? `0 0 0 2.5px ${accent}44` : 'none',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
       }}>
-      <span className="absolute inset-0 rounded pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity"
-        style={{ boxShadow: selected ? undefined : 'inset 0 0 0 1px rgba(255,255,255,0.45)' }} />
-      {empty && (
-        <span className="pointer-events-none font-bold" style={{ fontSize: `${(size / 1080) * 100}cqw`, color: 'rgba(255,255,255,0.35)' }}>Your text</span>
+      {editing ? (
+        <textarea
+          ref={areaRef}
+          value={item.text ?? ''}
+          onChange={e => onChange({ text: e.target.value })}
+          onMouseDown={e => e.stopPropagation()}
+          onClick={e => e.stopPropagation()}
+          onBlur={onEndEdit}
+          onKeyDown={e => { e.stopPropagation(); if (e.key === 'Escape') { e.preventDefault(); onEndEdit() } }}
+          aria-label="Edit the text"
+          spellCheck={false}
+          style={{
+            fontFamily, fontWeight: 400, fontSize, lineHeight: FRAME_TEXT_LINE, color: item.color || '#ffffff', textAlign: 'center',
+            display: 'block', width: '100%', height: '100%',
+            whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', overflow: 'hidden', resize: 'none',
+            background: 'transparent', border: 'none', outline: 'none', padding: 0, margin: 0,
+            caretColor: accent, userSelect: 'text',
+          }}
+        />
+      ) : empty && (
+        <span className="pointer-events-none" style={{ fontFamily, fontSize, lineHeight: FRAME_TEXT_LINE, color: 'rgba(255,255,255,0.35)' }}>Your text</span>
       )}
-      {selected && (
-        <span onPointerDown={e => start(e, 'resize')} aria-label="Drag to resize the text"
-          className="absolute rounded-full" style={{ right: -6, bottom: -6, width: 12, height: 12, background: '#c8ff00', border: '1.5px solid #000', cursor: 'nwse-resize', touchAction: 'none' }} />
+      {tools && (['left', 'right'] as const).map(side => (
+        <div key={side} onMouseDown={e => startWidth(e, side)}
+          title="Drag to make the text box wider or narrower (the text wraps inside it)"
+          aria-label={`Text box width (${side} side)`}
+          style={handle({ top: '50%', [side]: -5, transform: 'translateY(-50%)', width: 8, height: 22, cursor: 'ew-resize' })} />
+      ))}
+      {tools && <RotateHandle boxRef={ref} size={18} rotation={item.rotation ?? 0} onRotate={deg => onChange({ rotation: deg })} />}
+      {tools && onDelete && (
+        <button type="button" aria-label="Delete the text" title="Delete the text"
+          onMouseDown={e => { e.stopPropagation(); onDelete() }}
+          style={{
+            position: 'absolute', top: -9, right: -9, width: 18, height: 18, borderRadius: '50%',
+            background: '#ef4444', border: '2px solid #111', cursor: 'pointer', pointerEvents: 'auto',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+          }}>
+          <svg width="7" height="7" viewBox="0 0 8 8" fill="none"><path d="M1 1l6 6M7 1L1 7" stroke="white" strokeWidth="1.4" strokeLinecap="round"/></svg>
+        </button>
+      )}
+      {tools && (
+        <div onMouseDown={startSize} title="Drag to make the text bigger or smaller"
+          style={{
+            position: 'absolute', bottom: -6, right: -6, width: 14, height: 14, borderRadius: 3,
+            background: accent, border: '2px solid #111', cursor: 'nwse-resize', pointerEvents: 'auto',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+          }}>
+          <svg width="6" height="6" viewBox="0 0 8 8" fill="none">
+            <path d="M1 4h6M5 2l2 2-2 2" stroke="black" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
+          </svg>
+        </div>
       )}
     </div>
   )
@@ -1161,8 +1243,10 @@ interface OutputCanvasProps {
   /** Clicking a photo, video or text in a frame selects it */
   onFrameItemClick?: (id: string) => void
   activeFrameItemId?: string | null
-  /** A frame text dragged or resized in the preview */
-  onFrameItemChange?: (id: string, patch: Partial<Pick<FrameItem, 'x' | 'y' | 'size' | 'rect'>>) => void
+  /** A frame text dragged, resized, turned or typed in on the preview */
+  onFrameItemChange?: (id: string, patch: Partial<Pick<FrameItem, 'x' | 'y' | 'size' | 'rect' | 'w' | 'rotation' | 'text'>>) => void
+  /** A frame text's delete button on the preview */
+  onDeleteFrameItem?: (id: string) => void
   /** The line between two rows of a resizable frame dragged: the frame's new row heights (null = back to the template's) */
   onFrameRowsChange?: (heights: number[] | null) => void
   /** The main video's box in a slot resized or moved (shares of the slot; null = fill the slot again) */
@@ -1175,7 +1259,7 @@ export function OutputCanvas({
   className, style, skipTransitionRef,
   words, captionStyle, captionTextCase = 'title', showCaptions = false,
   textOverlays = [], activeTextOverlayId, onTextOverlayChange, onSelectTextOverlay, onDeleteTextOverlay, editTextOverlayId, onEditTextDone,
-  onCaptionPositionChange, frameMedia, onFrameLaneClick, onFrameItemClick, activeFrameItemId, onFrameItemChange, onFrameRowsChange, onFrameMainRectChange,
+  onCaptionPositionChange, frameMedia, onFrameLaneClick, onFrameItemClick, activeFrameItemId, onFrameItemChange, onDeleteFrameItem, onFrameRowsChange, onFrameMainRectChange,
 }: OutputCanvasProps) {
   const liveMs = useLiveTimeMs(live)
   const currentTimeMs = live ? liveMs : timeProp
@@ -1227,6 +1311,8 @@ export function OutputCanvas({
   editingTextRef.current = editingTextId
   const textOverlaysRef = useRef(textOverlays)
   textOverlaysRef.current = textOverlays
+  // The frame text being typed in on the preview (the canvas leaves its words out the same way)
+  const [editingFrameTextId, setEditingFrameTextId] = useState<string | null>(null)
 
   // Pre-build caption chunks so the RAF loop doesn't re-sort on every frame.
   // Rebuild only when the words array identity changes.
@@ -1244,6 +1330,11 @@ export function OutputCanvas({
   useEffect(() => {
     let rafId: number
 
+    // The frame on screen has its own time: each frame is drawn with the view of that time (not the
+    // player's clock, which can be a little off the frame), so a view change at a camera cut is a
+    // clean cut — never one frame of the new shot with the old view
+    let shownMs: number | null = null
+    const stopShown = videoRef.current ? trackPresentedFrame(videoRef.current, ms => { shownMs = ms }) : () => {}
     const loop = () => {
       const canvas = canvasRef.current
       const video  = videoRef.current
@@ -1252,7 +1343,8 @@ export function OutputCanvas({
         const ctx    = canvas.getContext('2d')
         // Clip time of the frame on screen (removed parts closed up, when there are any)
         const toTimeline = toTimelineRef.current
-        const videoMs = video.currentTime * 1000
+        const clockMs = video.currentTime * 1000
+        const videoMs = shownMs != null && Math.abs(shownMs - clockMs) < 300 ? shownMs : clockMs
         const clipMsNow = Math.max(0, toTimeline ? toTimeline(videoMs) : videoMs - clipStartMsRef.current)
         const seg    = segmentAtRef.current
           ? segmentAtRef.current(clipMsNow)
@@ -1330,7 +1422,7 @@ export function OutputCanvas({
     }
 
     rafId = requestAnimationFrame(loop)
-    return () => cancelAnimationFrame(rafId)
+    return () => { cancelAnimationFrame(rafId); stopShown() }
   }, [videoRef])
 
   // Active overlays at current time
@@ -1359,6 +1451,13 @@ export function OutputCanvas({
     })
   }, [activeSegment, currentTimeMs, onFrameItemClick])
 
+  // (only while that text is on screen)
+  const editingFrameText = itemRows.some(r => r.item.id === editingFrameTextId) ? editingFrameTextId : null
+  useEffect(() => {
+    frameTextEditing = editingFrameText
+    return () => { if (frameTextEditing === editingFrameText) frameTextEditing = null }
+  }, [editingFrameText])
+
   return (
     <GuideContext.Provider value={setGuides}>
     <div className={className} style={{ ...style, position: 'relative', containerType: 'inline-size' }} onClick={() => onSelectTextOverlay?.(null)}>
@@ -1386,8 +1485,12 @@ export function OutputCanvas({
       })}
       {itemRows.filter(r => r.item.kind === 'text' && !r.item.captions && onFrameItemChange).map(r => (
         <FrameTextBox key={`box-${r.item.id}`} row={r} item={r.item} selected={r.item.id === activeFrameItemId}
+          editing={r.item.id === editingFrameText}
           onSelect={() => onFrameItemClick?.(r.item.id)}
-          onChange={patch => onFrameItemChange?.(r.item.id, patch)} />
+          onChange={patch => onFrameItemChange?.(r.item.id, patch)}
+          onDelete={onDeleteFrameItem ? () => onDeleteFrameItem(r.item.id) : undefined}
+          onStartEdit={() => { onFrameItemClick?.(r.item.id); setEditingFrameTextId(r.item.id) }}
+          onEndEdit={() => setEditingFrameTextId(null)} />
       ))}
       {emptyLanes.map(r => (
         <button key={String(r.lane)}

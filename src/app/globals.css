@@ -1505,12 +1505,6 @@ body {
 }
 .ed-row-handle:hover::after, .ed-row-handle[data-on]::after { opacity: 1; }
 
-/* ── The tools as tabs along the top of the options panel (EditorShell): smaller, with a lime line
-   under the open one instead of a filled tile ── */
-.ed-tool-tab { border-radius: 7px 7px 0 0; gap: 2px; }
-.ed-tool-tab span { font-size: 9.5px; font-weight: 600; letter-spacing: 0.01em; }
-.ed-tool-tab[data-active] { background: rgb(var(--ed-fg) / 0.06); color: #C8FF00; box-shadow: inset 0 -2px 0 #C8FF00; }
-.ed-tool-tab[data-active]::before { display: none; }
 
 /* ── Lock / view / sound beside each timeline lane (SegmentTimeline laneCtl) ── */
 .lane-ctl { color: rgb(var(--ed-fg) / 0.42); transition: color .15s, background-color .15s; }
