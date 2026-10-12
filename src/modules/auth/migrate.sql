@@ -47,6 +47,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS vt_token_key ON verification_tokens (token);
 
 ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash TEXT;
 
+-- One device per account: the current sign-in's id (modules/auth/one-device.ts)
+ALTER TABLE users ADD COLUMN IF NOT EXISTS session_id TEXT;
+
 -- ── OTP table ─────────────────────────────────────────────────────────────────
 
 CREATE TABLE IF NOT EXISTS verification_otps (
