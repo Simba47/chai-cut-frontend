@@ -5,7 +5,7 @@ import type { SegmentLocal, LayoutType, TextOverlay, FrameItem, FrameLane, Frame
 import type { TrackRef } from '@/modules/editor/tracks'
 import { Waveform } from './Waveform'
 import { useLiveTimeMs, liveTime, usePlayerStore } from '@/modules/player/store'
-import { isFrameLayout, FRAME_TEMPLATES, frameLanesFor, frameOf, laneItems, itemBounds, MIN_ITEM_MS } from '@/modules/editor/frames'
+import { isFrameLayout, FRAME_TEMPLATES, frameLanesFor, frameOf, laneItems, itemBounds, MIN_ITEM_MS, isTextLane, frameSlotCount } from '@/modules/editor/frames'
 import { isShot } from '@/modules/editor/shots'
 
 export const LAYOUT_COLORS: Record<LayoutType, string> = {
@@ -24,6 +24,21 @@ export const LAYOUT_COLORS: Record<LayoutType, string> = {
   frame_title_caption: '#2dd4bf',
   frame_big_small: '#2dd4bf',
   frame_photo_story: '#2dd4bf',
+  frame_blur_fill: '#2dd4bf',
+  frame_gameplay: '#2dd4bf',
+  frame_pip: '#2dd4bf',
+  frame_screenshot: '#2dd4bf',
+  frame_comment: '#2dd4bf',
+  frame_letterbox_wide: '#2dd4bf',
+  frame_two_crops: '#2dd4bf',
+  frame_side_by_side: '#2dd4bf',
+  frame_name_tags: '#2dd4bf',
+  frame_brand_card: '#2dd4bf',
+  frame_top_list: '#2dd4bf',
+  frame_screen_face: '#2dd4bf',
+  frame_audiogram: '#2dd4bf',
+  frame_grid: '#2dd4bf',
+  frame_news: '#2dd4bf',
 }
 
 // Frame lane items: one colour per kind of media
@@ -40,10 +55,10 @@ const FRAME_LANE_H = 26
 function visibleLanes(seg: SegmentLocal) {
   const frame = frameOf(seg)
   const main = frame.main_slots ?? [0]
-  const slots = FRAME_TEMPLATES[seg.layout as FrameLayout].rows.filter(r => r.kind === 'slot').length
+  const slots = frameSlotCount(seg.layout as FrameLayout)
   return frameLanesFor(seg).filter(r => {
     const empty = laneItems(frame, r.lane, seg).length === 0
-    if (r.lane === 'band') return !empty
+    if (isTextLane(r.lane)) return !empty
     return !(slots === 1 && main.includes(r.lane) && empty)
   })
 }
@@ -1857,7 +1872,7 @@ export function SegmentTimeline({
               const row = visibleLanes(o).find(r => r.lane === lane)
               if (!row) return null
               const of = frameOf(o)
-              const isMain = row.lane !== 'band' && (of.main_slots ?? [0]).includes(row.lane)
+              const isMain = !isTextLane(row.lane) && (of.main_slots ?? [0]).includes(row.lane)
               return (
                 <Fragment key={o.id}>
                   <div className="absolute inset-y-0.5 pointer-events-none" style={{
@@ -1865,7 +1880,7 @@ export function SegmentTimeline({
                     background: 'rgb(var(--ed-fg) / 0.045)', boxShadow: 'inset 0 0 0 1px rgb(var(--ed-fg) / 0.06)',
                   }}>
                     <span className="absolute top-1/2 -translate-y-1/2 text-[10px] font-semibold whitespace-nowrap" style={{ left: 8, color: 'rgb(var(--ed-fg) / 0.3)' }}>
-                      {row.label}{row.lane === 'band' ? ' band' : ''}
+                      {row.label}{row.lane === 'band' && row.label === 'Text' ? ' band' : ''}
                     </span>
                   </div>
                   {isMain && (
@@ -1914,7 +1929,7 @@ export function SegmentTimeline({
                 {rows.map(lane => {
                   const laneKey = String(lane.lane)
                   const row = seg ? visibleLanes(seg).find(r => r.lane === lane.lane) : undefined
-                  const isMain = !!row && row.lane !== 'band' && main.includes(row.lane)
+                  const isMain = !!row && !isTextLane(row.lane) && main.includes(row.lane)
                   const mainId = `main:${lane.lane}`
                   const pulsing = pulseLane === lane.lane
                   return (
@@ -1930,7 +1945,7 @@ export function SegmentTimeline({
                           transition: 'background 0.3s, box-shadow 0.3s',
                         }}>
                           <span className="absolute top-1/2 -translate-y-1/2 text-[10px] font-semibold whitespace-nowrap" style={{ left: 8, color: 'rgb(var(--ed-fg) / 0.3)' }}>
-                            {row.label}{row.lane === 'band' ? ' band' : ''}
+                            {row.label}{row.lane === 'band' && row.label === 'Text' ? ' band' : ''}
                           </span>
                         </div>
                         {/* The main video under this slot's items */}
@@ -1994,8 +2009,8 @@ export function SegmentTimeline({
                           ref={el => { if (el) plusRefs.current.set(laneKey, el); else plusRefs.current.delete(laneKey) }}
                           onPointerDown={e => e.stopPropagation()}
                           onClick={e => { e.stopPropagation(); onAddFrameItem?.(row.lane, e.currentTarget.getBoundingClientRect()) }}
-                          aria-label={`Add to the ${row.label.toLowerCase()} ${row.lane === 'band' ? 'band' : 'slot'} at ${msToLabel(plusAt)}`}
-                          title={row.lane === 'band' ? 'Add text or captions here' : 'Add a photo, video or text here'}
+                          aria-label={`Add to the ${row.label.toLowerCase()} ${isTextLane(row.lane) ? 'area' : 'slot'} at ${msToLabel(plusAt)}`}
+                          title={isTextLane(row.lane) ? 'Add text here' : 'Add a photo, video or text here'}
                           className={`absolute top-1/2 flex items-center justify-center rounded-full transition-[transform,opacity] hover:scale-110 focus-visible:outline-none${onHover ? ' opacity-0 group-hover/lane:opacity-100 focus-visible:opacity-100' : ''}`}
                           style={{
                             left: `${pct(plusAt)}%`, transform: 'translate(-50%, -50%)', width: 18, height: 18, zIndex: 41,

@@ -3,12 +3,13 @@
 import { InfoTip } from '@/components/ui/info-tip'
 import { EmojiButton, insertAtCursor } from './EmojiPicker'
 import type { SegmentLocal, FrameItem, FrameLane, FrameBand } from '@chai-cut/shared'
-import { isFrameLayout, frameHasBand, frameLanes, frameOf, DEFAULT_BAND } from '@/modules/editor/frames'
+import { isFrameLayout, frameHasBand, frameLanes, frameOf, DEFAULT_BAND, frameTextLanes, isTextLane, textLaneLook } from '@/modules/editor/frames'
 import { FRAME_ITEM_COLORS, frameItemColor } from './SegmentTimeline'
 import { ItemTimeRange } from './ItemTimeRange'
 
 const ACCENT = '#c8ff00'
-const TEXT_BG = ['#000000', '#ffffff', '#c8ff00', '#ef4444', '#2563eb', '#f59e0b']
+// 'none': no background (the video or picture under it shows)
+const TEXT_BG = ['none', '#000000', '#ffffff', '#c8ff00', '#ef4444', '#2563eb', '#f59e0b']
 const TEXT_COLOR = ['#ffffff', '#000000', '#c8ff00', '#facc15']
 
 interface Props {
@@ -36,22 +37,28 @@ export function FrameTextPanel({ segment, currentTimeMs, selectedId, onSelect, o
   const frame = frameOf(segment)
   const lanes = frameLanes(segment.layout)
   const order = (lane: FrameLane) => lanes.findIndex(l => l.lane === lane)
-  const laneName = (lane: FrameLane) => lane === 'band' ? 'Band' : `${lanes.find(l => l.lane === lane)?.label ?? ''} card`
+  const laneName = (lane: FrameLane) => isTextLane(lane) ? lanes.find(l => l.lane === lane)?.label ?? 'Band' : `${lanes.find(l => l.lane === lane)?.label ?? ''} card`
   const texts = (frame.items ?? [])
     .filter(it => it.kind === 'text' && it.end_ms > segment.start_ms && it.start_ms < segment.end_ms)
     .sort((a, b) => order(a.lane) - order(b.lane) || a.start_ms - b.start_ms)
   const hasBand = frameHasBand(segment.layout)
+  // Each text area of the frame (the band, and a name tag / badge / ticker where it has one)
+  const textLanes = frameTextLanes(segment.layout)
 
   return (
     <div className="flex flex-col gap-3 p-4" style={{ borderBottom: '1px solid rgb(var(--ed-fg) / 0.06)' }}>
       <div className="flex items-center justify-between gap-2">
         <p style={{ fontSize: 11, fontWeight: 600, color: 'rgb(var(--ed-fg) / 0.5)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Frame text</p>
         {hasBand && (
-          <button onClick={() => onAdd('band')}
-            className="h-7 px-2.5 rounded-lg text-[11px] font-semibold transition-opacity hover:opacity-90"
-            style={{ background: ACCENT, color: '#000' }}>
-            + Band text at {msToLabel(currentTimeMs)}
-          </button>
+          <div className="flex flex-wrap justify-end gap-1.5">
+            {textLanes.map(lane => (
+              <button key={lane} onClick={() => onAdd(lane)}
+                className="h-7 px-2.5 rounded-lg text-[11px] font-semibold transition-opacity hover:opacity-90"
+                style={{ background: ACCENT, color: '#000' }}>
+                + {textLanes.length > 1 ? lanes.find(l => l.lane === lane)?.label ?? 'Text' : 'Band text'} at {msToLabel(currentTimeMs)}
+              </button>
+            ))}
+          </div>
         )}
       </div>
 
@@ -87,7 +94,7 @@ export function FrameTextPanel({ segment, currentTimeMs, selectedId, onSelect, o
                       className="self-start text-[11px] font-medium hover:underline" style={{ color: 'var(--ed-accent-text)' }}>Use your own text instead</button>
                   </>
                 ) : (() => {
-                  const t = { ...DEFAULT_BAND, ...(it.lane === 'band' ? frame.band : { bg: '#000000', size: 80 }), ...pickStyle(it) }
+                  const t = { ...DEFAULT_BAND, ...textLaneLook(segment, it.lane), ...pickStyle(it) }
                   return (
                     <>
                       <div className="flex gap-2 items-start">
@@ -153,13 +160,18 @@ function Swatches({ title, colors, value, onChange }: { title: string; colors: s
         {colors.map(c => {
           const on = c.toLowerCase() === value.toLowerCase()
           return (
-            <button key={c} onClick={() => onChange(c)} aria-label={`${title} ${c}`} aria-pressed={on}
-              style={{ width: 22, height: 22, borderRadius: '50%', background: c, border: `2px solid ${on ? ACCENT : 'rgb(var(--ed-fg) / 0.15)'}`, boxShadow: on ? '0 0 0 2px rgba(200,255,0,0.25)' : 'none' }} />
+            <button key={c} onClick={() => onChange(c)} aria-label={c === 'none' ? `${title}: none` : `${title} ${c}`} aria-pressed={on}
+              title={c === 'none' ? 'None (see-through)' : undefined}
+              style={{
+                width: 22, height: 22, borderRadius: '50%', border: `2px solid ${on ? ACCENT : 'rgb(var(--ed-fg) / 0.15)'}`, boxShadow: on ? '0 0 0 2px rgba(200,255,0,0.25)' : 'none',
+                // "None": a crossed-out circle
+                background: c === 'none' ? 'linear-gradient(135deg, transparent 45%, #ef4444 45%, #ef4444 55%, transparent 55%)' : c,
+              }} />
           )
         })}
         <label style={{ width: 22, height: 22, borderRadius: '50%', position: 'relative', cursor: 'pointer', flexShrink: 0 }} title="Custom colour">
           <span style={{ position: 'absolute', inset: 0, borderRadius: '50%', background: 'conic-gradient(red, yellow, lime, cyan, blue, magenta, red)', border: `2px solid ${!isPreset ? ACCENT : 'rgb(var(--ed-fg) / 0.2)'}` }} />
-          <input type="color" value={value} onChange={e => onChange(e.target.value)} aria-label={`Custom ${title.toLowerCase()}`}
+          <input type="color" value={value.startsWith('#') ? value : '#000000'} onChange={e => onChange(e.target.value)} aria-label={`Custom ${title.toLowerCase()}`}
             style={{ position: 'absolute', inset: 0, opacity: 0, width: '100%', height: '100%', cursor: 'pointer' }} />
         </label>
       </div>

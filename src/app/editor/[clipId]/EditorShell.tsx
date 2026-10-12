@@ -31,7 +31,7 @@ import { useConfirm } from '@/components/editor/ConfirmDialog'
 import { EditorTour, hasSeenEditorTour } from '@/components/editor/EditorTour'
 import { FrameAddMenu, type AddChoice } from '@/components/editor/FrameAddMenu'
 import { createFrameMediaPool } from '@/modules/editor/frameMedia'
-import { FRAME_TEMPLATES, isFrameLayout, frameOf, mainAudioVolume, frameLanes, frameSlotLabels, emptySlotStretches, slotOffers, DEFAULT_BAND, DEFAULT_CORNERS } from '@/modules/editor/frames'
+import { FRAME_TEMPLATES, isFrameLayout, frameOf, mainAudioVolume, frameLanes, frameSlotLabels, emptySlotStretches, slotOffers, DEFAULT_CORNERS, isTextLane, textLaneLook, type TextLane } from '@/modules/editor/frames'
 import { signOut } from 'next-auth/react'
 import { PlatformOverlay, PLATFORM_SAFE, type Platform } from '@/components/editor/PlatformOverlay'
 // ── Domain stores ──────────────────────────────────────────────────────────────
@@ -1595,12 +1595,14 @@ export function EditorShell({
   }
 
   // Text on a frame's band: added straight away at the playhead, then typed in the Text tool
-  function addBandText(segId: string, t: number) {
+  /** Text on a frame's band (or its second text area: a name tag, a badge, a ticker) at `t` */
+  function addBandText(segId: string, t: number, lane: TextLane = 'band') {
     const seg = segments.find(x => x.id === segId)
     if (!seg || sectionBlocked(segId)) return
     pause()
-    const band = { ...DEFAULT_BAND, ...seg.frame?.band }
-    addToLane(segId, 'band', t, { kind: 'text', text: '', bg: band.bg, color: band.color, size: band.size })
+    // The text area's own look where it has one (a white comment bubble, a lime badge…)
+    const look = textLaneLook(seg, lane)
+    addToLane(segId, lane, t, { kind: 'text', text: '', bg: look.bg, color: look.color, size: look.size })
   }
 
   function handleAddChoice(choice: AddChoice) {
@@ -1612,7 +1614,7 @@ export function EditorShell({
     if (!seg) return
     if (choice === 'photo' || choice === 'video') { setFramePicker({ segId, kind: choice, lane, t }); return }
     // Text on the band — the band appears with its first text
-    if (choice === 'bandtext') { addBandText(segId, t); return }
+    if (choice === 'bandtext') { addBandText(segId, t, isTextLane(lane) ? lane : 'band'); return }
     if (choice === 'main') {
       const f = frameOf(seg)
       const main = f.main_slots ?? [0]
@@ -1652,8 +1654,8 @@ export function EditorShell({
     pause()
     // Band: the new text's box takes the keyboard focus, so the lane's "+" doesn't.
     // Slot: the lane's own "+" menu opens on the timeline (same video / upload video / photo).
-    setLaneHighlight(h => ({ lane, n: (h?.n ?? 0) + 1, focusPlus: lane !== 'band', openMenu: lane !== 'band' }))
-    if (lane === 'band' && frameSeg) addBandText(frameSeg.id, currentTimeMs)
+    setLaneHighlight(h => ({ lane, n: (h?.n ?? 0) + 1, focusPlus: !isTextLane(lane), openMenu: !isTextLane(lane) }))
+    if (isTextLane(lane) && frameSeg) addBandText(frameSeg.id, currentTimeMs, lane)
   }
 
   // Frames list: pick something in a frame. The playhead moves onto it unless it's already showing.
@@ -3454,7 +3456,7 @@ export function EditorShell({
                 currentTimeMs={currentTimeMs}
                 selectedId={activeFrameItemId}
                 onSelect={setActiveFrameItemId}
-                onAdd={lane => { if (frameSeg && lane === 'band') addBandText(frameSeg.id, currentTimeMs) }}
+                onAdd={lane => { if (frameSeg && isTextLane(lane)) addBandText(frameSeg.id, currentTimeMs, lane) }}
                 onUpdate={(id, patch) => { if (frameSeg && !frameItemBlocked(frameSeg.id, id)) updateFrameItem(frameSeg.id, id, patch) }}
                 onRemove={id => { if (frameSeg) askRemoveFrameItem(frameSeg.id, id) }}
                 onUpdateBand={patch => { if (frameSeg && !sectionBlocked(frameSeg.id)) updateFrameBand(frameSeg.id, patch) }}
@@ -3937,7 +3939,7 @@ export function EditorShell({
           onAddFrameItem={(lane, anchor) => {
             if (!frameSeg) return
             pause()
-            if (lane === 'band') { addBandText(frameSeg.id, currentTimeMs); return }
+            if (isTextLane(lane)) { addBandText(frameSeg.id, currentTimeMs, lane); return }
             setAddMenu({ segId: frameSeg.id, lane, t: currentTimeMs, anchor })
           }}
           viewMarkers={viewMarkers}

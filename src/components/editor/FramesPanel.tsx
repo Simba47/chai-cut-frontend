@@ -3,7 +3,7 @@
 import { InfoTip } from '@/components/ui/info-tip'
 import { useEffect, useState } from 'react'
 import type { SegmentLocal, FrameLayout, FrameItem, FrameSettings, SlotMotion, CornerStyle } from '@chai-cut/shared'
-import { FRAME_TEMPLATES, FRAME_LAYOUTS, isFrameLayout, frameLanes, frameOf, cornerGeometry, CORNER_MAX, mainSlotSound } from '@/modules/editor/frames'
+import { FRAME_TEMPLATES, FRAME_LAYOUTS, isFrameLayout, frameLanes, frameOf, cornerGeometry, CORNER_MAX, mainSlotSound, frameAreas, frameBase, isTextLane } from '@/modules/editor/frames'
 import { frameItemColor, FRAME_ITEM_COLORS } from './SegmentTimeline'
 import { ItemTimeRange } from './ItemTimeRange'
 
@@ -50,26 +50,59 @@ function msToLabel(ms: number) {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`
 }
 
-/** Mini diagram of a frame: slots as tinted tiles, bands as dark strips with text lines */
+/** Mini diagram of a frame: each area where it sits — slots as tinted tiles (round where they are),
+ *  text areas with text lines, the caption strip as a highlighted line, the sound wave as bars */
 function FrameThumb({ layout }: { layout: FrameLayout }) {
-  const tints = ['#60a5fa', '#34d399', '#f472b6']
+  const tints = ['#60a5fa', '#34d399', '#f472b6', '#fbbf24']
+  const base = frameBase(layout)
   return (
-    <div className="flex flex-col gap-[2px] p-[3px] rounded-md" style={{ width: 40, height: 71, background: '#050505', border: '1px solid rgb(var(--ed-fg) / 0.12)' }}>
-      {FRAME_TEMPLATES[layout].rows.map((r, i) => r.kind === 'band'
-        ? (
-          <div key={i} className="flex flex-col items-center justify-center gap-[2px]" style={{ flex: r.h }}>
-            <span className="block rounded-full" style={{ width: '70%', height: 2, background: 'rgb(255 255 255 / 0.5)' }} />
-            <span className="block rounded-full" style={{ width: '45%', height: 2, background: 'rgb(255 255 255 / 0.35)' }} />
+    <div className="relative rounded-md overflow-hidden" style={{
+      width: 40, height: 71, border: '1px solid rgb(var(--ed-fg) / 0.12)',
+      background: base === 'blur' ? 'linear-gradient(160deg, #3b4252, #1f2937)' : base === 'band' ? '#2a2a33' : '#050505',
+    }}>
+      {frameAreas(layout).map((a, i) => {
+        const box: React.CSSProperties = { position: 'absolute', left: `${a.x * 100}%`, top: `${a.y * 100}%`, width: `${a.w * 100}%`, height: `${a.h * 100}%` }
+        if (a.kind === 'band') return (
+          <div key={i} className="flex flex-col items-center justify-center gap-[2px]"
+            style={{ ...box, background: a.bg && a.bg !== 'none' ? a.bg : undefined, borderRadius: a.radius ? 3 : undefined }}>
+            <span className="block rounded-full" style={{ width: '70%', height: 2, background: a.color === '#000000' || a.color === '#111111' ? 'rgb(0 0 0 / 0.6)' : 'rgb(255 255 255 / 0.55)' }} />
+            {a.h > 0.08 && <span className="block rounded-full" style={{ width: '45%', height: 2, background: 'rgb(255 255 255 / 0.35)' }} />}
           </div>
-        ) : r.kind === 'caption' ? (
-          // Caption strip: one highlighted line, like a caption
-          <div key={i} className="flex items-center justify-center" style={{ flex: r.h }}>
+        )
+        if (a.kind === 'caption') return (
+          <div key={i} className="flex items-center justify-center" style={box}>
             <span className="block rounded-full" style={{ width: '60%', height: 3, background: '#facc15' }} />
           </div>
-        ) : (
-          <div key={i} className="rounded-[3px]" style={{ flex: r.h, background: `${tints[r.slot % tints.length]}cc` }} />
-        ))}
+        )
+        if (a.kind === 'wave') return (
+          <div key={i} className="flex items-center justify-center gap-[1px]" style={box}>
+            {[3, 6, 4, 8, 5, 7, 3, 6].map((h, k) => <span key={k} style={{ width: 1.5, height: h, borderRadius: 1, background: a.color ?? '#c8ff00' }} />)}
+          </div>
+        )
+        return (
+          <div key={i} style={{
+            ...box, background: `${tints[a.slot % tints.length]}cc`, boxShadow: 'inset 0 0 0 1px #050505',
+            borderRadius: a.radius === 'circle' ? '50%' : a.radius ? 3 : 2,
+          }} />
+        )
+      })}
     </div>
+  )
+}
+
+/** A frame's shape in miniature (its card in the list): slots filled, text areas outlined */
+function FrameIcon({ layout, on }: { layout: FrameLayout; on: boolean }) {
+  return (
+    <span className="relative block" style={{ width: 11, height: 18 }} aria-hidden="true">
+      {frameAreas(layout).filter(a => a.kind === 'slot' || a.kind === 'band').map((a, i) => (
+        <span key={i} className="absolute" style={{
+          left: `${a.x * 100}%`, top: `${a.y * 100}%`, width: `${a.w * 100}%`, height: `${a.h * 100}%`,
+          borderRadius: a.kind === 'slot' && a.radius === 'circle' ? '50%' : 1.5,
+          background: a.kind === 'slot' ? (on ? '#c8ff00' : '#9ca3af') : 'transparent',
+          boxShadow: a.kind === 'slot' ? 'inset 0 0 0 0.5px rgba(0,0,0,0.6)' : `inset 0 0 0 1px ${on ? 'rgba(200,255,0,0.6)' : 'rgba(156,163,175,0.6)'}`,
+        }} />
+      ))}
+    </span>
   )
 }
 
@@ -108,9 +141,9 @@ export function FramesPanel({
         {!targetLabel && (
           <p className="text-xs" style={{ color: 'rgb(var(--ed-fg) / 0.5)' }}>Move the playhead onto a format first.</p>
         )}
-        {/* 4 across, 2 rows */}
+        {/* 4 across, the most used first. A clip already using a frame no longer offered still shows it here */}
         <div className="grid grid-cols-4 gap-1.5">
-          {FRAME_LAYOUTS.map(id => {
+          {[...FRAME_LAYOUTS, ...frames.map(f => f.layout as FrameLayout).filter((l, i, all) => isFrameLayout(l) && !FRAME_LAYOUTS.includes(l) && all.indexOf(l) === i)].map(id => {
             const t = FRAME_TEMPLATES[id]
             const on = current === id
             return (
@@ -159,15 +192,7 @@ export function FramesPanel({
                 {/* A tiny diagram of the frame */}
                 <span className="shrink-0 w-8 h-8 mt-px flex items-center justify-center rounded-lg"
                   style={{ background: isActive ? 'rgba(200,255,0,0.1)' : 'rgb(var(--ed-fg) / 0.06)' }}>
-                  <span className="flex flex-col gap-[1.5px]" style={{ width: 11, height: 18 }} aria-hidden="true">
-                    {FRAME_TEMPLATES[layout].rows.map((r, ri) => (
-                      <span key={ri} className="rounded-[1.5px]" style={{
-                        flex: r.h,
-                        background: r.kind === 'slot' ? (isActive ? '#c8ff00' : '#9ca3af') : 'transparent',
-                        boxShadow: r.kind === 'slot' ? undefined : `inset 0 0 0 1px ${isActive ? 'rgba(200,255,0,0.6)' : 'rgba(156,163,175,0.6)'}`,
-                      }} />
-                    ))}
-                  </span>
+                  <FrameIcon layout={layout} on={isActive} />
                 </span>
                 <div className="flex-1 min-w-0 flex flex-col">
                   {/* Line 1: name · time range */}
@@ -237,7 +262,7 @@ function FrameContents({ seg, currentTimeMs, videoTitles, selected, onSelectItem
   const frame = frameOf(seg)
   const lanes = frameLanes(seg.layout as FrameLayout)
   const laneIndex = (lane: FrameItem['lane']) => lanes.findIndex(l => l.lane === lane)
-  const laneName = (lane: FrameItem['lane']) => lane === 'band' ? 'Band' : lanes.find(l => l.lane === lane)?.label ?? ''
+  const laneName = (lane: FrameItem['lane']) => lanes.find(l => l.lane === lane)?.label ?? (isTextLane(lane) ? 'Band' : '')
   const main = frame.main_slots ?? [0]
 
   type Row = { id: string; icon: keyof typeof KIND_ICON; color: string; name: string; lane: FrameItem['lane']; from: number; to: number; item?: FrameItem }
