@@ -31,7 +31,7 @@ const TIPS = [
 
 /**
  * Full-screen loader: page loads, and the moment between clicking and the next page appearing.
- * The mark sits in a turning lime ring with a soft glow, over a faint dot grid; under the label a
+ * The mark sits in a soft lime glow, over a faint dot grid; under the label a
  * thin bar sweeps like progress and a tip changes every few seconds (styles: .bls-* in globals.css)
  */
 export function BrandLoaderScreen({ label, overlay = false }: { label: string; overlay?: boolean }) {
@@ -47,10 +47,6 @@ export function BrandLoaderScreen({ label, overlay = false }: { label: string; o
       <div className="bls-grid" aria-hidden="true" />
       <div className="bls-glow" aria-hidden="true" />
       <div className="bls-center">
-        <div className="bls-orbit" aria-hidden="true">
-          <span className="bls-ring" />
-          <span className="bls-ring bls-ring-2" />
-        </div>
         <BrandLoader size={52} />
       </div>
       <p className="bls-label">{label}</p>

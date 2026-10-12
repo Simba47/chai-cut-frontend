@@ -26,8 +26,8 @@ export interface CircularCarouselProps {
 }
 
 const VISIBLE_COUNT = 5
-const MAX_RADIUS_X = 300
-const RADIUS_Y = 110
+const MAX_RADIUS_X = 360
+const RADIUS_Y = 100
 
 // Below this track width the arc gets too cramped: show the active card with its
 // neighbours peeking in from the screen edges instead
@@ -44,9 +44,9 @@ function getItemPosition(index: number, activeIndex: number, total: number, trac
   if (trackWidth < COMPACT_WIDTH) {
     const d = Math.abs(adjustedOffset)
     if (d > 1) return null
-    return { x: adjustedOffset * trackWidth * 0.72, y: -30, scale: d ? 0.9 : 1, opacity: d ? 0.35 : 1, zIndex: 2 - d }
+    return { x: adjustedOffset * trackWidth * 0.72, y: -30, scale: d ? 0.9 : 1, opacity: 1, dim: d ? 0.45 : 1, zIndex: 2 - d }
   }
-  const radiusX = Math.min(MAX_RADIUS_X, trackWidth * 0.34)
+  const radiusX = Math.min(MAX_RADIUS_X, trackWidth * 0.36)
 
   if (Math.abs(adjustedOffset) > half) return null   // only VISIBLE_COUNT cards on the arc
 
@@ -56,11 +56,12 @@ function getItemPosition(index: number, activeIndex: number, total: number, trac
 
   const distance = Math.abs(adjustedOffset)
   const maxDistance = half + 1
-  const scale = Math.max(0, 1 - (distance / maxDistance) * 0.3)
-  const opacity = Math.max(0.25, 1 - (distance / maxDistance) * 0.75)
+  const scale = Math.max(0, 1 - (distance / maxDistance) * 0.28)
+  // cards stay solid (no see-through overlaps); the ones further back are dimmed instead
+  const dim = Math.max(0.3, 1 - (distance / maxDistance) * 0.85)
   const zIndex = VISIBLE_COUNT - distance
 
-  return { x, y, scale, opacity, zIndex }
+  return { x, y, scale, opacity: 1, dim, zIndex }
 }
 
 export function CircularCarousel({
@@ -158,10 +159,10 @@ export function CircularCarousel({
       className={cn('relative flex flex-col items-center justify-center gap-6 outline-none', className)}
     >
       {/* Circular track */}
-      <div ref={trackRef} className="relative h-[290px] w-full max-w-4xl sm:h-[360px]">
+      <div ref={trackRef} className="relative h-[310px] w-full max-w-5xl sm:h-[380px]">
         {items.map((item, i) => {
           const pos = getItemPosition(i, activeIndex, total, trackWidth)
-            ?? { x: 0, y: trackWidth < COMPACT_WIDTH ? -30 : 0, scale: 0.6, opacity: 0, zIndex: 0 }
+            ?? { x: 0, y: trackWidth < COMPACT_WIDTH ? -30 : 0, scale: 0.6, opacity: 0, dim: 0.3, zIndex: 0 }
           const isActive = i === activeIndex
           const hidden = pos.opacity === 0
 
@@ -170,7 +171,7 @@ export function CircularCarousel({
               key={item.id}
               type="button"
               initial={false}
-              animate={{ x: pos.x, y: pos.y, scale: pos.scale, opacity: pos.opacity }}
+              animate={{ x: pos.x, y: pos.y, scale: pos.scale, opacity: pos.opacity, filter: `brightness(${pos.dim})` }}
               transition={{ duration: reduceMotion ? 0 : 0.65, ease: [0.22, 1, 0.36, 1] }}
               onClick={() => goTo(i)}
               aria-label={item.title}
@@ -179,8 +180,8 @@ export function CircularCarousel({
               tabIndex={hidden ? -1 : undefined}
               style={{ zIndex: pos.zIndex, pointerEvents: hidden ? 'none' : undefined }}
               className={cn(
-                'absolute left-1/2 top-1/2 -ml-[132px] -mt-[88px] flex h-[176px] w-[264px] cursor-pointer flex-col items-start gap-3 rounded-2xl border p-5 text-left md:backdrop-blur-sm transition-[box-shadow,border-color] duration-300',
-                'bg-[linear-gradient(180deg,var(--card-hover),var(--card))]',
+                'absolute left-1/2 top-1/2 -ml-[144px] -mt-[106px] flex h-[212px] w-[288px] cursor-pointer flex-col items-start gap-4 overflow-hidden rounded-2xl border p-5 text-left transition-[box-shadow,border-color] duration-300',
+                'bg-[linear-gradient(180deg,var(--card-hover),var(--card))] shadow-[inset_0_1px_0_var(--border)]',
                 isActive
                   ? 'border-[var(--border-strong)] shadow-[0_24px_60px_-12px_rgba(0,0,0,0.6)]'
                   : 'border-[var(--border)] shadow-[0_8px_24px_-4px_rgba(0,0,0,0.35)]',
@@ -198,6 +199,7 @@ export function CircularCarousel({
                 <h3
                   className={cn(
                     'font-bold leading-tight tracking-[-0.02em] transition-colors duration-300',
+                    'line-clamp-2',
                     isActive ? 'text-[17px] text-[var(--text)]' : 'text-[15px] text-[var(--muted)]',
                   )}
                 >
@@ -205,8 +207,9 @@ export function CircularCarousel({
                 </h3>
                 <p
                   className={cn(
-                    'mt-1.5 line-clamp-3 text-[13px] leading-relaxed transition-colors duration-300',
-                    isActive ? 'text-[var(--muted)]' : 'text-[var(--dim)]',
+                    'mt-2 line-clamp-3 text-[13px] leading-[1.55] transition-opacity duration-300',
+                    // side cards show only their title, so they don't compete with the one in front
+                    isActive ? 'text-[var(--muted)] opacity-100' : 'text-[var(--dim)] opacity-0',
                   )}
                 >
                   {item.description}
