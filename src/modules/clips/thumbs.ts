@@ -11,7 +11,9 @@ import { useEffect, useState } from 'react'
 const W = 192, H = 108
 const cache = new Map<string, string>()
 const waiters = new Map<string, Array<(url: string | null) => void>>()
-type Job = { key: string; atSec: number }
+/** A face to cut out: its box (fractions of the frame); the picture is a square around it, `px` wide */
+type FaceCrop = { x: number; y: number; w: number; h: number; px: number }
+type Job = { key: string; atSec: number; face?: FaceCrop }
 const queues = new Map<string, { video: HTMLVideoElement; jobs: Job[]; busy: boolean }>()
 
 function keyOf(src: string, ms: number) { return `${src}#${Math.round(ms / 100)}` }
@@ -28,7 +30,6 @@ async function run(src: string) {
   q.busy = true
   const { video } = q
   const canvas = document.createElement('canvas')
-  canvas.width = W; canvas.height = H
   const ctx = canvas.getContext('2d')
   try {
     if (video.readyState < 1) {
@@ -49,8 +50,18 @@ async function run(src: string) {
       })
       let url: string | null = null
       try {
-        if (ctx && video.videoWidth) {
+        if (ctx && video.videoWidth && job.face) {
+          // A square around the face (head and a little of the shoulders), from the full-size frame
+          const vw = video.videoWidth, vh = video.videoHeight, f = job.face
+          const side = Math.min(vw, vh, 2.1 * Math.max(f.w * vw, f.h * vh))
+          const cx = (f.x + f.w / 2) * vw, cy = (f.y + f.h * 0.55) * vh
+          const sx = Math.max(0, Math.min(vw - side, cx - side / 2)), sy = Math.max(0, Math.min(vh - side, cy - side / 2))
+          canvas.width = f.px; canvas.height = f.px
+          ctx.drawImage(video, sx, sy, side, side, 0, 0, f.px, f.px)
+          url = canvas.toDataURL('image/jpeg', 0.85)
+        } else if (ctx && video.videoWidth) {
           // Cover the 16:9 thumbnail, like object-fit: cover
+          canvas.width = W; canvas.height = H
           const s = Math.max(W / video.videoWidth, H / video.videoHeight)
           const dw = video.videoWidth * s, dh = video.videoHeight * s
           ctx.drawImage(video, (W - dw) / 2, (H - dh) / 2, dw, dh)
@@ -64,8 +75,8 @@ async function run(src: string) {
   }
 }
 
-function request(src: string, ms: number): Promise<string | null> {
-  const key = keyOf(src, ms)
+function request(src: string, ms: number, face?: FaceCrop): Promise<string | null> {
+  const key = face ? `${keyOf(src, ms)}@${[face.x, face.y, face.w, face.h].map(v => v.toFixed(3)).join(',')}` : keyOf(src, ms)
   if (cache.has(key)) return Promise.resolve(cache.get(key)!)
   return new Promise(resolve => {
     const list = waiters.get(key)
@@ -82,7 +93,7 @@ function request(src: string, ms: number): Promise<string | null> {
       q = { video, jobs: [], busy: false }
       queues.set(src, q)
     }
-    q.jobs.push({ key, atSec: ms / 1000 })
+    q.jobs.push({ key, atSec: ms / 1000, face })
     void run(src)
   })
 }
@@ -99,5 +110,21 @@ export function useFrameAt(src: string | null | undefined, ms: number): string |
     request(src, at).then(u => { if (alive) setUrl(u) })
     return () => { alive = false }
   }, [src, at])
+  return url
+}
+
+/**
+ * A square picture of a face: the frame of `src` at `ms` (the video's own time), cut out around
+ * `box` (the face, fractions of the frame), `px` wide. Null until ready, or when it can't be read.
+ */
+export function useFaceAt(src: string | null | undefined, ms: number | null, box: { x: number; y: number; w: number; h: number } | null, px = 112): string | null {
+  const [url, setUrl] = useState<string | null>(null)
+  const sig = box ? [box.x, box.y, box.w, box.h].map(v => v.toFixed(3)).join(',') : ''
+  useEffect(() => {
+    if (!src || ms === null || !box) { setUrl(null); return }
+    let alive = true
+    request(src, ms, { ...box, px }).then(u => { if (alive) setUrl(u) })
+    return () => { alive = false }
+  }, [src, ms, sig, px]) // eslint-disable-line react-hooks/exhaustive-deps
   return url
 }

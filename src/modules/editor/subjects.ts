@@ -44,13 +44,47 @@ function steady(values: number[]): number[] {
 }
 const median = (v: number[]) => { const s = [...v].sort((a, b) => a - b); return s.length ? s[Math.floor(s.length / 2)] : 0 }
 
-/** The subject's face at a moment of the source video, or null when they weren't seen around then */
-export function subjectBoxAt(path: readonly SubjectPoint[], sourceMs: number): BoxPosition | null {
+/** Camera cuts (source ms, in order), from the tracker */
+export type Cuts = readonly number[]
+
+/** Whether a camera cut lies between two moments of the source (a < cut ≤ b, either order) */
+export function cutBetween(cuts: Cuts | undefined, a: number, b: number): boolean {
+  if (!cuts?.length || a === b) return false
+  const lo = Math.min(a, b), hi = Math.max(a, b)
+  // The first cut after lo
+  let i = 0, j = cuts.length
+  while (i < j) { const m = (i + j) >> 1; if (cuts[m] <= lo) i = m + 1; else j = m }
+  return i < cuts.length && cuts[i] <= hi
+}
+
+/**
+ * The camera cuts inside [from, to) of the timeline, in timeline ms (`toSource`: timeline ms →
+ * source ms; a cut is placed between the two quarter-second steps it falls between)
+ */
+export function cutsOnTimeline(cuts: Cuts | undefined, from: number, to: number, toSource: (t: number) => number): number[] {
+  if (!cuts?.length) return []
+  const out: number[] = []
+  for (let t = from; t < to; t += SUBJECT_STEP_MS) {
+    const s0 = toSource(t), s1 = toSource(Math.min(to, t + SUBJECT_STEP_MS))
+    for (const c of cuts) {
+      if (c <= s0 || c > s1) continue
+      // Within a stretch that plays straight through: where it falls; across a removed part: its end
+      const k = s1 - s0 > 0 && s1 - s0 < 2 * SUBJECT_STEP_MS ? (c - s0) / (s1 - s0) : 1
+      out.push(Math.round(t + k * (Math.min(to, t + SUBJECT_STEP_MS) - t)))
+    }
+  }
+  return out
+}
+
+/** The subject's face at a moment of the source video, or null when they weren't seen around then (never across a camera cut) */
+export function subjectBoxAt(path: readonly SubjectPoint[], sourceMs: number, cuts?: Cuts): BoxPosition | null {
   if (!path.length) return null
   // The first point at or after sourceMs
   let lo = 0, hi = path.length
   while (lo < hi) { const mid = (lo + hi) >> 1; if (path[mid][0] < sourceMs) lo = mid + 1; else hi = mid }
-  const a = path[lo - 1], b = path[lo]
+  // Only sightings in the same shot as this moment
+  const sameShot = (p: SubjectPoint | undefined) => (p && !cutBetween(cuts, p[0], sourceMs) ? p : undefined)
+  const a = sameShot(path[lo - 1]), b = sameShot(path[lo])
   const box = (p: SubjectPoint): BoxPosition => ({ x: p[1], y: p[2], w: p[3], h: p[4] })
   // Between two sightings a frame or so apart: in between them
   if (a && b && b[0] - a[0] <= 2 * SEEN_WITHIN_MS) {
@@ -62,12 +96,12 @@ export function subjectBoxAt(path: readonly SubjectPoint[], sourceMs: number): B
   return near ? box(near) : null
 }
 
-/** Whether the subject is the one talking at a moment of the source (the tracker's reading nearest it) */
-export function subjectTalksAt(path: readonly SubjectPoint[], sourceMs: number): boolean {
+/** Whether the subject is the one talking at a moment of the source (the tracker's reading nearest it, in the same shot) */
+export function subjectTalksAt(path: readonly SubjectPoint[], sourceMs: number, cuts?: Cuts): boolean {
   if (!path.length) return false
   let lo = 0, hi = path.length
   while (lo < hi) { const mid = (lo + hi) >> 1; if (path[mid][0] < sourceMs) lo = mid + 1; else hi = mid }
-  const near = [path[lo - 1], path[lo]].filter((p): p is SubjectPoint => !!p && Math.abs(p[0] - sourceMs) <= SEEN_WITHIN_MS)
+  const near = [path[lo - 1], path[lo]].filter((p): p is SubjectPoint => !!p && Math.abs(p[0] - sourceMs) <= SEEN_WITHIN_MS && !cutBetween(cuts, p[0], sourceMs))
     .sort((p, q) => Math.abs(p[0] - sourceMs) - Math.abs(q[0] - sourceMs))[0]
   return !!near && near[5] === 1
 }
@@ -87,6 +121,7 @@ const SWITCH_CONFIRM_MS = 750
  */
 export function directStretches(
   subjects: ReadonlyArray<{ id: string; path: readonly SubjectPoint[] }>, from: number, to: number, toSource: (t: number) => number,
+  cuts?: Cuts,
 ): Array<{ from: number; to: number; id: string }> {
   const picks: Array<{ t: number; id: string | null }> = []
   let current: string | null = null, since = -Infinity
@@ -94,8 +129,8 @@ export function directStretches(
   let pending: string | null = null, pendingFrom = 0
   for (let t = from; t < to; t += SUBJECT_STEP_MS) {
     const src = toSource(t)
-    const seen = subjects.filter(s => subjectBoxAt(s.path, src))
-    const talking = seen.filter(s => subjectTalksAt(s.path, src))
+    const seen = subjects.filter(s => subjectBoxAt(s.path, src, cuts))
+    const talking = seen.filter(s => subjectTalksAt(s.path, src, cuts))
     const here = current !== null && seen.some(s => s.id === current)
     let want: string | null = current
     if (talking.length) want = talking.some(s => s.id === current) ? current : talking[0].id
@@ -133,23 +168,96 @@ export function directStretches(
     else { out[1].from = out[0].from; out.splice(0, 1) }
   }
   for (let i = out.length - 1; i > 0; i--) if (out[i].id === out[i - 1].id) { out[i - 1].to = out[i].to; out.splice(i, 1) }
+  // A switch next to a camera cut happens exactly on the cut (the steps are a quarter second apart)
+  const onTimeline = cutsOnTimeline(cuts, from, to, toSource)
+  for (let i = 1; i < out.length; i++) {
+    const b = out[i].from
+    const c = onTimeline.filter(x => x > b - SUBJECT_STEP_MS - 1 && x < b + SUBJECT_STEP_MS && x > out[i - 1].from && x < out[i].to)
+      .sort((x, y) => Math.abs(x - b) - Math.abs(y - b))[0]
+    if (c !== undefined) { out[i - 1].to = c; out[i].from = c }
+  }
+  return out
+}
+
+/** [start, end] source ms while a subject is talking — the tracker's turns, to the word */
+export type Turn = readonly [number, number]
+type Speaker = { id: string; path: readonly SubjectPoint[]; speaking?: readonly Turn[] | null }
+/** A turn shorter than this (a "yeah", a laugh) doesn't take the view */
+const MIN_TURN_MS = 500
+/** A stretch shorter than this joins the one before it (no flicker) */
+const MIN_TURN_STRETCH_MS = 300
+
+/**
+ * Who the view shows through [from, to), from the speakers' turns: from the first word of a turn
+ * the view is on whoever says it — cut exactly there, no delay — and stays on them through the
+ * silence after, until the next person starts talking. Someone who isn't in the picture (another
+ * camera's shot) can't be shown: then whoever is in it, back to the speaker as soon as the picture
+ * cuts back to them. Before the first turn: the first speaker. `toTimeline`: source ms → timeline
+ * ms. Empty when nobody has turns or nobody is seen.
+ */
+export function turnStretches(
+  subjects: readonly Speaker[], from: number, to: number, toSource: (t: number) => number,
+  toTimeline: (s: number) => number, cuts?: Cuts,
+): Array<{ from: number; to: number; id: string }> {
+  const turns = subjects
+    .flatMap(s => (s.speaking ?? []).map(([a, b]) => ({ id: s.id, a: Math.round(toTimeline(a)), b: Math.round(toTimeline(b)) })))
+    .filter(t => t.b > from && t.a < to && t.b - t.a >= MIN_TURN_MS)
+    .sort((x, y) => x.a - y.a)
+  if (!turns.length) return []
+  const speakerAt = (t: number) => {
+    let who = turns[0].id
+    for (const tr of turns) { if (tr.a <= t) who = tr.id; else break }
+    return who
+  }
+  // Moments the view may change: each turn's first word, each camera cut, and a quarter-second
+  // step (someone leaving the picture without a cut)
+  const points = new Set<number>([from])
+  for (const tr of turns) if (tr.a > from) points.add(tr.a)
+  for (const c of cutsOnTimeline(cuts, from, to, toSource)) points.add(c)
+  for (let t = from; t < to; t += SUBJECT_STEP_MS) points.add(Math.round(t))
+  const at = [...points].filter(p => p >= from && p < to).sort((a, b) => a - b)
+  // Seen just after the moment (on a cut: in the new shot)
+  const seenAt = (s: Speaker, t: number) => !!subjectBoxAt(s.path, toSource(t + 1), cuts)
+  const out: Array<{ from: number; to: number; id: string }> = []
+  let current: string | null = null
+  for (const p of at) {
+    const want = speakerAt(p)
+    const seen = subjects.filter(s => seenAt(s, p))
+    let next: string | null = current
+    if (seen.some(s => s.id === want)) next = want
+    else if (current === null || !seen.some(s => s.id === current)) next = seen[0]?.id ?? current
+    if (next === null) continue
+    if (next !== current) { out.push({ from: p, to, id: next }); current = next }
+  }
+  if (!out.length) return []
+  out[0].from = from
+  for (let i = 0; i < out.length - 1; i++) out[i].to = out[i + 1].from
+  // Blips (a person seen for a moment between two others) join the stretch before
+  for (let i = out.length - 1; i > 0; i--) {
+    if (out[i].to - out[i].from >= MIN_TURN_STRETCH_MS) continue
+    out[i - 1].to = out[i].to
+    out.splice(i, 1)
+  }
+  for (let i = out.length - 1; i > 0; i--) if (out[i].id === out[i - 1].id) { out[i - 1].to = out[i].to; out.splice(i, 1) }
   return out
 }
 
 /**
- * The view changes that switch between the subjects over [from, to): each stretch of directStretches
- * follows its subject (smoothly, the view keeping its size), with a cut where the subject changes.
+ * The view changes that switch between the subjects over [from, to): each stretch follows its
+ * subject (smoothly, the view keeping its size), with a cut where the subject changes. With the
+ * speakers' turns (and `toTimeline`), on the turns — to the word; else on the talking readings.
  */
 export function autoDirectChanges(
-  subjects: ReadonlyArray<{ id: string; path: readonly SubjectPoint[] }>, from: number, to: number, toSource: (t: number) => number,
-  view: { w: number; h: number },
+  subjects: readonly Speaker[], from: number, to: number, toSource: (t: number) => number,
+  view: { w: number; h: number }, cuts?: Cuts, toTimeline?: (s: number) => number,
 ): ViewChange[] | null {
-  const stretches = directStretches(subjects, from, to, toSource)
+  const byTurns = toTimeline && subjects.some(s => s.speaking?.length) ? turnStretches(subjects, from, to, toSource, toTimeline, cuts) : []
+  const stretches = byTurns.length ? byTurns : directStretches(subjects, from, to, toSource, cuts)
   if (!stretches.length) return null
   const out: ViewChange[] = []
   for (const st of stretches) {
     const s = subjects.find(x => x.id === st.id)!
-    const part = followChanges(s.path, st.from, st.to, toSource, view, 'smooth')
+    const part = followChanges(s.path, st.from, st.to, toSource, view, 'smooth', cuts)
     if (!part?.length) continue
     part.forEach((c, i) => out.push({ ...c, t_ms: i === 0 ? st.from : c.t_ms, cut: i === 0 ? out.length > 0 : c.cut }))
   }
@@ -181,12 +289,12 @@ export function seenShare(path: readonly SubjectPoint[], from: number, to: numbe
  */
 export function followChanges(
   path: readonly SubjectPoint[], from: number, to: number, toSource: (t: number) => number,
-  view: { w: number; h: number }, style: FollowStyle,
+  view: { w: number; h: number }, style: FollowStyle, cuts?: Cuts,
 ): ViewChange[] | null {
   const ts: number[] = []
   for (let t = from; t < to; t += SUBJECT_STEP_MS) ts.push(Math.round(t))
   if (!ts.length) return null
-  const raw = ts.map(t => subjectBoxAt(path, toSource(t)))
+  const raw = ts.map(t => subjectBoxAt(path, toSource(t), cuts))
   if (!raw.some(Boolean)) return null
   // Not seen: the nearest sighting before (else after) holds
   const filled: BoxPosition[] = []
@@ -201,6 +309,13 @@ export function followChanges(
   const starts = [0]
   for (let i = 1; i < ts.length; i++) if (Math.abs(centre[i] - centre[i - 1]) > JUMP) starts.push(i)
   const parts = starts.map((s, k) => ({ from: s, to: starts[k + 1] ?? ts.length }))
+  // Where each stretch starts: a jump right after a camera cut starts exactly on the cut
+  const onTimeline = cutsOnTimeline(cuts, from, to, toSource)
+  const startOf = (i: number) => {
+    if (i === 0) return ts[0]
+    const c = onTimeline.find(x => x > ts[i - 1] && x <= ts[i])
+    return c ?? ts[i]
+  }
 
   const changes: ViewChange[] = []
   if (style === 'still') {
@@ -225,7 +340,7 @@ export function followChanges(
       if (score(i - 1) <= score(i + 1)) join(i)
       else join(i + 1)
     }
-    for (const p of parts) changes.push({ t_ms: ts[p.from], ...placeOf(p), w: view.w, h: view.h, cut: changes.length > 0 })
+    for (const p of parts) changes.push({ t_ms: startOf(p.from), ...placeOf(p), w: view.w, h: view.h, cut: changes.length > 0 })
     return changes
   }
   for (const p of parts) {
@@ -241,7 +356,7 @@ export function followChanges(
       const holdsTill = k > 0 && moved && prev && ts[i - 1] !== prev.t_ms
       // A point where it set off, so it doesn't glide all the way from the last change
       if (holdsTill) changes.push({ t_ms: ts[i - 1], x: prev.x, y: prev.y, w: view.w, h: view.h, cut: false })
-      if (moved) changes.push({ t_ms: ts[i], x: xs[k], y: ys[k], w: view.w, h: view.h, cut: k === 0 && changes.length > 0 })
+      if (moved) changes.push({ t_ms: k === 0 ? startOf(i) : ts[i], x: xs[k], y: ys[k], w: view.w, h: view.h, cut: k === 0 && changes.length > 0 })
     }
   }
   return changes

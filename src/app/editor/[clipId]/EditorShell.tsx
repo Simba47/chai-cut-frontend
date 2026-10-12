@@ -91,6 +91,9 @@ const PLATFORM_OPTIONS: { id: Platform; label: string; icon: React.ReactNode }[]
 // Options sidebar width (px)
 const OPTIONS_W = 272
 const PREVIEW_W = 360
+// The editing panel (timeline) opens this tall: room for the strip and the media lanes under it
+// (dragging the line above the play bar changes it for that visit; a double-click puts this back)
+const TIMELINE_DEFAULT_H = '35vh'
 // How wide the side columns can be dragged
 const OPTIONS_RANGE: [number, number] = [220, 520]
 const PREVIEW_RANGE: [number, number] = [260, 620]
@@ -310,8 +313,10 @@ export function EditorShell({
   )
   const [isFreePlan, setIsFreePlan] = useState(false)
   const [tool, setTool] = useState<Tool>('format')
-  // The editor always opens the same way: the tool rail with the options panel closed (a tool opens
-  // it), the video, the Preview column on the right and the timeline
+  // The editor always opens the same way — a new clip, a refresh, or coming from any board: the
+  // tool rail with the options panel closed (a tool opens it), the video, the Preview column on the
+  // right at its usual width (Off) and the timeline at its usual height. Sizes dragged while editing
+  // last for that visit only; nothing about the layout is remembered.
   const [optionsOpen, setOptionsOpen] = useState(false)
   // The Preview column on the right: can be closed for more room to edit
   const [previewOpen, setPreviewOpen] = useState(true)
@@ -346,15 +351,16 @@ export function EditorShell({
     window.addEventListener('keydown', onKey, true)
     return () => window.removeEventListener('keydown', onKey, true)
   }, [fullViewFallback]) // eslint-disable-line react-hooks/exhaustive-deps
-  // Widths of the two side columns, dragged at their inner edge (remembered per browser)
+  // Widths of the two side columns, dragged at their inner edge (this visit only)
   const [optionsW, setOptionsW] = useState(OPTIONS_W)
   const [previewW, setPreviewW] = useState(PREVIEW_W)
   const [resizing, setResizing] = useState<'options' | 'preview' | 'timeline' | null>(null)
-  // The timeline's height, dragged at the line above the play bar (null = its usual size); remembered per browser
+  // The timeline's height, dragged at the line above the play bar (null = its usual size; this visit only)
   const [timelineH, setTimelineH] = useState<number | null>(null)
   const timelineRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
-    try { const h = Number(localStorage.getItem('editor.timelineH')); if (h) setTimelineH(h) } catch { /* storage blocked */ }
+    // Sizes an older version remembered in this browser: gone, so every visit opens the usual way
+    try { for (const k of ['editor.timelineH', 'editor.optionsW', 'editor.previewW', 'editor.platformPreview']) localStorage.removeItem(k) } catch { /* storage blocked */ }
   }, [])
   /** Drag the line between the video and the play bar: up makes the timeline taller, down the video bigger */
   function startTimelineResize(e: React.PointerEvent) {
@@ -369,22 +375,11 @@ export function EditorShell({
     const up = () => {
       window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up)
       setResizing(null)
-      try { localStorage.setItem('editor.timelineH', String(h)) } catch { /* storage blocked */ }
     }
     window.addEventListener('pointermove', move)
     window.addEventListener('pointerup', up)
   }
-  function resetTimelineHeight() {
-    setTimelineH(null)
-    try { localStorage.removeItem('editor.timelineH') } catch { /* storage blocked */ }
-  }
-  useEffect(() => {
-    try {
-      const o = Number(localStorage.getItem('editor.optionsW')), pv = Number(localStorage.getItem('editor.previewW'))
-      if (o) setOptionsW(Math.max(OPTIONS_RANGE[0], Math.min(OPTIONS_RANGE[1], o)))
-      if (pv) setPreviewW(Math.max(PREVIEW_RANGE[0], Math.min(PREVIEW_RANGE[1], pv)))
-    } catch { /* storage blocked */ }
-  }, [])
+  function resetTimelineHeight() { setTimelineH(null) }
   /** Drag a side column's inner edge to resize it; double-click puts its usual width back */
   function startColumnResize(e: React.PointerEvent, which: 'options' | 'preview') {
     if (e.button !== 0) return
@@ -403,15 +398,12 @@ export function EditorShell({
     const up = () => {
       window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up)
       setResizing(null)
-      // Kept for this browser: the editor opens with these sizes next time
-      try { localStorage.setItem(which === 'options' ? 'editor.optionsW' : 'editor.previewW', String(w)) } catch { /* storage blocked */ }
     }
     window.addEventListener('pointermove', move)
     window.addEventListener('pointerup', up)
   }
   function resetColumn(which: 'options' | 'preview') {
     if (which === 'options') setOptionsW(OPTIONS_W); else setPreviewW(PREVIEW_W)
-    try { localStorage.removeItem(which === 'options' ? 'editor.optionsW' : 'editor.previewW') } catch { /* storage blocked */ }
   }
 
   // First-time tour: opens once the page has settled; the header's "?" replays it
@@ -936,18 +928,8 @@ export function EditorShell({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [segments, keyframes, trims, clipRange, captionStyle, textOverlays, audioTracks, transitions, filters, overlays])
 
-  // The social media preview choice is remembered per browser
-  const [platform, setPlatformState] = useState<Platform>('off')
-  useEffect(() => {
-    try {
-      const p = localStorage.getItem('editor.platformPreview')
-      if (p === 'instagram' || p === 'youtube') setPlatformState(p)
-    } catch { /* storage blocked */ }
-  }, [])
-  function setPlatform(p: Platform) {
-    setPlatformState(p)
-    try { localStorage.setItem('editor.platformPreview', p) } catch { /* storage blocked */ }
-  }
+  // The social media preview: Off each time the editor opens (part of its usual layout)
+  const [platform, setPlatform] = useState<Platform>('off')
   /**
    * Add a video, photo, song or text at a time (the playhead): from a sub timeline (its icon or its
    * empty row). A video or photo lasts 5 s, text 3 s (moved back to fit before the clip's end);
@@ -1542,7 +1524,15 @@ export function EditorShell({
   // People marked in the clip and tracked by the worker. Marking starts the tracking by itself;
   // when it's done every section's view switches between them through the clip, to whoever is
   // talking (one undo step, saved like any edit).
-  type SubjectRow = SubjectItem & { mark_ms: number; mark_x: number; mark_y: number; path: SubjectPoint[] | null; scan_start_ms: number | null; scan_end_ms: number | null }
+  type SubjectRow = SubjectItem & { mark_ms: number; mark_x: number; mark_y: number; path: SubjectPoint[] | null; scan_start_ms: number | null; scan_end_ms: number | null; cuts?: number[] | null; speaking?: Array<[number, number]> | null }
+  /** Their face for the card's picture: the tracked face nearest where they were marked (within 1.5 s), else around the mark */
+  const subjectFace = (s: SubjectRow): SubjectItem['face'] => {
+    const near = (s.path ?? []).reduce<SubjectPoint | null>((best, p) => (!best || Math.abs(p[0] - s.mark_ms) < Math.abs(best[0] - s.mark_ms) ? p : best), null)
+    if (near && Math.abs(near[0] - s.mark_ms) <= 1500) return { ms: near[0], box: { x: near[1], y: near[2], w: near[3], h: near[4] } }
+    return { ms: s.mark_ms, box: { x: Math.max(0, s.mark_x - 0.06), y: Math.max(0, s.mark_y - 0.12), w: 0.12, h: 0.2 } }
+  }
+  /** The camera cuts the tracker found (source ms, in order) */
+  const subjectCuts = (list: SubjectRow[]) => [...new Set(list.flatMap(s => s.cuts ?? []))].sort((a, b) => a - b)
   const [subjects, setSubjects] = useState<SubjectRow[]>([])
   const [subjectsLoaded, setSubjectsLoaded] = useState(false)
   const [subjectsLoading, setSubjectsLoading] = useState(false)
@@ -1606,6 +1596,25 @@ export function EditorShell({
       await trackSubjectsNow(true)
     } catch (e) { setSubjectsError(e instanceof Error ? e.message : 'Could not mark them') }
   }
+  /**
+   * Mark the subject: whoever the view (the 9:16 box) is on right now — no second click. Only where
+   * the view is the whole picture (Horizontal) does it ask to click on the person instead.
+   */
+  function markFromView() {
+    setSubjectNotice(null)
+    if (marking) { setMarking(false); return }
+    const seg = activeSegment
+    // The view showing the main video: the picked box, else (in a frame) its first main slot
+    const mainSlots = seg && isFrameLayout(seg.layout) ? frameOf(seg).main_slots ?? [0] : null
+    const box = seg && viewBox && !viewBox.image_path && !(viewBox.source_video_id && viewBox.source_video_id !== mainVideoId)
+      && (!mainSlots || mainSlots.includes(viewBox.slot_index))
+      ? viewBox
+      : seg?.crop_boxes.find(b => !b.image_path && (!mainSlots || mainSlots.includes(b.slot_index)))
+    if (!seg || !box || seg.layout === 'horizontal') { setMarking(true); return }
+    const v = getPositionAt(box.id, Math.round(liveTime.get()))
+    if (v.w > 0.9 && v.h > 0.9) { setMarking(true); return }
+    markSubject(v.x + v.w / 2, v.y + v.h / 2)
+  }
   async function trackSubjectsNow(all: boolean) {
     setSubjectNotice(null)
     try {
@@ -1630,6 +1639,7 @@ export function EditorShell({
     seen: s.status === 'done' && s.path ? seenShare(s.path, 0, clipLengthMs, trim.toSource) : null,
     stale: s.status === 'done' && s.scan_start_ms !== null && s.scan_end_ms !== null
       && (rawClip.start_ms < s.scan_start_ms - 500 || rawClip.end_ms > s.scan_end_ms + 500),
+    face: subjectFace(s),
   })), [subjects, clipLengthMs, trim, rawClip.start_ms, rawClip.end_ms])
   /**
    * Frame the whole clip on the tracked people: in every section, a view showing the main video
@@ -1640,6 +1650,7 @@ export function EditorShell({
   function frameClipOnSubjects(list: SubjectRow[]) {
     const tracked = list.filter(s => s.status === 'done' && s.path?.length) as Array<SubjectRow & { path: SubjectPoint[] }>
     if (!tracked.length) return
+    const cuts = subjectCuts(tracked)
     const { segments: segs, keyframes: kfs } = useEditorStore.getState()
     const next = { ...kfs }
     let framed = 0
@@ -1655,8 +1666,8 @@ export function EditorShell({
         const size = getBoxPositionAtLerp(seg.start_ms, kfs[box.id] ?? box.keyframes ?? [])
         const view = { w: size.w, h: size.h }
         const changes = views.length === 1
-          ? autoDirectChanges(tracked, seg.start_ms, seg.end_ms, trim.toSource, view)
-          : followChanges(tracked[i % tracked.length].path, seg.start_ms, seg.end_ms, trim.toSource, view, 'smooth')
+          ? autoDirectChanges(tracked, seg.start_ms, seg.end_ms, trim.toSource, view, cuts, trim.toTimeline)
+          : followChanges(tracked[i % tracked.length].path, seg.start_ms, seg.end_ms, trim.toSource, view, 'smooth', cuts)
         if (!changes?.length) return
         next[box.id] = buildKeyframes(changes.map((c, k) => (k === 0 ? { ...c, t_ms: seg.start_ms } : c)))
           .map(k => ({ id: crypto.randomUUID(), box_id: box.id, t_ms: k.t_ms, x: k.x, y: k.y, w: k.w, h: k.h }))
@@ -1681,14 +1692,16 @@ export function EditorShell({
   const restaleRef = useRef(false)
   useEffect(() => {
     if (restaleRef.current || subjectsBusy) return
-    if (subjectItems.some(s => s.status === 'done' && s.stale)) { restaleRef.current = true; trackSubjectsNow(true) }
+    const old = subjects.some(s => s.status === 'done' && (s.cuts === undefined || s.cuts === null) && s.path?.length && s.path[0].length < 6)
+    if (old || subjectItems.some(s => s.status === 'done' && s.stale)) { restaleRef.current = true; trackSubjectsNow(true) }
   }, [subjectItems, subjectsBusy]) // eslint-disable-line react-hooks/exhaustive-deps
   // The tracked people on the video, at a clip time (while the Subjects tool is open)
   const subjectsAt = useMemo(() => {
     const tracked = subjects.filter(s => s.status === 'done' && s.path?.length)
     if (tool !== 'subjects' || !showSubjects || !tracked.length) return undefined
+    const cuts = subjectCuts(tracked)
     return (ms: number) => tracked.flatMap(s => {
-      const box = subjectBoxAt(s.path!, trim.toSource(ms))
+      const box = subjectBoxAt(s.path!, trim.toSource(ms), cuts)
       return box ? [{ id: s.id, label: s.label, color: s.color, box }] : []
     })
   }, [subjects, tool, showSubjects, trim])
@@ -1885,6 +1898,14 @@ export function EditorShell({
     setOriginalMuted(false)
     setPickedSegIdState(null)
     setPickedMusicId(null)
+    // Everyone marked in Subjects goes too (they're saved on their own: Undo doesn't bring them back)
+    setMarking(false)
+    setSubjectNotice(null)
+    setSubjects([])
+    wasBusyRef.current = false
+    fetch(`${subjectsUrl}?all=1`, { method: 'DELETE' })
+      .then(r => { if (!r.ok) throw new Error() })
+      .catch(() => { setSubjectsError('The marked people could not be removed. Try again.'); loadSubjects() })
   }
   useEffect(() => {
     if (!confirmResetAll) return
@@ -3375,9 +3396,9 @@ export function EditorShell({
             {tool === 'subjects' && (
               <SubjectsPanel
                 subjects={subjectItems} loading={subjectsLoading} error={subjectsError}
-                marking={marking} onToggleMarking={() => { setSubjectNotice(null); setMarking(m => !m) }}
+                marking={marking} onToggleMarking={markFromView}
                 onRemove={removeSubject} onRename={renameSubject}
-                onShowMark={id => { const s = subjects.find(x => x.id === id); if (s) { pause(); seekToMs(Math.max(0, trim.toTimeline(s.mark_ms))) } }}
+                videoUrl={videoUrl}
                 showOnVideo={showSubjects} onShowOnVideo={setShowSubjects} notice={subjectNotice}
               />
             )}
@@ -4032,7 +4053,7 @@ export function EditorShell({
                 style={{ width: 280, zIndex: 71, background: 'var(--ed-panel)', border: '1px solid rgb(var(--ed-fg) / 0.12)', boxShadow: '0 12px 32px rgba(0,0,0,0.55)' }}>
                 <p id="reset-all-title" className="text-sm font-semibold text-[var(--ed-text)]">Reset all edits?</p>
                 <p id="reset-all-desc" className="text-xs leading-relaxed" style={{ color: 'rgb(var(--ed-fg) / 0.55)' }}>
-                  The clip goes back to how it was made: its original start and end, nothing cut out. Formats, frames, text, media, music, the video’s sound and the caption look go back to the start. Your captions stay. You can undo this.
+                  The clip goes back to how it was made: its original start and end, nothing cut out. Formats, frames, text, media, music, the video’s sound and the caption look go back to the start, and the people marked in Subjects are removed. Your captions stay. Undo brings back everything except the marked people.
                 </p>
                 <div className="flex justify-end gap-2">
                   <button onClick={() => setConfirmResetAll(false)} autoFocus
@@ -4057,7 +4078,7 @@ export function EditorShell({
       {/* Timeline (hidden with "Hide timeline") */}
       {/* (it doesn't scroll as a whole: the ruler and the main video stay, the tracks under them scroll) */}
       <div ref={timelineRef} data-tour="timeline" data-layout-panel="Editing panel" hidden={timelineHidden} className="shrink-0 flex flex-col overflow-hidden px-4 pt-3 pb-4"
-        style={{ ...(timelineH ? { height: timelineH } : { maxHeight: '32vh' }), background: 'var(--ed-track)', borderTop: '1px solid rgb(var(--ed-fg) / 0.06)', borderRadius: '0 0 11px 11px' }}>
+        style={{ height: timelineH ?? TIMELINE_DEFAULT_H, background: 'var(--ed-track)', borderTop: '1px solid rgb(var(--ed-fg) / 0.06)', borderRadius: '0 0 11px 11px' }}>
         <SegmentTimeline
           selectedMusicId={pickedMusicId} onSelectMusic={id => pickMusicTrack(id, doubleTap(`m${id}`))}
           photos={overlays.filter(o => o.type === 'image').map(o => ({ id: o.id, start_ms: o.start_ms, end_ms: o.end_ms, url: o.preview_url, hidden: o.hidden, locked: isLocked({ kind: 'photo', id: o.id }), track: o.track }))}

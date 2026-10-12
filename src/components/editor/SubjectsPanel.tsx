@@ -1,6 +1,7 @@
 'use client'
 
 import { useState } from 'react'
+import { useFaceAt } from '@/modules/clips/thumbs'
 
 // ── Subjects: mark the people, and the view follows them through the clip ─────
 // One button: Mark the subject. Clicking a person marks them; tracking starts by itself (everyone
@@ -18,6 +19,8 @@ export interface SubjectItem {
   seen: number | null
   /** Tracked before the clip's start or end moved: the new part isn't covered */
   stale: boolean
+  /** Their face for the picture on the card: a moment of the video (its own time, ms) and the face's box there */
+  face: { ms: number; box: { x: number; y: number; w: number; h: number } } | null
 }
 
 interface Props {
@@ -28,8 +31,8 @@ interface Props {
   onToggleMarking: () => void
   onRemove: (id: string) => void
   onRename: (id: string, label: string) => void
-  /** Jump to where the subject was marked */
-  onShowMark: (id: string) => void
+  /** The video the faces are cut from (for the pictures on the cards) */
+  videoUrl: string | null
   showOnVideo: boolean
   onShowOnVideo: (on: boolean) => void
   /** What the last framing did ("The view switches between A and B…") or why it couldn't */
@@ -62,7 +65,7 @@ export function SubjectsPanel(p: Props) {
         {p.marking ? 'Click a person on the video… (Esc to stop)' : 'Mark the subject'}
       </button>
       <p className="-mt-1.5 text-[11px]" style={{ color: 'rgb(var(--ed-fg) / 0.4)' }}>
-        Pause where their face can be seen, press Mark the subject, then click on them. Do it once for each person.
+        Put the 9:16 view on a person where their face can be seen, then press Mark the subject. Do it once for each person.
       </p>
 
       {p.error && <p role="alert" className="text-xs" style={{ color: '#f87171' }}>{p.error}</p>}
@@ -75,32 +78,27 @@ export function SubjectsPanel(p: Props) {
       ) : (
         <div className="flex flex-col gap-1.5">
           {p.subjects.map(s => (
-            <div key={s.id} className="group flex flex-col gap-1 rounded-lg px-2.5 py-2"
+            <div key={s.id} className="group flex items-center gap-3 rounded-xl px-3 py-3"
               style={{ background: 'rgb(var(--ed-fg) / 0.035)', boxShadow: `inset 3px 0 0 ${s.color}, inset 0 0 0 1px rgb(var(--ed-fg) / 0.06)` }}>
+              <Avatar subject={s} videoUrl={p.videoUrl} />
+              <div className="flex-1 min-w-0 flex flex-col gap-1">
               <div className="flex items-center gap-2 min-w-0">
-                <span className="shrink-0 w-5 h-5 flex items-center justify-center rounded-full text-[10px] font-bold" style={{ background: s.color, color: '#111' }}>
-                  {s.label.slice(0, 1).toUpperCase()}
-                </span>
                 {renaming === s.id ? (
                   <input autoFocus value={name} maxLength={24} onChange={e => setName(e.target.value)}
                     onBlur={() => { if (name.trim() && name.trim() !== s.label) p.onRename(s.id, name.trim()); setRenaming(null) }}
                     onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); if (e.key === 'Escape') setRenaming(null) }}
-                    className="flex-1 min-w-0 h-6 px-1.5 rounded text-[12.5px] outline-none text-[var(--ed-text)]"
+                    className="flex-1 min-w-0 h-7 px-1.5 rounded text-[14px] outline-none text-[var(--ed-text)]"
                     style={{ background: 'rgb(var(--ed-fg) / 0.08)' }} aria-label="Subject name" />
                 ) : (
                   <button type="button" onClick={() => { setRenaming(s.id); setName(s.label) }} title="Rename"
-                    className="flex-1 min-w-0 truncate text-left text-[12.5px] font-semibold text-[var(--ed-text)]">{s.label}</button>
+                    className="flex-1 min-w-0 truncate text-left text-[14px] font-semibold text-[var(--ed-text)]">{s.label}</button>
                 )}
-                <button type="button" onClick={() => p.onShowMark(s.id)} title="Go to where they were marked"
-                  className="shrink-0 h-6 px-1.5 rounded text-[10.5px] transition-colors hover:bg-[rgb(var(--ed-fg)/0.08)]" style={{ color: muted }}>
-                  Show
-                </button>
                 <button type="button" onClick={() => p.onRemove(s.id)} aria-label={`Remove ${s.label}`} title="Remove (the view keeps the framing it has now)"
                   className="shrink-0 w-6 h-6 flex items-center justify-center rounded transition-colors hover:bg-[rgba(239,68,68,0.12)] hover:text-[#f87171]" style={{ color: muted }}>
                   <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
                 </button>
               </div>
-              <span className="text-[11px]" style={{ color: s.status === 'failed' ? '#f87171' : muted }}>
+              <span className="text-[11.5px]" style={{ color: s.status === 'failed' ? '#f87171' : muted }}>
                 {(s.status === 'new' || s.status === 'queued') && 'Getting ready to follow them…'}
                 {s.status === 'running' && `Following them through the clip… ${Math.max(5, s.progress)}%`}
                 {s.status === 'failed' && (s.error ?? 'Could not follow them — remove them and mark them again')}
@@ -111,6 +109,7 @@ export function SubjectsPanel(p: Props) {
                   <span className="block h-full rounded-full transition-[width] duration-500" style={{ width: `${Math.max(5, s.progress)}%`, background: s.color }} />
                 </span>
               )}
+              </div>
             </div>
           ))}
         </div>
@@ -125,5 +124,19 @@ export function SubjectsPanel(p: Props) {
       )}
       {p.notice && <p role="status" className="text-[11.5px]" style={{ color: 'var(--ed-accent-text)' }}>{p.notice}</p>}
     </div>
+  )
+}
+
+/** The person's face (cut from the video where they were marked) in their colour's ring; their initial until it's ready */
+function Avatar({ subject: s, videoUrl }: { subject: SubjectItem; videoUrl: string | null }) {
+  const url = useFaceAt(videoUrl, s.face?.ms ?? null, s.face?.box ?? null)
+  return (
+    <span className="shrink-0 w-12 h-12 rounded-full overflow-hidden flex items-center justify-center text-[15px] font-bold"
+      style={{ background: s.color, color: '#111', boxShadow: `0 0 0 2px ${s.color}, 0 0 0 4px rgb(var(--ed-fg) / 0.06)` }}>
+      {url
+        // eslint-disable-next-line @next/next/no-img-element
+        ? <img src={url} alt={s.label} className="w-full h-full object-cover" />
+        : s.label.slice(0, 1).toUpperCase()}
+    </span>
   )
 }

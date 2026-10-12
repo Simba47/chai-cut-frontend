@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { requireUser } from '@/server/auth'
-import { listSubjects, addSubject, renameSubject, deleteSubject } from '@/server/services/subjects'
+import { listSubjects, addSubject, renameSubject, deleteSubject, deleteAllSubjects } from '@/server/services/subjects'
 import { apiError } from '@/lib/api-error'
 
 export const runtime = 'nodejs'
@@ -44,13 +44,14 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ cl
   }
 }
 
-// Remove: ?id=
+// Remove: ?id= (one), or ?all=1 (everyone marked in the clip)
 export async function DELETE(req: NextRequest, { params }: { params: Promise<{ clipId: string }> }) {
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   const { clipId } = await params
   try {
-    await deleteSubject(user.id, clipId, req.nextUrl.searchParams.get('id') ?? '')
+    if (req.nextUrl.searchParams.get('all') === '1') await deleteAllSubjects(user.id, clipId)
+    else await deleteSubject(user.id, clipId, req.nextUrl.searchParams.get('id') ?? '')
     return NextResponse.json({ ok: true })
   } catch (err) {
     return apiError(err)
