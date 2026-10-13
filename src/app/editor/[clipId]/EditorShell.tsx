@@ -44,6 +44,7 @@ import { useCaptionStore } from '@/modules/captions/store'
 import { useMediaStore } from '@/modules/media/store'
 import { rowsToLocal, normalizeCoverage, uncoveredRanges, defaultCropForSlot, msToLabel } from '@/modules/editor/utils'
 import { isShot, flattenShots, toSaved, restoreLayers } from '@/modules/editor/shots'
+import { applyGroupShots } from '@/modules/editor/groupShots'
 import { fitsOn, freeTrackIn, settleTracks, savedLanes, type TrackItem, type TrackRef } from '@/modules/editor/tracks'
 import { viewChanges } from '@/modules/editor/views'
 import { subjectBoxAt, seenShare, followChanges, autoDirectChanges, type SubjectPoint } from '@/modules/editor/subjects'
@@ -109,7 +110,7 @@ const TOOLS: { id: Tool; label: string; title: string; hint: string; icon: React
   },
   {
     id: 'subjects', label: 'Subjects', title: 'Subjects',
-    hint: 'Mark the people in the clip and track them, then frame any view on any of them — from the playhead or for a whole section.',
+    hint: 'Mark each person once: the view then switches between them through the whole clip, to whoever is talking. Mark a group shot to keep its format wherever it comes back.',
     icon: <><circle cx="9" cy="8" r="3.2" stroke="currentColor" strokeWidth="1.8" fill="none" /><path d="M3.5 19.5c.6-3 2.8-5 5.5-5s4.9 2 5.5 5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" fill="none" /><path d="M16 5.5a3 3 0 010 5.6M18 14.6c1.4.7 2.3 2.4 2.6 4.9" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" fill="none" /></>,
   },
   {
@@ -1524,9 +1525,17 @@ export function EditorShell({
   // People marked in the clip and tracked by the worker. Marking starts the tracking by itself;
   // when it's done every section's view switches between them through the clip, to whoever is
   // talking (one undo step, saved like any edit).
-  type SubjectRow = SubjectItem & { mark_ms: number; mark_x: number; mark_y: number; path: SubjectPoint[] | null; scan_start_ms: number | null; scan_end_ms: number | null; cuts?: number[] | null; speaking?: Array<[number, number]> | null }
+  type SubjectRow = SubjectItem & {
+    mark_ms: number; mark_x: number; mark_y: number; path: SubjectPoint[] | null; scan_start_ms: number | null; scan_end_ms: number | null
+    cuts?: number[] | null; speaking?: Array<[number, number]> | null
+    /** A group subject (a marked camera shot): its format and views, and wherever the clip shows that shot (source ms) */
+    shot?: { layout: LayoutType; boxes: Array<{ slot_index: number; x: number; y: number; w: number; h: number }> } | null
+    spans?: Array<[number, number]> | null
+  }
   /** Their face for the card's picture: the tracked face nearest where they were marked (within 1.5 s), else around the mark */
   const subjectFace = (s: SubjectRow): SubjectItem['face'] => {
+    // A group not looked for yet: its first view's picture
+    if (s.shot && !s.path?.length && s.shot.boxes[0]) { const b = s.shot.boxes[0]; return { ms: s.mark_ms, box: { x: b.x, y: b.y, w: b.w, h: b.h } } }
     const near = (s.path ?? []).reduce<SubjectPoint | null>((best, p) => (!best || Math.abs(p[0] - s.mark_ms) < Math.abs(best[0] - s.mark_ms) ? p : best), null)
     if (near && Math.abs(near[0] - s.mark_ms) <= 1500) return { ms: near[0], box: { x: near[1], y: near[2], w: near[3], h: near[4] } }
     return { ms: s.mark_ms, box: { x: Math.max(0, s.mark_x - 0.06), y: Math.max(0, s.mark_y - 0.12), w: 0.12, h: 0.2 } }
@@ -1591,9 +1600,8 @@ export function EditorShell({
       const { subject } = await subjectsCall(subjectsUrl, { method: 'POST', body: JSON.stringify({ mark_ms, x, y }) })
       setSubjects(list => [...list, { ...subject, seen: null, stale: false }])
       setSubjectsError(null)
-      // Everyone marked is tracked again together (who is who, and who is talking, is worked out
-      // between all of them)
-      await trackSubjectsNow(true)
+      // Not looked for yet: everyone and every group is marked first, then Mark in the whole clip
+      // (markInWholeClip) finds them all together
     } catch (e) { setSubjectsError(e instanceof Error ? e.message : 'Could not mark them') }
   }
   /**
@@ -1614,6 +1622,44 @@ export function EditorShell({
     const v = getPositionAt(box.id, Math.round(liveTime.get()))
     if (v.w > 0.9 && v.h > 0.9) { setMarking(true); return }
     markSubject(v.x + v.w / 2, v.y + v.h / 2)
+  }
+  /**
+   * Mark the shot (a group subject): the format on screen and where its views are become this camera
+   * shot's own — wherever the clip shows the same shot again (the same people in the same places),
+   * it gets this format and these views, over following whoever is talking.
+   */
+  async function markShot() {
+    setSubjectNotice(null)
+    setMarking(false)
+    const seg = activeSegment
+    if (!seg) { setSubjectsError('Pick a format here first (Vertical, Split, Trio…) and place its views, then mark the shot.'); return }
+    if (isFrameLayout(seg.layout)) { setSubjectsError('A frame can’t be a group’s format yet — use Vertical, Split, Trio or another format.'); return }
+    if (seg.crop_boxes.some(b => b.image_path || (b.source_video_id && b.source_video_id !== mainVideoId))) {
+      setSubjectsError('Every view has to show this clip’s video to mark the shot.'); return
+    }
+    pause()
+    const t = Math.round(liveTime.get())
+    const boxes = [...seg.crop_boxes].sort((a, b) => a.slot_index - b.slot_index).map(b => {
+      const v = getPositionAt(b.id, t)
+      return { slot_index: b.slot_index, x: v.x, y: v.y, w: v.w, h: v.h }
+    })
+    try {
+      const { subject } = await subjectsCall(subjectsUrl, {
+        method: 'POST',
+        body: JSON.stringify({ mark_ms: Math.round(trim.toSource(Math.max(0, t))), x: 0.5, y: 0.5, shot: { layout: seg.layout, boxes } }),
+      })
+      setSubjects(list => [...list, { ...subject, seen: null, stale: false }])
+      setSubjectsError(null)
+    } catch (e) { setSubjectsError(e instanceof Error ? e.message : 'Could not mark the shot') }
+  }
+  /**
+   * Mark in the whole clip: once everyone and every group is marked, they are all looked for through
+   * the whole clip together (who is who, and who is talking, is worked out between all of them);
+   * when that's done the clip is laid out once — the groups' formats, and the view on whoever is talking.
+   */
+  async function markInWholeClip() {
+    setMarking(false)
+    await trackSubjectsNow(true)
   }
   async function trackSubjectsNow(all: boolean) {
     setSubjectNotice(null)
@@ -1636,26 +1682,47 @@ export function EditorShell({
   // How much of the clip each is seen in, and whether the clip has grown past what was tracked
   const subjectItems = useMemo<SubjectItem[]>(() => subjects.map(s => ({
     ...s,
+    // A group read by a worker from before group subjects (it followed one face instead of finding
+    // the shot): it needs looking for again — Mark in the whole clip offers it
+    ...(s.shot && s.status === 'done' && !s.spans
+      ? { status: 'failed' as const, error: 'Not looked for as a group yet — press Mark in the whole clip again.' }
+      : {}),
     seen: s.status === 'done' && s.path ? seenShare(s.path, 0, clipLengthMs, trim.toSource) : null,
     stale: s.status === 'done' && s.scan_start_ms !== null && s.scan_end_ms !== null
       && (rawClip.start_ms < s.scan_start_ms - 500 || rawClip.end_ms > s.scan_end_ms + 500),
     face: subjectFace(s),
+    group: s.shot ? { layout: s.shot.layout, places: s.spans?.length ?? 0 } : null,
   })), [subjects, clipLengthMs, trim, rawClip.start_ms, rawClip.end_ms])
   /**
-   * Frame the whole clip on the tracked people: in every section, a view showing the main video
-   * switches between them — to whoever is talking (autoDirectChanges); a section with two or three
-   * such views (split, trio, a frame) puts one person in each. Views keep their size. Locked
-   * sections, photos and other videos are left alone. One undo step.
+   * Frame the whole clip on the tracked subjects. Group subjects first: wherever the clip shows a
+   * marked shot, it gets that group's format and views (applyGroupShots) — the user's own choice wins.
+   * Everywhere else, in every section, a view showing the main video switches between the people —
+   * to whoever is talking (autoDirectChanges); a section with two or three such views (split, trio,
+   * a frame) puts one person in each. Views keep their size. Locked sections, photos and other
+   * videos are left alone. One undo step.
    */
   function frameClipOnSubjects(list: SubjectRow[]) {
-    const tracked = list.filter(s => s.status === 'done' && s.path?.length) as Array<SubjectRow & { path: SubjectPoint[] }>
-    if (!tracked.length) return
+    const groups = list.filter(s => s.status === 'done' && s.shot && s.spans?.length)
+    const tracked = list.filter(s => s.status === 'done' && !s.shot && s.path?.length) as Array<SubjectRow & { path: SubjectPoint[] }>
+    if (!tracked.length && !groups.length) return
+    const held = groups.length ? applyGroupShots(groups.map(g => ({
+      layout: g.shot!.layout, boxes: g.shot!.boxes,
+      spans: g.spans!.map(([a, b]) => [trim.toTimeline(a), trim.toTimeline(b)] as [number, number]),
+    })), clipLengthMs, getVideoAR(), mainVideoId) : []
+    const inGroup = (seg: { start_ms: number; end_ms: number }) => held.some(([a, b]) => seg.start_ms >= a - 150 && seg.end_ms <= b + 150)
+    const groupNote = held.length
+      ? `${groups.map(g => g.label).join(', ')}: ${held.length === 1 ? 'its shot has' : `its shot comes up ${held.length} times — each has`} the format you marked. `
+      : ''
+    if (!tracked.length) {
+      setSubjectNotice(held.length ? `${groupNote}Undo takes it back.` : 'The marked shot isn’t seen anywhere else in this clip.')
+      return
+    }
     const cuts = subjectCuts(tracked)
     const { segments: segs, keyframes: kfs } = useEditorStore.getState()
     const next = { ...kfs }
     let framed = 0
     for (const seg of segs.filter(x => !isShot(x, mainVideoId) && x.end_ms - x.start_ms > 250).sort((a, b) => a.start_ms - b.start_ms)) {
-      if (seg.locked || seg.layout === 'horizontal') continue
+      if (seg.locked || seg.layout === 'horizontal' || inGroup(seg)) continue
       const frame = isFrameLayout(seg.layout)
       const mainSlots = frame ? frameOf(seg).main_slots ?? [0] : null
       // The views that show the main video (in a frame: its main slots, not one shown whole)
@@ -1674,17 +1741,20 @@ export function EditorShell({
         framed++
       })
     }
-    if (!framed) { setSubjectNotice('They aren’t seen in the parts of the clip that can be framed on them.'); return }
+    if (!framed) {
+      setSubjectNotice(held.length ? `${groupNote}Undo takes it back.` : 'They aren’t seen in the parts of the clip that can be framed on them.')
+      return
+    }
     useEditorStore.setState({ keyframes: next })
     const names = tracked.map(s => s.label)
-    setSubjectNotice(names.length > 1
-      ? `The view now switches between ${names.slice(0, -1).join(', ')} and ${names[names.length - 1]} through the clip — to whoever is talking. Undo takes it back.`
-      : `The view now follows ${names[0]} through the clip. Undo takes it back.`)
+    setSubjectNotice(groupNote + (names.length > 1
+      ? `${groupNote ? 'Elsewhere the' : 'The'} view switches between ${names.slice(0, -1).join(', ')} and ${names[names.length - 1]} through the clip — to whoever is talking. Undo takes it back.`
+      : `${groupNote ? 'Elsewhere the' : 'The'} view follows ${names[0]} through the clip. Undo takes it back.`))
   }
   // When tracking finishes, the clip is framed on them
   const wasBusyRef = useRef(false)
   useEffect(() => {
-    const busy = subjects.some(s => s.status === 'new' || s.status === 'queued' || s.status === 'running')
+    const busy = subjects.some(s => s.status === 'queued' || s.status === 'running')
     if (wasBusyRef.current && !busy) frameClipOnSubjects(subjects)
     wasBusyRef.current = busy
   }, [subjects]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -3405,7 +3475,7 @@ export function EditorShell({
             {tool === 'subjects' && (
               <SubjectsPanel
                 subjects={subjectItems} loading={subjectsLoading} error={subjectsError}
-                marking={marking} onToggleMarking={markFromView}
+                marking={marking} onToggleMarking={markFromView} onMarkShot={markShot} onMarkInClip={markInWholeClip}
                 onRemove={removeSubject} onRename={renameSubject}
                 videoUrl={videoUrl}
                 showOnVideo={showSubjects} onShowOnVideo={setShowSubjects} notice={subjectNotice}

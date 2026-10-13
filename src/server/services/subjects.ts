@@ -24,6 +24,39 @@ export interface Subject {
   cuts?: number[] | null
   /** When they are talking ([start, end] source ms, to the word); null before the worker saved them */
   speaking?: Array<[number, number]> | null
+  /** A group subject: a camera shot marked with its format and views (null for a person) */
+  shot?: ShotArrangement | null
+  /** A group subject: wherever the clip shows that shot ([start, end] source ms), once found */
+  spans?: Array<[number, number]> | null
+}
+
+/**
+ * A group subject's format: the layout, and each view where the user put it (fractions of the
+ * source picture). Wherever the clip shows the marked shot again, the editor puts exactly this there.
+ */
+export interface ShotArrangement {
+  layout: string
+  boxes: Array<{ slot_index: number; x: number; y: number; w: number; h: number }>
+}
+/** The formats a group subject can be marked in (frames keep their own lanes, so not those) */
+const SHOT_LAYOUTS: Record<string, number> = { vertical: 1, split: 2, trio: 3, spotlight: 1, centered: 1, horizontal: 1 }
+export const MAX_SHOTS = 6
+
+/** A group subject's format from the editor, checked (a 400 when it isn't one) */
+function cleanShot(v: unknown): ShotArrangement {
+  const bad = () => Object.assign(new Error('This format can’t be marked as a group subject'), { status: 400 })
+  const o = v as { layout?: unknown; boxes?: unknown } | null
+  if (!o || typeof o.layout !== 'string' || !(o.layout in SHOT_LAYOUTS) || !Array.isArray(o.boxes)) throw bad()
+  const n = SHOT_LAYOUTS[o.layout]
+  const boxes = (o.boxes as Array<Record<string, unknown>>).map(b => {
+    const slot_index = Number(b?.slot_index), x = Number(b?.x), y = Number(b?.y), w = Number(b?.w), h = Number(b?.h)
+    if (!Number.isInteger(slot_index) || slot_index < 0 || slot_index >= n) throw bad()
+    if (![x, y, w, h].every(Number.isFinite) || w <= 0 || h <= 0 || x < -0.001 || y < -0.001 || x + w > 1.001 || y + h > 1.001) throw bad()
+    const r = (q: number) => Math.round(q * 10000) / 10000
+    return { slot_index, x: r(x), y: r(y), w: r(w), h: r(h) }
+  })
+  if (boxes.length !== n || new Set(boxes.map(b => b.slot_index)).size !== n) throw bad()
+  return { layout: o.layout, boxes: boxes.sort((a, b) => a.slot_index - b.slot_index) }
 }
 
 export const MAX_SUBJECTS = 6
@@ -49,10 +82,13 @@ async function ownClip(userId: string, clipId: string) {
 const BASE_COLUMNS = sql`id, label, color, mark_ms, mark_x, mark_y, status, error, progress, path, scan_start_ms, scan_end_ms`
 const WITH_CUTS = sql`id, label, color, mark_ms, mark_x, mark_y, status, error, progress, path, scan_start_ms, scan_end_ms, cuts`
 const WITH_ALL = sql`id, label, color, mark_ms, mark_x, mark_y, status, error, progress, path, scan_start_ms, scan_end_ms, cuts, speaking`
+const WITH_SHOTS = sql`id, label, color, mark_ms, mark_x, mark_y, status, error, progress, path, scan_start_ms, scan_end_ms, cuts, speaking, shot, spans`
+type Extras = 'shots' | 'all' | 'cuts' | 'none'
 /** Which of the newer columns the table has (the worker adds them when it starts). A plain answer,
  *  not a fragment: a query fragment must never be awaited (awaiting one runs it) */
-const pick = (x: 'all' | 'cuts' | 'none') => (x === 'all' ? WITH_ALL : x === 'cuts' ? WITH_CUTS : BASE_COLUMNS)
-async function extras(): Promise<'all' | 'cuts' | 'none'> {
+const pick = (x: Extras) => (x === 'shots' ? WITH_SHOTS : x === 'all' ? WITH_ALL : x === 'cuts' ? WITH_CUTS : BASE_COLUMNS)
+async function extras(): Promise<Extras> {
+  if (await hasColumn('clip_subjects', 'spans')) return 'shots'
   if (await hasColumn('clip_subjects', 'speaking')) return 'all'
   return (await hasColumn('clip_subjects', 'cuts')) ? 'cuts' : 'none'
 }
@@ -64,25 +100,46 @@ export async function listSubjects(userId: string, clipId: string): Promise<Subj
   } catch (e) { return notReady(e) }
 }
 
-/** Mark a person: at `mark_ms` of the source video, where they were clicked (fractions of the frame) */
-export async function addSubject(userId: string, clipId: string, body: { mark_ms?: unknown; x?: unknown; y?: unknown }): Promise<Subject> {
+/**
+ * Mark a person: at `mark_ms` of the source video, where they were clicked (fractions of the frame).
+ * With `shot` (the format and views on screen), a group subject instead: the camera shot at that
+ * moment, which gets that format wherever the clip shows it.
+ */
+export async function addSubject(userId: string, clipId: string, body: { mark_ms?: unknown; x?: unknown; y?: unknown; shot?: unknown }): Promise<Subject> {
   await ownClip(userId, clipId)
   const t = Number(body.mark_ms), x = Number(body.x), y = Number(body.y)
   if (![t, x, y].every(Number.isFinite) || t < 0 || x < 0 || x > 1 || y < 0 || y > 1) {
     throw Object.assign(new Error('Click on the person in the video to mark them'), { status: 400 })
   }
+  const shot = body.shot != null ? cleanShot(body.shot) : null
   try {
-    const existing = await sql<{ label: string; color: string }[]>`SELECT label, color FROM clip_subjects WHERE clip_id = ${clipId}`
-    if (existing.length >= MAX_SUBJECTS) throw Object.assign(new Error(`Up to ${MAX_SUBJECTS} subjects per clip`), { status: 400 })
-    // The first free letter and colour
+    const cols = await extras()
+    if (shot && cols !== 'shots') {
+      throw Object.assign(new Error('Group subjects need the latest worker. They start working once the backend is updated.'), { status: 503 })
+    }
+    const existing = cols === 'shots'
+      ? await sql<{ label: string; color: string; group: boolean }[]>`SELECT label, color, shot IS NOT NULL AS "group" FROM clip_subjects WHERE clip_id = ${clipId}`
+      : (await sql<{ label: string; color: string }[]>`SELECT label, color FROM clip_subjects WHERE clip_id = ${clipId}`).map(r => ({ ...r, group: false }))
+    const same = existing.filter(s => s.group === !!shot)
+    if (shot && same.length >= MAX_SHOTS) throw Object.assign(new Error(`Up to ${MAX_SHOTS} group subjects per clip`), { status: 400 })
+    if (!shot && same.length >= MAX_SUBJECTS) throw Object.assign(new Error(`Up to ${MAX_SUBJECTS} subjects per clip`), { status: 400 })
+    // The first free name (a letter for a person, "Group 1" for a shot) and colour
     const labels = new Set(existing.map(s => s.label)), colors = new Set(existing.map(s => s.color))
-    const label = [...'ABCDEFGHIJKLMNOPQRSTUVWXYZ'].find(l => !labels.has(l)) ?? `S${existing.length + 1}`
+    const label = shot
+      ? `Group ${Array.from({ length: MAX_SHOTS + 1 }, (_, i) => i + 1).find(i => !labels.has(`Group ${i}`))}`
+      : [...'ABCDEFGHIJKLMNOPQRSTUVWXYZ'].find(l => !labels.has(l)) ?? `S${existing.length + 1}`
     const color = COLORS.find(c => !colors.has(c)) ?? COLORS[existing.length % COLORS.length]
-    const [row] = await sql<Subject[]>`
-      INSERT INTO clip_subjects (clip_id, label, color, mark_ms, mark_x, mark_y)
-      VALUES (${clipId}, ${label}, ${color}, ${Math.round(t)}, ${x}, ${y})
-      RETURNING ${pick(await extras())}
-    `
+    const [row] = shot
+      ? await sql<Subject[]>`
+          INSERT INTO clip_subjects (clip_id, label, color, mark_ms, mark_x, mark_y, shot)
+          VALUES (${clipId}, ${label}, ${color}, ${Math.round(t)}, ${x}, ${y}, ${sql.json(shot as never)})
+          RETURNING ${pick(cols)}
+        `
+      : await sql<Subject[]>`
+          INSERT INTO clip_subjects (clip_id, label, color, mark_ms, mark_x, mark_y)
+          VALUES (${clipId}, ${label}, ${color}, ${Math.round(t)}, ${x}, ${y})
+          RETURNING ${pick(cols)}
+        `
     return row
   } catch (e) { return notReady(e) }
 }
