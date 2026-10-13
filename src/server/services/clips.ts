@@ -504,8 +504,8 @@ export async function regenerateClipText(userId: string, clipId: string) {
   `
   if (!clip) throw Object.assign(new Error('Clip not found'), { status: 404 })
   if (clip.user_id !== userId) throw Object.assign(new Error('Forbidden'), { status: 403 })
-  const apiKey = process.env.GEMINI_API_KEY
-  if (!apiKey) throw Object.assign(new Error('AI text is not configured'), { status: 500 })
+  const { aiProvider, askGemini } = await import('@/lib/gemini')
+  if (!aiProvider()) throw Object.assign(new Error('AI text is not configured'), { status: 500 })
 
   const [transcript] = await sql`SELECT id FROM transcripts WHERE video_id = ${clip.video_id} ORDER BY created_at DESC LIMIT 1`
   const words = transcript
@@ -519,7 +519,7 @@ export async function regenerateClipText(userId: string, clipId: string) {
   const { generateClipText } = await import('@/lib/clipText')
   let text
   try {
-    text = await generateClipText(words, clip.video_title ?? null, apiKey)
+    text = await generateClipText(words, clip.video_title ?? null, prompt => askGemini(prompt))
   } catch (e) {
     console.error('[ai-text] Gemini error:', e)
     throw Object.assign(new Error('AI could not write the text right now. Try again in a moment.'), { status: 502 })

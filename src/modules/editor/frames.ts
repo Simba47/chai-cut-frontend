@@ -125,11 +125,11 @@ export const FRAME_TEMPLATES: Record<FrameLayout, FrameTemplate> = {
     offers: [{ video: true, photo: true }, { video: true, photo: true }],
   },
   frame_screenshot: {
-    name: 'Screenshot + speaker', description: 'A tweet, headline or article on top (shown whole), the speaker below.',
+    name: 'Pic + Vid', description: 'A picture on top (shown whole: a photo, tweet, headline or article), the video below.',
     corners: 0,
     rows: [
-      { kind: 'slot', slot: 0, h: 0.42, fit: 'contain', fill: '#111111', label: 'Screenshot' },
-      { kind: 'slot', slot: 1, h: 0.58, label: 'Speaker' },
+      { kind: 'slot', slot: 0, h: 0.42, fit: 'contain', fill: '#111111', label: 'Pic' },
+      { kind: 'slot', slot: 1, h: 0.58, label: 'Video' },
     ],
     defaults: ['photo', 'video'], mainSlots: [1],
     offers: [{ video: true, photo: true }, { video: true, photo: false }],
@@ -245,16 +245,16 @@ export const FRAME_TEMPLATES: Record<FrameLayout, FrameTemplate> = {
 }
 
 /**
- * The frames the gallery offers, the most used first (user 2026-10-12). The others (Letterbox wide,
- * Dual + Letterbox, Video + Photo, News, Audiogram, Photo Story, 2×2 grid, Triple) stay defined
- * above so clips that already use them still show, edit and export as before; they just aren't
- * offered for new frames. Branded card is kept for the brand kit planned later (a saved colour,
- * title and @handle for every clip), not offered as a frame.
+ * The frames the gallery offers, the most used first (user 2026-10-12; cut down to these eight
+ * 2026-10-13). The others (Gameplay split, Close-up + wide, Picture in picture, Comment reply,
+ * Big + Small, Top list, Letterbox wide, Dual + Letterbox, Video + Photo, News, Audiogram, Photo
+ * Story, 2×2 grid, Triple) stay defined above so clips that already use them still show, edit and
+ * export as before; they just aren't offered for new frames. Branded card is kept for the brand kit
+ * planned later (a saved colour, title and @handle for every clip), not offered as a frame.
  */
 export const FRAME_LAYOUTS: FrameLayout[] = [
-  'frame_single', 'frame_title_caption', 'frame_blur_fill', 'frame_dual', 'frame_gameplay', 'frame_two_crops',
-  'frame_pip', 'frame_screenshot', 'frame_comment', 'frame_name_tags', 'frame_big_small', 'frame_side_by_side',
-  'frame_top_list', 'frame_screen_face',
+  'frame_single', 'frame_title_caption', 'frame_blur_fill', 'frame_dual', 'frame_screenshot', 'frame_name_tags',
+  'frame_side_by_side', 'frame_screen_face',
 ]
 
 export function isFrameLayout(layout: LayoutType | string | null | undefined): layout is FrameLayout {

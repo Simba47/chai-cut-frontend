@@ -18,7 +18,8 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ cli
   }
 }
 
-// Mark a person: { mark_ms (source video), x, y (fractions of the frame) }
+// Mark a person: { mark_ms (source video), x, y (fractions of the frame) }; with shot: { layout,
+// boxes } a group subject (the camera shot at mark_ms, given that format wherever it comes back)
 export async function POST(req: NextRequest, { params }: { params: Promise<{ clipId: string }> }) {
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })

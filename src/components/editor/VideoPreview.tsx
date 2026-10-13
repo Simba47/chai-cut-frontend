@@ -2044,11 +2044,12 @@ function OverlayBox({ overlay, isActive, onChange, onSelect, onDelete }: Overlay
       }}
       onMouseDown={startDrag}
     >
-      {/* Image content: the whole picture in its own shape (the export fits it the same way) */}
+      {/* Image content: the whole picture stretched to fill its box, whatever its width and height
+          (the export stretches it the same way: render.py image overlays) */}
       <div style={{ position: 'absolute', inset: 0, overflow: 'hidden', pointerEvents: 'none' }}>
       {imageUrl
         // eslint-disable-next-line @next/next/no-img-element
-        ? <img src={imageUrl} alt="" draggable={false} style={{ width: '100%', height: '100%', objectFit: 'contain', pointerEvents: 'none', display: 'block' }} />
+        ? <img src={imageUrl} alt="" draggable={false} style={{ width: '100%', height: '100%', objectFit: 'fill', pointerEvents: 'none', display: 'block' }} />
         : <div style={{ width: '100%', height: '100%', background: `${color}22`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             <span style={{ fontSize: 10, fontWeight: 700, color }}>IMG</span>
           </div>

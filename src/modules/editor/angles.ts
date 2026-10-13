@@ -1,0 +1,109 @@
+import { subjectBoxAt, type SubjectPoint } from './subjects'
+
+// ── Camera angles (SubjectsPanel) ─────────────────────────────────────────────
+// The worker lists the clip's camera angles (a shot, and everywhere it comes back — server
+// services/subjects.ts getAngles). Here each becomes a row of the Subjects tool: where the clip, as
+// it is now, shows it; who of the marked people is in it; and whether a group is marked on it. An
+// angle with neither is "not set": the view there follows whoever is talking, as everywhere.
+
+export interface Angle {
+  /** How many people it shows; 0: the other shots (no faces, or too short to be an angle) */
+  people: number
+  /** A moment that shows it (source ms), and the faces there, left to right (fractions of the frame) */
+  at: number
+  faces: Array<{ x: number; y: number; w: number; h: number }>
+  /** Wherever the clip shows it: [start, end] source ms */
+  spans: Array<[number, number]>
+}
+
+/** What a row needs to know of a marked subject */
+export interface AngleSubject {
+  id: string; label: string; color: string
+  mark_ms: number; mark_x: number; mark_y: number
+  status: string
+  path: SubjectPoint[] | null
+  /** A group subject (a marked shot) */
+  shot?: { layout: string } | null
+}
+
+export interface AngleRow {
+  people: number
+  at: number
+  faces: Array<{ box: { x: number; y: number; w: number; h: number }; subject: { label: string; color: string } | null }>
+  /** Where the clip shows it now: [start, end] ms of the timeline (removed parts left out) */
+  shown: Array<[number, number]>
+  totalMs: number
+  /** The group marked on this angle */
+  group: { label: string; layout: string; color: string } | null
+  /** Someone in it is marked, or it has a group */
+  set: boolean
+  /** Where the playhead goes to show it (timeline ms) */
+  jumpMs: number
+}
+
+/** Marked from the view, the mark is the view's middle: the face at most this far across from it is theirs (as the tracker's VIEW_MARK_REACH) */
+const MARK_REACH = 0.25
+/** A stretch shorter than this isn't shown as one */
+const MIN_SHOWN_MS = 200
+
+/**
+ * The angles as rows, for the clip as it is now. `cuts`: the camera cuts the tracker found (source
+ * ms); `toTimeline`: source ms → timeline ms; `lengthMs`: the clip's length on the timeline.
+ * Angles the clip no longer shows (their parts were removed) are left out.
+ */
+export function angleRows(
+  angles: readonly Angle[], subjects: readonly AngleSubject[], cuts: readonly number[],
+  toTimeline: (sourceMs: number) => number, lengthMs: number,
+): AngleRow[] {
+  return angles.flatMap((a): AngleRow[] => {
+    const shown = a.spans
+      .map(([s, e]): [number, number] => [Math.max(0, Math.round(toTimeline(s))), Math.min(lengthMs, Math.round(toTimeline(e)))])
+      .filter(([s, e]) => e - s >= MIN_SHOWN_MS)
+    if (!shown.length) return []
+    const inAngle = (sourceMs: number) => a.spans.some(([s, e]) => sourceMs >= s && sourceMs < e)
+
+    // Each marked person's place in this angle's picture: where the tracker saw them at that moment,
+    // else (not looked for yet) where they were marked, if that was in this angle
+    const taken = new Map<number, AngleSubject>()
+    for (const s of subjects) {
+      if (s.shot) continue
+      const seen = s.status === 'done' && s.path?.length ? subjectBoxAt(s.path, a.at, cuts as number[]) : null
+      const tracked = s.status === 'done' && !!s.path?.length
+      if (tracked && !seen) continue
+      if (!tracked && !inAngle(s.mark_ms)) continue
+      const px = seen ? seen.x + seen.w / 2 : s.mark_x, py = seen ? seen.y + seen.h / 2 : s.mark_y
+      let best = -1, bestD = Infinity
+      a.faces.forEach((f, k) => {
+        if (taken.has(k)) return
+        const dx = Math.abs(px - (f.x + f.w / 2)), dy = Math.abs(py - (f.y + f.h / 2))
+        // Seen by the tracker: on that face. Only marked: the face nearest across
+        if (seen ? dx > f.w || dy > f.h : dx > MARK_REACH) return
+        const d = seen ? dx + dy : dx
+        if (d < bestD) { bestD = d; best = k }
+      })
+      if (best >= 0) taken.set(best, s)
+    }
+    const g = subjects.find(s => s.shot && inAngle(s.mark_ms))
+    const faces = a.faces.map((box, k) => {
+      const s = taken.get(k)
+      return { box, subject: s ? { label: s.label, color: s.color } : null }
+    })
+
+    // The playhead goes to the angle's own moment where the clip still has it, else into its first stretch
+    const atT = Math.round(toTimeline(a.at))
+    const first = shown[0]
+    const jumpMs = shown.some(([s, e]) => atT >= s && atT < e - 50) ? atT : Math.round(first[0] + Math.min(600, (first[1] - first[0]) / 2))
+    return [{
+      people: a.people, at: a.at, faces, shown, jumpMs,
+      totalMs: shown.reduce((n, [s, e]) => n + e - s, 0),
+      group: g ? { label: g.label, layout: g.shot!.layout, color: g.color } : null,
+      set: !!g || faces.some(f => f.subject),
+    }]
+  })
+}
+
+/** The row showing at `t` (timeline ms), or null */
+export function angleAt(rows: readonly AngleRow[], t: number): number | null {
+  const i = rows.findIndex(r => r.shown.some(([s, e]) => t >= s && t < e))
+  return i >= 0 ? i : null
+}

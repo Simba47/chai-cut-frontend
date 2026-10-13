@@ -4,6 +4,7 @@ import PostgresAdapter from '@auth/pg-adapter'
 import { Pool } from 'pg'
 import { authConfig } from './auth.config'
 import { verifyPassword } from './modules/auth/password'
+import { startSession, isCurrentSession } from './modules/auth/one-device'
 import sql from './lib/db'
 
 const g = global as typeof globalThis & { _pgPool?: Pool }
@@ -51,8 +52,15 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
     }),
   ],
   callbacks: {
-    jwt({ token, user, trigger, session }) {
-      if (user) token.id = user.id
+    async jwt({ token, user, trigger, session }) {
+      if (user) {
+        token.id = user.id
+        // One device per account: this sign-in becomes the only one, any other device is signed out
+        token.sid = await startSession(user.id as string)
+        delete token.replaced
+      } else if (token.id && !token.replaced && !(await isCurrentSession(token.id as string, token.sid as string | undefined))) {
+        token.replaced = true
+      }
       // Account settings changed the name: the page calls update({ name }) so the session shows it
       if (trigger === 'update' && session && typeof session === 'object' && 'name' in session) {
         token.name = (session as { name?: string | null }).name ?? null
@@ -65,6 +73,8 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
       return token
     },
     session({ session, token }) {
+      // A replaced sign-in gets no user id: nothing treats it as signed in (server/auth.ts, providers.tsx)
+      if (token.replaced) { session.replaced = true; return session }
       if (session.user && token.id) session.user.id = token.id as string
       return session
     },
