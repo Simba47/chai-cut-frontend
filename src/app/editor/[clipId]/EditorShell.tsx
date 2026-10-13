@@ -1891,7 +1891,7 @@ export function EditorShell({
     })
     // Explicit defaults (not blanks): the save only writes caption fields that have a value
     useCaptionStore.setState(st => ({
-      captionStyle: { ...st.captionStyle, font: null, size: null, color: '#FFE700', position: null, position_y: null, animation: 'karaoke' },
+      captionStyle: { ...st.captionStyle, font: null, size: null, color: '#FFE700', position: null, position_y: null, animation: 'karaoke', template: null },
     }))
     // The video's own sound: full volume, not muted; and nothing stays selected
     setOriginalVolume(1)

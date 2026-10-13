@@ -1,5 +1,6 @@
 'use client'
 
+import { TEMPLATE_FONTS, templateFontFamily, templateOf, isLatinText } from '@/modules/captions/templates'
 import { useRef, useEffect, useCallback, useState, useMemo, useId, createContext, useContext } from 'react'
 import { emojiFamily, captionEmojiFamily } from '@/modules/editor/emojiFont'
 import type { RefObject } from 'react'
@@ -900,8 +901,10 @@ function exportFont(id?: string | null) {
 
 /** Words per caption line for a style (render.py _preset_events uses the same rule) */
 export function captionWordsPerLine(style: Partial<CaptionStyle>) {
-  if (style.animation === 'word') return 1
+  const tpl = templateOf(style)
+  if (!tpl && style.animation === 'word') return 1
   if (style.words_per_line) return Math.max(1, Math.min(8, style.words_per_line))
+  if (tpl) return tpl.perLine
   return style.animation === 'highlight' || style.animation === 'hormozi' ? 3 : CAPTION_MAX_WORDS
 }
 
@@ -913,6 +916,26 @@ function textOn(hex: string) {
   return 0.299 * r + 0.587 * g + 0.114 * b > 150 ? '#000000' : '#FFFFFF'
 }
 
+/** How a caption font is drawn on the canvas: its family, the size factor, and its weight / slant */
+type DrawFont = { family: string; em: number; weight: number; italic: boolean }
+/**
+ * A caption style's font (modules/captions/templates.ts), loaded from the same file the export
+ * uses. Registered at the weight and slant the file already is, so the browser draws it as it is
+ * (libass does the same: render.py _TEMPLATE_FONTS).
+ */
+function templateFont(key: string): DrawFont | null {
+  const f = TEMPLATE_FONTS[key]
+  if (!f) return null
+  const family = templateFontFamily(key)
+  if (!loadedExportFonts.has(family) && typeof FontFace !== 'undefined') {
+    loadedExportFonts.add(family)
+    new FontFace(family, `url(/caption-fonts/${f.file})`, { weight: String(f.weight), style: f.italic ? 'italic' : 'normal' }).load()
+      .then(face => document.fonts.add(face))
+      .catch(() => loadedExportFonts.delete(family))
+  }
+  return { family, em: f.em, weight: f.weight, italic: !!f.italic }
+}
+
 function drawPresetCaptions(
   ctx: CanvasRenderingContext2D,
   chunk: FlatWord[],
@@ -922,17 +945,28 @@ function drawPresetCaptions(
 ) {
   const W = ctx.canvas.width, H = ctx.canvas.height
   const k = W / 1080                                   // export is laid out at 1080 wide
-  const anim = style.animation!
+  // A caption style (template) is drawn as its base preset, with its own settings (render.py _TEMPLATES)
+  const tpl = templateOf(style)
+  const anim: string = tpl ? tpl.base : style.animation!
   const color = style.color ?? '#FFFFFF'
   const hl = style.highlight_color ?? '#FFE700'
-  const stroke = ((style.stroke_width ?? 4) + (anim === 'hormozi' ? HORMOZI_STROKE : 0)) * k * (anim === 'box' ? 0 : 1)
-  const upper = style.uppercase || anim === 'hormozi'
+  const stroke = ((tpl?.stroke ?? style.stroke_width ?? 4) + (anim === 'hormozi' && !tpl ? HORMOZI_STROKE : 0)) * k * (anim === 'box' ? 0 : 1)
+  const shadow = (tpl?.shadow ?? 2) * k
+  const upper = style.uppercase || (tpl ? !!tpl.upper : anim === 'hormozi')
   const emphasis = style.emphasis ?? {}
   const baseScale = anim === 'word' ? WORD_SCALE : 1
-  // The Noto Indic fonts have no Latin letters: Roman-letter captions use Roboto (as render.py)
-  const font = exportFont(style.language === 'roman' ? 'roboto' : style.font)
-  const fontPx = (style.size ?? 52) * k * font.em
-  const fontFamily = `${captionEmojiFamily(font.em)}, "${font.family}", sans-serif`
+  const spokenScale = tpl?.scale ? tpl.scale / 100 : HORMOZI_SCALE
+  // A template's own fonts, for text they can draw (Latin letters). Otherwise, as before: the Noto
+  // Indic fonts have no Latin letters, so Roman-letter captions use Roboto (as render.py), and
+  // these are drawn bold (libass thickens them: the style asks for bold)
+  const latin = style.language === 'roman' || isLatinText(chunk.map(w => w.word).join(' '))
+  const plain = exportFont(style.language === 'roman' ? 'roboto' : style.font)
+  const baseFont: DrawFont = (tpl && latin ? templateFont(tpl.font) : null) ?? { family: plain.family, em: plain.em, weight: 700, italic: false }
+  const liveFont = tpl?.liveFont && latin ? templateFont(tpl.liveFont) : null
+  // The caption size as libass takes it: every font is sized so its full height is this
+  const lineH = (style.size ?? 52) * (tpl && latin ? tpl.size / 100 : 1) * k
+  const fontOf = (f: DrawFont, scale: number) =>
+    `${f.italic ? 'italic ' : ''}${f.weight} ${lineH * f.em * scale}px ${captionEmojiFamily(f.em)}, "${f.family}", sans-serif`
   const lineStart = chunk[0].start_ms
   const lineEnd = chunk[chunk.length - 1].end_ms
 
@@ -945,7 +979,7 @@ function drawPresetCaptions(
     alpha = Math.min(1, Math.max(0, (tMs - lineStart) / 80))
   }
 
-  // Per word: text, scale, colour, visibility, spoken
+  // Per word: text, scale, colour, visibility, spoken, font
   const items = chunk.map((w, j) => {
     const text = upper ? w.word.toUpperCase() : w.word
     const on = w.start_ms, off = chunk[j + 1]?.start_ms ?? lineEnd
@@ -959,34 +993,42 @@ function drawPresetCaptions(
       else if (dt < POP_MS) scale *= 1.1 - 0.1 * ((dt - POP_MS / 2) / (POP_MS / 2))
     }
     const spoken = tMs >= on && tMs < off
-    if (anim === 'hormozi' && spoken) scale *= HORMOZI_SCALE
-    const rest = emph ? hl : color
-    const fill = anim === 'word' || anim === 'glow' ? rest : spoken ? (anim === 'highlight' ? textOn(hl) : hl) : rest
-    return { text, scale, visible, spoken, fill }
+    if (anim === 'hormozi' && spoken) scale *= spokenScale
+    // (on a box an emphasised word stays the text colour: only bigger)
+    const rest = emph && !tpl?.box ? hl : color
+    const fill = anim === 'word' || anim === 'glow' || tpl?.liveText ? rest : spoken ? (anim === 'highlight' ? textOn(hl) : hl) : rest
+    return { text, scale, visible, spoken, fill, font: spoken && liveFont ? liveFont : baseFont }
   })
 
   ctx.save()
   ctx.globalAlpha = alpha
   ctx.textBaseline = 'middle'
+  ctx.textAlign = 'left'
   ctx.lineJoin = 'round'
-  const widthOf = (it: typeof items[number]) => {
-    ctx.font = `700 ${fontPx * it.scale}px ${fontFamily}`
-    return ctx.measureText(it.text).width
-  }
-  ctx.font = `700 ${fontPx}px ${fontFamily}`
+  const widths = items.map(it => { ctx.font = fontOf(it.font, it.scale); return ctx.measureText(it.text).width })
+  ctx.font = fontOf(baseFont, 1)
   const space = ctx.measureText(' ').width
-  const widths = items.map(widthOf)
+  // Where each word goes: along one line, or (stack) one word a line, the block centred on y
   const total = widths.reduce((a, b) => a + b, 0) + space * (items.length - 1)
-  let x = (W - total) / 2
-  if (anim === 'box') {
-    // One box round the whole line (libass BorderStyle 3: the text's full height plus the padding)
-    const pad = BOX_PAD * k, hPx = fontPx / font.em
-    ctx.fillStyle = LINE_BOX
-    ctx.fillRect(x - pad, y - hPx / 2 - pad, total + pad * 2, hPx + pad * 2)
+  const at: { x: number; y: number }[] = []
+  if (tpl?.stack) {
+    const heights = items.map(it => lineH * it.scale)
+    let top = y - heights.reduce((a, b) => a + b, 0) / 2
+    items.forEach((_, j) => { at.push({ x: (W - widths[j]) / 2, y: top + heights[j] / 2 }); top += heights[j] })
+  } else {
+    let x = (W - total) / 2
+    items.forEach((_, j) => { at.push({ x, y }); x += widths[j] + space })
+  }
+  if (anim === 'box' || (tpl?.box && !tpl.stack)) {
+    // One box round the whole line (libass BorderStyle 3: the text's full height plus the padding):
+    // dark glass, or a template's colour
+    const pad = BOX_PAD * k, x0 = (W - total) / 2
+    ctx.fillStyle = tpl?.box === 'hl' ? hl : tpl?.box ?? LINE_BOX
+    ctx.fillRect(x0 - pad, y - lineH / 2 - pad, total + pad * 2, lineH + pad * 2)
   }
   items.forEach((it, j) => {
-    const w = widths[j]
-    ctx.font = `700 ${fontPx * it.scale}px ${fontFamily}`
+    const w = widths[j], { x, y: wy } = at[j]
+    ctx.font = fontOf(it.font, it.scale)
     if (it.visible && anim === 'glow') {
       // libass blurs the 3 px outline: a soft halo, not a solid ring
       const a = alpha * (it.spoken ? 1 : GLOW_DIM)
@@ -995,33 +1037,37 @@ function drawPresetCaptions(
       ctx.shadowBlur = GLOW_BLUR * 2 * k
       ctx.lineWidth = 3 * 2 * k
       ctx.strokeStyle = hl
-      ctx.textAlign = 'left'
-      ctx.strokeText(it.text, x, y)
+      ctx.strokeText(it.text, x, wy)
       ctx.shadowBlur = 0
       ctx.shadowColor = 'transparent'
       ctx.globalAlpha = a
       ctx.fillStyle = it.fill
-      ctx.fillText(it.text, x, y)
+      ctx.fillText(it.text, x, wy)
       ctx.globalAlpha = alpha
     } else if (it.visible) {
       if (anim === 'highlight' && it.spoken) {
         // libass boxes the font's full height (the caption size) plus the padding
-        const pad = BOX_PAD * k, hPx = (fontPx / font.em) * it.scale
+        const pad = BOX_PAD * k, hPx = lineH * it.scale
         ctx.fillStyle = hl
-        ctx.fillRect(x - pad, y - hPx / 2 - pad, w + pad * 2, hPx + pad * 2)
-      } else {
+        ctx.fillRect(x - pad, wy - hPx / 2 - pad, w + pad * 2, hPx + pad * 2)
+      } else if (anim !== 'box') {
+        // The outline with its drop shadow; with no outline the letters cast the shadow themselves
         ctx.shadowColor = 'rgba(0,0,0,0.5)'
-        ctx.shadowOffsetX = ctx.shadowOffsetY = 2 * k
-        ctx.lineWidth = stroke * 2
-        ctx.strokeStyle = '#000000'
-        if (stroke > 0) ctx.strokeText(it.text, x, y)
+        ctx.shadowOffsetX = ctx.shadowOffsetY = shadow
+        if (stroke > 0) {
+          ctx.lineWidth = stroke * 2
+          ctx.strokeStyle = '#000000'
+          ctx.strokeText(it.text, x, wy)
+        } else if (shadow > 0) {
+          ctx.fillStyle = it.fill
+          ctx.fillText(it.text, x, wy)
+        }
         ctx.shadowColor = 'transparent'
+        ctx.shadowOffsetX = ctx.shadowOffsetY = 0
       }
       ctx.fillStyle = it.fill
-      ctx.textAlign = 'left'
-      ctx.fillText(it.text, x, y)
+      ctx.fillText(it.text, x, wy)
     }
-    x += w + space
   })
   ctx.restore()
 }
@@ -1038,7 +1084,8 @@ function drawCaptions(
   const W = ctx.canvas.width, H = ctx.canvas.height
   const chunk = findCaptionChunk(chunks, tMs)
   if (!chunk) return
-  if (isPreset(style.animation)) { drawPresetCaptions(ctx, chunk, tMs, style, band); return }
+  // (a caption style — style.template — is a preset in its own look)
+  if (isPreset(style.animation) || templateOf(style)) { drawPresetCaptions(ctx, chunk, tMs, style, band); return }
 
   const color     = style.color    ?? '#FFFFFF'
   const animation = style.animation ?? 'karaoke'

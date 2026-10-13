@@ -130,6 +130,8 @@ export async function saveClip(userId: string, clipId: string, body: SaveClipInp
 
   const hasEnabledField = await captionEnabledField()
   const hasPresetFields = await captionPresetFields()
+  // The caption style (template): saved once the backend has added its field
+  const hasTemplateField = await hasColumn('caption_styles', 'template')
   const hasRemoveFillers = typeof body.removeFillers === 'boolean' && await clipsHasRemoveFillers()
   const hasFades = await hasColumn('audio_tracks', 'fade_in')
   const hasTextW = await hasColumn('text_overlays', 'w')
@@ -207,7 +209,8 @@ export async function saveClip(userId: string, clipId: string, body: SaveClipInp
     } else if (Object.keys(captionStyle).length > 0) {
       const styleFields = ['font', 'size', 'color', 'position', 'position_y', 'animation', 'language', 'translated_from_language', 'timing_offset_ms',
         // Animated presets. Not emphasis: the export fills that in, and the editor's copy may be stale.
-        ...(hasPresetFields ? PRESET_STYLE_FIELDS : [])]
+        ...(hasPresetFields ? PRESET_STYLE_FIELDS : []),
+        ...(hasTemplateField ? ['template'] : [])]
       const onOff = hasEnabledField ? { enabled: captionEnabled } : {}
       const entries = Object.entries(captionStyle).filter(([k, v]) => styleFields.includes(k) && v !== undefined)
       const fields: Record<string, unknown> = Object.fromEntries(entries)

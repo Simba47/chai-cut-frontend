@@ -1,5 +1,6 @@
 'use client'
 
+import { CAPTION_TEMPLATE_LIST, TEMPLATE_FONTS, TEMPLATE_GROUPS, applyTemplate, templateFontFamily, templateOf, type CaptionTemplate } from '@/modules/captions/templates'
 import { useEffect, useRef, useState } from 'react'
 import type { AnimationType, CaptionStyle } from '@chai-cut/shared'
 import { SARVAM_LANGUAGES, DEFAULT_CAPTION_STYLE } from '@chai-cut/shared'
@@ -174,6 +175,7 @@ const PRESETS: Array<{ id: AnimationType; label: string }> = [
   { id: 'fade', label: 'Fade' },
   { id: 'none', label: 'None' },
 ]
+const CLASSIC = 'Classic'
 const ANIMATED = ['karaoke', 'hormozi', 'box', 'glow', 'pop', 'highlight', 'bounce', 'word']
 const HIGHLIGHT_COLORS = ['#FFE700', '#c8ff00', '#22d3ee', '#ec4899', '#f97316', '#8b5cf6']
 
@@ -188,7 +190,52 @@ const PRESET_CSS = `
 @keyframes cc-fade { 0% { opacity: 0 } 25%,100% { opacity: 1 } }
 .cc-demo span { display: inline-block; border-radius: 3px; padding: 0 2px }
 @keyframes cc-spin { from { transform: rotate(0deg) } to { transform: rotate(360deg) } }
+${Object.entries(TEMPLATE_FONTS).map(([key, f]) => `@font-face { font-family: "${templateFontFamily(key)}"; src: url(/caption-fonts/${f.file}); font-weight: ${f.weight}; font-style: ${f.italic ? 'italic' : 'normal'}; font-display: swap }`).join('\n')}
 `
+
+/**
+ * A caption style's tile: a few words as the style draws them while the middle one is spoken —
+ * its fonts, starting colours, box, glow, and one word a line when it stacks
+ */
+function TemplateDemo({ t }: { t: CaptionTemplate }) {
+  const words = t.perLine === 1 ? ['Hey'] : t.perLine === 2 ? ['Hey', 'there'] : ['Hey', 'there', 'friend']
+  const live = Math.min(1, words.length - 1)
+  const px = (key: string, scale = 1) => 11 * (t.size / 100) * (TEMPLATE_FONTS[key].em / 0.6) * scale
+  const face = (key: string): React.CSSProperties => {
+    const f = TEMPLATE_FONTS[key]
+    return { fontFamily: `"${templateFontFamily(key)}", sans-serif`, fontWeight: f.weight, fontStyle: f.italic ? 'italic' : 'normal' }
+  }
+  const lineBox = t.base === 'box' || (!!t.box && !t.stack)
+  const outline = t.base !== 'box' && (t.stroke ?? 4) > 0
+  const shadow = t.base === 'box' ? undefined : `${(t.shadow ?? 2) / 3}px ${(t.shadow ?? 2) / 3}px 0 rgba(0,0,0,0.55)`
+  return (
+    <span className="inline-flex items-center justify-center" style={{
+      flexDirection: t.stack ? 'column' : 'row', gap: t.stack ? 0 : '0.28em', lineHeight: 1.05, whiteSpace: 'nowrap',
+      color: t.color, textTransform: t.upper ? 'uppercase' : undefined, ...face(t.font), fontSize: px(t.font),
+      ...(lineBox ? { background: t.box === 'hl' ? t.hl : t.box ?? 'rgba(0,0,0,0.62)', padding: '2px 6px' } : {}),
+      ...(outline ? { WebkitTextStroke: `${Math.min(0.6, (t.stroke ?? 4) / 10)}px #000`, paintOrder: 'stroke fill' } : {}),
+    }}>
+      {words.map((w, i) => {
+        const spoken = i === live
+        const key = spoken && t.liveFont ? t.liveFont : t.font
+        const chip = t.base === 'highlight' && spoken
+        const glow = t.base === 'glow'
+        return (
+          <span key={w} style={{
+            ...(spoken && t.liveFont ? face(key) : {}),
+            fontSize: px(key, spoken && t.base === 'hormozi' ? (t.scale ?? 115) / 100 : 1),
+            color: chip ? (parseInt(t.hl.slice(1, 3), 16) * 0.299 + parseInt(t.hl.slice(3, 5), 16) * 0.587 + parseInt(t.hl.slice(5, 7), 16) * 0.114 > 150 ? '#000' : '#fff')
+              : spoken && !t.liveText && !glow ? t.hl : undefined,
+            background: chip ? t.hl : undefined, padding: chip ? '0 3px' : undefined,
+            WebkitTextStroke: chip ? '0' : undefined,
+            opacity: glow && !spoken ? 0.65 : 1,
+            textShadow: glow ? `0 0 5px ${t.hl}, 0 0 10px ${t.hl}` : chip ? undefined : shadow,
+          }}>{w}</span>
+        )
+      })}
+    </span>
+  )
+}
 
 function formatElapsed(sec: number) {
   return `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`
@@ -377,6 +424,9 @@ export function CaptionStyler({
   const color = style.color ?? DEFAULT_CAPTION_STYLE.color
   const animation = style.animation ?? DEFAULT_CAPTION_STYLE.animation
   const hl = style.highlight_color ?? '#FFE700'
+  const tpl = templateOf(style)
+  // The kind of style shown: the picked style's own to begin with
+  const [group, setGroup] = useState(tpl?.group ?? (animation !== 'karaoke' || style.template === null ? CLASSIC : TEMPLATE_GROUPS[0]))
 
   return (
     <div className="flex flex-col gap-5 px-4 pb-5 pt-1">
@@ -416,22 +466,53 @@ export function CaptionStyler({
       {/* ── Style: each tile is a little dark "screen" playing the animation, its name below ── */}
       <section className="flex flex-col gap-2.5">
         <h3 className="cap-heading">Style</h3>
-        <div className="grid grid-cols-2 gap-2">
-          {PRESETS.map(p => {
-            const on = animation === p.id
-            return (
-              <button key={p.id} onClick={() => onChange({ animation: p.id })} aria-pressed={on}
-                className="cap-tile" data-on={on || undefined}>
-                <span className="cap-tile-screen">
-                  <span className="text-[11px] font-bold flex items-center" style={{ color: '#fff' }}>
-                    <PresetDemo id={p.id} hl={hl} />
-                  </span>
-                </span>
-                <span className="cap-tile-name">{p.label}</span>
-              </button>
-            )
-          })}
+        {/* The kinds of style; "Classic" holds the plain animations */}
+        <div role="tablist" aria-label="Kinds of caption style" className="flex flex-wrap gap-1.5">
+          {[...TEMPLATE_GROUPS, CLASSIC].map(g => (
+            <button key={g} role="tab" aria-selected={group === g} onClick={() => setGroup(g)}
+              className="px-2.5 h-7 rounded-full text-[11.5px] font-semibold transition-colors"
+              style={group === g
+                ? { background: '#c8ff00', color: '#0a0a0a' }
+                : { background: 'rgb(var(--ed-fg) / 0.05)', color: 'rgb(var(--ed-fg) / 0.7)', boxShadow: 'inset 0 0 0 1px rgb(var(--ed-fg) / 0.08)' }}>
+              {g}
+            </button>
+          ))}
         </div>
+        {group === CLASSIC ? (
+          <div className="grid grid-cols-2 gap-2">
+            {PRESETS.map(p => {
+              const on = !tpl && animation === p.id
+              return (
+                // (a classic animation is not a caption style: picking one drops the style)
+                <button key={p.id} onClick={() => onChange({ animation: p.id, template: null })} aria-pressed={on}
+                  className="cap-tile" data-on={on || undefined}>
+                  <span className="cap-tile-screen">
+                    <span className="text-[11px] font-bold flex items-center" style={{ color: '#fff' }}>
+                      <PresetDemo id={p.id} hl={hl} />
+                    </span>
+                  </span>
+                  <span className="cap-tile-name">{p.label}</span>
+                </button>
+              )
+            })}
+          </div>
+        ) : (
+          // Ready-made looks: each has its own font; picking one sets its colours too (change them below)
+          <div className="grid grid-cols-2 gap-2">
+            {CAPTION_TEMPLATE_LIST.filter(t => t.group === group).map(t => {
+              const on = tpl?.id === t.id
+              return (
+                <button key={t.id} aria-pressed={on} className="cap-tile" data-on={on || undefined} title={t.label}
+                  onClick={() => { onChange(applyTemplate(t)); onTextCaseChange(t.upper ? 'upper' : 'title') }}>
+                  <span className="cap-tile-screen" style={{ height: 56, overflow: 'hidden' }}>
+                    <TemplateDemo t={t} />
+                  </span>
+                  <span className="cap-tile-name">{t.label}</span>
+                </button>
+              )
+            })}
+          </div>
+        )}
       </section>
 
       {/* ── Look: colours, font, size and capitals ── */}
@@ -441,8 +522,8 @@ export function CaptionStyler({
       {/* Colours: a live sample, one-click themes, then a field per colour that opens a palette */}
       <ColourChooser
         text={color} highlight={hl}
-        showHighlight={ANIMATED.includes(animation)}
-        highlightLabel={animation === 'highlight' ? 'Box' : 'Highlight'}
+        showHighlight={!!tpl || ANIMATED.includes(animation)}
+        highlightLabel={(tpl ? tpl.base === 'highlight' || tpl.box === 'hl' : animation === 'highlight') ? 'Box' : tpl?.base === 'glow' ? 'Glow' : 'Highlight'}
         onText={c => onChange({ color: c })}
         onHighlight={c => onChange({ highlight_color: c })}
       />
