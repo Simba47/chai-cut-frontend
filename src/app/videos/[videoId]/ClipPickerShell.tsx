@@ -469,6 +469,8 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: P
   const isReady = video.status === 'ready'
   const isProcessing = video.status === 'uploaded' || video.status === 'transcribing'
   const maxMs = video.duration_ms ?? 0
+  // The time boxes show hours for a video an hour or longer (or one whose length isn't known yet)
+  const withHours = maxMs === 0 || maxMs >= 3_600_000
 
   // Poll while processing
   useEffect(() => {
@@ -912,11 +914,29 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: P
             style={{ background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.12)' }}
           />
         </div>
-        <div style={{ width: 150 }}>
-          <TimeField id="clip-start" label="Start" value={formStart} onChange={setFormStart} onUseNow={() => setFormStart(msToDisplay(nowMs))} />
-        </div>
-        <div style={{ width: 150 }}>
-          <TimeField id="clip-end" label="End" value={formEnd} onChange={setFormEnd} onUseNow={() => setFormEnd(msToDisplay(nowMs))} />
+        {/* Start → how long → End */}
+        <div className="flex items-center gap-2.5">
+          <div style={{ width: withHours ? 118 : 96 }}>
+            <TimeField id="clip-start" label="Start" value={formStart} onChange={setFormStart} showHours={withHours} />
+          </div>
+          {(() => {
+            const a = parseTime(formStart), z = parseTime(formEnd)
+            const ok = a != null && z != null && z > a
+            return (
+              <span className="shrink-0 flex flex-col items-center gap-1" title="Clip length">
+                <span className="px-2 py-0.5 rounded-full text-[11px] font-bold tabular-nums"
+                  style={ok ? { color: ACCENT, background: 'rgba(200,255,0,0.1)' } : { color: 'rgba(255,255,255,0.35)', background: 'rgba(255,255,255,0.05)' }}>
+                  {ok ? msToDisplay(z! - a!) : '–'}
+                </span>
+                <svg width="34" height="6" viewBox="0 0 34 6" fill="none" aria-hidden="true">
+                  <path d="M1 3h31M29 1l3 2-3 2" stroke={ok ? ACCENT : 'rgba(255,255,255,0.3)'} strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              </span>
+            )
+          })()}
+          <div style={{ width: withHours ? 118 : 96 }}>
+            <TimeField id="clip-end" label="End" value={formEnd} onChange={setFormEnd} showHours={withHours} />
+          </div>
         </div>
         <div className="flex gap-2">
           <button type="submit" disabled={!!busy}
@@ -1544,8 +1564,9 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: P
  * can't be typed or deleted. Two digits move on to the next part (hours → minutes → seconds), as
  * does ":" or "."; Backspace in an empty part goes back; ↑ / ↓ step a part; a pasted time
  * (1:42:08 or 4:05) fills all three. Empty parts count as 00.
+ * Under an hour of video (`showHours` false) the hours part isn't shown: the box reads 4:05.
  */
-function TimeField({ id, label, value, onChange, onUseNow }: { id: string; label: string; value: string; onChange: (v: string) => void; onUseNow: () => void }) {
+function TimeField({ id, label, value, onChange, showHours = true }: { id: string; label: string; value: string; onChange: (v: string) => void; showHours?: boolean }) {
   type Parts = [string, string, string]
   const pad = (n: number) => String(n).padStart(2, '0')
   const split = (v: string): Parts => {
@@ -1583,6 +1604,8 @@ function TimeField({ id, label, value, onChange, onUseNow }: { id: string; label
     onChange(out)
   }
   const max = (i: number) => (i === 0 ? 99 : 59)
+  /** The first part shown (minutes when there are no hours) */
+  const first = showHours ? 0 : 1
   // What's been typed into a part since it was entered: its first digit always starts it afresh
   // (whatever the part held, wherever a click put the cursor); the second completes it and moves on
   const typing = useRef<{ i: number; buf: string } | null>(null)
@@ -1633,8 +1656,8 @@ function TimeField({ id, label, value, onChange, onUseNow }: { id: string; label
       return
     }
     if (e.key === ':' || e.key === '.' || e.key === ' ') { e.preventDefault(); if (i < 2) go(i + 1); return }
-    if (e.key === 'Backspace' && (!el.value || atStart) && i > 0) { e.preventDefault(); go(i - 1, 'end'); return }
-    if (e.key === 'ArrowLeft' && atStart && i > 0) { e.preventDefault(); go(i - 1, 'end'); return }
+    if (e.key === 'Backspace' && (!el.value || atStart) && i > first) { e.preventDefault(); go(i - 1, 'end'); return }
+    if (e.key === 'ArrowLeft' && atStart && i > first) { e.preventDefault(); go(i - 1, 'end'); return }
     if (e.key === 'ArrowRight' && atEnd && i < 2) { e.preventDefault(); go(i + 1); return }
     if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
       e.preventDefault()
@@ -1653,29 +1676,26 @@ function TimeField({ id, label, value, onChange, onUseNow }: { id: string; label
   }
   const names = ['hours', 'minutes', 'seconds']
   return (
-    <div className="flex flex-col gap-1">
-      <label htmlFor={`${id}-h`} className="text-[11px] font-medium" style={{ color: 'rgba(255,255,255,0.5)' }}>{label}</label>
-      <div className="flex items-center rounded-lg overflow-hidden focus-within:border-[#c8ff00]" style={{ background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.12)' }}>
-        <div className="min-w-0 flex-1 flex items-center px-2 py-2 font-mono tabular-nums text-sm text-white">
-          {parts.map((p, i) => (
+    <div className="flex items-center justify-center h-[52px] px-3 rounded-xl transition-[border-color,box-shadow] focus-within:border-[#c8ff00] focus-within:shadow-[0_0_0_3px_rgba(200,255,0,0.12)]"
+      style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)' }}>
+      <div className="min-w-0 flex flex-col items-center justify-center">
+        <label htmlFor={`${id}-${'hms'[first]}`} className="text-[10px] font-semibold uppercase leading-none" style={{ color: 'rgba(255,255,255,0.45)', letterSpacing: '0.08em' }}>{label}</label>
+        <div className="flex items-center mt-1.5 text-[17px] font-semibold tabular-nums leading-none text-white">
+          {parts.map((p, i) => i < first ? null : (
             <span key={i} className="flex items-center">
-              {i > 0 && <span aria-hidden="true" className="px-px select-none" style={{ color: 'rgba(255,255,255,0.45)' }}>:</span>}
+              {i > first && <span aria-hidden="true" className="select-none" style={{ color: 'rgba(255,255,255,0.35)' }}>:</span>}
               <input ref={refs[i]} id={`${id}-${'hms'[i]}`} type="text" inputMode="numeric" autoComplete="off"
-                aria-label={`${label} ${names[i]}`} placeholder="00" value={p}
+                aria-label={`${label} ${names[i]}`} placeholder={i === first && !showHours ? '0' : '00'} value={i === first && !showHours && p.startsWith('0') && p.length === 2 ? p.slice(1) : p}
                 onChange={e => type(i, e.target.value)} onKeyDown={e => key(i, e)} onPaste={paste}
                 onFocus={e => { typing.current = null; e.currentTarget.select() }}
                 // (the click that focused it would otherwise drop the selection and leave the cursor in the old digits)
                 onMouseUp={e => e.preventDefault()}
                 onBlur={() => { const cur = live.current; if (cur[i].length === 1) { const next = [...cur] as Parts; next[i] = pad(Number(cur[i])); put(next) } }}
-                className="bg-transparent outline-none text-center rounded placeholder:text-white/30 focus:bg-white/10"
-                style={{ width: '2.4ch' }} />
+                className="bg-transparent outline-none text-center rounded-md placeholder:text-white/30 focus:bg-white/10"
+                style={{ width: i === first && !showHours ? '1.6ch' : '2.2ch', padding: 0 }} />
             </span>
           ))}
         </div>
-        <button type="button" onClick={onUseNow} title="Use the video's current time"
-          className="shrink-0 px-2 self-stretch text-[11px] font-medium transition-colors hover:bg-white/10" style={{ color: ACCENT }}>
-          Now
-        </button>
       </div>
     </div>
   )

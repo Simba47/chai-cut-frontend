@@ -7,6 +7,8 @@ import { Mail, MapPin, Menu, Phone, X } from 'lucide-react'
 import { motion, useReducedMotion, useScroll, useSpring, useTransform, type MotionStyle } from 'framer-motion'
 import { PricingSection, type PricingPlan } from '@/components/ui/pricing'
 import { DotField } from '@/components/ui/dot-field'
+import { ClipForge } from '@/components/landing/clip-forge'
+import { ZoomFit } from '@/components/ui/zoom-fit'
 import { TiltCard } from '@/components/ui/tilt-card'
 import { FillButtonContent } from '@/components/ui/fill-button'
 import { EditorMockup } from '@/components/ui/editor-mockup'
@@ -14,6 +16,8 @@ import { BrandLogo } from '@/components/ui/brand-logo'
 import { CircularCarousel, type CarouselItem } from '@/components/ui/circular-carousel'
 import { SectionTransition } from '@/components/ui/section-transition'
 import { FaqSection, type FaqItem } from '@/components/ui/faq-section'
+import { HeroLens } from '@/components/landing/hero-lens'
+import { InsightsSection, ProblemSection, ProofSection } from '@/components/landing/sections'
 import { neutralStyle, useLiteMotion } from '@/components/ui/use-lite-motion'
 import { PLANS } from '@/lib/plans'
 import { COMPANY } from '@/lib/company'
@@ -79,28 +83,29 @@ const PRICING_PLANS: PricingPlan[] = [
 // FAQ between Pricing and the closing section. Plan-by-plan differences live in Pricing, not here.
 const FAQS: FaqItem[] = [
   {
-    question: 'What is Shortcut?',
-    answer: 'Shortcut turns your long videos — podcasts, interviews, vlogs, streams — into short vertical clips for Instagram Reels, YouTube Shorts and TikTok. You upload once, pick the moments you want, reframe them to 9:16, add captions and export, all in one editor.',
+    question: 'How fast can I make a clip?',
+    // TODO(content): the client's page leaves the minutes as [X]
+    answer: 'Most clips are ready to post in [X] minutes from upload, including captions and branding.',
   },
   {
-    question: 'Which video formats and sizes can I upload?',
-    answer: `MP4, MOV, MKV and WebM. You can upload from your device or paste a Google Drive link shared as “Anyone with the link”. Large files are welcome, so you can upload full-length podcasts and streams.`,
+    question: 'What if the AI picks the wrong moment or framing?',
+    answer: 'Edit any clip in the timeline, or hit play and steer the frame to fix it in one pass.',
   },
   {
-    question: 'Can Shortcut caption videos in my language?',
-    answer: 'Yes! Speak in the language your audience loves — Shortcut captions videos in multiple languages, even when you mix them mid-sentence. Captions are timed and styled automatically, so your clips are ready to post, and you can tweak any word or style before you export.',
+    question: 'Which platforms can I post to?',
+    answer: 'YouTube Shorts, Instagram Reels and TikTok. Connect your channels once and post in one tap.',
   },
   {
-    question: 'Will my exported clips lose quality?',
-    answer: 'No. Clips export in the original quality you uploaded, ready to post, and you can add your own logo to every clip.',
+    question: 'How do trending topics work?',
+    answer: 'We show which topics, hooks and clip lengths are getting views in your niche, then highlight matching moments in your uploads.',
   },
   {
-    question: 'Is Shortcut free to start?',
-    answer: 'Yes. You can sign up and start clipping for free — no credit card needed. When you need more, pick the plan that fits you in the Pricing section above.',
+    question: 'Can I use any video?',
+    answer: 'Use videos you own or have permission to use. Clips from content you don’t have rights to can get your channel struck or demonetized. Paid campaigns, coming soon, give you approved sources to clip.',
   },
   {
-    question: 'Are my videos private?',
-    answer: 'Yes. Everything you upload stays private to your account. Only you can see your videos and clips, and we never publish anything on your behalf.',
+    question: 'Is there a free plan?',
+    answer: `Yes. Your first ${free.maxClips} clips are free, no credit card needed.`,
   },
 ]
 
@@ -127,32 +132,38 @@ const LANE_DURATIONS = [22, 30, 26, 34, 24, 28]
 
 // "How it works" steps
 const STEPS = [
-  { title: 'Upload', desc: 'Upload your long-form video.' },
-  { title: 'Select', desc: 'Select the part you want to turn into a short.' },
-  { title: 'Reframe', desc: 'Drag the frame on what matters. Your video renders in parallel.' },
-  { title: 'Export', desc: 'Add captions, make quick edits, and export your short.' },
+  { title: 'See what’s working', desc: 'Check trending topics in your niche, plus the hooks and clip lengths getting the most views this week.' },
+  { title: 'Upload and let AI clip', desc: 'Paste a link or upload a long video. AI cuts ready-to-post shorts with captions, headlines and your brand kit.' },
+  { title: 'Fix in one pass, then post', desc: 'Framing off? Hit play and steer the frame live. No keyframes. Then post straight to your channels.' },
+  { title: 'Track and earn more', desc: 'See views and earnings for every clip. Shortcut learns what works for you and picks better moments next time.' },
 ]
 
 // Features shown in the circular carousel
 const featureIcon = (glyph: string, tone: string) => <span className={`feature-icon ${tone}`} aria-hidden>{glyph}</span>
 
 const FEATURES: CarouselItem[] = [
-  { id: 'captions', tag: 'AI', icon: featureIcon('✦', 'fi-cyan'), title: 'Auto-Captions', description: 'AI-generated captions in multiple languages. Styled, timed, and ready to post — no manual typing.' },
-  { id: 'crop', tag: 'Framing', icon: featureIcon('✂', 'fi-warm'), title: 'Smart Crop', description: 'Turn horizontal videos into vertical reels. Animate it across keyframes to follow movement.' },
-  { id: 'export', tag: 'Export', icon: featureIcon('⬆', 'fi-green'), title: 'Original-Quality Export', description: 'Export in the original quality you uploaded, ready for Instagram, Shorts, or TikTok.' },
-  { id: 'timeline', tag: 'Editing', icon: featureIcon('◈', 'fi-purple'), title: 'Multi-Segment Timeline', description: 'Split your clip into segments and pick a different layout for each one.' },
-  { id: 'text', tag: 'Design', icon: featureIcon('≋', 'fi-yellow'), title: 'Text Overlays', description: 'Add custom text, titles, or call-outs anywhere on screen. Full style control — font, color, position.' },
-  { id: 'search', tag: 'Search', icon: featureIcon('⌕', 'fi-blue'), title: 'Scene Search', description: 'Shortcut searches the captions and pulls out that exact moment from your video which is needed for you.' },
+  { id: 'moments', tag: 'AI', icon: featureIcon('✦', 'fi-cyan'), title: 'Your best moments, found for you', description: 'Upload one video and get a batch of ready-to-post clips in minutes, not hours.' },
+  { id: 'steer', tag: 'Framing', icon: featureIcon('◎', 'fi-warm'), title: 'Fix any frame in one pass', description: 'Hit play and guide the frame live. No keyframes, no frame-by-frame dragging.' },
+  { id: 'captions', tag: 'Captions', icon: featureIcon('≋', 'fi-yellow'), title: 'Captions that keep them watching', description: 'Accurate captions in seconds, styled to stop the scroll even on mute.' },
+  { id: 'hooks', tag: 'Hooks', icon: featureIcon('⚡', 'fi-green'), title: 'Win the first second', description: 'Add hooks and titles that grab attention before viewers swipe away.' },
+  { id: 'brand', tag: 'Brand', icon: featureIcon('◈', 'fi-purple'), title: 'Every clip looks like yours', description: 'Your fonts, colors and logo applied to every clip automatically.' },
+  { id: 'layouts', tag: 'Layouts', icon: featureIcon('▤', 'fi-blue'), title: 'Ready-made layouts', description: 'Video with text on top, split screen, video with photo, and more.' },
+  { id: 'export', tag: 'Speed', icon: featureIcon('⬆', 'fi-green'), title: 'No waiting to export', description: 'Clips render while you edit, so they’re ready the moment you finish.' },
+  { id: 'post', tag: 'Publish', icon: featureIcon('➚', 'fi-cyan'), title: 'Post everywhere at once', description: 'Send clips straight to YouTube Shorts, Reels and TikTok from one place.' },
 ]
 
 const CONTACT = COMPANY
 
 const EXPLORE = [
-  { label: 'Features', href: '#features' },
   { label: 'How it works', href: '#process' },
-  { label: 'Editor', href: '#editor' },
+  { label: 'Features', href: '#features' },
+  { label: 'Trends', href: '#trends' },
+]
+// Footer "Explore" column (the client's footer links)
+const FOOTER_LINKS = [
+  { label: 'Features', href: '#features' },
   { label: 'Pricing', href: '#pricing' },
-  { label: 'FAQ', href: '#faq' },
+  { label: 'Help', href: '#faq' },
 ]
 
 // Instagram links to the official account.
@@ -312,11 +323,12 @@ export function LandingPage() {
 
   const heroRef = useRef<HTMLElement>(null)
 
-  // Speed stat counts up 1 → 10 once the pill has faded in
-  const [speed, setSpeed] = useState(1)
+  // "Your first N clips are free": N counts up from 0 once the line has faded in, like earnings
+  // adding up (N is the Free plan's clip limit, so it always matches Pricing)
+  const [freeClips, setFreeClips] = useState(0)
   useEffect(() => {
-    if (reduceMotion) { setSpeed(10); return }
-    const t = setTimeout(() => setSpeed(10), 1300)
+    if (reduceMotion) { setFreeClips(free.maxClips); return }
+    const t = setTimeout(() => setFreeClips(free.maxClips), 1300)
     return () => clearTimeout(t)
   }, [reduceMotion])
 
@@ -405,7 +417,7 @@ export function LandingPage() {
         <div className="nav-right">
           <Link href="/login" className="btn-nav-ghost fill-btn fill-btn-sm"><FillButtonContent>Log in</FillButtonContent></Link>
           <Link href="/signup" className="btn-nav-primary arrow-btn">
-            <span className="arrow-btn-label">Get started free</span>
+            <span className="arrow-btn-label">Start clipping free</span>
             <SquiggleArrow />
           </Link>
           <button
@@ -438,71 +450,94 @@ export function LandingPage() {
           {!lite && <DotField hostRef={heroRef} />}
         </motion.div>
 
+        {/* Desktop: text and buttons on the left, the lens animation on the right.
+            Below 1100px the two stack, centred. */}
+        <div className="hero-grid">
         <motion.div className="hero-text" style={fx({ opacity: textOpacity, scale: textScale, filter: textBlur })}>
-          <div className="hero-eyebrow intro" style={{ '--d': '0s' } as React.CSSProperties}>
-            <span className="eyebrow-dot" />
-            Built for Indian creators
-          </div>
           <h1 className="hero-headline">
-            <motion.span className="line" style={fx({ x: line1X })}><span className="line-inner">The <span className="warm">Shortcut</span></span></motion.span>
-            <motion.span className="line" style={fx({ x: line2X })}><span className="line-inner">to Short-Form.</span></motion.span>
+            <motion.span className="line" style={fx({ x: line1X })}><span className="line-inner">Turn every video</span></motion.span>
+            <motion.span className="line" style={fx({ x: line2X })}><span className="line-inner">into <span className="warm">income.</span></span></motion.span>
           </h1>
           <motion.div style={fx({ opacity: detailsOpacity, y: detailsY })}>
           <p className="hero-sub intro" style={{ '--d': '.55s' } as React.CSSProperties}>
-            The fastest way to turn long videos into short clips
+            AI finds the best moments, cuts them into <span className="whitespace-nowrap">ready-to-post</span> shorts, and shows you what&rsquo;s trending.
           </p>
-          <div className="hero-meta intro" style={{ '--d': '.85s' } as React.CSSProperties}>
-            <div className="hero-meta-item">
-              <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 1l1.6 3.3 3.6.5-2.6 2.5.6 3.6L7 9.3l-3.2 1.6.6-3.6L1.8 4.8l3.6-.5L7 1z" fill="currentColor" /></svg>
-              Free to start
-            </div>
-            <div className="hero-meta-item">
-              <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><circle cx="7" cy="7" r="5.5" stroke="currentColor" strokeWidth="1.4" /><path d="M7 4.5v3l2 1.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" /></svg>
-              Export in minutes
-            </div>
-            <div className="hero-meta-item">
-              {/* landscape frame → portrait frame */}
-              <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><rect x="0.9" y="3.5" width="6.6" height="4.6" rx="1" stroke="currentColor" strokeWidth="1.3" /><rect x="9" y="1.6" width="4.1" height="7.6" rx="1" stroke="currentColor" strokeWidth="1.3" /><path d="M3 11.2c1.6 1.3 4.3 1.4 6.3-.2m0 0-1.6-.1m1.6.1-.3-1.5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" /></svg>
-              Horizontal to vertical
-            </div>
+          <div className="hero-ctas intro" style={{ '--d': '.7s' } as React.CSSProperties}>
+            <Link href="/signup" className="btn-nav-primary arrow-btn hero-cta-main">
+              <span className="arrow-btn-label">Start clipping free</span>
+              <SquiggleArrow />
+            </Link>
+            <a href="#process" onClick={e => goToSection(e, '#process')} className="btn-nav-ghost fill-btn hero-cta-ghost">
+              <FillButtonContent>See how it works</FillButtonContent>
+            </a>
           </div>
-          <div className="hero-speed intro" style={{ '--d': '1s' } as React.CSSProperties}>
-            <span className="speed-num">
-              <NumberFlow value={speed} className="tabular-nums" />×
-            </span>
-            <span className="speed-text"><strong>faster.</strong> Less editing, more posting.</span>
+          {/* Earnings line: a growth chart draws itself, and the free-clip number (lime, no badge)
+              flips in while it counts up, then flips again now and then (styles: .hero-earn in landing.css) */}
+          <div className="hero-earn intro" style={{ '--d': '.85s' } as React.CSSProperties}>
+            <svg className="earn-chart" width="26" height="20" viewBox="0 0 26 20" fill="none" aria-hidden="true">
+              <path className="earn-line" d="M2 16l6-6 4.5 4L22 4" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
+              <path className="earn-head" d="M16 4h6v6" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+            <p className="earn-text">
+              No credit card needed. Your first{' '}
+              <span className="earn-num">
+                <span className="earn-coin">
+                  <NumberFlow value={freeClips} className="tabular-nums" />
+                </span>
+              </span>{' '}
+              clips are free.
+            </p>
           </div>
           </motion.div>
         </motion.div>
 
+        {/* recedes with the headline as the next section slides over */}
+        <motion.div className="hero-visual" style={fx({ opacity: textOpacity, scale: textScale })}>
+          <div className="intro" style={{ '--d': '.9s' } as React.CSSProperties}>
+            <HeroLens />
+          </div>
+        </motion.div>
+        </div>
+
       </section>
 
-      {/* ── FEATURES (slides up over the pinned hero) ── */}
+      {/* ── PROBLEM (slides up over the pinned hero) ── */}
       <motion.div
-        id="features"
+        id="problem"
         ref={sheetRef}
         className="section-wrap sheet"
         style={fx({ scale: sheetScale, borderTopLeftRadius: sheetRadius, borderTopRightRadius: sheetRadius })}
       >
-        <section className="section-inner">
-          <div className="section-head reveal">
-            <p className="section-eyebrow">What you get</p>
-            <h2 className="section-title">Everything your reel needs</h2>
-            <p className="section-sub">A focused toolkit — no bloat, no learning curve. From raw footage to export-ready reel without switching tabs.</p>
-          </div>
-          <div data-fit className="reveal">
-            <CircularCarousel items={FEATURES} />
-          </div>
-        </section>
+        <ProblemSection />
       </motion.div>
       </div>
 
-      {/* ── PROCESS ── */}
+      {/* ── HOW IT WORKS ── */}
       <SectionTransition id="process" variant="tilt" className="section-wrap">
         <section className="section-inner">
           <div className="section-head reveal">
             <p className="section-eyebrow">How it works</p>
-            <h2 className="section-title">From footage to reel in 4 steps</h2>
+            <h2 className="section-title">From long video to earning clips in four steps.</h2>
+          </div>
+          {/* The process in motion: on the left, the clip forge (long video in, clips out) and the
+              editing board (steer the frame live); the right column is kept for cards */}
+          <div className="pw">
+            <div className="pw-left">
+              <figure className="pw-stage reveal">
+                <figcaption className="pw-label"><span>01</span>AI finds your best moments and cuts the clips</figcaption>
+                <ClipForge clips={10} />
+              </figure>
+              <figure className="pw-stage reveal">
+                <figcaption className="pw-label"><span>02</span>Steer any frame right while it plays</figcaption>
+                <ZoomFit width={880} className="editor-showcase pw-editor">
+                  <span className="lx-live" aria-hidden="true"><span className="lx-dot" />Steering live</span>
+                  <EditorMockup />
+                </ZoomFit>
+              </figure>
+            </div>
+            <div className="pw-right">
+              {/* TODO: cards go here */}
+            </div>
           </div>
           <div className="process-grid">
             {STEPS.map((step, i) => (
@@ -515,20 +550,34 @@ export function LandingPage() {
               </TiltCard>
             ))}
           </div>
+          <p className="lx-loop reveal">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 11-3-6.7L21 8" /><path d="M21 3v5h-5" /></svg>
+            Every clip you post makes the next one smarter.
+          </p>
         </section>
       </SectionTransition>
 
-      {/* ── EDITOR: the editor in action ── */}
-      <SectionTransition id="editor" variant="iris" className="section-wrap">
+      {/* ── FEATURES ── */}
+      <SectionTransition id="features" variant="zoom" className="section-wrap">
         <section className="section-inner">
           <div className="section-head reveal">
-            <p className="section-eyebrow">Inside the editor</p>
-            <h2 className="section-title">Crop, caption and cut in one place</h2>
+            <p className="section-eyebrow">Features</p>
+            <h2 className="section-title">Everything you need to post more and earn more.</h2>
           </div>
-          <div data-fit data-fit-width="680" className="editor-showcase reveal">
-            <EditorMockup />
+          <div data-fit className="reveal">
+            <CircularCarousel items={FEATURES} />
           </div>
         </section>
+      </SectionTransition>
+
+      {/* ── INSIDE SHORTCUT: trends, earnings and output on one board (keeps the #trends anchor for the nav) ── */}
+      <SectionTransition id="trends" variant="tilt" className="section-wrap">
+        <InsightsSection />
+      </SectionTransition>
+
+      {/* ── SOCIAL PROOF ── */}
+      <SectionTransition id="proof" variant="tilt" className="section-wrap">
+        <ProofSection />
       </SectionTransition>
 
       {/* ── PRICING ── */}
@@ -544,9 +593,9 @@ export function LandingPage() {
       {/* ── FAQ ── */}
       <div id="faq" className="section-wrap">
         <FaqSection
-          eyebrow="Shortcut FAQs"
-          title="Frequently asked questions"
-          description="Everything you need to know about turning long videos into short clips with Shortcut."
+          eyebrow="FAQ"
+          title="Questions"
+          description="Everything you need to know about clipping and earning with Shortcut."
           items={FAQS}
         />
       </div>
@@ -569,16 +618,14 @@ export function LandingPage() {
             </div>
           ))}
         </div>
-        <h2 className="reveal">Ready to <span className="accent">cut</span> your first reel?</h2>
-        <p className="reveal">Join thousands of Indian creators already editing on Shortcut. Free to start, no credit card.</p>
-        <div className="lang-multi reveal">
-          {/* globe */}
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-            <circle cx="12" cy="12" r="9.5" /><path d="M2.5 12h19" /><path d="M12 2.5c2.6 2.8 3.9 6 3.9 9.5s-1.3 6.7-3.9 9.5c-2.6-2.8-3.9-6-3.9-9.5s1.3-6.7 3.9-9.5z" />
-          </svg>
-          Auto-captions in multiple languages
+        <h2 className="reveal">Your next video could be your <span className="accent">best week</span> yet.</h2>
+        <p className="reveal">Upload one video. Leave with a week of clips.</p>
+        <div className="reveal">
+          <Link href="/signup" className="btn-nav-primary arrow-btn hero-cta-main">
+            <span className="arrow-btn-label">Start clipping free</span>
+            <SquiggleArrow />
+          </Link>
         </div>
-        <p className="lang-note reveal"><Link href="/signup">Get started →</Link></p>
       </section>
 
       {/* ── FOOTER ── */}
@@ -587,7 +634,7 @@ export function LandingPage() {
         <div className="footer-top">
           <FooterReveal className="footer-brand">
             <a href="#" className="footer-logo" aria-label="Shortcut home"><BrandLogo size="sm" /></a>
-            <p className="footer-tagline">Transcribe, clip, and edit vertical videos in multiple languages.</p>
+            <p className="footer-tagline">Shortcut: the shortcut to short-form.</p>
             <div className="socials">
               {SOCIALS.map(s => (
                 <a
@@ -612,7 +659,7 @@ export function LandingPage() {
           <nav className="footer-col" aria-label="Explore">
             <h4 className="footer-heading">Explore</h4>
             <ul className="footer-list">
-              {EXPLORE.map(l => <li key={l.href}><a href={l.href} onClick={e => goToSection(e, l.href)}>{l.label}</a></li>)}
+              {FOOTER_LINKS.map(l => <li key={l.label}><a href={l.href} onClick={e => goToSection(e, l.href)}>{l.label}</a></li>)}
             </ul>
           </nav>
           </FooterReveal>

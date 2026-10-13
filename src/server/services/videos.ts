@@ -1,6 +1,6 @@
 import { DeleteObjectCommand, DeleteObjectsCommand, GetObjectCommand } from '@aws-sdk/client-s3'
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
-import { GoogleGenerativeAI } from '@google/generative-ai'
+import { aiProvider, askGemini, GEMINI_MODEL } from '@/lib/gemini'
 import { r2, R2_BUCKET } from '@/lib/r2'
 import sql from '@/lib/db'
 import { findClips, type FoundClip, type Subscores } from './clipFinder'
@@ -11,7 +11,7 @@ import { logSuggestionEvents, type SuggestionSource } from './suggestionEvents'
  * (jobs/ai_edit.ts) — so the three agree with each other and there is one price and one vendor.
  * (Before: Claude Haiku, Gemini 3.1 Pro preview and Gemini 2.5 Flash, one each.)
  */
-export const CLIP_MODEL = 'gemini-2.5-flash'
+export const CLIP_MODEL = GEMINI_MODEL
 
 /** 'shown' for each AI suggestion returned (plain fallback chunks are not AI picks) */
 function logShown(userId: string, videoId: string, source: SuggestionSource, model: string, suggestions: ClipSuggestion[]) {
@@ -231,14 +231,13 @@ export async function getVideoSuggestions(userId: string, videoId: string, extra
   if (words.length === 0) return { suggestions: makeTimeChunks(durationMs) }
 
   // Plain chunks only when no AI can answer
-  const geminiKey = process.env.GEMINI_API_KEY
-  if (!geminiKey) return { suggestions: makeWordChunks(words, durationMs) }
+  if (!aiProvider()) return { suggestions: makeWordChunks(words, durationMs) }
 
   // Skip what's already a clip, and moments already listed (so "View more" finds new ones)
   const exclude = [...await clippedRanges(videoId, durationMs), ...extraExclude]
   const model = CLIP_MODEL
   try {
-    const suggestions = await detectBestMoments(words, durationMs, geminiKey, exclude)
+    const suggestions = await detectBestMoments(words, durationMs, exclude)
     logShown(userId, videoId, 'best_moments', model, suggestions)
     return { suggestions, model }
   } catch (e) {
@@ -342,10 +341,9 @@ export async function getVideoSuggestionsByCriteria(
     throw Object.assign(new Error('This video has no transcript yet'), { status: 400 })
   }
 
-  const geminiKey = process.env.GEMINI_API_KEY
-  if (!geminiKey) throw Object.assign(new Error('AI clip detection is not configured'), { status: 500 })
+  if (!aiProvider()) throw Object.assign(new Error('AI clip detection is not configured'), { status: 500 })
 
-  const suggestions = await detectClipsByCriteria(words, durationMs, trimmedCriteria, geminiKey)
+  const suggestions = await detectClipsByCriteria(words, durationMs, trimmedCriteria)
   logShown(userId, videoId, 'clip_search', CLIP_MODEL, suggestions)
   return { suggestions }
 }
@@ -372,12 +370,8 @@ async function clippedRanges(videoId: string, durationMs: number): Promise<Array
 }
 
 // Best moments: the whole transcript in ~10-minute windows (see clipFinder.ts)
-async function detectBestMoments(words: Word[], durationMs: number, apiKey: string, exclude: Array<[number, number]>): Promise<ClipSuggestion[]> {
-  const genAI = new GoogleGenerativeAI(apiKey)
-  const ask = async (system: string, user: string) => {
-    const m = genAI.getGenerativeModel({ model: CLIP_MODEL, systemInstruction: system })
-    return (await m.generateContent(user)).response.text()
-  }
+async function detectBestMoments(words: Word[], durationMs: number, exclude: Array<[number, number]>): Promise<ClipSuggestion[]> {
+  const ask = (system: string, user: string) => askGemini(user, { model: CLIP_MODEL, system })
   const clips = await findClips({
     words, durationMs, mode: { kind: 'best' }, ask, exclude,
     log: msg => console.error('[suggestions]', msg),
@@ -388,14 +382,9 @@ async function detectBestMoments(words: Word[], durationMs: number, apiKey: stri
 // Clip search: Gemini reads the whole transcript in windows and keeps only genuine matches.
 // Clips end on a line the model chose, so the old +5 s end padding is no longer needed.
 async function detectClipsByCriteria(
-  words: Word[], durationMs: number, criteria: string, apiKey: string,
+  words: Word[], durationMs: number, criteria: string,
 ): Promise<ClipSuggestion[]> {
-  const genAI = new GoogleGenerativeAI(apiKey)
-  const ask = async (system: string, user: string) => {
-    const model = genAI.getGenerativeModel({ model: CLIP_MODEL, systemInstruction: system })
-    const result = await model.generateContent(user)
-    return result.response.text()
-  }
+  const ask = (system: string, user: string) => askGemini(user, { model: CLIP_MODEL, system })
   const clips = await findClips({
     words, durationMs, mode: { kind: 'search', criteria }, ask,
     log: msg => console.error('[ai-detect]', msg),

@@ -33,7 +33,7 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
         if (!email || !password) return null
 
         const [user] = await sql`
-          SELECT id, email, name, password_hash, "emailVerified"
+          SELECT id, email, name, image, password_hash, "emailVerified"
           FROM users WHERE email = ${email}
         `
         if (!user || !user.password_hash) return null
@@ -42,7 +42,12 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
         const ok = await verifyPassword(password, user.password_hash as string)
         if (!ok) return null
 
-        return { id: user.id as string, email: user.email as string, name: (user.name as string | null) ?? null }
+        // (image: the profile photo's address — the same one photoUrl makes in server/services/account.ts)
+        const photo = user.image as string | null
+        return {
+          id: user.id as string, email: user.email as string, name: (user.name as string | null) ?? null,
+          image: photo?.startsWith('avatars/') ? `/api/account/photo?v=${photo.split('/').pop()!.slice(0, 8)}` : null,
+        }
       },
     }),
   ],
@@ -59,6 +64,11 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
       // Account settings changed the name: the page calls update({ name }) so the session shows it
       if (trigger === 'update' && session && typeof session === 'object' && 'name' in session) {
         token.name = (session as { name?: string | null }).name ?? null
+      }
+      // …or the profile photo: update({ image }). Only our own photo address (or none) is taken.
+      if (trigger === 'update' && session && typeof session === 'object' && 'image' in session) {
+        const image = (session as { image?: unknown }).image
+        token.picture = typeof image === 'string' && image.startsWith('/api/account/photo?v=') ? image : null
       }
       return token
     },

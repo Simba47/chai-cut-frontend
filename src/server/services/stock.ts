@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { GoogleGenerativeAI } from '@google/generative-ai'
+import { aiProvider, askGemini } from '@/lib/gemini'
 import { GetObjectCommand, PutObjectCommand, HeadObjectCommand } from '@aws-sdk/client-s3'
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 import sql from '@/lib/db'
@@ -260,8 +260,7 @@ export async function brollIdeas(userId: string, clipId: string): Promise<string
   `
   if (!clip) throw Object.assign(new Error('Clip not found'), { status: 404 })
   if (clip.user_id !== userId) throw Object.assign(new Error('Forbidden'), { status: 403 })
-  const apiKey = process.env.GEMINI_API_KEY
-  if (!apiKey) return []
+  if (!aiProvider()) return []
   const [t] = await sql`SELECT id FROM transcripts WHERE video_id = ${clip.video_id} ORDER BY created_at DESC LIMIT 1`
   if (!t) return []
   const words = await sql<{ word: string }[]>`
@@ -273,7 +272,7 @@ ${words.map(w => w.word).join(' ').slice(0, 4000)}
 Suggest 6 short English searches (2-3 words each) for stock B-roll footage that would fit things, places or actions talked about. Concrete and visual only (e.g. "cinema crowd", "city traffic night"); no real people or brands.
 Return ONLY a JSON array of strings.`
   try {
-    const out = (await new GoogleGenerativeAI(apiKey).getGenerativeModel({ model: 'gemini-2.5-flash' }).generateContent(prompt)).response.text()
+    const out = await askGemini(prompt)
     const arr = JSON.parse(out.match(/\[[\s\S]*\]/)?.[0] ?? '[]') as unknown[]
     return arr.filter((s): s is string => typeof s === 'string').map(s => s.trim().slice(0, 40)).filter(Boolean).slice(0, 6)
   } catch (e) {
