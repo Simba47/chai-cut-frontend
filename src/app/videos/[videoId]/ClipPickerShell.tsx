@@ -1927,7 +1927,7 @@ function SubEditOverlay({ startedAt, estimate, ahead, onStop }: { startedAt: num
   const share = waiting ? 0 : Math.min(0.97, elapsed / total)
   const left = total - elapsed
   const step = waiting ? `Waiting for the worker${ahead ? ` · ${ahead} job${ahead === 1 ? '' : 's'} ahead` : ''}`
-    : share < 0.3 ? 'Reading the video' : share < 0.75 ? 'Finding the people and who talks when' : 'Laying the clip out'
+    : share < 0.3 ? 'Reading the video' : share < 0.75 ? 'Finding the people and who talks when' : 'Framing the clip on whoever is talking'
   return (
     <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-2 rounded-[inherit] px-4 text-center"
       style={{ background: 'rgba(10,10,10,0.86)', backdropFilter: 'blur(2px)' }} role="status" aria-live="polite"
@@ -2117,9 +2117,9 @@ function ClipCard({ id, focused, number, origin, title, startMs, endMs, status, 
       {!selecting && (
         <div className="mt-2.5 grid grid-cols-3 gap-1.5">
           <button onClick={e => { e.stopPropagation(); if (sub.state === 'done') onEdit(); else sub.start() }} disabled={sub.busy || disabled}
-            title={sub.busy ? 'Finding the people and laying the clip out — you can keep working'
+            title={sub.busy ? 'Finding the people and framing the clip on whoever is talking — you can keep working'
               : sub.state === 'done' ? 'Sub-edited: framed on whoever is talking. Open it in the editor'
-              : `Sub-edit: finds everyone in this clip and lays it out by itself — one person: locked on them; two: split screen; three: the one talking in the middle; more: the picture in two halves${sub.estimate ? ` — takes about ${aboutLabel(sub.estimate)}` : ''}. It replaces the clip's layouts; text, photos, music and captions stay`}
+              : `Sub-edit: finds everyone in this clip and frames it on whoever is talking, by itself${sub.estimate ? ` — takes about ${aboutLabel(sub.estimate)}` : ''}`}
             className="h-8 flex items-center justify-center gap-1.5 rounded-lg text-xs font-semibold transition-colors hover:bg-white/10 disabled:cursor-default"
             style={{
               color: sub.state === 'done' ? '#4ade80' : sub.busy ? ACCENT : 'rgba(255,255,255,0.9)',
