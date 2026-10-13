@@ -1,5 +1,6 @@
 'use client'
 
+import { preloadMascot } from '@/components/ui/mascot'
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import type { CaptionStyle, SegmentLocal, TextOverlay, TranscriptWord } from '@chai-cut/shared'
@@ -32,6 +33,8 @@ export function ClipsGallery({ video, videoUrl, stockUrls, job, clips: initial }
   job: { status: string; error: string | null } | null
   clips: GalleryClip[]
 }) {
+  // (the loader shown when a clip is opened has the mascot: its picture is fetched now)
+  preloadMascot()
   const router = useRouter()
   const [clips, setClips] = useState(initial)
   const [opening, setOpening] = useState(false)
@@ -115,7 +118,7 @@ export function ClipsGallery({ video, videoUrl, stockUrls, job, clips: initial }
   // and the post text folded away until you open it.
   return (
     <div className="min-h-screen flex flex-col" style={{ background: '#0b0b0c' }}>
-      {opening && <BrandLoaderScreen overlay label="Getting your clip ready, please wait…" />}
+      {opening && <BrandLoaderScreen mascot overlay label="Getting your clip ready, please wait…" />}
       <nav className="flex items-center gap-3 px-4 shrink-0 sticky top-0 z-10"
         style={{ height: 56, background: 'rgba(14,14,15,0.85)', backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)', borderBottom: '1px solid rgba(255,255,255,0.07)' }}>
         <Breadcrumbs shine items={[

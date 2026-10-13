@@ -1,5 +1,6 @@
 'use client'
 
+import { preloadMascot } from '@/components/ui/mascot'
 import './dashboard.css'
 import { useState, useEffect, useRef, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
@@ -44,6 +45,8 @@ function useDismiss(open: boolean, close: () => void) {
 }
 
 export default function DashboardPage() {
+  // (the clip board's loader has the mascot: its picture is fetched now, so it shows at once)
+  preloadMascot('clipboard')
   const router = useRouter()
   const [videos, setVideos] = useState<DashVideo[]>([])
   const [loading, setLoading] = useState(true)

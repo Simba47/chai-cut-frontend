@@ -1,5 +1,6 @@
 'use client'
 
+import { preloadMascot } from '@/components/ui/mascot'
 import { InfoTip } from '@/components/ui/info-tip'
 import { useFrameAt } from '@/modules/clips/thumbs'
 import { useState, useRef, useEffect, useCallback, useSyncExternalStore } from 'react'
@@ -192,6 +193,8 @@ const stageLabel = (pct: number) =>
 // ── main component ─────────────────────────────────────────────────────────────
 
 export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: Props) {
+  // (the loader shown when a clip is opened has the mascot: its picture is fetched now)
+  preloadMascot()
   const router = useRouter()
   const videoRef = useRef<HTMLVideoElement>(null)
 
@@ -1338,7 +1341,7 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: P
   return (
     <div className="h-screen flex flex-col overflow-hidden" style={{ background: '#0d0d0d' }}>
       {/* Opening a clip: covers the page while the clip is created and the editor loads */}
-      {busy && <BrandLoaderScreen overlay label="Getting your clip ready, please wait…" />}
+      {busy && <BrandLoaderScreen mascot overlay label="Getting your clip ready, please wait…" />}
       {/* Nav */}
       <nav className="flex items-center gap-3 px-4 shrink-0"
         style={{ height: 56, background: '#111', borderBottom: '1px solid rgba(255,255,255,0.07)' }}>
