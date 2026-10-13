@@ -60,8 +60,10 @@ export async function listMedia(userId: string): Promise<MediaItem[]> {
     listFolder(`audio/${userId}/`, 'audio').catch(() => []),
   ])
   const vids: MediaItem[] = await Promise.all(videos
-    // Stock footage is under Library; a video still downloading or that failed has nothing to show
-    .filter(v => !(v.is_asset && !v.is_upload_asset) && v.status === 'ready' && v.storage_path)
+    // Only videos imported in the editor: dashboard videos (the ones clips are made from) aren't
+    // media, and stock footage is under B-roll stock. A video still downloading or that failed has
+    // nothing to show.
+    .filter(v => v.is_upload_asset && v.status === 'ready' && v.storage_path)
     .map(async v => ({
       kind: 'video' as const, id: v.id as string, name: (v.title as string | null)?.trim() || 'Video',
       url: await sign(((v.proxy_path as string | null) || v.storage_path) as string), duration_ms: v.duration_ms as number | null,

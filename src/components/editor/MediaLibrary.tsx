@@ -17,7 +17,7 @@ export interface LibraryItem {
   created_at: string
 }
 
-export type MediaSection = 'media' | 'library'
+export type MediaSection = 'media' | 'library' | 'photos'
 
 
 type Filter = 'all' | 'video' | 'audio' | 'image'
@@ -46,14 +46,14 @@ const clock = (ms: number | null) => {
  * adds it at the playhead, or drag it onto the timeline; the bin deletes it. Library is the stock
  * footage search (`library`).
  */
-export function MediaLibrary({ items, loading, used, filter, onFilter, section, importing, onImport, onAdd, onDelete, library }: {
+export function MediaLibrary({ items, loading, used, filter, onFilter, section, importing, onImport, onAdd, onDelete, library, photos }: {
   items: LibraryItem[]
   loading: boolean
   /** Ids (videos) and storage paths (photos, audio) already in this clip */
   used: Set<string>
   filter: Filter
   onFilter: (f: Filter) => void
-  /** Import or Library (switched in the panel's header) */
+  /** Import, B-roll stock or Search photos (switched in the panel's header) */
   section: MediaSection
   /** What is being imported right now (shown on the Import button) */
   importing: string | null
@@ -62,6 +62,8 @@ export function MediaLibrary({ items, loading, used, filter, onFilter, section, 
   /** Delete it from the library (resolves when it's gone) */
   onDelete: (item: LibraryItem) => Promise<void>
   library: React.ReactNode
+  /** Media ▸ Search photos: free stock photos to add */
+  photos?: React.ReactNode
 }) {
   const [view, setView] = useState<View>('grid')
   const [sortBy, setSortBy] = useState<SortBy>('time')
@@ -103,6 +105,8 @@ export function MediaLibrary({ items, loading, used, filter, onFilter, section, 
       <div className="flex-1 min-w-0 min-h-0 flex flex-col">
         {section === 'library' ? (
           <div className="flex-1 min-h-0 overflow-y-auto">{library}</div>
+        ) : section === 'photos' ? (
+          <div className="flex-1 min-h-0 overflow-y-auto">{photos}</div>
         ) : (
           <>
             {/* ── Import · view · sort · filter ── */}

@@ -194,7 +194,11 @@ export async function trackSubjects(userId: string, clipId: string, body: { star
     `
     if (queued.length) {
       // A job still waiting will take these too; one already running takes only its own
-      const [waiting] = await sql`SELECT 1 FROM jobs WHERE type = 'track_subjects' AND status = 'queued' AND payload->>'clip_id' = ${clipId} LIMIT 1`
+      // (not a Sub-edit or an angles scan of the clip: those never track the marked ones)
+      const [waiting] = await sql`
+        SELECT 1 FROM jobs WHERE type = 'track_subjects' AND status = 'queued' AND payload->>'clip_id' = ${clipId}
+          AND payload->>'auto' IS NULL AND payload->>'angles' IS NULL LIMIT 1
+      `
       if (!waiting) {
         await sql`INSERT INTO jobs (type, payload, status) VALUES ('track_subjects', ${sql.json({ clip_id: clipId, start_ms: Math.round(start), end_ms: Math.round(end) })}, 'queued')`
       }
@@ -207,6 +211,76 @@ export async function trackSubjects(userId: string, clipId: string, body: { star
     }
     return notReady(e)
   }
+}
+
+// ── Camera angles ──────────────────────────────────────────────────────────────
+// The Subjects tool lists every camera angle of the clip (a shot, and everywhere it comes back), so
+// each can be given its subject or its group and none is missed. The worker finds them
+// (jobs/track_subjects.ts findAngles, a track_subjects job with payload angles) into clip_angles.
+
+export interface Angle {
+  /** How many people it shows; 0: the other shots (no faces, or too short to be an angle) */
+  people: number
+  /** A moment that shows it (source ms), and the faces there, left to right (fractions of the frame) */
+  at: number
+  faces: Array<{ x: number; y: number; w: number; h: number }>
+  /** Wherever the clip shows it: [start, end] source ms */
+  spans: Array<[number, number]>
+}
+export interface AnglesState {
+  /** none: never looked for; unavailable: the worker that finds them isn't deployed yet */
+  status: 'none' | 'queued' | 'running' | 'done' | 'failed' | 'unavailable'
+  progress: number
+  error: string | null
+  angles: Angle[]
+  scan_start_ms: number | null
+  scan_end_ms: number | null
+}
+const NO_ANGLES: AnglesState = { status: 'none', progress: 0, error: null, angles: [], scan_start_ms: null, scan_end_ms: null }
+/** A scan not heard from for this long has stopped (the worker restarted): it can be started again */
+const ANGLES_STUCK = '5 minutes'
+
+export async function getAngles(userId: string, clipId: string): Promise<AnglesState> {
+  await ownClip(userId, clipId)
+  try {
+    const [row] = await sql<(Omit<AnglesState, 'angles'> & { angles: Angle[] | null; stuck: boolean })[]>`
+      SELECT status, progress, error, angles, scan_start_ms, scan_end_ms,
+        status IN ('queued', 'running') AND updated_at < now() - ${ANGLES_STUCK}::interval AS stuck
+      FROM clip_angles WHERE clip_id = ${clipId}
+    `
+    if (!row) return NO_ANGLES
+    const { stuck, ...state } = row
+    if (stuck) return { ...state, angles: [], status: 'failed', error: 'Looking for the angles stopped. Try again.' }
+    return { ...state, angles: state.status === 'done' ? state.angles ?? [] : [], error: state.status === 'failed' ? 'The angles could not be found this time. Try again.' : null }
+  } catch (e) {
+    if ((e as { code?: string })?.code === '42P01') return { ...NO_ANGLES, status: 'unavailable' }
+    throw e
+  }
+}
+
+/** Look for the angles through [start_ms, end_ms] of the source video (the clip as it is in the editor) */
+export async function scanAngles(userId: string, clipId: string, body: { start_ms?: unknown; end_ms?: unknown }): Promise<AnglesState> {
+  const clip = await ownClip(userId, clipId)
+  let start = Number(body.start_ms), end = Number(body.end_ms)
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) { start = clip.start_ms; end = clip.end_ms }
+  start = Math.max(0, start)
+  end = Math.min(end, start + 6 * 60_000)
+  try {
+    // One scan at a time: a row already waiting or being worked on is left alone
+    const [queued] = await sql<{ clip_id: string }[]>`
+      INSERT INTO clip_angles (clip_id, status, progress) VALUES (${clipId}, 'queued', 0)
+      ON CONFLICT (clip_id) DO UPDATE SET status = 'queued', progress = 0, error = NULL, updated_at = now()
+        WHERE clip_angles.status NOT IN ('queued', 'running') OR clip_angles.updated_at < now() - ${ANGLES_STUCK}::interval
+      RETURNING clip_id
+    `
+    if (queued) {
+      await sql`INSERT INTO jobs (type, payload, status) VALUES ('track_subjects', ${sql.json({ clip_id: clipId, start_ms: Math.round(start), end_ms: Math.round(end), angles: true })}, 'queued')`
+    }
+  } catch (e) {
+    if ((e as { code?: string })?.code === '42P01') return { ...NO_ANGLES, status: 'unavailable' }
+    throw e
+  }
+  return getAngles(userId, clipId)
 }
 
 // ── Sub-edit (the clip board's button) ─────────────────────────────────────────
