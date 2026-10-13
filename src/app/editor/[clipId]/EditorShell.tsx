@@ -1988,6 +1988,14 @@ export function EditorShell({
     seekToMs(Math.max(0, Math.min(at, trim.lengthMs - 1)))
   }, [trimsKey]) // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Where the clip started and ended when it was made (before its ends were moved), on the timeline:
+  // the timeline marks them while an end is dragged back out
+  const madeClip = savedClip as typeof savedClip & { original_start_ms?: number | null; original_end_ms?: number | null }
+  const clipMade = {
+    start: trim.toTimeline(madeClip.original_start_ms ?? savedClip.start_ms),
+    end: trim.toTimeline(madeClip.original_end_ms ?? savedClip.end_ms),
+  }
+
   /** The least of a clip that must stay when a part is cut out */
   const MIN_CLIP_LEFT_MS = MIN_CLIP_MS
 
@@ -4117,6 +4125,7 @@ export function EditorShell({
           videoUrl={videoUrl} safeDurationMs={clipDurationMs} onSeek={seekToMs}
           sourceAt={trim.toSource} sourceKey={trimsKey}
           clipEdgeLimits={canTrim ? clipEdgeLimits : undefined} onClipEdge={moveClipEdge}
+          clipMade={canTrim ? clipMade : undefined}
           onSelectSegment={id => setActiveSegmentId(id)}
           onBrollChange={(id, s, e, done) => retimeBroll(id, s, e, done !== false)}
           videoUrls={videoUrls} mediaLengths={videoLengths}

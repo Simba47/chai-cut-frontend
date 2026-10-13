@@ -1,6 +1,6 @@
 'use client'
 
-import { useRef, useState, useEffect, useLayoutEffect, useCallback, Fragment } from 'react'
+import { useRef, useState, useEffect, useLayoutEffect, useCallback, useMemo, Fragment } from 'react'
 import type { SegmentLocal, LayoutType, TextOverlay, FrameItem, FrameLane, FrameLayout } from '@chai-cut/shared'
 import type { TrackRef } from '@/modules/editor/tracks'
 import { Waveform } from './Waveform'
@@ -71,7 +71,83 @@ const THUMB_COUNT = 24
 // start or end is dragged the strip is laid out again many times a second: each thumbnail first
 // takes the nearest frame already captured (so nothing goes blank), and only the frames missing —
 // the new footage — are captured.
+// Keyed by the file's own address: the signed link to it (?X-Amz-…) is new on every page load, so
+// keyed by that nothing was ever found again.
 const thumbCache = new Map<string, Map<number, string>>()
+const thumbKey = (url: string) => url.split(/[?#]/)[0]
+function thumbsFor(url: string): Map<number, string> {
+  const key = thumbKey(url)
+  let cache = thumbCache.get(key)
+  if (!cache) { cache = new Map(); thumbCache.set(key, cache) }
+  return cache
+}
+
+// ── Frames kept in the browser (IndexedDB) ──
+// Capturing a strip takes a seek in the video per frame: seconds for a whole strip. So the frames
+// of the last videos opened are kept, and a clip opened again (or the page refreshed) shows its
+// strip at once. One record per video file: { key, at, frames: [[ms, dataUrl], …] }.
+const SAVED_DB = 'shortcut-thumbs', SAVED_STORE = 'frames'
+const SAVED_VIDEOS = 12          // videos kept
+const SAVED_FRAMES = 400         // frames kept per video (~10 KB each)
+let savedDb: Promise<IDBDatabase | null> | null = null
+function openSaved(): Promise<IDBDatabase | null> {
+  if (savedDb) return savedDb
+  savedDb = new Promise(resolve => {
+    try {
+      const req = indexedDB.open(SAVED_DB, 1)
+      req.onupgradeneeded = () => { req.result.createObjectStore(SAVED_STORE, { keyPath: 'key' }) }
+      req.onsuccess = () => resolve(req.result)
+      req.onerror = () => resolve(null)
+      req.onblocked = () => resolve(null)
+    } catch { resolve(null) }   // (private windows, old browsers: just not kept)
+  })
+  return savedDb
+}
+const savedLoads = new Map<string, Promise<void>>()
+const savedDone = new Set<string>()
+/** The frames kept for this video, put into its cache (once; resolves when they are there) */
+function loadSavedThumbs(url: string): Promise<void> {
+  const key = thumbKey(url)
+  let load = savedLoads.get(key)
+  if (!load) {
+    load = openSaved().then(db => new Promise<void>(resolve => {
+      const done = () => { savedDone.add(key); resolve() }
+      if (!db) { done(); return }
+      try {
+        const req = db.transaction(SAVED_STORE).objectStore(SAVED_STORE).get(key)
+        req.onsuccess = () => {
+          const cache = thumbsFor(url)
+          for (const [ms, dataUrl] of (req.result?.frames ?? []) as [number, string][]) if (!cache.has(ms)) cache.set(ms, dataUrl)
+          done()
+        }
+        req.onerror = done
+      } catch { done() }
+    }))
+    savedLoads.set(key, load)
+  }
+  return load
+}
+const saveTimers = new Map<string, ReturnType<typeof setTimeout>>()
+/** Keep this video's frames (a moment after the last one is captured), and let go of the oldest videos */
+function saveThumbsSoon(url: string) {
+  const key = thumbKey(url)
+  clearTimeout(saveTimers.get(key))
+  saveTimers.set(key, setTimeout(async () => {
+    saveTimers.delete(key)
+    const db = await openSaved()
+    if (!db) return
+    try {
+      const frames = [...thumbsFor(url)].slice(-SAVED_FRAMES)
+      const store = db.transaction(SAVED_STORE, 'readwrite').objectStore(SAVED_STORE)
+      store.put({ key, at: Date.now(), frames })
+      const all = store.getAll()
+      all.onsuccess = () => {
+        const old = (all.result as { key: string; at: number }[]).sort((a, b) => b.at - a.at).slice(SAVED_VIDEOS)
+        for (const r of old) store.delete(r.key)
+      }
+    } catch { /* (storage full or blocked: the strip is simply captured again next time) */ }
+  }, 1500))
+}
 function nearestThumb(cache: Map<number, string>, ms: number, tol: number): string | undefined {
   let best: string | undefined, bestD = tol
   for (const [t, url] of cache) { const d = Math.abs(t - ms); if (d <= bestD) { bestD = d; best = url } }
@@ -230,11 +306,20 @@ export function VideoThumbnails({ videoUrl, startMs, durationMs, count = THUMB_C
   // Frames that couldn't be had (a long original still opening, a slow seek): asked for again, a few times
   const [retry, setRetry] = useState(0)
   useEffect(() => { setRetry(0) }, [videoUrl, startMs, durationMs, sourceKey])
+  // The frames kept in the browser from last time are read first (a few ms): the strip shows at once
+  const [saved, setSaved] = useState(() => !!videoUrl && savedDone.has(thumbKey(videoUrl)))
   useEffect(() => {
-    if (!videoUrl || (tile && !size.w)) return
+    if (!videoUrl) return
+    if (savedDone.has(thumbKey(videoUrl))) { setSaved(true); return }
+    let gone = false
+    setSaved(false)
+    loadSavedThumbs(videoUrl).then(() => { if (!gone) setSaved(true) })
+    return () => { gone = true }
+  }, [videoUrl])
+  useEffect(() => {
+    if (!videoUrl || !saved || (tile && !size.w)) return
     let cancelled = false
-    let cache = thumbCache.get(videoUrl)
-    if (!cache) { cache = new Map(); thumbCache.set(videoUrl, cache) }  // (sharp frames: CAPTURE_H)
+    const cache = thumbsFor(videoUrl)   // (sharp frames: CAPTURE_H)
     // Where each thumbnail is in the video (a tile: the moment under its middle), and how far off a
     // reused frame may be (half a thumbnail)
     const at = sourceAtRef.current
@@ -243,7 +328,7 @@ export function VideoThumbnails({ videoUrl, startMs, durationMs, count = THUMB_C
       return at ? at(clipMs) : startMs + clipMs
     })
     const tol = Math.max(250, durationMs / n / 2)
-    const start = targets.map(t => nearestThumb(cache!, t, tol) ?? '')
+    const start = targets.map(t => nearestThumb(cache, t, tol) ?? '')
     setThumbs(start)
     // Spread out first — every 8th frame, then every 4th, 2nd, the rest — so the whole strip shows
     // something early, then fills in (seeks in a long video are slow)
@@ -257,12 +342,21 @@ export function VideoThumbnails({ videoUrl, startMs, durationMs, count = THUMB_C
       // Tiles: laid out again for the video's own shape first
       onShape: shape => { if (tile && Math.abs(shape - ar) > 0.01) { setAr(shape); return false } return true },
       onFrame: (i, dataUrl, ms) => {
-        cache!.set(ms, dataUrl)
+        cache.set(ms, dataUrl)
+        saveThumbsSoon(videoUrl)
         setThumbs(prev => { const next = [...prev]; next[i] = dataUrl; return next })
       },
     }), 120)
     return () => { cancelled = true; clearTimeout(wait) }
-  }, [videoUrl, startMs, durationMs, n, sourceKey, tile, size.w, size.h, ar, retry]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [videoUrl, saved, startMs, durationMs, n, sourceKey, tile, size.w, size.h, ar, retry]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // While frames are still being captured, a slot without its own shows the nearest one there is:
+  // the strip is whole from the first few frames, and sharpens as the rest arrive
+  const shown = useMemo(() => {
+    const have = thumbs.map((t, i) => (t ? i : -1)).filter(i => i >= 0)
+    if (!have.length || have.length === n) return thumbs
+    return Array.from({ length: n }, (_, i) => thumbs[i] || thumbs[have.reduce((best, j) => (Math.abs(j - i) < Math.abs(best - i) ? j : best), have[0])])
+  }, [thumbs, n])
 
   return (
     // (only a picture: never grabbed itself — an image dragged by the browser stopped the playhead
@@ -270,8 +364,8 @@ export function VideoThumbnails({ videoUrl, startMs, durationMs, count = THUMB_C
     <div ref={boxRef} className="absolute inset-0 flex overflow-hidden pointer-events-none" style={{ borderRadius: radius }}>
       {Array.from({ length: n }).map((_, i) => (
         <div key={i} style={{ ...(tile ? { width: tileW, flex: 'none' } : { flex: 1, minWidth: 0 }), overflow: 'hidden', background: 'rgb(var(--ed-fg) / 0.03)' }}>
-          {thumbs[i] && (
-            <img src={thumbs[i]} alt="" draggable={false} style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
+          {shown[i] && (
+            <img src={shown[i]} alt="" draggable={false} style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
           )}
         </div>
       ))}
@@ -360,6 +454,12 @@ interface Props {
   clipEdgeLimits?: { startEarlier: number; startLater: number; endEarlier: number; endLater: number }
   /** Called while dragging (`done` false, a few times a second: the clip changes live) and on release (`done` true) */
   onClipEdge?: (edge: 'start' | 'end', deltaMs: number, done: boolean) => void
+  /**
+   * Where the clip started and ended when it was first made, on this timeline (ms: negative =
+   * before the clip's start now, i.e. its start has been trimmed since; past the end = its end
+   * has). Shown while an end is dragged back out, which also snaps to them.
+   */
+  clipMade?: { start: number; end: number }
   safeDurationMs?: number
   onSeek: (ms: number) => void
   onSelectSegment: (id: string) => void
@@ -479,6 +579,7 @@ export function SegmentTimeline({
   sourceKey,
   clipEdgeLimits,
   onClipEdge,
+  clipMade,
   safeDurationMs,
   onSeek,
   onSelectSegment,
@@ -736,6 +837,12 @@ export function SegmentTimeline({
     const snapTo = nowRef.current
     const snapMs = 8 * msPerPx
     let lastX = x0, auto = 0                              // auto: video added by holding past the edge
+    // Dragging back out over what was trimmed: the move that puts this end back where the clip was
+    // made (null when it hasn't been trimmed). It snaps there, and holding past the edge pauses there.
+    const madeD = !clipMade ? null
+      : edge === 'start' ? (clipMade.start < -50 ? clipMade.start : null)
+      : (clipMade.end > len + 50 ? clipMade.end - len : null)
+    let heldAtMade = false, holdUntil = 0
     const clamp = (r: number) => (edge === 'start'
       ? Math.max(-lim.startEarlier, Math.min(lim.startLater, r))
       : Math.max(-lim.endEarlier, Math.min(lim.endLater, r)))
@@ -743,6 +850,7 @@ export function SegmentTimeline({
       const d = (lastX - x0) * msPerPx + outward * auto
       const edgeAt = edge === 'start' ? d : len + d
       const snapped = snapTo > 0 && snapTo < len && Math.abs(edgeAt - snapTo) <= snapMs
+      if (madeD !== null && Math.abs(d - madeD) <= snapMs) return clamp(Math.round(madeD))
       // Whole tenths of a second (or exactly the playhead), inside the limits
       return clamp(snapped ? Math.round(edge === 'start' ? snapTo : snapTo - len) : Math.round(d / 100) * 100)
     }
@@ -761,9 +869,18 @@ export function SegmentTimeline({
       last = now
       const past = (lastX - stripEdge) * outward      // px beyond the strip's end, outwards
       const room = edge === 'start' ? lim.startEarlier : lim.endLater
-      if (past > 0 && room > 0) {
+      if (past > 0 && room > 0 && now >= holdUntil) {
+        const pos = (lastX - x0) * msPerPx
+        const before = (pos + outward * auto) * outward
         // 2 s of video per second at the edge, up to 30 s per second far past it
         auto = Math.min(room + len, auto + dt * Math.min(30_000, 2_000 + past * 160))
+        // Reaching where the clip was made: it stops there for a moment (keep holding to go on)
+        const target = madeD !== null ? madeD * outward : null
+        if (target !== null && !heldAtMade && before < target && (pos + outward * auto) * outward >= target) {
+          auto = (madeD! - pos) * outward
+          heldAtMade = true
+          holdUntil = now + 900
+        }
         show()
       }
       if (seekTo !== null) { onSeek(seekTo); seekTo = null }
@@ -1746,27 +1863,83 @@ export function SegmentTimeline({
 
             {/* A clip end dragged inwards (cut on release): the part that stays is outlined in lime,
                 with where it will start (or end) and how long it will be under the strip */}
-            {/* A clip end dragged outwards (added on release): how much more video, and the new length */}
-            {clipAdd > 0 && clipDrag && (
-              <>
-                <div className="absolute pointer-events-none" style={{
-                  left: 0, width: '100%', top: STRIP_TOP, height: STRIP_H, zIndex: 35,
-                  borderRadius: 12, boxShadow: `inset 0 0 0 2px ${ACCENT}, 0 0 14px rgba(200,255,0,0.25)`,
-                }} />
-                <span className="absolute pointer-events-none px-2.5 rounded-full text-[11px] font-semibold tabular-nums whitespace-nowrap leading-[20px]"
-                  style={{
-                    ...(clipDrag.edge === 'start' ? { left: 0 } : { right: 0 }), top: STRIP_TOP + STRIP_H + 6, zIndex: 45,
-                    background: '#1b1b1f', color: '#fff', boxShadow: '0 0 0 1px rgba(255,255,255,0.12), 0 6px 16px rgba(0,0,0,0.55)',
-                  }}>
-                  <span style={{ color: ACCENT }}>+{(clipAdd / 1000).toFixed(1)}s</span>
-                  {clipDrag.edge === 'start' && <> · starts at {msToLabel(Math.max(0, clipStartMs - clipAdd))}.{Math.floor(Math.max(0, clipStartMs - clipAdd) / 100) % 10} in the video</>}
-                  <span style={{ opacity: 0.45 }}> · </span>
-                  {durLabel(duration + clipAdd)}
-                  {clipAdd >= (clipDrag.edge === 'start' ? clipEdgeLimits?.startEarlier ?? 0 : clipEdgeLimits?.endLater ?? 0) && <span style={{ color: ACCENT }}> · all of it</span>}
-                </span>
-              </>
-            )}
+            {/* A clip end dragged outwards (added on release). What is being added shows as it is, with a
+                thin line under it: lime for what was trimmed and is coming back, white for video from
+                beyond where the clip was made. Two markers say where the clip was made ("Original
+                start") and where it starts now; under the strip, in words. */}
+            {clipAdd > 0 && clipDrag && (() => {
+              const start = clipDrag.edge === 'start'
+              // (view ms) the part being added, and inside it the point where the clip was made
+              const [addFrom, addTo] = start ? [0, clipAdd] : [duration, duration + clipAdd]
+              const trimmed = !clipMade ? 0 : start ? Math.max(0, -clipMade.start) : Math.max(0, clipMade.end - duration)   // how much had been trimmed off this end
+              const back = Math.min(clipAdd, trimmed)             // …of which this much is coming back
+              const beyond = clipAdd - back                       // video from before (after) the original clip
+              const madeAt = start ? clipAdd - trimmed : duration + trimmed
+              const nowAt = start ? clipAdd : duration
+              const exact = trimmed > 0 && Math.abs(clipAdd - trimmed) < 1
+              const tag = (at: number, text: string, lime: boolean, side: 'l' | 'r') => (
+                <>
+                  <div className="absolute pointer-events-none" style={{
+                    left: `calc(${pct(at)}% - 1px)`, top: STRIP_TOP - 6, height: STRIP_H + 12, width: 0, zIndex: 37,
+                    borderLeft: lime ? `2px solid ${ACCENT}` : '2px dashed rgba(255,255,255,0.85)',
+                    filter: lime ? 'drop-shadow(0 0 6px rgba(200,255,0,0.7))' : undefined,
+                  }} />
+                  <span className="absolute pointer-events-none px-1.5 rounded text-[10px] font-bold whitespace-nowrap leading-[16px]"
+                    style={{
+                      left: `${pct(at)}%`, top: STRIP_TOP - 24, zIndex: 46, transform: side === 'l' ? 'translateX(calc(-100% - 3px))' : 'translateX(3px)',
+                      ...(lime ? { background: ACCENT, color: '#0a0a0a' } : { background: 'rgba(255,255,255,0.92)', color: '#0a0a0a' }),
+                    }}>
+                    {text}
+                  </span>
+                </>
+              )
+              return (
+                <>
+                  <div className="absolute pointer-events-none" style={{
+                    left: 0, width: '100%', top: STRIP_TOP, height: STRIP_H, zIndex: 35,
+                    borderRadius: 12, boxShadow: `inset 0 0 0 2px ${ACCENT}, 0 0 14px rgba(200,255,0,0.25)`,
+                  }} />
+                  {/* The footage itself shows as it is. A thin line along the bottom says which part is
+                      which: lime = coming back from what was trimmed, white = from beyond where the
+                      clip was made */}
+                  {back > 0 && (
+                    <div className="absolute pointer-events-none" style={{
+                      left: `${pct(start ? addTo - back : addFrom)}%`, width: `${pct(back)}%`, top: STRIP_TOP + STRIP_H - 7, height: 3, zIndex: 36,
+                      borderRadius: 3, background: ACCENT, boxShadow: '0 0 6px rgba(200,255,0,0.6)',
+                    }} />
+                  )}
+                  {beyond > 0 && (
+                    <div className="absolute pointer-events-none" style={{
+                      left: `calc(${pct(start ? addFrom : addFrom + back)}% + ${start ? 8 : 0}px)`, width: `calc(${pct(beyond)}% - 8px)`, top: STRIP_TOP + STRIP_H - 7, height: 3, zIndex: 36,
+                      borderRadius: 3, background: 'rgba(255,255,255,0.75)',
+                    }} />
+                  )}
+                  {tag(nowAt, start ? 'Starts here now' : 'Ends here now', false, start ? 'r' : 'l')}
+                  {trimmed > 0 && clipAdd >= trimmed - 1 && tag(madeAt, start ? 'Original start' : 'Original end', true, start ? (exact ? 'r' : 'l') : (exact ? 'l' : 'r'))}
+                  <span className="absolute pointer-events-none px-2.5 rounded-full text-[11px] font-semibold tabular-nums whitespace-nowrap leading-[20px]"
+                    style={{
+                      ...(start ? { left: 0 } : { right: 0 }), top: STRIP_TOP + STRIP_H + 6, zIndex: 45,
+                      background: '#1b1b1f', color: '#fff', boxShadow: '0 0 0 1px rgba(255,255,255,0.12), 0 6px 16px rgba(0,0,0,0.55)',
+                    }}>
+                    <span style={{ color: ACCENT }}>+{(clipAdd / 1000).toFixed(1)}s</span>
+                    <span style={{ opacity: 0.45 }}> · </span>
+                    {exact
+                      ? <span style={{ color: ACCENT }}>back to your original {start ? 'start' : 'end'}</span>
+                      : trimmed > 0 && beyond <= 0
+                        ? <>{((trimmed - clipAdd) / 1000).toFixed(1)}s more to your original {start ? 'start' : 'end'}</>
+                        : trimmed > 0
+                          ? <>{(beyond / 1000).toFixed(1)}s {start ? 'before your original start' : 'after your original end'}</>
+                          : <>{start ? 'earlier video' : 'later video'}</>}
+                    <span style={{ opacity: 0.45 }}> · </span>
+                    {durLabel(duration + clipAdd)}
+                    {clipAdd >= (start ? clipEdgeLimits?.startEarlier ?? 0 : clipEdgeLimits?.endLater ?? 0) && <span style={{ opacity: 0.6 }}> · all there is</span>}
+                  </span>
+                </>
+              )
+            })()}
 
+            {/* A clip end dragged inwards (cut on release): the part that stays is outlined in lime,
+                with where it will start (or end) and how long it will be under the strip */}
             {clipCut > 0 && clipDrag && (() => {
               const start = clipDrag.edge === 'start'
               const [keepFrom, keepTo] = start ? [clipCut, duration] : [0, duration - clipCut]
@@ -1850,7 +2023,7 @@ export function SegmentTimeline({
               )}
               {/* The ◆ being dragged: the frame at that moment and its time, above it */}
               {viewDragT !== null && (() => {
-                const cache = videoUrl ? thumbCache.get(videoUrl) : undefined
+                const cache = videoUrl ? thumbsFor(videoUrl) : undefined
                 const src = cache ? nearestThumb(cache, sourceAt ? sourceAt(viewDragT) : clipStartMs + viewDragT, Math.max(1500, duration / 40)) : undefined
                 return (
                   <div className="absolute pointer-events-none flex flex-col items-center gap-1"
