@@ -121,14 +121,21 @@ function jobDone(url: string, g: Grabber) {
     grabbers.delete(url)
   }, LET_GO_AFTER_MS)
 }
+// A long original (an hour or more, before its editing copy is made) can take a while to open and
+// to seek in: these waits are long enough for that. A frame whose seek didn't finish is not kept
+// (it would be a black or wrong picture); the strip asks for it again (see `onShort`).
+const OPEN_WAIT_MS = 45000
+const SEEK_WAIT_MS = 10000
 /**
  * Frames of a video at these times (ms in the video), one after another, `onFrame` with each as it
  * is ready. `onShape` first gets the video's width / height: false stops there (the caller lays
- * its frames out again for that shape and asks again).
+ * its frames out again for that shape and asks again). `onShort` is called when some frames could
+ * not be had this time (the file wasn't open yet, or a seek took too long).
  */
 function grabFrames(url: string, times: Array<{ i: number; ms: number }>, opts: {
   onFrame: (i: number, dataUrl: string, ms: number) => void
   onShape?: (shape: number) => boolean
+  onShort?: () => void
   cancelled: () => boolean
 }) {
   const g = grabberFor(url)
@@ -136,6 +143,7 @@ function grabFrames(url: string, times: Array<{ i: number; ms: number }>, opts: 
   g.chain = g.chain.then(async () => {
     if (opts.cancelled()) return
     await takeGrabTurn()
+    let short = false
     try {
       const vid = g.el
       if (vid.readyState < 1) {
@@ -143,11 +151,17 @@ function grabFrames(url: string, times: Array<{ i: number; ms: number }>, opts: 
           const done = () => r()
           vid.addEventListener('loadedmetadata', done, { once: true })
           vid.addEventListener('error', done, { once: true })
-          setTimeout(done, 15000)
+          setTimeout(done, OPEN_WAIT_MS)
         })
       }
       const durSec = vid.duration
-      if (opts.cancelled() || !durSec || !isFinite(durSec)) return
+      if (opts.cancelled()) return
+      if (!durSec || !isFinite(durSec)) {
+        // Couldn't open it: start again with a fresh copy next time
+        short = true
+        if (grabbers.get(url) === g) { g.el.removeAttribute('src'); g.el.load(); grabbers.delete(url) }
+        return
+      }
       // In the video's own shape (not squeezed), big enough to stay sharp
       const shape = vid.videoWidth && vid.videoHeight ? vid.videoWidth / vid.videoHeight : 16 / 9
       if (opts.onShape && !opts.onShape(shape)) return
@@ -160,20 +174,22 @@ function grabFrames(url: string, times: Array<{ i: number; ms: number }>, opts: 
         if (opts.cancelled()) return
         const targetSec = Math.min(durSec, Math.max(0, ms / 1000))
         if (!(Math.abs(vid.currentTime - targetSec) < 0.05 && vid.readyState >= 2)) {
-          await new Promise<void>(r => {
-            const tid = setTimeout(r, 3000)
-            vid.addEventListener('seeked', () => { clearTimeout(tid); r() }, { once: true })
+          const arrived = await new Promise<boolean>(r => {
+            const tid = setTimeout(() => r(false), SEEK_WAIT_MS)
+            vid.addEventListener('seeked', () => { clearTimeout(tid); r(true) }, { once: true })
             vid.currentTime = targetSec
           })
+          if (!arrived || vid.readyState < 2) { short = true; continue }
         }
         if (opts.cancelled()) return
         try {
           ctx.drawImage(vid, 0, 0, canvas.width, canvas.height)
           opts.onFrame(i, canvas.toDataURL('image/jpeg', 0.82), Math.round(targetSec * 1000))
-        } catch { /* (a frame that can't be read is left blank) */ }
+        } catch { short = true }
       }
     } finally {
       endGrabTurn()
+      if (short && !opts.cancelled()) opts.onShort?.()
     }
   }).catch(() => {}).finally(() => jobDone(url, g))
 }
@@ -211,6 +227,9 @@ export function VideoThumbnails({ videoUrl, startMs, durationMs, count = THUMB_C
   const n = tile ? Math.max(1, Math.min(60, Math.ceil(size.w / tileW))) : count
   const sourceAtRef = useRef(sourceAt)
   sourceAtRef.current = sourceAt
+  // Frames that couldn't be had (a long original still opening, a slow seek): asked for again, a few times
+  const [retry, setRetry] = useState(0)
+  useEffect(() => { setRetry(0) }, [videoUrl, startMs, durationMs, sourceKey])
   useEffect(() => {
     if (!videoUrl || (tile && !size.w)) return
     let cancelled = false
@@ -226,11 +245,15 @@ export function VideoThumbnails({ videoUrl, startMs, durationMs, count = THUMB_C
     const tol = Math.max(250, durationMs / n / 2)
     const start = targets.map(t => nearestThumb(cache!, t, tol) ?? '')
     setThumbs(start)
-    const missing = targets.map((ms, i) => ({ i, ms })).filter(({ i }) => !start[i])
+    // Spread out first — every 8th frame, then every 4th, 2nd, the rest — so the whole strip shows
+    // something early, then fills in (seeks in a long video are slow)
+    const pass = (i: number) => (i % 8 === 0 ? 0 : i % 4 === 0 ? 1 : i % 2 === 0 ? 2 : 3)
+    const missing = targets.map((ms, i) => ({ i, ms })).filter(({ i }) => !start[i]).sort((a, b) => pass(a.i) - pass(b.i) || a.i - b.i)
     if (!missing.length) return
     // A short pause first: while a clip end is being dragged the layout changes on every frame
     const wait = setTimeout(() => grabFrames(videoUrl, missing, {
       cancelled: () => cancelled,
+      onShort: () => { if (retry < 6) setTimeout(() => { if (!cancelled) setRetry(n => n + 1) }, 1500 * (retry + 1)) },
       // Tiles: laid out again for the video's own shape first
       onShape: shape => { if (tile && Math.abs(shape - ar) > 0.01) { setAr(shape); return false } return true },
       onFrame: (i, dataUrl, ms) => {
@@ -239,7 +262,7 @@ export function VideoThumbnails({ videoUrl, startMs, durationMs, count = THUMB_C
       },
     }), 120)
     return () => { cancelled = true; clearTimeout(wait) }
-  }, [videoUrl, startMs, durationMs, n, sourceKey, tile, size.w, size.h, ar]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [videoUrl, startMs, durationMs, n, sourceKey, tile, size.w, size.h, ar, retry]) // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     // (only a picture: never grabbed itself — an image dragged by the browser stopped the playhead
@@ -687,6 +710,13 @@ export function SegmentTimeline({
   }
 
   // ── The clip's own ends: drag outwards for more video, inwards to cut ──
+  // As in CapCut: nothing changes while the handle is dragged; releasing applies it (one undo step).
+  //  • In: the handle follows the pointer, the part that will go is hidden, and the preview shows the
+  //    frame the clip will now start (or end) on.
+  //  • Out: there's no room beside the timeline to drag into, so (as when dragging past the edge of
+  //    any editor's timeline) holding the pointer past the strip's end keeps adding video — faster
+  //    the further past it is — up to all there is. Moving back in gives it back, at the timeline's
+  //    own scale. A label shows how much is being added.
   const [clipDrag, setClipDrag] = useState<{ edge: 'start' | 'end'; delta: number } | null>(null)
   function handleClipEdgeDown(e: React.PointerEvent, edge: 'start' | 'end') {
     if (e.button !== 0 || !clipEdgeLimits || !onClipEdge) return
@@ -696,27 +726,58 @@ export function SegmentTimeline({
     if (!rect || duration <= 0) return
     const lim = clipEdgeLimits
     const x0 = e.clientX
-    const at = (clientX: number) => {
-      const d = ((clientX - x0) / rect.width) * duration
-      // Whole tenths of a second, inside the limits
-      const r = Math.round(d / 100) * 100
-      return edge === 'start' ? Math.max(-lim.startEarlier, Math.min(lim.startLater, r)) : Math.max(-lim.endEarlier, Math.min(lim.endLater, r))
+    const len = duration
+    const msPerPx = duration / rect.width
+    const outward = edge === 'start' ? -1 : 1           // the pointer's direction for more video
+    // Where "past the edge" begins: the strip's end, or just beyond the handle where it was pressed
+    // (the handle sits outside the strip, so a press alone never adds anything)
+    const stripEdge = edge === 'start' ? Math.min(rect.left, x0) - 4 : Math.max(rect.right, x0) + 4
+    // The new edge snaps onto where the playhead was (park the playhead, drag the edge onto it)
+    const snapTo = nowRef.current
+    const snapMs = 8 * msPerPx
+    let lastX = x0, auto = 0                              // auto: video added by holding past the edge
+    const clamp = (r: number) => (edge === 'start'
+      ? Math.max(-lim.startEarlier, Math.min(lim.startLater, r))
+      : Math.max(-lim.endEarlier, Math.min(lim.endLater, r)))
+    const current = () => {
+      const d = (lastX - x0) * msPerPx + outward * auto
+      const edgeAt = edge === 'start' ? d : len + d
+      const snapped = snapTo > 0 && snapTo < len && Math.abs(edgeAt - snapTo) <= snapMs
+      // Whole tenths of a second (or exactly the playhead), inside the limits
+      return clamp(snapped ? Math.round(edge === 'start' ? snapTo : snapTo - len) : Math.round(d / 100) * 100)
     }
+    const cuts = (d: number) => (edge === 'start' ? d > 0 : d < 0)
     setClipDrag({ edge, delta: 0 })
-    // The clip changes as the handle moves: at most once a frame, from where the drag started
-    let pending: number | null = null, frame = 0
-    const flush = () => { frame = 0; if (pending !== null) { onClipEdge(edge, pending, false); pending = null } }
-    const move = (ev: PointerEvent) => {
-      const d = at(ev.clientX)
-      setClipDrag({ edge, delta: d })
-      pending = d
-      if (!frame) frame = requestAnimationFrame(flush)
+    onClipEdge(edge, 0, false)   // the drag starts: playback pauses, the clip as it is now is kept to work from
+    let shown = 0, seekTo: number | null = null, raf = 0, last = performance.now()
+    const show = () => {
+      const d = current()
+      if (d !== shown) { shown = d; setClipDrag({ edge, delta: d }) }
+      if (cuts(d)) seekTo = edge === 'start' ? d : Math.max(0, len + d - 1)
     }
+    // Every frame: holding past the edge adds video; the preview follows a cut edge
+    const tick = (now: number) => {
+      const dt = Math.min(64, now - last) / 1000
+      last = now
+      const past = (lastX - stripEdge) * outward      // px beyond the strip's end, outwards
+      const room = edge === 'start' ? lim.startEarlier : lim.endLater
+      if (past > 0 && room > 0) {
+        // 2 s of video per second at the edge, up to 30 s per second far past it
+        auto = Math.min(room + len, auto + dt * Math.min(30_000, 2_000 + past * 160))
+        show()
+      }
+      if (seekTo !== null) { onSeek(seekTo); seekTo = null }
+      raf = requestAnimationFrame(tick)
+    }
+    raf = requestAnimationFrame(tick)
+    const move = (ev: PointerEvent) => { lastX = ev.clientX; show() }
     const up = (ev: PointerEvent) => {
       window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up)
-      if (frame) cancelAnimationFrame(frame)
+      cancelAnimationFrame(raf)
+      lastX = ev.clientX
+      const d = current()
       setClipDrag(null)
-      onClipEdge(edge, at(ev.clientX), true)
+      onClipEdge(edge, d, true)
     }
     window.addEventListener('pointermove', move); window.addEventListener('pointerup', up)
   }
@@ -1062,7 +1123,7 @@ export function SegmentTimeline({
   /** An empty media lane: a faint row that adds that kind at the playhead (as in CapCut) */
   /** Dashed guide through a lane while one of its items sits on an edge */
   const laneGuide = (prefix: string) => snapLine !== null && dragging?.startsWith(prefix) ? (
-    <div className="absolute top-0 bottom-0 pointer-events-none" style={{ left: `calc(${pct(snapLine)}% - 0.5px)`, width: 0, borderLeft: `1.5px dashed ${ACCENT}`, zIndex: 20 }} />
+    <div className="absolute top-0 bottom-0 pointer-events-none" style={{ left: `calc(${at(snapLine)}% - 0.5px)`, width: 0, borderLeft: `1.5px dashed ${ACCENT}`, zIndex: 20 }} />
   ) : null
   /** The lime tag on a bar that lines up with sections */
   const fitTag = (label: string | null) => label ? (
@@ -1158,15 +1219,37 @@ export function SegmentTimeline({
     window.addEventListener('pointerup', up)
   }
 
-  const pct = (ms: number) => (duration > 0 ? (ms / duration) * 100 : 0)
+  // How much a clip end dragged outwards is adding (0 otherwise). While it is dragged the timeline is
+  // laid out as if the clip were already that much longer — the ruler, the film strip (with the new
+  // footage) and everything on it — so it grows with the drag; the clip itself changes on release.
+  const clipAdd = clipDrag && (clipDrag.edge === 'start' ? clipDrag.delta < 0 : clipDrag.delta > 0) ? Math.abs(clipDrag.delta) : 0
+  /** Video being added before the start: everything already there sits that much later meanwhile */
+  const addBefore = clipDrag?.edge === 'start' ? clipAdd : 0
+  const viewDur = duration + clipAdd
+  /** A length (ms) as a share (%) of the timeline */
+  const pct = (ms: number) => (viewDur > 0 ? (ms / viewDur) * 100 : 0)
+  /** Where a time (ms) sits on the timeline (%) */
+  const at = (ms: number) => pct(ms + addBefore)
   const byTime = [...segments].sort((a, b) => a.start_ms - b.start_ms)
 
   // Ruler: pick the smallest spacing that keeps labels readable at this zoom
   const contentW = Math.max(1, viewW * zoom)
-  const [majorMs, minorPerMajor] = TICK_STEPS.find(([ms]) => (ms / Math.max(duration, 1)) * contentW >= MIN_LABEL_GAP_PX) ?? TICK_STEPS[TICK_STEPS.length - 1]
+  // How much a clip end dragged inwards is cutting off (0 otherwise): that part of the film strip is hidden
+  const clipCut = clipDrag && (clipDrag.edge === 'start' ? clipDrag.delta > 0 : clipDrag.delta < 0) ? Math.abs(clipDrag.delta) : 0
+  // The film strip's frames while adding: the new footage before (or after) the clip's own
+  const clipSourceAt = (t: number) => (sourceAt ? sourceAt(t) : clipStartMs + t)
+  const stripSourceAt = clipAdd > 0
+    ? (t: number) => (addBefore
+      ? (t < addBefore ? clipStartMs - addBefore + t : clipSourceAt(t - addBefore))
+      : (t <= duration ? clipSourceAt(t) : clipSourceAt(duration) + (t - duration)))
+    : sourceAt
+  const stripClip = clipCut > 0
+    ? (clipDrag!.edge === 'start' ? `inset(0 0 0 ${pct(clipCut)}% round 12px)` : `inset(0 ${pct(clipCut)}% 0 0 round 12px)`)
+    : undefined
+  const [majorMs, minorPerMajor] = TICK_STEPS.find(([ms]) => (ms / Math.max(viewDur, 1)) * contentW >= MIN_LABEL_GAP_PX) ?? TICK_STEPS[TICK_STEPS.length - 1]
   const minorMs = majorMs / minorPerMajor
   const ticks: { t: number; major: boolean }[] = []
-  for (let i = 0; i * minorMs <= duration; i++) ticks.push({ t: i * minorMs, major: i % minorPerMajor === 0 })
+  for (let i = 0; i * minorMs <= viewDur; i++) ticks.push({ t: i * minorMs, major: i % minorPerMajor === 0 })
 
   const colorOf = (seg: SegmentLocal) => LAYOUT_COLORS[seg.layout]
   // Videos on top (B-roll) are layers: they sit on their own lane, over the sections, which stay
@@ -1288,14 +1371,14 @@ export function SegmentTimeline({
   const THIN_ROW_H = 6
   /** A thin media line (outside the section under the playhead) */
   const thinBar = (color: string, startMs: number, endMs: number): React.CSSProperties => ({
-    left: `${pct(startMs)}%`, width: `max(6px, ${pct(endMs - startMs)}%)`, top: '50%', height: 4, transform: 'translateY(-50%)',
+    left: `${at(startMs)}%`, width: `max(6px, ${pct(endMs - startMs)}%)`, top: '50%', height: 4, transform: 'translateY(-50%)',
     borderRadius: 2, backgroundColor: `${color}b3`, cursor: 'pointer', touchAction: 'none',
   })
   /** A media bar on its row: tinted with its kind's colour, a solid edge on the left; picked = white ring */
   /** Whether a bar is the selected thing: `selectedId` when the editor gives it, else the bar's own pick */
   const isSel = (id: string, own: boolean) => (selectedId !== undefined ? id === selectedId : own)
   const mediaBar = (color: string, startMs: number, endMs: number, sel: boolean, on: boolean, fits: boolean, st?: { hidden?: boolean; locked?: boolean }): React.CSSProperties => ({
-    left: `${pct(startMs)}%`, width: `max(12px, ${pct(endMs - startMs)}%)`, borderRadius: 5, paddingRight: 8,
+    left: `${at(startMs)}%`, width: `max(12px, ${pct(endMs - startMs)}%)`, borderRadius: 5, paddingRight: 8,
     backgroundColor: `${color}${sel || on ? '55' : '30'}`,
     // Selected: a lime outline, the same on every kind of bar (and on the main video's sections)
     boxShadow: fits && on ? `inset 0 0 0 1.5px ${ACCENT}, 0 0 10px rgba(200,255,0,0.35)`
@@ -1332,7 +1415,7 @@ export function SegmentTimeline({
     const color = MEDIA_COLORS[kind], what = kind === 'broll' ? 'B-roll' : 'Video'
     const sel = isSel(seg.id, seg.id === activeSegmentId || seg.id === pickedSegmentId)
     const on = !!dragging?.startsWith('broll-') && dragging.endsWith(seg.id)
-    const at = brollGhost?.id === seg.id ? { start_ms: brollGhost.start, end_ms: brollGhost.end } : seg
+    const shown = brollGhost?.id === seg.id ? { start_ms: brollGhost.start, end_ms: brollGhost.end } : seg
     const box = seg.crop_boxes[0]
     const name = (videoTitles[box?.source_video_id ?? ''] ?? what).replace(/^(Pixabay|Pexels): /, '').split(',')[0]
     const url = videoUrls[box?.source_video_id ?? '']
@@ -1340,7 +1423,7 @@ export function SegmentTimeline({
       <div key={seg.id} onPointerDown={e => handleBrollDown(e, seg, 'body')}
         title={`${what} · ${name} · ${msToLabel(seg.start_ms)}–${msToLabel(seg.end_ms)} · click to pick it, drag to move (up or down: another track), drag the ends to trim`}
         className="absolute inset-y-0 flex flex-col overflow-hidden"
-        style={barStyle(color, at.start_ms, at.end_ms, sel, on, false, { hidden: box?.hidden, locked: seg.locked })}>
+        style={barStyle(color, shown.start_ms, shown.end_ms, sel, on, false, { hidden: box?.hidden, locked: seg.locked })}>
         <MediaGrip onPointerDown={e => handleBrollDown(e, seg, 'start')} side="left" label={`Trim the start of the ${what === 'B-roll' ? 'B-roll' : 'video'}`} />
         {barHead(kind, name, seg.end_ms - seg.start_ms, { hidden: box?.hidden, muted: box?.muted !== false, locked: seg.locked })}
         {barBody(url && <VideoThumbnails tile videoUrl={url} startMs={box?.source_offset_ms ?? 0} durationMs={seg.end_ms - seg.start_ms} radius={0} dim={false} />)}
@@ -1524,7 +1607,7 @@ export function SegmentTimeline({
           onDragOver={onDragOver} onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDropAt(null) }} onDrop={onDrop}>
           {/* Where a dragged file or stock clip would go (the box has 14 px of padding each side) */}
           {dropAt && (
-            <div className="absolute top-0 bottom-0 pointer-events-none" style={{ left: `calc(14px + (100% - 28px) * ${pct(dropAt.ms) / 100})`, zIndex: 60 }}>
+            <div className="absolute top-0 bottom-0 pointer-events-none" style={{ left: `calc(14px + (100% - 28px) * ${at(dropAt.ms) / 100})`, zIndex: 60 }}>
               <div className="absolute top-0 bottom-0" style={{ left: -1, width: 2, background: ACCENT, boxShadow: '0 0 8px rgba(200,255,0,0.6)' }} />
               <span className="absolute whitespace-nowrap text-[10px] font-bold px-1.5 py-0.5 rounded" style={{ top: 2, left: 4, background: ACCENT, color: '#000' }}>
                 Drop {dropAt.what} at {msToLabel(dropAt.ms)}
@@ -1537,7 +1620,7 @@ export function SegmentTimeline({
             {/* ── Ruler ─────────────────────────────────────────────── */}
             <div className="relative" style={{ height: RULER_H }}>
               {ticks.map(({ t, major }) => {
-                const p = pct(t)
+                const p = pct(t)   // (the ruler counts the timeline as it will be: no shift)
                 return (
                   <div key={t} className="absolute pointer-events-none" style={major
                     ? { left: `${p}%`, bottom: 2, width: 1, height: 7, marginLeft: -0.5, background: 'rgb(var(--ed-fg) / 0.28)', borderRadius: 1 }
@@ -1574,7 +1657,7 @@ export function SegmentTimeline({
                     title={`Join · format ${li} → ${li + 1} · ${msToLabel(left.end_ms)} · drag to move both together`}
                     className="absolute flex items-center justify-center"
                     style={{
-                      left: `${pct(left.end_ms)}%`, top: '50%', transform: 'translate(-50%, -50%)',
+                      left: `${at(left.end_ms)}%`, top: '50%', transform: 'translate(-50%, -50%)',
                       width: 26, height: 14, borderRadius: 7,
                       background: `linear-gradient(90deg, ${cl} 0 50%, ${cr} 50% 100%)`,
                       border: '1.5px solid rgba(0,0,0,0.6)',
@@ -1618,16 +1701,17 @@ export function SegmentTimeline({
             )}
 
             {/* ── Film strip: tinted per format, hatched where no format is set ── */}
-            <div data-lane="main" className="relative overflow-hidden" style={{ height: STRIP_H, borderRadius: 12, boxShadow: '0 0 0 1px rgb(var(--ed-fg) / 0.1), 0 10px 24px -12px rgba(0,0,0,0.9)' }}>
+            {/* (a clip end dragged inwards hides what it is cutting off: drag back and it shows again) */}
+            <div data-lane="main" className="relative overflow-hidden" style={{ height: STRIP_H, borderRadius: 12, boxShadow: '0 0 0 1px rgb(var(--ed-fg) / 0.1), 0 10px 24px -12px rgba(0,0,0,0.9)', clipPath: stripClip }}>
               {videoUrl
-                ? <VideoThumbnails videoUrl={videoUrl} startMs={clipStartMs} durationMs={duration} radius={12} dim={false} sourceAt={sourceAt} sourceKey={sourceKey} />
+                ? <VideoThumbnails videoUrl={videoUrl} startMs={clipStartMs - addBefore} durationMs={viewDur} radius={12} dim={false} sourceAt={stripSourceAt} sourceKey={sourceKey} />
                 : <div className="absolute inset-0" style={{ background: 'var(--ed-raise)' }} />}
 
               {gaps.map(g => (
                 <div key={`gap-${g.start_ms}`} className="absolute inset-y-0 pointer-events-none flex items-center justify-center overflow-hidden"
                   title={`${msToLabel(g.start_ms)}–${msToLabel(g.end_ms)} · no format: default Vertical framing`}
                   style={{
-                    left: `${pct(g.start_ms)}%`, width: `${pct(g.end_ms - g.start_ms)}%`,
+                    left: `${at(g.start_ms)}%`, width: `${pct(g.end_ms - g.start_ms)}%`,
                     background: 'repeating-linear-gradient(135deg, rgba(0,0,0,0.6) 0 6px, rgba(0,0,0,0.4) 6px 12px)',
                     boxShadow: 'inset 0 0 0 1px rgb(var(--ed-fg) / 0.12)',
                   }}>
@@ -1645,7 +1729,7 @@ export function SegmentTimeline({
                 return (
                   <div key={seg.id} className="absolute inset-y-0 pointer-events-none"
                     style={{
-                      left: `${pct(seg.start_ms)}%`, width: `${pct(seg.end_ms - seg.start_ms)}%`,
+                      left: `${at(seg.start_ms)}%`, width: `${pct(seg.end_ms - seg.start_ms)}%`,
                       background: otherPicked
                         ? 'linear-gradient(180deg, rgba(0,0,0,0.3), rgba(0,0,0,0.5))'
                         : 'linear-gradient(180deg, transparent 55%, rgba(0,0,0,0.45))',
@@ -1660,20 +1744,68 @@ export function SegmentTimeline({
               })}
             </div>
 
+            {/* A clip end dragged inwards (cut on release): the part that stays is outlined in lime,
+                with where it will start (or end) and how long it will be under the strip */}
+            {/* A clip end dragged outwards (added on release): how much more video, and the new length */}
+            {clipAdd > 0 && clipDrag && (
+              <>
+                <div className="absolute pointer-events-none" style={{
+                  left: 0, width: '100%', top: STRIP_TOP, height: STRIP_H, zIndex: 35,
+                  borderRadius: 12, boxShadow: `inset 0 0 0 2px ${ACCENT}, 0 0 14px rgba(200,255,0,0.25)`,
+                }} />
+                <span className="absolute pointer-events-none px-2.5 rounded-full text-[11px] font-semibold tabular-nums whitespace-nowrap leading-[20px]"
+                  style={{
+                    ...(clipDrag.edge === 'start' ? { left: 0 } : { right: 0 }), top: STRIP_TOP + STRIP_H + 6, zIndex: 45,
+                    background: '#1b1b1f', color: '#fff', boxShadow: '0 0 0 1px rgba(255,255,255,0.12), 0 6px 16px rgba(0,0,0,0.55)',
+                  }}>
+                  <span style={{ color: ACCENT }}>+{(clipAdd / 1000).toFixed(1)}s</span>
+                  {clipDrag.edge === 'start' && <> · starts at {msToLabel(Math.max(0, clipStartMs - clipAdd))}.{Math.floor(Math.max(0, clipStartMs - clipAdd) / 100) % 10} in the video</>}
+                  <span style={{ opacity: 0.45 }}> · </span>
+                  {durLabel(duration + clipAdd)}
+                  {clipAdd >= (clipDrag.edge === 'start' ? clipEdgeLimits?.startEarlier ?? 0 : clipEdgeLimits?.endLater ?? 0) && <span style={{ color: ACCENT }}> · all of it</span>}
+                </span>
+              </>
+            )}
+
+            {clipCut > 0 && clipDrag && (() => {
+              const start = clipDrag.edge === 'start'
+              const [keepFrom, keepTo] = start ? [clipCut, duration] : [0, duration - clipCut]
+              return (
+                <>
+                  <div className="absolute pointer-events-none" style={{
+                    left: `${at(keepFrom)}%`, width: `${pct(keepTo - keepFrom)}%`, top: STRIP_TOP, height: STRIP_H, zIndex: 35,
+                    borderRadius: 12, boxShadow: `inset 0 0 0 2px ${ACCENT}, 0 0 14px rgba(200,255,0,0.25)`,
+                  }} />
+                  <span className="absolute pointer-events-none px-2.5 rounded-full text-[11px] font-semibold tabular-nums whitespace-nowrap leading-[20px]"
+                    style={{
+                      left: `${at(start ? keepFrom : keepTo)}%`, top: STRIP_TOP + STRIP_H + 6, zIndex: 45,
+                      transform: start ? 'translateX(-12px)' : 'translateX(calc(-100% + 12px))',
+                      background: '#1b1b1f', color: '#fff', boxShadow: '0 0 0 1px rgba(255,255,255,0.12), 0 6px 16px rgba(0,0,0,0.55)',
+                    }}>
+                    {start ? 'Starts' : 'Ends'} at {msToLabel(start ? keepFrom : keepTo)}
+                    <span style={{ opacity: 0.45 }}> · </span>
+                    <span style={{ color: ACCENT }}>{durLabel(keepTo - keepFrom)}</span>
+                  </span>
+                </>
+              )
+            })()}
+
             {/* ── The clip's own start and end: lime handles just outside the strip ── */}
             {clipEdgeLimits && onClipEdge && (['start', 'end'] as const).map(edge => {
               const dragging = clipDrag?.edge === edge
               const lim = clipEdgeLimits
               const can = edge === 'start' ? lim.startEarlier + lim.startLater > 0 : lim.endEarlier + lim.endLater > 0
               const label = edge === 'start' ? 'Drag to extend the clip at its start, or shorten it' : 'Drag to extend the clip at its end, or shorten it'
+              // Dragged inwards, the handle rides on the new edge (the clip only changes on release)
+              const inward = dragging ? clipCut : 0
               return (
                 <span key={edge} role="slider" aria-label={label} title={`${label} (up to 5 min)`}
                   aria-valuenow={dragging ? clipDrag!.delta : 0}
                   onPointerDown={e => handleClipEdgeDown(e, edge)}
                   className="group/ce absolute flex items-center justify-center"
                   style={{
-                    top: STRIP_TOP, height: STRIP_H, width: 14, zIndex: 40,
-                    ...(edge === 'start' ? { left: -15 } : { right: -15 }),
+                    top: STRIP_TOP, height: STRIP_H, width: 14, zIndex: 40, touchAction: 'none',
+                    ...(edge === 'start' ? { left: `calc(${pct(inward)}% - 15px)` } : { right: `calc(${pct(inward)}% - 15px)` }),
                     cursor: can ? 'ew-resize' : 'not-allowed',
                   }}>
                   <span className="flex items-center justify-center rounded-full transition-[background,height,box-shadow]"
@@ -1695,12 +1827,12 @@ export function SegmentTimeline({
             {doomed && (
               <>
                 <div className="absolute pointer-events-none" style={{
-                  left: `${pct(doomed.start)}%`, width: `${pct(doomed.end - doomed.start)}%`, top: STRIP_TOP, height: STRIP_H, zIndex: 31,
+                  left: `${at(doomed.start)}%`, width: `${pct(doomed.end - doomed.start)}%`, top: STRIP_TOP, height: STRIP_H, zIndex: 31,
                   borderRadius: 12, background: 'repeating-linear-gradient(135deg, rgba(239,68,68,0.55) 0 8px, rgba(239,68,68,0.38) 8px 16px)',
                   boxShadow: 'inset 0 0 0 2px #ef4444',
                 }} />
                 <span className="absolute pointer-events-none px-2 py-0.5 rounded-full text-[10px] font-bold whitespace-nowrap"
-                  style={{ left: `${pct((doomed.start + doomed.end) / 2)}%`, top: RULER_H + LANE_H / 2, transform: 'translate(-50%, -50%)', zIndex: 45, background: '#ef4444', color: '#fff', boxShadow: '0 4px 12px rgba(0,0,0,0.5)' }}>
+                  style={{ left: `${at((doomed.start + doomed.end) / 2)}%`, top: RULER_H + LANE_H / 2, transform: 'translate(-50%, -50%)', zIndex: 45, background: '#ef4444', color: '#fff', boxShadow: '0 4px 12px rgba(0,0,0,0.5)' }}>
                   {doomed.label}
                 </span>
               </>
@@ -1722,7 +1854,7 @@ export function SegmentTimeline({
                 const src = cache ? nearestThumb(cache, sourceAt ? sourceAt(viewDragT) : clipStartMs + viewDragT, Math.max(1500, duration / 40)) : undefined
                 return (
                   <div className="absolute pointer-events-none flex flex-col items-center gap-1"
-                    style={{ left: `${pct(viewDragT)}%`, bottom: 'calc(100% + 6px)', transform: 'translateX(-50%)', zIndex: 60 }}>
+                    style={{ left: `${at(viewDragT)}%`, bottom: 'calc(100% + 6px)', transform: 'translateX(-50%)', zIndex: 60 }}>
                     {src && <img src={src} alt="" draggable={false} style={{ width: 80, height: 56, objectFit: 'cover', borderRadius: 8, boxShadow: `0 0 0 2px ${ACCENT}, 0 8px 18px rgba(0,0,0,0.6)` }} />}
                     <span className="px-1.5 py-0.5 rounded-md text-[10px] font-bold tabular-nums" style={{ background: ACCENT, color: '#111' }}>{msToLabel(viewDragT)}</span>
                   </div>
@@ -1745,7 +1877,7 @@ export function SegmentTimeline({
                       title={`${first ? 'First view' : v.cut ? 'View change (cut)' : 'Motion point (glide)'} · ${msToLabel(v.t_ms)}${first ? '' : ' · drag to move · Delete to remove'}`}
                       className="absolute top-1/2"
                       style={{
-                        left: `${pct(v.t_ms)}%`, width: size, height: size,
+                        left: `${at(v.t_ms)}%`, width: size, height: size,
                         transform: `translate(${v.t_ms <= 0 ? '0' : '-50%'}, -50%) rotate(45deg)`,
                         borderRadius: v.cut || first ? 3 : 999,
                         background: on ? ACCENT : v.cut || first ? 'rgb(var(--ed-fg) / 0.9)' : 'rgb(var(--ed-fg) / 0.5)',
@@ -1758,7 +1890,7 @@ export function SegmentTimeline({
                         onClick={e => { e.stopPropagation(); onDuplicateView(v.t_ms) }}
                         aria-label={`Duplicate the view at ${msToLabel(v.t_ms)}`} title="Duplicate this view — then drag the copy wherever you want it (Ctrl+D)"
                         className="absolute top-1/2 flex items-center justify-center rounded-full"
-                        style={{ left: `calc(${pct(v.t_ms)}% + 10px)`, transform: 'translateY(-50%)', width: 16, height: 16, zIndex: 37, background: ACCENT, color: '#111' }}>
+                        style={{ left: `calc(${at(v.t_ms)}% + 10px)`, transform: 'translateY(-50%)', width: 16, height: 16, zIndex: 37, background: ACCENT, color: '#111' }}>
                         <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                           <rect x="9" y="9" width="12" height="12" rx="2" /><path d="M5 15V5a2 2 0 012-2h10" />
                         </svg>
@@ -1769,7 +1901,7 @@ export function SegmentTimeline({
                         onClick={e => { e.stopPropagation(); onRemoveView(v.t_ms) }}
                         aria-label={`Remove the view change at ${msToLabel(v.t_ms)}`} title="Remove this view change (Delete)"
                         className="absolute top-1/2 flex items-center justify-center rounded-full"
-                        style={{ left: `calc(${pct(v.t_ms)}% + ${onDuplicateView ? 30 : 10}px)`, transform: 'translateY(-50%)', width: 16, height: 16, zIndex: 37, background: '#ef4444', color: '#fff', fontSize: 10, lineHeight: 1 }}>
+                        style={{ left: `calc(${at(v.t_ms)}% + ${onDuplicateView ? 30 : 10}px)`, transform: 'translateY(-50%)', width: 16, height: 16, zIndex: 37, background: '#ef4444', color: '#fff', fontSize: 10, lineHeight: 1 }}>
                         ✕
                       </button>
                     )}
@@ -1807,7 +1939,7 @@ export function SegmentTimeline({
                     // of one and the start of the next stand side by side instead of overlapping
                     className="group absolute flex items-center justify-center transition-[background,box-shadow] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white"
                     style={{
-                      left: `${pct(t)}%`, top: STRIP_TOP, height: STRIP_H, width: selected || active ? 10 : 6,
+                      left: `${at(t)}%`, top: STRIP_TOP, height: STRIP_H, width: selected || active ? 10 : 6,
                       transform: edge === 'start' ? 'translateX(0)' : 'translateX(-100%)',
                       borderRadius: edge === 'start' ? '12px 3px 3px 12px' : '3px 12px 12px 3px',
                       background: selected || active ? ACCENT : 'transparent',
@@ -1828,13 +1960,13 @@ export function SegmentTimeline({
 
             {/* Snap guide while trimming */}
             {snapLine !== null && (
-              <div className="absolute top-0 bottom-0 pointer-events-none z-20" style={{ left: `${pct(snapLine)}%`, width: 1, background: 'rgb(var(--ed-fg) / 0.6)' }} />
+              <div className="absolute top-0 bottom-0 pointer-events-none z-20" style={{ left: `${at(snapLine)}%`, width: 1, background: 'rgb(var(--ed-fg) / 0.6)' }} />
             )}
 
             {/* ── Playhead ─────────────────────────────────────────── */}
             {/* White line with the current time on a pill at the top (the pill stays on screen at the ends).
                 White keeps it distinct from the lime trim frame. */}
-            <AtPlayhead pctOf={pct} className="absolute top-0 bottom-0 pointer-events-none z-40">
+            <AtPlayhead pctOf={at} className="absolute top-0 bottom-0 pointer-events-none z-40">
               {(ms, p) => (
                 <>
                   <div className="absolute" style={{ top: 18, bottom: 0, left: -1, width: 2, borderRadius: 2, background: '#fff', boxShadow: '0 0 0 1px rgba(0,0,0,0.35), 0 0 12px rgba(255,255,255,0.35)' }} />
@@ -1876,7 +2008,7 @@ export function SegmentTimeline({
               return (
                 <Fragment key={o.id}>
                   <div className="absolute inset-y-0.5 pointer-events-none" style={{
-                    left: `${pct(o.start_ms)}%`, width: `${pct(o.end_ms - o.start_ms)}%`, borderRadius: 5,
+                    left: `${at(o.start_ms)}%`, width: `${pct(o.end_ms - o.start_ms)}%`, borderRadius: 5,
                     background: 'rgb(var(--ed-fg) / 0.045)', boxShadow: 'inset 0 0 0 1px rgb(var(--ed-fg) / 0.06)',
                   }}>
                     <span className="absolute top-1/2 -translate-y-1/2 text-[10px] font-semibold whitespace-nowrap" style={{ left: 8, color: 'rgb(var(--ed-fg) / 0.3)' }}>
@@ -1890,7 +2022,7 @@ export function SegmentTimeline({
                       onPointerDown={e => e.stopPropagation()}
                       onClick={e => { e.stopPropagation(); onSeek(o.start_ms) }}
                       style={{
-                        left: `${pct(o.start_ms)}%`, width: `${pct(o.end_ms - o.start_ms)}%`, borderRadius: 5,
+                        left: `${at(o.start_ms)}%`, width: `${pct(o.end_ms - o.start_ms)}%`, borderRadius: 5,
                         background: `${FRAME_ITEM_COLORS.main}24`, boxShadow: `inset 2px 0 0 ${FRAME_ITEM_COLORS.main}`,
                       }}>
                       <span className="px-2 truncate text-[10px] font-semibold pointer-events-none" style={{ color: 'rgb(var(--ed-fg) / 0.75)' }}>{row.label} · Main video</span>
@@ -1908,7 +2040,7 @@ export function SegmentTimeline({
                         onPointerDown={e => e.stopPropagation()}
                         onClick={e => { e.stopPropagation(); onJumpToFrameItem?.(o.id, it.id) }}
                         style={{
-                          left: `${pct(from)}%`, width: `max(8px, ${pct(to - from)}%)`, borderRadius: 5, zIndex: 2,
+                          left: `${at(from)}%`, width: `max(8px, ${pct(to - from)}%)`, borderRadius: 5, zIndex: 2,
                           background: `${color}38`, boxShadow: `inset 0 0 0 1px ${color}88`,
                         }}>
                         {it.kind === 'photo' && it.image_url && (
@@ -1939,7 +2071,7 @@ export function SegmentTimeline({
                       {seg && frame && row && (<>
                         {/* This frame's stretch of the lane */}
                         <div className="absolute inset-y-0.5 pointer-events-none" style={{
-                          left: `${pct(seg.start_ms)}%`, width: `${pct(seg.end_ms - seg.start_ms)}%`, borderRadius: 5,
+                          left: `${at(seg.start_ms)}%`, width: `${pct(seg.end_ms - seg.start_ms)}%`, borderRadius: 5,
                           background: pulsing ? 'rgba(200,255,0,0.12)' : 'rgb(var(--ed-fg) / 0.045)',
                           boxShadow: pulsing ? 'inset 0 0 0 1.5px #c8ff00' : 'inset 0 0 0 1px rgb(var(--ed-fg) / 0.06)',
                           transition: 'background 0.3s, box-shadow 0.3s',
@@ -1956,7 +2088,7 @@ export function SegmentTimeline({
                               onPointerDown={e => { e.stopPropagation(); onSelectFrameItem?.(mainId); handleTrackDrag(e) }}
                               title="Main video · select it to change its sound or take it out of this slot"
                               style={{
-                                left: `${pct(seg.start_ms)}%`, width: `${pct(seg.end_ms - seg.start_ms)}%`, borderRadius: 5,
+                                left: `${at(seg.start_ms)}%`, width: `${pct(seg.end_ms - seg.start_ms)}%`, borderRadius: 5,
                                 background: `${FRAME_ITEM_COLORS.main}${on ? '40' : '24'}`,
                                 boxShadow: on ? SELECTED_RING : `inset 2px 0 0 ${FRAME_ITEM_COLORS.main}`, zIndex: on ? 3 : undefined,
                               }}>
@@ -1977,7 +2109,7 @@ export function SegmentTimeline({
                               onPointerDown={e => handleFrameItemDown(e, it, 'move')}
                               title={`${name} · ${msToLabel(from)}–${msToLabel(to)} · drag to move, drag the ends to trim`}
                               style={{
-                                left: `${pct(from)}%`, width: `max(8px, ${pct(to - from)}%)`, borderRadius: 5, zIndex: on ? 3 : 2,
+                                left: `${at(from)}%`, width: `max(8px, ${pct(to - from)}%)`, borderRadius: 5, zIndex: on ? 3 : 2,
                                 background: `${color}${on ? '55' : '38'}`,
                                 boxShadow: on ? SELECTED_RING : `inset 0 0 0 1px ${color}88`,
                                 cursor: dragging === `item-${it.id}` ? 'grabbing' : 'grab', touchAction: 'none',
@@ -2013,7 +2145,7 @@ export function SegmentTimeline({
                           title={isTextLane(row.lane) ? 'Add text here' : 'Add a photo, video or text here'}
                           className={`absolute top-1/2 flex items-center justify-center rounded-full transition-[transform,opacity] hover:scale-110 focus-visible:outline-none${onHover ? ' opacity-0 group-hover/lane:opacity-100 focus-visible:opacity-100' : ''}`}
                           style={{
-                            left: `${pct(plusAt)}%`, transform: 'translate(-50%, -50%)', width: 18, height: 18, zIndex: 41,
+                            left: `${at(plusAt)}%`, transform: 'translate(-50%, -50%)', width: 18, height: 18, zIndex: 41,
                             background: '#c8ff00', color: '#000', border: '1.5px solid rgba(0,0,0,0.7)',
                             boxShadow: pulsing ? '0 0 0 4px rgba(200,255,0,0.35), 0 0 12px rgba(200,255,0,0.8)' : '0 1px 4px rgba(0,0,0,0.6)',
                           }}>
@@ -2026,7 +2158,7 @@ export function SegmentTimeline({
                   )
                 })}
                 {/* Playhead through the lanes: the same line as over the main video, over every bar */}
-                <AtPlayhead pctOf={pct} className="absolute top-0 bottom-0 pointer-events-none" style={PLAYHEAD_LINE} />
+                <AtPlayhead pctOf={at} className="absolute top-0 bottom-0 pointer-events-none" style={PLAYHEAD_LINE} />
               </div>
             )
           })()}
@@ -2038,7 +2170,7 @@ export function SegmentTimeline({
               {laneGuide('broll-') ?? laneGuide('photo-') ?? laneGuide('music-') ?? laneGuide('text-')}
               {/* Playhead through all the media rows: the same line as over the main video, over every bar
                   (so where a split will cut a selected video, photo, text or song is plain to see) */}
-              <AtPlayhead pctOf={pct} className="absolute top-0 bottom-0 pointer-events-none" style={PLAYHEAD_LINE} />
+              <AtPlayhead pctOf={at} className="absolute top-0 bottom-0 pointer-events-none" style={PLAYHEAD_LINE} />
 
               {/* The visual tracks (highest first: drawn over the ones under it), then the audio tracks */}
               {visualTracks.map((t, i) => trackRow('visual', t, i === 0 ? 'top' : null,
@@ -2158,4 +2290,3 @@ function MediaGrip({ side, label, onPointerDown }: { side: 'left' | 'right'; lab
     </span>
   )
 }
-

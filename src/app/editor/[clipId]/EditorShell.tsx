@@ -2035,26 +2035,35 @@ export function EditorShell({
       useMediaStore.setState({ overlays: base.state.overlays, textOverlays: base.state.textOverlays, audioTracks: base.state.audioTracks, transitions: base.state.transitions })
       return
     }
-    const state = base.state
-    const trim0 = base.map
-    const len = trim0.lengthMs
-    let next: TimedState, start = base.start, end = base.end, playhead: number
-    const onTop = (s: SegmentLocal) => isShot(s, mainVideoId)
-    if (edge === 'start' && d < 0) { next = insertAtStart(state, -d, onTop); start += d; playhead = 0; captionAfterEdgeRef.current = true }
-    else if (edge === 'end' && d > 0) { next = extendEnd(state, len, len + d, onTop); end += d; playhead = len + d - 1; captionAfterEdgeRef.current = true }
-    else {
-      // Cutting from an end: what's there goes, as when a part is deleted
-      const [a, b] = edge === 'start' ? [0, d] : [len + d, len]
-      const locked = lockedInRange(state, a, b)
-      if (locked.length) { notifyLocked(`${locked[0][0].toUpperCase()}${locked[0].slice(1)} there is locked — unlock it first`); return }
-      next = rippleDelete(state, a, b)
-      if (edge === 'start') { start = trim0.toSource(d); playhead = 0 } else { end = trim0.toSourceEnd(len + d); playhead = Math.max(0, len + d - 1) }
-    }
+    const step = edgeStep(base, edge, d)
+    if (!step) return
+    if (step.added) captionAfterEdgeRef.current = true
     if (!done) captionAfterEdgeRef.current = false   // only once the drag is over
     skipCanvasTransitionRef.current = true
-    seekAfterTrimRef.current = playhead
-    editor.applyTrim(next.segments, next.keyframes, cleanTrims(base.trims, start, end), [start, end])
-    useMediaStore.setState({ overlays: next.overlays, textOverlays: next.textOverlays, audioTracks: next.audioTracks, transitions: next.transitions })
+    seekAfterTrimRef.current = step.playhead
+    editor.applyTrim(step.next.segments, step.next.keyframes, cleanTrims(base.trims, step.start, step.end), [step.start, step.end])
+    useMediaStore.setState({ overlays: step.next.overlays, textOverlays: step.next.textOverlays, audioTracks: step.next.audioTracks, transitions: step.next.transitions })
+  }
+  /**
+   * One end of the clip moved by `d` ms of timeline (start: < 0 earlier, more video; > 0 cut from the
+   * front. End: > 0 later; < 0 cut from the back), worked out from `b` without applying it.
+   * null when something locked is in the way (the user is told).
+   */
+  function edgeStep(b: { state: TimedState; start: number; end: number; map: typeof trim }, edge: 'start' | 'end', d: number) {
+    const state = b.state, trim0 = b.map, len = trim0.lengthMs
+    let next: TimedState, start = b.start, end = b.end, playhead: number, added = false
+    const onTop = (s: SegmentLocal) => isShot(s, mainVideoId)
+    if (edge === 'start' && d < 0) { next = insertAtStart(state, -d, onTop); start += d; playhead = 0; added = true }
+    else if (edge === 'end' && d > 0) { next = extendEnd(state, len, len + d, onTop); end += d; playhead = len + d - 1; added = true }
+    else {
+      // Cutting from an end: what's there goes, as when a part is deleted
+      const [a, z] = edge === 'start' ? [0, d] : [len + d, len]
+      const locked = lockedInRange(state, a, z)
+      if (locked.length) { notifyLocked(`${locked[0][0].toUpperCase()}${locked[0].slice(1)} there is locked — unlock it first`); return null }
+      next = rippleDelete(state, a, z)
+      if (edge === 'start') { start = trim0.toSource(d); playhead = 0 } else { end = trim0.toSourceEnd(len + d); playhead = Math.max(0, len + d - 1) }
+    }
+    return { next, start, end, playhead, added }
   }
 
   function askDeleteFormat(segId: string) {
