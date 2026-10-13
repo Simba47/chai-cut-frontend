@@ -12,6 +12,7 @@ import { PostText, type PostTextValue } from '@/components/clips/PostText'
 import { BrollPanel, type StockResult } from '@/components/editor/BrollPanel'
 import { VideoPanel, type PanelVideo } from '@/components/editor/VideoPanel'
 import { MediaLibrary, type LibraryItem, type MediaSection } from '@/components/editor/MediaLibrary'
+import { PhotoSearch } from '@/components/editor/PhotoSearch'
 import { useBrollSources, useBorrowedSlots } from '@/modules/editor/brollSources'
 import { SegmentTimeline, LAYOUT_COLORS, MAX_ZOOM, zoomStep, zoomLabel, STOCK_DRAG_TYPE, type LaneCtl, type LaneCtlKey } from '@/components/editor/SegmentTimeline'
 import { useVideoUpload } from '@/modules/upload/useVideoUpload'
@@ -51,7 +52,8 @@ import { subjectBoxAt, seenShare, followChanges, autoDirectChanges, type Subject
 import { buildKeyframes } from '@/modules/editor/views'
 import { frameSlotSize } from '@/modules/editor/frames'
 import { getBoxPositionAtLerp } from '@/lib/interpolation'
-import { SubjectsPanel, type SubjectItem } from '@/components/editor/SubjectsPanel'
+import { SubjectsPanel, type SubjectItem, type AnglesView } from '@/components/editor/SubjectsPanel'
+import { angleRows, angleAt, type Angle } from '@/modules/editor/angles'
 import type { SegmentLocal, CropBoxLocal, FrameLayout, FrameLane, FrameItem } from '@chai-cut/shared'
 
 type Tool = 'format' | 'subjects' | 'frames' | 'captions' | 'text' | 'media' | 'music' | 'cleanup' | 'post'
@@ -1590,12 +1592,13 @@ export function EditorShell({
     if (!res.ok) throw new Error(data.error ?? 'Something went wrong')
     return data
   }
-  async function markSubject(x: number, y: number) {
+  /** `atSourceMs`: a moment of the source video (a face of a camera angle); else the moment on screen */
+  async function markSubject(x: number, y: number, atSourceMs?: number) {
     pause()
     setMarking(false)
     setSubjectNotice(null)
     // The moment on screen, in the source video's time
-    const mark_ms = Math.round(trim.toSource(Math.max(0, liveTime.get())))
+    const mark_ms = atSourceMs ?? Math.round(trim.toSource(Math.max(0, liveTime.get())))
     try {
       const { subject } = await subjectsCall(subjectsUrl, { method: 'POST', body: JSON.stringify({ mark_ms, x, y }) })
       setSubjects(list => [...list, { ...subject, seen: null, stale: false }])
@@ -1775,6 +1778,70 @@ export function EditorShell({
       return box ? [{ id: s.id, label: s.label, color: s.color, box }] : []
     })
   }, [subjects, tool, showSubjects, trim])
+
+  // ── Camera angles (modules/editor/angles.ts) ──
+  // Every angle of the clip, listed in the Subjects tool so each gets its subject or its group. The
+  // worker looks for them the first time the tool opens (and again when the clip grew past what it read).
+  type AnglesData = { status: 'none' | 'queued' | 'running' | 'done' | 'failed' | 'unavailable'; progress: number; error: string | null; angles: Angle[]; scan_start_ms: number | null; scan_end_ms: number | null }
+  const [anglesData, setAnglesData] = useState<AnglesData | null>(null)
+  const loadAngles = useCallback(async (scan = false) => {
+    try {
+      const res = await fetch(`${subjectsUrl}/angles`, scan
+        ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ start_ms: rawClip.start_ms, end_ms: rawClip.end_ms }) }
+        : undefined)
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.error ?? 'The camera angles could not be listed.')
+      setAnglesData(data)
+    } catch (e) {
+      setAnglesData({ status: 'failed', progress: 0, error: e instanceof Error ? e.message : 'The camera angles could not be listed.', angles: [], scan_start_ms: null, scan_end_ms: null })
+    }
+  }, [subjectsUrl, rawClip.start_ms, rawClip.end_ms])
+  useEffect(() => { if (tool === 'subjects' && !anglesData) loadAngles() }, [tool, anglesData, loadAngles])
+  // Never looked for, or the clip grew past what was read: look (once for each start and end of the clip)
+  const anglesAskedRef = useRef('')
+  useEffect(() => {
+    if (tool !== 'subjects' || !anglesData) return
+    const grown = anglesData.status === 'done' && anglesData.scan_start_ms !== null && anglesData.scan_end_ms !== null
+      && (rawClip.start_ms < anglesData.scan_start_ms - 500 || rawClip.end_ms > anglesData.scan_end_ms + 500)
+    if (anglesData.status !== 'none' && !grown) return
+    const range = `${rawClip.start_ms}-${rawClip.end_ms}`
+    if (anglesAskedRef.current === range) return
+    anglesAskedRef.current = range
+    loadAngles(true)
+  }, [tool, anglesData, rawClip.start_ms, rawClip.end_ms, loadAngles])
+  const anglesBusy = anglesData?.status === 'queued' || anglesData?.status === 'running'
+  useEffect(() => {
+    if (!anglesBusy || tool !== 'subjects') return
+    const id = setInterval(() => loadAngles(), 2500)
+    return () => clearInterval(id)
+  }, [anglesBusy, tool, loadAngles])
+  const angleItems = useMemo(
+    () => (anglesData?.status === 'done' ? angleRows(anglesData.angles, subjects, subjectCuts(subjects), trim.toTimeline, clipLengthMs) : []),
+    [anglesData, subjects, trim, clipLengthMs], // eslint-disable-line react-hooks/exhaustive-deps
+  )
+  const angleNow = useMemo(() => (tool === 'subjects' && angleItems.length ? angleAt(angleItems, currentTimeMs) : null), [tool, angleItems, currentTimeMs])
+  const anglesView = useMemo<AnglesView>(() => ({
+    status: !anglesData ? 'loading' : anglesData.status === 'none' || anglesData.status === 'queued' || anglesData.status === 'running' ? 'scanning' : anglesData.status,
+    progress: anglesData?.progress ?? 0, error: anglesData?.error ?? null, items: angleItems, now: angleNow,
+  }), [anglesData, angleItems, angleNow])
+  function openAngle(i: number) {
+    const a = angleItems[i]
+    if (!a) return
+    setSubjectNotice(null)
+    pause()
+    seekToMs(a.jumpMs)
+  }
+  /** A click on a face of an angle: that person, marked at the angle's own moment */
+  function markAngleFace(i: number, k: number) {
+    const a = angleItems[i], f = a?.faces[k]
+    if (!f || f.subject) return
+    markSubject(f.box.x + f.box.w / 2, f.box.y + f.box.h / 2, a.at)
+  }
+  function markByClick() {
+    setSubjectNotice(null)
+    pause()
+    setMarking(m => !m)
+  }
 
   // The frame on screen: its own time in the video (see frameStartAt)
   const shownFrameRef = useRef<number | null>(null)
@@ -3234,30 +3301,10 @@ export function EditorShell({
                 Edit caption text
               </button>
             ) : (
-              tool === 'media' ? (
-                // Media: its ⓘ, then the Import | Library switch
-                <div className="flex items-center gap-2">
-                  <InfoTip label={`About ${activeTool.title}`}>{activeTool.hint}</InfoTip>
-                  <div role="tablist" aria-label="Media" className="flex p-0.5 rounded-lg" style={{ background: 'rgb(var(--ed-fg) / 0.06)', border: '1px solid rgb(var(--ed-fg) / 0.07)' }}>
-                    {(['media', 'library'] as const).map(sec => {
-                      const on = mediaSection === sec
-                      return (
-                        <button key={sec} type="button" role="tab" aria-selected={on} onClick={() => setMediaSection(sec)}
-                          title={sec === 'media' ? 'Your videos, photos and audio' : 'Stock footage to search'}
-                          className="h-7 px-3 rounded-md text-[12px] font-semibold transition-colors"
-                          style={on ? { background: 'rgb(var(--ed-fg) / 0.12)', color: 'var(--ed-accent-text)', boxShadow: 'inset 0 0 0 1px rgb(var(--ed-fg) / 0.08)' } : { color: 'rgb(var(--ed-fg) / 0.6)' }}>
-                          {sec === 'media' ? 'Import' : 'Library'}
-                        </button>
-                      )
-                    })}
-                  </div>
-                </div>
-              ) : (
               // The tool's explanation sits behind the ⓘ
               <div className="flex items-center h-7">
                 <InfoTip label={`About ${activeTool.title}`}>{activeTool.hint}</InfoTip>
               </div>
-              )
             )}
             </div>
             <button onClick={() => toggleOptions(false)} aria-label="Close options sidebar" title="Close options sidebar"
@@ -3465,6 +3512,8 @@ export function EditorShell({
 
             {tool === 'subjects' && (
               <SubjectsPanel
+                angles={anglesView} onOpenAngle={openAngle} onMarkFace={markAngleFace} onClickMark={markByClick}
+                onScanAngles={() => { anglesAskedRef.current = ''; loadAngles(true) }}
                 subjects={subjectItems} loading={subjectsLoading} error={subjectsError}
                 marking={marking} onToggleMarking={markFromView} onMarkShot={markShot} onMarkInClip={markInWholeClip}
                 onRemove={removeSubject} onRename={renameSubject}
@@ -3685,9 +3734,25 @@ export function EditorShell({
               </>
             )}
 
-            {/* Media: the library (Import · Library) */}
+            {/* Media: Import · B-roll stock · Search photos (the switch on its own row: three names don't fit beside the header's buttons) */}
             {tool === 'media' && (() => {
               return (
+                <div className="flex flex-col h-full min-h-0">
+                <div role="tablist" aria-label="Media" className="shrink-0 grid grid-cols-3 gap-0.5 p-0.5 mx-3 mt-2 rounded-lg"
+                  style={{ background: 'rgb(var(--ed-fg) / 0.06)', border: '1px solid rgb(var(--ed-fg) / 0.07)' }}>
+                  {(['media', 'library', 'photos'] as const).map(sec => {
+                    const on = mediaSection === sec
+                    return (
+                      <button key={sec} type="button" role="tab" aria-selected={on} onClick={() => setMediaSection(sec)}
+                        title={sec === 'media' ? 'Your videos, photos and audio' : sec === 'library' ? 'Stock footage to search' : 'Free stock photos to search'}
+                        className="h-7 px-1 rounded-md text-[11.5px] font-semibold whitespace-nowrap transition-colors"
+                        style={on ? { background: 'rgb(var(--ed-fg) / 0.12)', color: 'var(--ed-accent-text)', boxShadow: 'inset 0 0 0 1px rgb(var(--ed-fg) / 0.08)' } : { color: 'rgb(var(--ed-fg) / 0.6)' }}>
+                        {sec === 'media' ? 'Import' : sec === 'library' ? 'B-roll stock' : 'Search photos'}
+                      </button>
+                    )
+                  })}
+                </div>
+                <div className="flex-1 min-h-0">
                 <MediaLibrary
                   items={libraryItems} loading={libraryLoading} used={usedMedia}
                   filter={mediaFilter} onFilter={setMediaFilter}
@@ -3711,7 +3776,13 @@ export function EditorShell({
                       settings={<VideoPanel kind="broll" videos={stockVideos} {...shotPanelProps} />}
                     />
                   }
+                  photos={
+                    <PhotoSearch clipId={clip.id} currentTimeMs={currentTimeMs}
+                      onAdd={p => { addPhotoPathAt(p.storage_path, p.preview_url, currentTimeMs); loadLibrary() }} />
+                  }
                 />
+                </div>
+                </div>
               )
             })()}
 
