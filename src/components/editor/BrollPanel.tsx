@@ -13,6 +13,8 @@ export interface StockResult {
 export interface BrollShot { id: string; start_ms: number; end_ms: number; title: string }
 
 const CATEGORIES = ['City', 'People', 'Nature', 'Office', 'Food', 'Technology', 'Crowd', 'Travel']
+/** The stock video libraries: id, name, the key that turns it on */
+const STOCK_SOURCES = [['pixabay', 'Pixabay', 'PIXABAY_API_KEY'], ['pexels', 'Pexels', 'PEXELS_API_KEY'], ['coverr', 'Coverr', 'COVERR_API_KEY']] as const
 
 const fmt = (ms: number) => { const s = Math.max(0, Math.round(ms / 100) / 10); return `${Math.floor(s / 60)}:${(s % 60).toFixed(1).padStart(4, '0')}` }
 const muted = (a: number) => `rgb(var(--ed-fg) / ${a})`
@@ -53,6 +55,19 @@ export function BrollPanel({ clipId, currentTimeMs, shots, selectedId = null, fo
   const [picked, setPicked] = useState<StockResult | null>(null)
   const [adding, setAdding] = useState(false)
   const asked = useRef('')
+  // Which library to search (Pixabay · Pexels · Coverr): the ones with a key can be picked, to
+  // compare them on the same search
+  const [sources, setSources] = useState<string[]>([])
+  const [source, setSource] = useState<string | null>(null)
+  useEffect(() => {
+    let alive = true
+    fetch('/api/stock/search?q=').then(r => (r.ok ? r.json() : null)).then(d => {
+      if (!alive || !d) return
+      setSources(d.sources ?? [])
+      setSource(s => s ?? d.provider ?? null)
+    }).catch(() => {})
+    return () => { alive = false }
+  }, [])
   // Search | Upload | In this clip: each part of B-roll on its own tab, like other editors
   const [tabState, setTab] = useState<BrollTab>(focusId ? 'clip' : 'search')
   const tab: BrollTab = searchOnly ? 'search' : tabState
@@ -70,16 +85,16 @@ export function BrollPanel({ clipId, currentTimeMs, shots, selectedId = null, fo
     return () => { alive = false }
   }, [clipId])
 
-  async function search(q: string) {
+  async function search(q: string, from: string | null = source) {
     const term = q.trim()
     if (!term) return
-    setQuery(term); asked.current = term
+    setQuery(term); asked.current = `${from}|${term}`
     setSearching(true); setError(null); setPicked(null)
     try {
-      const res = await fetch(`/api/stock/search?q=${encodeURIComponent(term)}`)
+      const res = await fetch(`/api/stock/search?q=${encodeURIComponent(term)}${from ? `&source=${from}` : ''}`)
       const data = await res.json()
       if (!res.ok) throw new Error(data.error ?? 'Search failed')
-      if (asked.current !== term) return
+      if (asked.current !== `${from}|${term}`) return
       setProvider(data.provider)
       setResults(data.items ?? [])
       if (!data.provider) setError('Stock video search is not set up (PIXABAY_API_KEY).')
@@ -121,6 +136,23 @@ export function BrollPanel({ clipId, currentTimeMs, shots, selectedId = null, fo
       </div>}
 
       {tab === 'search' && (<>
+        {/* The library: switching it searches the same words there */}
+        <div role="radiogroup" aria-label="Stock library" className="grid grid-cols-3 gap-0.5 p-0.5 rounded-lg" style={{ background: muted(0.06) }}>
+          {STOCK_SOURCES.map(([id, label, keyName]) => {
+            const ready = sources.includes(id)
+            const on = source === id
+            return (
+              <button key={id} type="button" role="radio" aria-checked={on} disabled={!ready}
+                onClick={() => { setSource(id); if (query.trim()) search(query, id) }}
+                title={ready ? `Search ${label}` : `${label} isn’t set up (${keyName})`}
+                className="h-7 rounded-md text-[11.5px] font-semibold transition-colors disabled:cursor-not-allowed"
+                style={on ? { background: muted(0.16), color: 'var(--ed-text)' } : { color: muted(ready ? 0.6 : 0.28) }}>
+                {label}{!ready && <span className="ml-1 text-[9.5px] font-medium">· no key</span>}
+              </button>
+            )
+          })}
+        </div>
+
         {/* Search */}
         <form onSubmit={e => { e.preventDefault(); search(query) }} className="flex gap-1.5">
           <input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search stock videos…"
@@ -150,7 +182,7 @@ export function BrollPanel({ clipId, currentTimeMs, shots, selectedId = null, fo
         {/* Results */}
         {results && (
           results.length === 0 && !searching
-            ? <p className="text-xs" style={{ color: muted(0.5) }}>No videos for “{asked.current}”. Try other words.</p>
+            ? <p className="text-xs" style={{ color: muted(0.5) }}>No videos for “{asked.current.slice(asked.current.indexOf('|') + 1)}”{provider ? ` on ${STOCK_SOURCES.find(s => s[0] === provider)?.[1] ?? provider}` : ''}. Try other words or another library.</p>
             : (
               <div className="grid grid-cols-2 gap-1.5 overflow-y-auto -mr-2 pr-2" style={{ maxHeight: 300 }}>
                 {results.map(r => (
@@ -171,7 +203,7 @@ export function BrollPanel({ clipId, currentTimeMs, shots, selectedId = null, fo
           </div>
         )}
 
-        {provider && <p className="text-[10px]" style={{ color: muted(0.35) }}>Videos from {provider === 'pexels' ? 'Pexels' : 'Pixabay'}. The speaker keeps talking under each shot.</p>}
+        {provider && <p className="text-[10px]" style={{ color: muted(0.35) }}>Videos from {STOCK_SOURCES.find(s => s[0] === provider)?.[1] ?? 'Pixabay'}. The speaker keeps talking under each shot.</p>}
       </>)}
 
       {tab === 'upload' && <UploadBroll currentTimeMs={currentTimeMs} onUploaded={async id => { await onUploaded?.(id); setTab('clip') }} />}
