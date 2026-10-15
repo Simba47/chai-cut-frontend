@@ -106,7 +106,13 @@ export interface FrameSettings {
 export type AnimationType = 'karaoke' | 'fade' | 'none'
   // Animated presets (render.py _preset_events, VideoPreview drawPresetCaptions)
   | 'pop' | 'highlight' | 'bounce' | 'word' | 'hormozi' | 'box' | 'glow'
-export type TransitionType = 'cut' | 'fade' | 'wipe'
+/**
+ * How one section gives way to the next (transitions.type). The names are ffmpeg's xfade
+ * transitions, which the export draws them with (render.py), except the two older ones: 'fade' (a
+ * dissolve) and 'wipe' (= wipeleft). 'cut': none.
+ */
+export type TransitionType = 'cut' | 'fade' | 'wipe' | 'fadeblack' | 'fadewhite' | 'slideleft' | 'slideup' | 'zoomin' | 'circleopen'
+  | 'slideright' | 'slidedown' | 'smoothleft' | 'hblur' | 'radial' | 'pixelize'
 
 export interface Video {
   id: string
@@ -221,6 +227,11 @@ export interface CaptionStyle {
   stroke_width?: number | null
   /** Words the AI marked important, keyed by the word's start_ms; set by the export */
   emphasis?: Record<string, boolean> | null
+  /**
+   * The caption style picked (modules/captions/templates.ts: a preset in its own font and look);
+   * null = none. `animation` then holds its base preset, drawn where templates aren't known.
+   */
+  template?: string | null
 }
 
 export interface TextOverlay {

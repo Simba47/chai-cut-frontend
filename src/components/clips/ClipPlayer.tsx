@@ -31,6 +31,29 @@ export function ClipPlayer({ videoUrl, mainVideoId, stockUrls = {}, startMs, end
   const [tMs, setTMs] = useState(0)   // clip-relative
   const lengthMs = endMs - startMs
 
+  // Full screen: the reel as big as the screen allows, still 9:16 (black either side). Where a
+  // page can't go full screen (iPhone Safari), it fills the window instead. Esc / the button leave.
+  const boxRef = useRef<HTMLDivElement>(null)
+  const [full, setFull] = useState<'screen' | 'window' | null>(null)
+  useEffect(() => {
+    const onChange = () => setFull(f => (document.fullscreenElement === boxRef.current ? 'screen' : f === 'screen' ? null : f))
+    document.addEventListener('fullscreenchange', onChange)
+    return () => document.removeEventListener('fullscreenchange', onChange)
+  }, [])
+  useEffect(() => {
+    if (full !== 'window') return
+    const esc = (e: KeyboardEvent) => { if (e.key === 'Escape') setFull(null) }
+    window.addEventListener('keydown', esc)
+    return () => window.removeEventListener('keydown', esc)
+  }, [full])
+  function toggleFull() {
+    if (full === 'screen') { void document.exitFullscreen().catch(() => {}); return }
+    if (full === 'window') { setFull(null); return }
+    const el = boxRef.current
+    if (el?.requestFullscreen) el.requestFullscreen().then(() => setFull('screen')).catch(() => setFull('window'))
+    else setFull('window')
+  }
+
   const keyframes = useMemo(() => {
     const map: Record<string, SegmentLocal['crop_boxes'][number]['keyframes']> = {}
     for (const s of segments) for (const b of s.crop_boxes) map[b.id] = b.keyframes
@@ -135,7 +158,9 @@ export function ClipPlayer({ videoUrl, mainVideoId, stockUrls = {}, startMs, end
   const fmt = (ms: number) => { const s = Math.floor(ms / 1000); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}` }
 
   return (
-    <div className="relative w-full rounded-xl overflow-hidden bg-black" style={{ aspectRatio: '9 / 16' }}>
+    <div ref={boxRef} className={full ? 'flex items-center justify-center bg-black' : 'w-full'}
+      style={full === 'window' ? { position: 'fixed', inset: 0, zIndex: 300 } : full ? { width: '100%', height: '100%' } : undefined}>
+    <div className={`relative overflow-hidden bg-black ${full ? 'h-full' : 'w-full rounded-xl'}`} style={{ aspectRatio: '9 / 16', ...(full ? { maxWidth: '100%' } : {}) }}>
       {/* The source video, drawn onto the 9:16 canvas below (kept in the page so it decodes) */}
       <video
         ref={videoRef}
@@ -177,8 +202,17 @@ export function ClipPlayer({ videoUrl, mainVideoId, stockUrls = {}, startMs, end
           onClick={e => { const r = e.currentTarget.getBoundingClientRect(); seekTo(Math.min(1, Math.max(0, (e.clientX - r.left) / r.width))) }}>
           <div className="h-full rounded-full" style={{ width: `${Math.min(100, (tMs / lengthMs) * 100)}%`, background: '#c8ff00' }} />
         </div>
-        <span className="text-[10px] tabular-nums text-white/80">{fmt(tMs)} / {fmt(lengthMs)}</span>
+        <span className={`${full ? 'text-xs' : 'text-[10px]'} tabular-nums text-white/80`}>{fmt(tMs)} / {fmt(lengthMs)}</span>
+        <button type="button" onClick={toggleFull} aria-label={full ? 'Exit full screen' : 'Full screen'} title={full ? 'Exit full screen (Esc)' : 'Full screen'}
+          className="shrink-0 -my-1 -mr-1 w-7 h-7 grid place-items-center rounded-md text-white/85 transition-colors hover:bg-white/15 hover:text-white">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d={full
+              ? 'M9 4v4a1 1 0 0 1-1 1H4M15 4v4a1 1 0 0 0 1 1h4M9 20v-4a1 1 0 0 0-1-1H4M15 20v-4a1 1 0 0 1 1-1h4'
+              : 'M4 9V5a1 1 0 0 1 1-1h4M15 4h4a1 1 0 0 1 1 1v4M20 15v4a1 1 0 0 1-1 1h-4M9 20H5a1 1 0 0 1-1-1v-4'} />
+          </svg>
+        </button>
       </div>
+    </div>
     </div>
   )
 }

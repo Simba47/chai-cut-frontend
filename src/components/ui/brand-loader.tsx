@@ -2,6 +2,8 @@
 
 import { useEffect, useState } from 'react'
 import { BRAND_BOTTOM, BRAND_TOP } from '@/components/ui/brand-logo'
+import { PandaLoader } from '@/components/ui/panda-loader'
+import type { MascotScene } from '@/components/ui/mascot'
 
 /**
  * Loading indicator made from the Shortcut mark: the two slashes of the "S" drift apart,
@@ -32,9 +34,12 @@ const TIPS = [
 /**
  * Full-screen loader: page loads, and the moment between clicking and the next page appearing.
  * The mark sits in a soft lime glow, over a faint dot grid; under the label a
- * thin bar sweeps like progress and a tip changes every few seconds (styles: .bls-* in globals.css)
+ * thin bar sweeps like progress and a tip changes every few seconds (styles: .bls-* in globals.css).
+ * `mascot`: the Shortcut panda instead of the mark alone — true / 'editor': it lounges while its
+ * laptop makes clips (opening the editing board); 'clipboard': it walks along, typing, puzzling
+ * out the best moments (opening the clip board).
  */
-export function BrandLoaderScreen({ label, overlay = false }: { label: string; overlay?: boolean }) {
+export function BrandLoaderScreen({ label, overlay = false, mascot = false }: { label: string; overlay?: boolean; mascot?: boolean | MascotScene }) {
   // Starts on the first tip (same on the server and in the browser), then picks a random one
   const [tip, setTip] = useState(0)
   useEffect(() => {
@@ -43,12 +48,18 @@ export function BrandLoaderScreen({ label, overlay = false }: { label: string; o
     return () => clearInterval(t)
   }, [])
   return (
-    <div className={`bls ${overlay ? 'fixed inset-0 z-[200]' : 'relative h-dvh'}`}>
+    <div className={`bls ${overlay ? 'fixed inset-0 z-[200]' : 'relative h-dvh'}`} data-mascot={mascot ? 'true' : undefined} role={mascot ? 'status' : undefined}>
       <div className="bls-grid" aria-hidden="true" />
       <div className="bls-glow" aria-hidden="true" />
-      <div className="bls-center">
-        <BrandLoader size={52} />
-      </div>
+      {mascot ? (
+        // (nothing in its place until the panda's picture has loaded — not the plain mark: a mark
+        // that then turns into the panda looked like two loaders — the panda fades in on its own)
+        <div className="bls-mascot"><PandaLoader scene={mascot === true ? 'editor' : mascot} /></div>
+      ) : (
+        <div className="bls-center">
+          <BrandLoader size={52} />
+        </div>
+      )}
       <p className="bls-label">{label}</p>
       <div className="bls-bar" aria-hidden="true"><span /></div>
       <p key={tip} className="bls-tip"><span>Tip</span>{TIPS[tip]}</p>
