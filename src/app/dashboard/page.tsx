@@ -4,7 +4,6 @@ import { preloadMascot } from '@/components/ui/mascot'
 import './dashboard.css'
 import { useState, useEffect, useRef, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
-import Link from 'next/link'
 import type { Video } from '@chai-cut/shared'
 import { ACCEPTED_VIDEO_EXTENSIONS } from '@chai-cut/shared'
 import { Breadcrumbs } from '@/components/ui/breadcrumbs'
@@ -45,8 +44,10 @@ function useDismiss(open: boolean, close: () => void) {
 }
 
 export default function DashboardPage() {
-  // (the clip board's loader has the mascot: its picture is fetched now, so it shows at once)
+  // (the clip board's and the editing board's loaders have the mascot: their pictures are
+  // fetched now, so they show at once — the dashboard is where people come from)
   preloadMascot('clipboard')
+  preloadMascot('editor')
   const router = useRouter()
   const [videos, setVideos] = useState<DashVideo[]>([])
   const [loading, setLoading] = useState(true)
@@ -64,7 +65,9 @@ export default function DashboardPage() {
   const dragDepth = useRef(0)
   // Resumable upload straight to storage (see useVideoUpload); problems before it starts
   // (wrong type, too big, plan full) show in uploadError
-  const upload = useVideoUpload(videoId => router.push(`/videos/${videoId}`))
+  // "Make clips" (and an upload that has finished) first asks how: AI edit or manual edit
+  const [choosing, setChoosing] = useState<{ id: string; title: string } | null>(null)
+  const upload = useVideoUpload(videoId => setChoosing({ id: videoId, title: 'your video' }))
   const uploading = upload.state.phase === 'uploading' || upload.state.phase === 'finishing'
   const [uploadError, setUploadError] = useState<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -338,6 +341,7 @@ export default function DashboardPage() {
                 onToggle={() => toggleSelected(video.id)}
                 onRename={t => renameVideo(video.id, t)}
                 onDelete={() => setPendingDelete([{ video, title }])}
+                onOpen={() => setChoosing({ id: video.id, title })}
               />
             ))}
           </div>
@@ -378,6 +382,11 @@ export default function DashboardPage() {
           onFile={f => { setChooserOpen(false); startUpload(f) }}
           onImported={() => { setChooserOpen(false); fetchVideos(); fetchPlan() }}
         />
+      )}
+
+      {choosing && (
+        <EditModeDialog title={choosing.title} onClose={() => setChoosing(null)}
+          onPick={mode => router.push(`/videos/${choosing.id}?start=${mode}`)} />
       )}
 
       {pendingDelete && pendingDelete.length > 0 && (
@@ -474,9 +483,11 @@ function SortMenu({ value, onChange }: { value: SortKey; onChange: (v: SortKey) 
   )
 }
 
-function VideoCard({ video, title, selecting, selected, onToggle, onRename, onDelete }: {
+function VideoCard({ video, title, selecting, selected, onToggle, onRename, onDelete, onOpen }: {
   video: DashVideo
   title: string
+  /** "Make clips": asks AI edit or manual edit, then opens the clip board */
+  onOpen: () => void
   /** Select mode: the whole card toggles its tick; rename, delete and "Make clips" step aside */
   selecting: boolean
   selected: boolean
@@ -643,9 +654,9 @@ function VideoCard({ video, title, selecting, selected, onToggle, onRename, onDe
         </div>
         {/* The only way into the clip picker, so a stray click on the card doesn't navigate */}
         {ready && !selecting && (
-          <Link href={`/videos/${video.id}`} className="vcard-open fill-btn fill-btn-sm" aria-label={`Make clips from ${title}`}>
+          <button type="button" onClick={onOpen} className="vcard-open fill-btn fill-btn-sm" aria-haspopup="dialog" aria-label={`Make clips from ${title}`}>
             <FillButtonContent icon="scissors">Make clips</FillButtonContent>
-          </Link>
+          </button>
         )}
       </div>
     </div>
@@ -856,6 +867,64 @@ function DeleteDialog({ items, onClose, onDeleted }: {
           <button className="dash-btn dash-btn-danger" onClick={confirm} disabled={deleting}>
             {deleting ? <><span className="dash-spinner" /> Deleting</> : one ? 'Delete' : `Delete ${items.length} videos`}
           </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/**
+ * Before the clip board: how the user wants to make clips. AI edit — AI finds the best moments
+ * and makes the clips; Manual edit — they pick the moments themselves. Either opens the clip board
+ * (its loading screen first), which points at the matching tools (?start=ai | manual).
+ * Esc or a click outside closes it (the video stays on the dashboard).
+ */
+function EditModeDialog({ title, onClose, onPick }: { title: string; onClose: () => void; onPick: (mode: 'ai' | 'manual') => void }) {
+  const [picked, setPicked] = useState<'ai' | 'manual' | null>(null)
+  useEffect(() => {
+    const esc = (e: KeyboardEvent) => { if (e.key === 'Escape' && !picked) onClose() }
+    window.addEventListener('keydown', esc)
+    return () => window.removeEventListener('keydown', esc)
+  }, [onClose, picked])
+  const pick = (mode: 'ai' | 'manual') => { if (picked) return; setPicked(mode); onPick(mode) }
+  const options = [
+    {
+      mode: 'ai' as const, name: 'AI edit', tag: 'Fastest',
+      desc: 'AI finds the best moments and turns them into ready-to-post clips.',
+      icon: <path d="M12 3l1.9 5.6L19.5 10.5l-5.6 1.9L12 18l-1.9-5.6L4.5 10.5l5.6-1.9zM19 15.5l.8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8z" fill="currentColor" stroke="none" />,
+    },
+    {
+      mode: 'manual' as const, name: 'Manual edit', tag: 'Full control',
+      desc: 'Pick the moments yourself: set where each clip starts and ends.',
+      icon: <><circle cx="6" cy="6" r="3" /><circle cx="6" cy="18" r="3" /><path d="M20 4L8.1 15.9M14.5 14.5L20 20M8.1 8.1L12 12" /></>,
+    },
+  ]
+  return (
+    <div className="dash-modal-backdrop" onClick={() => { if (!picked) onClose() }}>
+      <div className="dash-modal emd" role="dialog" aria-modal="true" aria-labelledby="emd-title" onClick={e => e.stopPropagation()}>
+        <h2 id="emd-title">How do you want to make clips?</h2>
+        <p className="emd-sub">From <b>{title}</b></p>
+        <div className="emd-options">
+          {options.map((o, i) => (
+            <button key={o.mode} type="button" className="emd-option" data-picked={picked === o.mode || undefined}
+              disabled={!!picked && picked !== o.mode} onClick={() => pick(o.mode)} autoFocus={i === 0}>
+              <span className="emd-icon" aria-hidden="true">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">{o.icon}</svg>
+              </span>
+              <span className="emd-text">
+                <span className="emd-name">{o.name}<span className="emd-tag">{o.tag}</span></span>
+                <span className="emd-desc">{o.desc}</span>
+              </span>
+              <span className="emd-go" aria-hidden="true">
+                {picked === o.mode
+                  ? <span className="dash-spinner" />
+                  : <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M9 6l6 6-6 6" /></svg>}
+              </span>
+            </button>
+          ))}
+        </div>
+        <div className="dash-modal-actions">
+          <button className="dash-btn" onClick={onClose} disabled={!!picked}>Not now</button>
         </div>
       </div>
     </div>
