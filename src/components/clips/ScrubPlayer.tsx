@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, type RefObject } from 'react'
 import { useStoryboard } from '@/modules/clips/storyboard'
+import { useLocalVideoProgress } from '@/modules/clips/localVideo'
 
 /**
  * The clip board's video player, with its own controls so dragging along the video is smooth
@@ -14,10 +15,17 @@ import { useStoryboard } from '@/modules/clips/storyboard'
  *    done — instead of a jump per mouse move piling up (what made the browser's own bar lag).
  *  - Hovering the bar shows that moment's time above it (no picture: the big one shows it while dragging).
  *
+ *  - The page downloads the whole video once (modules/clips/localVideo.ts): `loading` is how far
+ *    along that is (shown on the bar; only this player re-renders as it moves). When it is all here `src` becomes the downloaded copy and
+ *    the player switches to it in place — same moment, still playing if it was — and from then
+ *    on any jump is instant.
+ *
  * Space plays / pauses, ← / → jump 5 s, F is full screen, M mutes.
  */
-export function ScrubPlayer({ src, videoRef, durationMs: durHint, onTime, onMeta, onError }: {
+export function ScrubPlayer({ src, videoRef, durationMs: durHint, loadKey, onTime, onMeta, onError }: {
   src: string
+  /** The key the page downloads the whole video under (useLocalVideo): its progress shows on the bar */
+  loadKey?: string | null
   videoRef: RefObject<HTMLVideoElement | null>
   /** The length if known before the video loads (ms) */
   durationMs?: number | null
@@ -39,11 +47,25 @@ export function ScrubPlayer({ src, videoRef, durationMs: durHint, onTime, onMeta
   const [slow, setSlow] = useState(false)
   const [idle, setIdle] = useState(false)
   const [boardOn, setBoardOn] = useState(false)
-
-  const frameAt = useStoryboard(src, durMs || null, boardOn, playing || dragging)
-
-  // The moment asked for (dragged to / jumped to), and the jump to it
   const want = useRef<number | null>(null)
+
+  // (the storyboard waits for the download: it would slow it, and once the video is here the
+  // real frames come at once anyway)
+  // The whole video downloading: 0 → 1; null when it is here (or can't be)
+  const loading = useLocalVideoProgress(loadKey)
+  const frameAt = useStoryboard(src, durMs || null, boardOn && loading === null, playing || dragging)
+
+  // Where the video is, and the switch to the downloaded copy: the source changes in this render,
+  // so the moment and whether it was playing are noted now and put back once it has loaded
+  const posRef = useRef(0)
+  const lastSrc = useRef(src)
+  const resume = useRef<{ ms: number; play: boolean } | null>(null)
+  if (lastSrc.current !== src) {
+    resume.current = { ms: want.current ?? posRef.current, play: playing }
+    lastSrc.current = src
+  }
+
+  // The moment asked for (dragged to / jumped to), and the jump to it (declared above)
   const draggingRef = useRef(false)
   const wasPlaying = useRef(false)
   const slowTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -67,6 +89,7 @@ export function ScrubPlayer({ src, videoRef, durationMs: durHint, onTime, onMeta
     const v = videoRef.current
     const m = Math.max(0, Math.min(durMs || ms, ms))
     want.current = m
+    posRef.current = m
     setCurMs(m)
     onTime(m)
     if (v && Math.abs(v.currentTime * 1000 - m) > 250) {
@@ -170,8 +193,9 @@ export function ScrubPlayer({ src, videoRef, durationMs: durHint, onTime, onMeta
       <video
         ref={videoRef}
         src={src}
-        // (loaded ahead, so a moment dragged to is usually there already)
-        preload="auto"
+        // (loaded ahead, so a moment dragged to is usually there already; while the whole video is
+        // downloading only its start, so the two don't fight over the connection)
+        preload={loading === null ? 'auto' : 'metadata'}
         playsInline
         className="w-full h-full object-contain"
         onClick={togglePlay}
@@ -181,6 +205,13 @@ export function ScrubPlayer({ src, videoRef, durationMs: durHint, onTime, onMeta
           if (isFinite(v.duration) && v.duration > 0) setDurMs(v.duration * 1000)
           setMuted(v.muted)
           onMeta?.(v)
+          // (switched to the downloaded copy: back to the same moment, playing if it was)
+          const r = resume.current
+          if (r) {
+            resume.current = null
+            if (r.ms > 0) { want.current = r.ms; v.currentTime = r.ms / 1000 }
+            if (r.play) void v.play().catch(() => {})
+          }
         }}
         onCanPlay={e => {
           caughtUp(e.currentTarget)
@@ -193,6 +224,7 @@ export function ScrubPlayer({ src, videoRef, durationMs: durHint, onTime, onMeta
           // (a jump on the way to the moment asked for has landed: not there yet, keep going)
           if (want.current !== null && Math.abs(v.currentTime * 1000 - want.current) >= 40) return
           want.current = null
+          posRef.current = v.currentTime * 1000
           setCurMs(v.currentTime * 1000)
           onTime(v.currentTime * 1000)
         }}
@@ -205,6 +237,7 @@ export function ScrubPlayer({ src, videoRef, durationMs: durHint, onTime, onMeta
           const v = e.currentTarget
           if (want.current === null) {
             const ms = v.currentTime * 1000
+            posRef.current = ms
             setCurMs(ms)
             onTime(ms)
             setPreview(frameAt(ms))
@@ -242,7 +275,8 @@ export function ScrubPlayer({ src, videoRef, durationMs: durHint, onTime, onMeta
           onPointerDown={onBarDown} onPointerMove={onBarMove} onPointerUp={onBarUp} onPointerCancel={onBarUp}
           onPointerLeave={() => { if (!draggingRef.current) setHover(null) }}>
           <div className="sp-track">
-            <div className="sp-buf" style={{ width: `${pct(bufMs)}%` }} />
+            {/* (what is here: the download's progress while the whole video comes in) */}
+            <div className="sp-buf" style={{ width: `${loading !== null ? Math.max(loading * 100, pct(bufMs)) : pct(bufMs)}%` }} />
             <div className="sp-done" style={{ width: `${pct(curMs)}%` }} />
           </div>
           <div className="sp-thumb" style={{ left: `${pct(curMs)}%` }} />
@@ -260,6 +294,11 @@ export function ScrubPlayer({ src, videoRef, durationMs: durHint, onTime, onMeta
           </button>
           <span className="sp-time tabular-nums">{fmt(curMs)} <span className="sp-time-of">/ {fmt(durMs)}</span></span>
           <span className="flex-1" />
+          {loading !== null && (
+            <span className="sp-load tabular-nums" title="The whole video is loading once, so playing from any moment is instant">
+              Loading video {Math.round(loading * 100)}%
+            </span>
+          )}
           <button type="button" className="sp-btn" onClick={toggleMute} aria-label={muted ? 'Unmute' : 'Mute'}>
             {muted
               ? <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden><path d="M11 5 6 9H3v6h3l5 4z" fill="currentColor" /><path d="m22 9-6 6M16 9l6 6" /></svg>

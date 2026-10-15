@@ -4,6 +4,7 @@ import { preloadMascot } from '@/components/ui/mascot'
 import { InfoTip } from '@/components/ui/info-tip'
 import { useFrameAt } from '@/modules/clips/thumbs'
 import { ScrubPlayer } from '@/components/clips/ScrubPlayer'
+import { useLocalVideo } from '@/modules/clips/localVideo'
 import { useState, useRef, useEffect, useCallback, useSyncExternalStore } from 'react'
 import { useRouter } from 'next/navigation'
 import { Breadcrumbs } from '@/components/ui/breadcrumbs'
@@ -143,6 +144,8 @@ const AUTO_MAX = 10
 interface Props {
   video: VideoData
   videoUrl: string
+  /** The file's storage path: the whole video is downloaded once and kept under it (modules/clips/localVideo.ts) */
+  videoKey?: string | null
   /** The video has no editing copy yet: ask the worker for one (page.tsx) */
   needsProxy?: boolean
   /** Picked on the dashboard: AI edit or manual edit — that part of the clip board is pointed at on arrival */
@@ -210,9 +213,15 @@ const stageLabel = (pct: number) =>
 
 // ── main component ─────────────────────────────────────────────────────────────
 
-export function ClipPickerShell({ video: initialVideo, videoUrl, needsProxy, startWith, savedClips }: Props) {
+export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, videoKey, needsProxy, startWith, savedClips }: Props) {
   // (the loader shown when a clip is opened has the mascot: its picture is fetched now)
   preloadMascot()
+  // The whole video is downloaded once (modules/clips/localVideo.ts), then the player and the clip
+  // previews play it from the computer: no waiting on the network when playing from or dragging
+  // to any moment. Until it is all here, the link streams as before. (The thumbnails keep the
+  // link: their frames are already grabbed, and switching would grab them all again.)
+  const playUrl = useLocalVideo(signedUrl, videoKey)
+  const videoUrl = signedUrl
   const router = useRouter()
   const videoRef = useRef<HTMLVideoElement>(null)
 
@@ -839,7 +848,8 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, needsProxy, sta
   const player = isReady && videoUrl ? (
     // Our own controls (components/clips/ScrubPlayer.tsx): dragging along the video shows each
     // moment at once and never piles up jumps, however heavy the file is
-    <ScrubPlayer src={videoUrl} videoRef={videoRef} durationMs={initialVideo.duration_ms}
+    <ScrubPlayer src={playUrl} videoRef={videoRef} durationMs={initialVideo.duration_ms}
+      loadKey={videoKey || signedUrl}
       onTime={setNowMs}
       onMeta={v => {
         if (v.videoWidth && v.videoHeight) setRatio(v.videoWidth / v.videoHeight)
@@ -876,7 +886,7 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, needsProxy, sta
   const previewPane = (
     <div className="w-full h-full flex items-center justify-center">
       {momentPreview ? (
-        <ClipPlayer key={`m-${momentPreview.s.id}`} videoUrl={videoUrl} mainVideoId={video.id}
+        <ClipPlayer key={`m-${momentPreview.s.id}`} videoUrl={playUrl} mainVideoId={video.id}
           startMs={momentPreview.s.start_ms} endMs={momentPreview.s.end_ms}
           segments={previewSegments([], momentPreview.s.end_ms - momentPreview.s.start_ms, ratio)}
           words={[]} captionStyle={null} textOverlays={[]} />
@@ -887,7 +897,7 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, needsProxy, sta
       ) : 'error' in previewData ? (
         <p className="text-sm px-6 text-center" style={{ color: '#f87171' }}>{previewData.error}</p>
       ) : (
-        <ClipPlayer key={previewData.id} videoUrl={videoUrl} mainVideoId={previewData.video_id} stockUrls={previewData.stockUrls}
+        <ClipPlayer key={previewData.id} videoUrl={playUrl} mainVideoId={previewData.video_id} stockUrls={previewData.stockUrls}
           startMs={previewData.start_ms} endMs={previewData.end_ms}
           segments={previewSegments(previewData.segments, previewData.end_ms - previewData.start_ms, ratio)}
           words={previewData.words}

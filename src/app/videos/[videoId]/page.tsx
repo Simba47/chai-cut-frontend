@@ -95,6 +95,8 @@ export default async function VideoPickerPage({
     <ClipPickerShell
       video={video}
       videoUrl={videoUrl}
+      // (names the file across visits: the clip board keeps its download under it)
+      videoKey={videoUrl ? proxy_path || video.storage_path : null}
       needsProxy={needsProxy}
       startWith={startWith}
       savedClips={savedClips}
