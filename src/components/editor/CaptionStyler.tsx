@@ -425,8 +425,8 @@ export function CaptionStyler({
   const animation = style.animation ?? DEFAULT_CAPTION_STYLE.animation
   const hl = style.highlight_color ?? '#FFE700'
   const tpl = templateOf(style)
-  // The kind of style shown: the picked style's own to begin with
-  const [group, setGroup] = useState(tpl?.group ?? (animation !== 'karaoke' || style.template === null ? CLASSIC : TEMPLATE_GROUPS[0]))
+  // The kind of style shown: the picked caption style's own; otherwise Classic (the plain animations)
+  const [group, setGroup] = useState(tpl?.group ?? CLASSIC)
 
   return (
     <div className="flex flex-col gap-5 px-4 pb-5 pt-1">
@@ -468,7 +468,7 @@ export function CaptionStyler({
         <h3 className="cap-heading">Style</h3>
         {/* The kinds of style; "Classic" holds the plain animations */}
         <div role="tablist" aria-label="Kinds of caption style" className="flex flex-wrap gap-1.5">
-          {[...TEMPLATE_GROUPS, CLASSIC].map(g => (
+          {[CLASSIC, ...TEMPLATE_GROUPS].map(g => (
             <button key={g} role="tab" aria-selected={group === g} onClick={() => setGroup(g)}
               className="px-2.5 h-7 rounded-full text-[11.5px] font-semibold transition-colors"
               style={group === g
