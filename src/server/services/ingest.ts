@@ -70,6 +70,8 @@ export interface SignUploadRequest {
   key: string
   uploadId?: string
   partNumber?: number
+  /** Several parts signed in one go (PUT): up to 100 part numbers */
+  partNumbers?: number[]
   /** The file being uploaded — needed to start an upload */
   file?: { name: string; size: number; type?: string }
   /** B-roll uploaded in the editor: saved as an asset (not on the dashboard, not counted as a video) */
@@ -86,7 +88,7 @@ function uploadExtension(filename: string) {
   return ext
 }
 
-export async function signUploadRequest(userId: string, r: SignUploadRequest): Promise<{ url: string; key?: string; headers?: Record<string, string> }> {
+export async function signUploadRequest(userId: string, r: SignUploadRequest): Promise<{ url: string; key?: string; headers?: Record<string, string> } | { urls: Record<string, string> }> {
   const startsUpload = !r.uploadId && (r.method === 'POST' || r.method === 'PUT')
   if (startsUpload) {
     if (!r.file?.name || !(r.file.size > 0)) throw err('File details missing', 400)
@@ -112,6 +114,16 @@ export async function signUploadRequest(userId: string, r: SignUploadRequest): P
   const Key = r.key
   if (r.uploadId) {
     const UploadId = r.uploadId
+    if (r.method === 'PUT' && Array.isArray(r.partNumbers)) {
+      // A batch of parts at once (the uploader asks ahead: one request instead of one per part)
+      const nums = r.partNumbers.map(Number)
+      if (!nums.length || nums.length > 100 || nums.some(n => !Number.isInteger(n) || n < 1 || n > 10000)) throw err('Invalid part numbers', 400)
+      const urls: Record<string, string> = {}
+      await Promise.all(nums.map(async PartNumber => {
+        urls[PartNumber] = await getSignedUrl(r2, new UploadPartCommand({ Bucket: R2_BUCKET, Key, UploadId, PartNumber }), { expiresIn: UPLOAD_URL_TTL_S })
+      }))
+      return { urls }
+    }
     if (r.method === 'PUT') {
       const PartNumber = Number(r.partNumber)
       if (!Number.isInteger(PartNumber) || PartNumber < 1 || PartNumber > 10000) throw err('Invalid part number', 400)
