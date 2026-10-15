@@ -686,6 +686,15 @@ function paintFrame(
   }
 }
 
+/** A small canvas for Pixelate, kept between frames (only resized) */
+let pixelTmp: HTMLCanvasElement | null = null
+function pixelCanvas(w: number, h: number) {
+  if (!pixelTmp) pixelTmp = document.createElement('canvas')
+  if (pixelTmp.width !== w) pixelTmp.width = w
+  if (pixelTmp.height !== h) pixelTmp.height = h
+  return pixelTmp
+}
+
 /** A transition the preview plays: centred on the join at `at` (clip ms), `ms` long */
 export type TransitionCut = { at: number; ms: number; type: string }
 
@@ -715,6 +724,58 @@ function drawTransition(ctx: CanvasRenderingContext2D, a: HTMLCanvasElement, b: 
       ctx.drawImage(a, 0, -e * H, W, H)
       ctx.drawImage(b, 0, (1 - e) * H, W, H)
       break
+    case 'slideright':
+      ctx.drawImage(a, e * W, 0, W, H)
+      ctx.drawImage(b, (e - 1) * W, 0, W, H)
+      break
+    case 'slidedown':
+      ctx.drawImage(a, 0, e * H, W, H)
+      ctx.drawImage(b, 0, (e - 1) * H, W, H)
+      break
+    case 'smoothleft': {
+      // Whip: a push to the left, smeared sideways over its middle (the export: slideleft, then
+      // avgblur over the middle 60%, render.py)
+      const blur = e > 0.2 && e < 0.8 ? Math.round(W * 0.012) : 0
+      if (blur > 0) ctx.filter = `blur(${blur}px)`
+      ctx.drawImage(a, -e * W, 0, W, H)
+      ctx.drawImage(b, (1 - e) * W, 0, W, H)
+      break
+    }
+    case 'hblur': {
+      // Blur: the picture goes soft, swaps at the softest, then comes back sharp
+      const blur = Math.round(Math.sin(Math.PI * e) * W * 0.03)
+      if (blur > 0) ctx.filter = `blur(${blur}px)`
+      ctx.drawImage(a, 0, 0, W, H)
+      ctx.globalAlpha = e
+      ctx.drawImage(b, 0, 0, W, H)
+      break
+    }
+    case 'radial': {
+      // Clock: a hand sweeps round from 12 o'clock, uncovering the new picture behind it
+      ctx.drawImage(a, 0, 0, W, H)
+      const r = Math.hypot(W, H)
+      ctx.beginPath(); ctx.moveTo(W / 2, H / 2)
+      ctx.arc(W / 2, H / 2, r, -Math.PI / 2, -Math.PI / 2 + e * Math.PI * 2); ctx.closePath(); ctx.clip()
+      ctx.drawImage(b, 0, 0, W, H)
+      break
+    }
+    case 'pixelize': {
+      // Pixelate: the picture breaks into ever bigger blocks, swaps at the blockiest, then sharpens
+      const q = Math.sin(Math.PI * e)
+      // (blocks up to a 16th of the width at the peak, whatever the preview's size)
+      const cells = Math.max(1, Math.round(W / Math.max(1, q * W / 16)))
+      const tmp = pixelCanvas(cells, Math.max(1, Math.round(cells * H / W)))
+      const t = tmp.getContext('2d')
+      if (!t) { ctx.drawImage(e < 0.5 ? a : b, 0, 0, W, H); break }
+      t.imageSmoothingEnabled = true
+      t.globalAlpha = 1
+      t.drawImage(a, 0, 0, tmp.width, tmp.height)
+      t.globalAlpha = e
+      t.drawImage(b, 0, 0, tmp.width, tmp.height)
+      ctx.imageSmoothingEnabled = q < 0.05
+      ctx.drawImage(tmp, 0, 0, W, H)
+      break
+    }
     case 'wipe': case 'wipeleft':
       // The new picture comes in from the right edge, moving left
       ctx.drawImage(a, 0, 0, W, H)

@@ -55,7 +55,7 @@ import { getBoxPositionAtLerp } from '@/lib/interpolation'
 import { SubjectsPanel, type SubjectItem, type AnglesView } from '@/components/editor/SubjectsPanel'
 import { angleRows, angleAt, type Angle } from '@/modules/editor/angles'
 import type { SegmentLocal, CropBoxLocal, FrameLayout, FrameLane, FrameItem, TransitionType } from '@chai-cut/shared'
-import { TransitionsPanel, type TransitionJoin } from '@/components/editor/TransitionsPanel'
+import { TransitionsPanel, TRANSITION_DEFAULT_MS, type TransitionJoin } from '@/components/editor/TransitionsPanel'
 
 type Tool = 'format' | 'subjects' | 'frames' | 'captions' | 'transitions' | 'text' | 'media' | 'music' | 'cleanup' | 'post'
 /** Media: the user's imported media, or Library (stock footage) */
@@ -496,6 +496,20 @@ export function EditorShell({
       const had = prev.find(t => t.after_segment_id === afterId)
       return [...rest, { id: had?.id ?? crypto.randomUUID(), clip_id: clip.id, after_segment_id: afterId, type, duration_ms: Math.round(durationMs) }]
     })
+  }
+  /**
+   * A transition picked with no join at the playhead: the part of the clip there is split at the
+   * playhead (as S does) and the new join gets that transition. The left half keeps its id, so it
+   * is the section before the join.
+   */
+  const canAddTransitionAt = (seg: SegmentLocal | undefined, ms: number) => !!seg && ms > seg.start_ms + 100 && ms < seg.end_ms - 100
+  function addTransitionHere(type: TransitionType) {
+    const seg = activeSegment
+    if (!seg || !canAddTransitionAt(seg, currentTimeMs) || sectionBlocked(seg.id)) return
+    pause()
+    skipCanvasTransitionRef.current = true
+    if (!splitAtMs(seg.id, currentTimeMs, getPositionAt)) return
+    setTransitionAt(seg.id, type, TRANSITION_DEFAULT_MS)
   }
   /** "Preview" on a join: the preview opens and plays the clip from a moment before it */
   function previewJoin(at: number, durationMs: number) {
@@ -3846,7 +3860,8 @@ export function EditorShell({
 
             {tool === 'transitions' && (
               <TransitionsPanel joins={transitionJoins} transitions={transitions} currentTimeMs={currentTimeMs}
-                onSet={setTransitionAt} onPreview={previewJoin} />
+                canAddHere={canAddTransitionAt(activeSegment, currentTimeMs)} onAddHere={addTransitionHere}
+                onSet={setTransitionAt} onPreview={previewJoin} onSeek={ms => { pause(); seekToMs(ms) }} />
             )}
 
             {tool === 'text' && (

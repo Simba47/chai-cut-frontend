@@ -403,9 +403,9 @@ export async function hasColumn(table: string, column: string): Promise<boolean>
 }
 
 /**
- * Whether transitions.type takes the newer kinds (fadeblack, slideleft…): the backend widens the
- * table's check when it starts (its index.ts). Before that only cut / fade / wipe can be saved —
- * anything else would fail the whole save. Known once it's true.
+ * Whether transitions.type takes every kind the editor offers (fadeblack, slideleft… pixelize):
+ * the backend widens the table's check when it starts (its index.ts). Before that only cut / fade
+ * / wipe are sure to save — anything else would fail the whole save. Known once it's true.
  */
 let transitionKindsKnown = false
 export async function transitionKindsAllowed(): Promise<boolean> {
@@ -414,7 +414,7 @@ export async function transitionKindsAllowed(): Promise<boolean> {
     SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint
     WHERE conrelid = 'transitions'::regclass AND conname = 'transitions_type_check'`.catch(() => null)
   // (no check at all also takes every kind)
-  if (rows && (rows.length === 0 || String(rows[0].def).includes('slideleft'))) transitionKindsKnown = true
+  if (rows && (rows.length === 0 || String(rows[0].def).includes('pixelize'))) transitionKindsKnown = true
   return transitionKindsKnown
 }
 

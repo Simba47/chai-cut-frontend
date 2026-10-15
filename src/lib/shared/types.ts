@@ -112,6 +112,7 @@ export type AnimationType = 'karaoke' | 'fade' | 'none'
  * dissolve) and 'wipe' (= wipeleft). 'cut': none.
  */
 export type TransitionType = 'cut' | 'fade' | 'wipe' | 'fadeblack' | 'fadewhite' | 'slideleft' | 'slideup' | 'zoomin' | 'circleopen'
+  | 'slideright' | 'slidedown' | 'smoothleft' | 'hblur' | 'radial' | 'pixelize'
 
 export interface Video {
   id: string

@@ -1,5 +1,6 @@
 'use client'
 
+import { useState } from 'react'
 import type { Transition, TransitionType } from '@chai-cut/shared'
 
 /** A place where one section of the main strip ends and the next begins (timeline ms) */
@@ -13,21 +14,27 @@ export interface TransitionJoin {
 }
 
 /**
- * The kinds of transition, in the order they're offered. Each tile plays a little loop of what it
- * does: the outgoing picture (grey) gives way to the incoming one (lime). Styles: .tr-* in
- * globals.css. The export draws them with ffmpeg's xfade (render.py); the preview the same way
- * (VideoPreview drawTransition).
+ * The kinds of transition, most used in short-form editing first. Each tile plays a little loop
+ * of what it does: the outgoing picture (dark) gives way to the incoming one (light). Styles:
+ * .tr-* in globals.css. The export draws them with ffmpeg's xfade (render.py); the preview the
+ * same way (VideoPreview drawTransition).
  */
 export const TRANSITION_KINDS: { type: TransitionType; name: string }[] = [
   { type: 'cut', name: 'None' },
   { type: 'fade', name: 'Dissolve' },
   { type: 'fadeblack', name: 'Fade black' },
   { type: 'fadewhite', name: 'Flash' },
-  { type: 'slideleft', name: 'Slide' },
-  { type: 'slideup', name: 'Slide up' },
-  { type: 'wipe', name: 'Wipe' },
   { type: 'zoomin', name: 'Zoom' },
+  { type: 'smoothleft', name: 'Whip' },
+  { type: 'hblur', name: 'Blur' },
+  { type: 'slideleft', name: 'Slide left' },
+  { type: 'slideright', name: 'Slide right' },
+  { type: 'slideup', name: 'Slide up' },
+  { type: 'slidedown', name: 'Slide down' },
+  { type: 'wipe', name: 'Wipe' },
   { type: 'circleopen', name: 'Circle' },
+  { type: 'radial', name: 'Clock' },
+  { type: 'pixelize', name: 'Pixelate' },
 ]
 /** How long a new transition lasts, and the range it can be set to (ms) */
 export const TRANSITION_DEFAULT_MS = 500
@@ -37,86 +44,151 @@ function fmt(ms: number) {
   const s = Math.max(0, Math.round(ms / 100) / 10)
   return `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`
 }
+const nameOf = (t: TransitionType) => TRANSITION_KINDS.find(k => k.type === t)?.name ?? 'None'
 
 /**
- * The Transitions tool: every join between sections of the clip, each with its transition (None
- * to begin with) picked from tiles, and how long it lasts. "Preview" plays the clip through that
- * join; "Use on every join" gives all of them the same one.
+ * The Transitions tool, one set of controls for the whole clip:
+ *
+ *  - "Apply to": All cuts, or one cut (a chip per join, by its time; picking one moves the
+ *    playhead there). A dot on a chip: that cut has a transition.
+ *  - The tiles: the transition for what "Apply to" says (for All cuts, lit when they all share one).
+ *  - Length, then Preview (plays through the cut, or the first one) and "+ Add cut" (splits the
+ *    clip at the playhead: a new join).
+ *
+ * With no joins yet the tiles still show: picking one splits the clip at the playhead and puts
+ * that transition on the new join (onAddHere).
  */
-export function TransitionsPanel({ joins, transitions, currentTimeMs, onSet, onPreview }: {
+export function TransitionsPanel({ joins, transitions, currentTimeMs, canAddHere, onAddHere, onSet, onPreview, onSeek }: {
   joins: TransitionJoin[]
   transitions: Transition[]
   currentTimeMs: number
+  /** The playhead is inside a part of the clip (not on its first or last moment): it can be split there */
+  canAddHere: boolean
+  /** Split the clip at the playhead and give the new join this transition */
+  onAddHere: (type: TransitionType) => void
   onSet: (afterId: string, type: TransitionType, durationMs: number) => void
   /** Play the clip through this join (from a moment before it) */
   onPreview: (at: number, durationMs: number) => void
+  /** Move the playhead (to a cut picked in "Apply to") */
+  onSeek?: (ms: number) => void
 }) {
+  // What the controls apply to: every cut, or one (its section id)
+  const [scope, setScope] = useState<'all' | string>('all')
+
   if (joins.length === 0) {
     return (
-      <div className="tr-empty">
-        <span className="tr-empty-icon" aria-hidden="true">
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-            <rect x="2.5" y="5" width="8" height="14" rx="2" /><rect x="13.5" y="5" width="8" height="14" rx="2" /><path d="M10.5 12h3" />
-          </svg>
-        </span>
-        <p className="tr-empty-title">No joins yet</p>
-        <p className="tr-empty-text">A transition goes where one part of the clip meets the next. Split the clip (press S at the playhead) or change its format partway, then come back here.</p>
+      <div className="flex flex-col gap-3 px-4 pb-5 pt-1">
+        <div className="tr-start">
+          <span className="tr-empty-icon" aria-hidden="true">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="2.5" y="5" width="8" height="14" rx="2" /><rect x="13.5" y="5" width="8" height="14" rx="2" /><path d="M10.5 12h3" />
+            </svg>
+          </span>
+          <div className="min-w-0">
+            <p className="tr-empty-title">Add a transition</p>
+            <p className="tr-empty-text">
+              {canAddHere
+                ? <>Pick one: the clip is cut at the playhead (<b className="tabular-nums">{fmt(currentTimeMs)}</b>) and it plays there.</>
+                : <>Move the playhead to where one shot should give way to the next, then pick one.</>}
+            </p>
+          </div>
+        </div>
+        <KindTiles picked={null} label="Add a transition at the playhead" disabled={!canAddHere}
+          onPick={t => { if (t !== 'cut') onAddHere(t) }} />
       </div>
     )
   }
-  // The join nearest the playhead is shown as the one being looked at
-  const near = joins.reduce((best, j) => (Math.abs(j.at - currentTimeMs) < Math.abs(best.at - currentTimeMs) ? j : best), joins[0])
+
+  const trOf = (j: TransitionJoin) => transitions.find(t => t.after_segment_id === j.afterId)
+  const typeOf = (j: TransitionJoin): TransitionType => trOf(j)?.type ?? 'cut'
+  const one = scope === 'all' ? null : joins.find(j => j.afterId === scope) ?? null
+  const targets = one ? [one] : joins
+  // What the tiles show: the cut's own, or for All cuts the one they share (none lit when mixed)
+  const types = new Set(targets.map(typeOf))
+  const picked: TransitionType | null = types.size === 1 ? [...types][0] : null
+  const firstOn = targets.find(j => typeOf(j) !== 'cut')
+  const ms = (firstOn && trOf(firstOn)?.duration_ms) || TRANSITION_DEFAULT_MS
+  const anyOn = !!firstOn
+  const onJoin = joins.some(j => Math.abs(j.at - currentTimeMs) < 150)
+  const preview = one ?? firstOn ?? joins[0]
+
+  function apply(type: TransitionType, len = ms) {
+    for (const j of targets) onSet(j.afterId, type, len)
+  }
+
   return (
-    <div className="flex flex-col gap-3 px-4 pb-5 pt-1">
-      <p className="text-[12px] leading-relaxed" style={{ color: 'rgb(var(--ed-fg) / 0.55)' }}>
-        Pick how each part of the clip gives way to the next. It plays in the preview and in the export.
-      </p>
-      {joins.map((j, i) => {
-        const tr = transitions.find(t => t.after_segment_id === j.afterId)
-        const type: TransitionType = tr?.type ?? 'cut'
-        const ms = tr?.duration_ms ?? TRANSITION_DEFAULT_MS
-        const on = type !== 'cut'
-        return (
-          <section key={j.afterId} className="tr-join" data-near={j === near || undefined} aria-label={`Join ${i + 1} at ${fmt(j.at)}`}>
-            <div className="flex items-center gap-2">
-              <span className="tr-join-num">{i + 1}</span>
-              <div className="flex-1 min-w-0">
-                <p className="tr-join-title">Join at {fmt(j.at)}</p>
-                <p className="tr-join-sub truncate">{j.from} → {j.to}</p>
-              </div>
-              <button type="button" className="tr-play" onClick={() => onPreview(j.at, on ? ms : 0)} title="Play the clip through this join">
-                <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M7 5v14l12-7z" /></svg>
-                Preview
-              </button>
-            </div>
-            <div className="grid grid-cols-3 gap-1.5" role="radiogroup" aria-label={`Transition at join ${i + 1}`}>
-              {TRANSITION_KINDS.map(k => (
-                <button key={k.type} type="button" role="radio" aria-checked={type === k.type}
-                  className="tr-tile" data-on={type === k.type || undefined}
-                  onClick={() => onSet(j.afterId, k.type, ms)}>
-                  <span className="tr-demo" data-kind={k.type} aria-hidden="true"><i className="tr-a" /><i className="tr-b" /></span>
-                  <span className="tr-name">{k.name}</span>
-                </button>
-              ))}
-            </div>
-            {on && (
-              <div className="flex flex-col gap-1.5">
-                <label className="flex items-center justify-between text-[11.5px]" style={{ color: 'rgb(var(--ed-fg) / 0.6)' }}>
-                  <span>Length</span>
-                  <span className="tabular-nums font-semibold" style={{ color: 'var(--ed-text)' }}>{(ms / 1000).toFixed(1)} s</span>
-                </label>
-                <input type="range" min={MIN_MS} max={MAX_MS} step={100} value={ms} aria-label="Transition length"
-                  onChange={e => onSet(j.afterId, type, Number(e.target.value))} className="tr-range" />
-                {joins.length > 1 && (
-                  <button type="button" className="tr-all" onClick={() => joins.forEach(o => onSet(o.afterId, type, ms))}>
-                    Use on every join
-                  </button>
-                )}
-              </div>
-            )}
-          </section>
-        )
-      })}
+    <div className="flex flex-col gap-3.5 px-4 pb-5 pt-1">
+      {/* Apply to: all cuts, or one */}
+      <div className="flex flex-col gap-1.5">
+        <span className="tr-label">Apply to</span>
+        <div className="tr-scope" role="radiogroup" aria-label="Which cuts">
+          <button type="button" role="radio" aria-checked={scope === 'all'} data-on={scope === 'all' || undefined}
+            onClick={() => setScope('all')}>
+            All cuts <span className="tr-scope-n">{joins.length}</span>
+          </button>
+          {joins.map(j => (
+            <button key={j.afterId} type="button" role="radio" aria-checked={scope === j.afterId} data-on={scope === j.afterId || undefined}
+              title={`Cut at ${fmt(j.at)}: ${nameOf(typeOf(j))}`}
+              onClick={() => { setScope(j.afterId); onSeek?.(j.at) }}>
+              <span className="tabular-nums">{fmt(j.at)}</span>
+              {typeOf(j) !== 'cut' && <i className="tr-scope-dot" aria-label="has a transition" />}
+            </button>
+          ))}
+        </div>
+        {scope === 'all' && picked === null && (
+          <span className="tr-hint">The cuts have different transitions — picking one sets it on all of them.</span>
+        )}
+      </div>
+
+      <KindTiles picked={picked} label={one ? `Transition at ${fmt(one.at)}` : 'Transition on every cut'} onPick={t => apply(t)} />
+
+      {anyOn && (
+        <div className="flex flex-col gap-1">
+          <label className="flex items-center justify-between text-[11.5px]" style={{ color: 'rgb(var(--ed-fg) / 0.6)' }}>
+            <span>Length</span>
+            <span className="tabular-nums font-semibold" style={{ color: 'var(--ed-text)' }}>{(ms / 1000).toFixed(1)} s</span>
+          </label>
+          <input type="range" min={MIN_MS} max={MAX_MS} step={100} value={ms} aria-label="Transition length"
+            onChange={e => {
+              const len = Number(e.target.value)
+              for (const j of targets) if (typeOf(j) !== 'cut') onSet(j.afterId, typeOf(j), len)
+            }} className="tr-range" />
+        </div>
+      )}
+
+      <div className="flex items-center gap-2">
+        <button type="button" className="tr-play flex-1 justify-center" onClick={() => onPreview(preview.at, typeOf(preview) !== 'cut' ? (trOf(preview)?.duration_ms ?? TRANSITION_DEFAULT_MS) : 0)}
+          title={`Play the clip through the cut at ${fmt(preview.at)}`}>
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M7 5v14l12-7z" /></svg>
+          Preview {fmt(preview.at)}
+        </button>
+        <button type="button" className="tr-play flex-1 justify-center" disabled={!canAddHere || onJoin} onClick={() => { onAddHere(picked && picked !== 'cut' ? picked : 'fade'); setScope('all') }}
+          title={canAddHere && !onJoin ? `Cut the clip at ${fmt(currentTimeMs)} and add a transition there` : 'Move the playhead inside a part of the clip'}>
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.8" strokeLinecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+          Add cut at {fmt(currentTimeMs)}
+        </button>
+      </div>
+    </div>
+  )
+}
+
+/** The tiles of every kind; `picked` is lit */
+function KindTiles({ picked, label, disabled, onPick }: {
+  picked: TransitionType | null
+  label: string
+  disabled?: boolean
+  onPick: (type: TransitionType) => void
+}) {
+  return (
+    <div className="grid grid-cols-3 gap-1.5" role="radiogroup" aria-label={label}>
+      {TRANSITION_KINDS.map(k => (
+        <button key={k.type} type="button" role="radio" aria-checked={picked === k.type} disabled={disabled}
+          className="tr-tile" data-on={picked === k.type || undefined}
+          onClick={() => onPick(k.type)}>
+          <span className="tr-demo" data-kind={k.type} aria-hidden="true"><i className="tr-a" /><i className="tr-b" /></span>
+          <span className="tr-name">{k.name}</span>
+        </button>
+      ))}
     </div>
   )
 }
