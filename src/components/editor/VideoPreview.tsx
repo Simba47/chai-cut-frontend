@@ -12,7 +12,7 @@ import { applyCase } from './CaptionStyler'
 import { normalizedSlotAspect, fitToAspect } from '@/modules/editor/utils'
 import { isFrameLayout, frameSlotLabels, frameLanesFor, frameBandShown, frameOf, itemAt, captionBandAt, cornerGeometry, MIN_ROW_H, mainRect, boxRect, MIN_BOX as MIN_MAIN_BOX, frameAreas, frameBase, areaRadius, frameSlotSize, isTextLane, frameRows } from '@/modules/editor/frames'
 import type { FrameMediaPool } from '@/modules/editor/frameMedia'
-import { useLiveTimeMs } from '@/modules/player/store'
+import { useLiveTimeMs, liveTime, usePlayerStore } from '@/modules/player/store'
 import { addedVideoBox } from '@/modules/editor/visibility'
 import { trackPresentedFrame } from '@/modules/player/presentedFrame'
 
@@ -1572,8 +1572,13 @@ interface OutputCanvasProps {
    * section with none is a hard cut, as in the export — not the soft blend shown otherwise.
    */
   transitionCuts?: TransitionCut[]
-  /** Clip time → the main video's own time (ms), when parts of the clip were removed (else clipStartMs + t) */
+  /** Clip time → the main video's own time (ms), when parts of the clip were removed or videos put in (else clipStartMs + t) */
   timelineToVideo?: (t: number) => number
+  /**
+   * The clip's time now, when it doesn't follow the main video: with videos put in between
+   * (inserts.ts) the main video waits while one plays, and the clip's own clock runs on
+   */
+  clock?: () => number
   /** Other videos and photos shown in frame slots */
   frameMedia?: FrameMediaPool | null
   /** "+" on an empty frame slot or band: takes the user to that lane on the timeline */
@@ -1597,7 +1602,7 @@ export function OutputCanvas({
   className, style, skipTransitionRef,
   words, captionStyle, captionTextCase = 'title', showCaptions = false,
   textOverlays = [], activeTextOverlayId, onTextOverlayChange, onSelectTextOverlay, onDeleteTextOverlay, editTextOverlayId, onEditTextDone,
-  onCaptionPositionChange, onCaptionSizeChange, transitionCuts, timelineToVideo, frameMedia, onFrameLaneClick, onFrameItemClick, activeFrameItemId, onFrameItemChange, onDeleteFrameItem, onFrameRowsChange, onFrameMainRectChange,
+  onCaptionPositionChange, onCaptionSizeChange, transitionCuts, timelineToVideo, clock, frameMedia, onFrameLaneClick, onFrameItemClick, activeFrameItemId, onFrameItemChange, onDeleteFrameItem, onFrameRowsChange, onFrameMainRectChange,
 }: OutputCanvasProps) {
   // Where the captions are drawn right now (from the canvas, each frame), for their box on the
   // preview: kept in state only when it moves noticeably, at most ~10 times a second
@@ -1641,6 +1646,8 @@ export function OutputCanvas({
   const transitionCutsRef = useRef(transitionCuts)
   const timelineToVideoRef = useRef(timelineToVideo)
   timelineToVideoRef.current = timelineToVideo
+  const clockRef = useRef(clock)
+  clockRef.current = clock
   transitionCutsRef.current = transitionCuts
   // The two sections of a transition, each drawn whole off screen, then blended onto the canvas
   const trCanvases = useRef<[HTMLCanvasElement, HTMLCanvasElement] | null>(null)
@@ -1729,7 +1736,7 @@ export function OutputCanvas({
         const toTimeline = toTimelineRef.current
         const clockMs = video.currentTime * 1000
         const videoMs = shownMs != null && Math.abs(shownMs - clockMs) < 300 ? shownMs : clockMs
-        const clipMsNow = Math.max(0, toTimeline ? toTimeline(videoMs) : videoMs - clipStartMsRef.current)
+        const clipMsNow = Math.max(0, clockRef.current ? clockRef.current() : toTimeline ? toTimeline(videoMs) : videoMs - clipStartMsRef.current)
         const seg    = segmentAtRef.current
           ? segmentAtRef.current(clipMsNow)
           : activeSegmentRef.current
@@ -2191,6 +2198,34 @@ function RotateHandle({ boxRef, rotation, onRotate, size = 20 }: {
 
 // ── OverlayBox — free-position drag+resize for image/video overlays ──────────
 
+/**
+ * Picture in picture: the video in its window, kept in step with the clip's playhead (the live
+ * time) and playing while the clip plays; its sound unless muted. Stretched to its box, as the
+ * export draws it (render.py video overlays).
+ */
+function PipVideo({ overlay }: { overlay: Overlay }) {
+  const ref = useRef<HTMLVideoElement>(null)
+  const playing = usePlayerStore(s => s.playing)
+  const sync = useCallback(() => {
+    const v = ref.current
+    if (!v) return
+    const want = Math.max(0, ((overlay.source_offset_ms ?? 0) + liveTime.get() - overlay.start_ms) / 1000)
+    const live = usePlayerStore.getState().playing
+    // Playing: only re-seek on real drift (a seek stalls the picture); paused: follow exactly
+    if (!v.seeking && Math.abs(v.currentTime - want) > (live ? 0.3 : 0.05)) v.currentTime = want
+    if (live && v.paused) v.play().catch(() => {})
+    if (!live && !v.paused) v.pause()
+  }, [overlay.source_offset_ms, overlay.start_ms])
+  useEffect(() => liveTime.subscribe(sync), [sync])
+  useEffect(() => { sync() }, [sync, playing])
+  useEffect(() => () => ref.current?.pause(), [])
+  return (
+    <video ref={ref} src={overlay.preview_url} muted={!!overlay.muted} playsInline preload="auto" crossOrigin="anonymous"
+      onLoadedData={sync}
+      style={{ width: '100%', height: '100%', objectFit: 'fill', pointerEvents: 'none', display: 'block' }} />
+  )
+}
+
 interface OverlayBoxProps {
   overlay: Overlay
   isActive: boolean
@@ -2257,7 +2292,7 @@ function OverlayBox({ overlay, isActive, onChange, onSelect, onDelete }: Overlay
     return overlay.preview_url ?? null
   }, [overlay.type, overlay.preview_url])
 
-  const color = '#f59e0b'
+  const color = overlay.type === 'video' ? '#f97316' : '#f59e0b'
   return (
     <div
       ref={ref}
@@ -2276,7 +2311,9 @@ function OverlayBox({ overlay, isActive, onChange, onSelect, onDelete }: Overlay
       {/* Image content: the whole picture stretched to fill its box, whatever its width and height
           (the export stretches it the same way: render.py image overlays) */}
       <div style={{ position: 'absolute', inset: 0, overflow: 'hidden', pointerEvents: 'none' }}>
-      {imageUrl
+      {overlay.type === 'video' && overlay.preview_url
+        ? <PipVideo overlay={overlay} />
+        : imageUrl
         // eslint-disable-next-line @next/next/no-img-element
         ? <img src={imageUrl} alt="" draggable={false} style={{ width: '100%', height: '100%', objectFit: 'fill', pointerEvents: 'none', display: 'block' }} />
         : <div style={{ width: '100%', height: '100%', background: `${color}22`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>

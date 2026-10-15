@@ -3,7 +3,11 @@
 import { useRef, useEffect, useCallback } from 'react'
 import { usePlayerStore, liveTime } from './store'
 
-type PushedSeg = { start_ms: number; end_ms: number; video_offset_ms?: number | null }
+/**
+ * A stretch of the timeline [at, at + ms) (modules/editor/inserts.ts Piece): the main video from
+ * `from` on (clip-relative ms), or held at `hold` while a video put in between plays
+ */
+type Piece = { id?: string; at: number; ms: number; from?: number; hold?: number }
 /** A part of the source video that stays in the clip: [start, end) in ms of the video */
 type KeptRange = [number, number]
 
@@ -12,29 +16,43 @@ type KeptRange = [number, number]
 const JOIN_LOOKAHEAD_MS = 34
 // A seek can land a little before the time asked for: within this, the video is where it should be
 const SEEK_SLACK_MS = 60
+// Moving on to the next piece: within this the video is already where it goes on (no seek)
+const CONTIGUOUS_MS = 80
 
-interface InsertState {
-  insertStartMs: number  // timeline start of INSERT (= video_offset_ms of pushed seg)
-  insertEndMs: number    // timeline end of INSERT (= pushed seg's start_ms)
-  videoHoldMs: number    // video position frozen here during INSERT
-  startWallMs: number    // wall-clock anchor; timelineMs = insertStartMs + (now - startWallMs)
+/** Playing a video put in between: the main video is held, a clock moves the timeline on */
+interface HoldState {
+  piece: Piece
+  /** performance.now() at timeline `piece.at` (moved when paused and resumed) */
+  startWall: number
+  /** When the clock entered (or resumed in) this piece */
+  enteredWall: number
 }
 
 // Wires a <video> element to the playerStore.
 // Returns videoRef + imperative controls. State (currentTimeMs, playing) is in the store.
-// segments: non-broll segments from the editor store — used to honour video_offset_ms for true INSERTs.
+// pieces: a clip with videos put in between (inserts.ts piecesOf): the clip plays its pieces one
+// after another — each part from its own moment of the main video (jumping over what was cut),
+// and during a video put in between the main video waits while a clock runs the timeline.
 // kept: when parts of the clip were removed (lib/trims.ts), the parts of the video that stay. The
 // timeline (currentTimeMs, seekToMs) then runs over those parts only, and playback skips the rest.
-export function useVideoSync(clipStartMs = 0, clipEndMs?: number, segments?: PushedSeg[], kept?: KeptRange[]) {
+// (The editor uses one or the other.)
+export function useVideoSync(clipStartMs = 0, clipEndMs?: number, pieces?: Piece[], kept?: KeptRange[],
+  /**
+   * How far a held piece's own video (the inserted one) has really played, ms into the piece; null
+   * while it isn't playing yet. Given, it runs the clock through the piece — the timeline waits for
+   * the video to start and never runs ahead of its picture (no stall-and-jump at the join).
+   */
+  heldPlayedMs?: (piece: Piece) => number | null,
+) {
+  const heldPlayedRef = useRef(heldPlayedMs)
+  heldPlayedRef.current = heldPlayedMs
   const videoRef = useRef<HTMLVideoElement>(null)
   const rafRef = useRef<number>(0)
   // true when rafRef holds a requestVideoFrameCallback handle (separate ID space from rAF)
   const isVFCRef = useRef(false)
-  const segmentsRef = useRef<PushedSeg[] | undefined>(segments)
-  // INSERT playback state (wall-clock driven while main video is frozen)
-  const insertRef = useRef<InsertState | null>(null)
-  // video_offset_ms of the pushed seg we are legitimately playing through (post-INSERT resume)
-  const playingThroughRef = useRef<number | null>(null)
+  const piecesRef = useRef<Piece[]>([])
+  piecesRef.current = !kept?.length && pieces?.length ? pieces : []
+  const holdRef = useRef<HoldState | null>(null)
   const { setCurrentTimeMs, setDurationMs, setPlaying } = usePlayerStore()
   const keptRef = useRef<KeptRange[] | undefined>(kept)
   keptRef.current = kept && kept.length ? kept : undefined
@@ -46,8 +64,6 @@ export function useVideoSync(clipStartMs = 0, clipEndMs?: number, segments?: Pus
     pendingSeekRef.current = null
     el.currentTime = sec
   }
-
-  useEffect(() => { segmentsRef.current = segments }, [segments])
 
   // ── Removed parts ────────────────────────────────────────────────────────────
 
@@ -89,6 +105,89 @@ export function useVideoSync(clipStartMs = 0, clipEndMs?: number, segments?: Pus
     return keptToTimeline(k, Math.max(k[i][0], absMs))
   }
 
+  // ── Pieces ───────────────────────────────────────────────────────────────────
+
+  const piecesTotal = () => { const p = piecesRef.current; return p.length ? p[p.length - 1].at + p[p.length - 1].ms : 0 }
+  const pieceIndexAt = (t: number) => {
+    const p = piecesRef.current
+    for (let i = 0; i < p.length; i++) if (t < p[i].at + p[i].ms) return t >= p[i].at ? i : -1
+    return p.length - 1
+  }
+  /** Timeline ms → main video ms (clip-relative); in a held piece: where the video waits */
+  function videoOfTime(t: number): number {
+    const i = pieceIndexAt(t), p = piecesRef.current[i]
+    if (!p) return Math.max(0, t)
+    return p.hold != null ? p.hold : (p.from ?? 0) + Math.min(p.ms - 1, Math.max(0, t - p.at))
+  }
+
+  /** Stop at the clip's end (on its last frame) */
+  function stopAtEnd(el: HTMLVideoElement) {
+    cancelTick(el)
+    cancelAnimationFrame(rafRef.current)
+    holdRef.current = null
+    el.pause()
+    setPlaying(false)
+    const total = piecesTotal()
+    setCurrentTimeMs(Math.max(0, total - 1))
+    seekVideo(el, (clipStartMs + videoOfTime(total - 1)) / 1000)
+  }
+  /** On to piece `i` from its start (`run`: playing) */
+  function enterPiece(el: HTMLVideoElement, i: number, run: boolean) {
+    const p = piecesRef.current[i]
+    if (!p) { stopAtEnd(el); return }
+    if (p.hold != null) { enterHold(el, p, p.at, run); return }
+    holdRef.current = null
+    const want = clipStartMs + (p.from ?? 0)
+    if (Math.abs(el.currentTime * 1000 - want) > CONTIGUOUS_MS) el.currentTime = want / 1000
+    setCurrentTimeMs(p.at)
+    if (run) {
+      if (el.paused) safePlay(el)
+      else scheduleTick(el)
+    }
+  }
+
+  /** The clock running the timeline through a video put in between (the main video is held meanwhile) */
+  function holdTick() {
+    if (!usePlayerStore.getState().playing) return
+    const h = holdRef.current
+    const el = videoRef.current
+    if (!h || !el) return
+    // The inserted video's own playback drives the clock when it can tell (it waits while that
+    // video starts; never runs ahead of its picture). Otherwise: the wall clock, from when it started.
+    const played = heldPlayedRef.current?.(h.piece)
+    const wall = h.piece.at + (performance.now() - h.startWall)
+    let t = wall
+    if (played != null) {
+      t = h.piece.at + Math.max(0, played)
+      h.startWall = performance.now() - (t - h.piece.at)   // (the wall clock carries on from here if it stops telling)
+    } else if (heldPlayedRef.current && performance.now() - h.enteredWall < 1500) {
+      // Not playing yet (just started, still loading): wait for it, up to 1.5 s
+      t = Math.max(h.piece.at, Math.min(wall, liveTime.get()))
+      h.startWall = performance.now() - (t - h.piece.at)
+    }
+    if (t < h.piece.at + h.piece.ms) {
+      setCurrentTimeMs(t)
+      rafRef.current = requestAnimationFrame(holdTick) as unknown as number
+      isVFCRef.current = false
+      return
+    }
+    // Through it: on to the next piece
+    enterPiece(el, piecesRef.current.indexOf(h.piece) + 1, true)
+  }
+  /** Start (or resume) playing through held piece `piece` from timeline `ms` */
+  function enterHold(el: HTMLVideoElement, piece: Piece, ms: number, run: boolean) {
+    holdRef.current = { piece, startWall: performance.now() - Math.max(0, ms - piece.at), enteredWall: performance.now() }
+    const want = clipStartMs + (piece.hold ?? 0)
+    if (Math.abs(el.currentTime * 1000 - want) > CONTIGUOUS_MS) seekVideo(el, want / 1000)
+    if (!el.paused) el.pause()   // (onPause sees holdRef: the player stays "playing")
+    setCurrentTimeMs(ms)
+    if (run) {
+      cancelAnimationFrame(rafRef.current)
+      isVFCRef.current = false
+      rafRef.current = requestAnimationFrame(holdTick) as unknown as number
+    }
+  }
+
   // ── helpers (use refs so closures never go stale) ────────────────────────────
 
   // Cancel whichever tick type is currently scheduled.
@@ -120,85 +219,6 @@ export function useVideoSync(clipStartMs = 0, clipEndMs?: number, segments?: Pus
     el.play().catch(e => { if (e?.name !== 'AbortError') console.error(e) })
   }
 
-  // video ms → timeline ms.
-  // For positions within a pushed segment (Part B after an INSERT): direct mapping.
-  // For positions past all pushed segments: add the accumulated B-roll durations that were
-  // inserted before this video position so the timeline stays extended correctly.
-  function videoToTimeline(videoMs: number): number {
-    const segs = segmentsRef.current ?? []
-    const pushed = segs.find(s =>
-      s.video_offset_ms != null &&
-      videoMs >= (s.video_offset_ms as number) &&
-      videoMs < (s.video_offset_ms as number) + (s.end_ms - s.start_ms),
-    )
-    if (pushed?.video_offset_ms != null) return pushed.start_ms + (videoMs - pushed.video_offset_ms)
-
-    // Accumulate B-roll offset for every pushed segment whose video range ends before videoMs
-    let offset = 0
-    for (const s of segs) {
-      if (s.video_offset_ms == null) continue
-      const segVideoEnd = (s.video_offset_ms as number) + (s.end_ms - s.start_ms)
-      if (videoMs >= segVideoEnd) {
-        offset += s.start_ms - (s.video_offset_ms as number)  // B-roll duration at this insert
-      }
-    }
-    return videoMs + offset
-  }
-
-  // timeline ms → video ms (used by seekToMs)
-  function timelineToVideo(ms: number): number {
-    const segs = segmentsRef.current ?? []
-    const pushed = segs.find(s => s.video_offset_ms != null && ms >= s.start_ms && ms < s.end_ms)
-    if (pushed?.video_offset_ms != null) return pushed.video_offset_ms + (ms - pushed.start_ms)
-
-    // Subtract accumulated B-roll offsets for pushed segments whose timeline range ends before ms
-    let offset = 0
-    for (const s of segs) {
-      if (s.video_offset_ms == null) continue
-      if (ms >= s.end_ms) {
-        offset += s.start_ms - (s.video_offset_ms as number)
-      }
-    }
-    return ms - offset
-  }
-
-  // Find the pushed segment whose INSERT range contains `ms` (INSERT = [video_offset_ms, start_ms))
-  function findInsertOwner(ms: number): PushedSeg | undefined {
-    return (segmentsRef.current ?? []).find(s =>
-      s.video_offset_ms != null && ms >= (s.video_offset_ms as number) && ms < s.start_ms,
-    )
-  }
-
-  // Wall-clock RAF that advances currentTimeMs through the INSERT duration
-  function doInsertTick() {
-    // Guard: if paused, let any zombie RAF chain die here instead of continuing to
-    // advance currentTimeMs. cancelAnimationFrame only cancels the next *pending* frame;
-    // the frame that is already executing will still schedule one more — this check kills it.
-    if (!usePlayerStore.getState().playing) return
-    const state = insertRef.current
-    if (!state) return
-    const timelineMs = state.insertStartMs + (Date.now() - state.startWallMs)
-    if (timelineMs >= state.insertEndMs) {
-      // INSERT done — clear state and resume main video from video_offset_ms
-      const holdMs = state.videoHoldMs
-      const endMs = state.insertEndMs
-      insertRef.current = null
-      playingThroughRef.current = holdMs  // next tick knows we're legitimately in pushed seg
-      setCurrentTimeMs(endMs)
-      const el = videoRef.current
-      if (el) {
-        // The video is already parked at holdMs (set when INSERT started).
-        // Seeking again to the same position triggers an unnecessary seek cycle in
-        // Chromium that can flush decoded frames and leave the canvas black.
-        // Just resume playback from the current position.
-        safePlay(el)
-      }
-    } else {
-      setCurrentTimeMs(timelineMs)
-      rafRef.current = requestAnimationFrame(doInsertTick) as unknown as number
-    }
-  }
-
   // ── Main video tick ──────────────────────────────────────────────────────────
 
   const tick = useCallback(() => {
@@ -212,55 +232,30 @@ export function useVideoSync(clipStartMs = 0, clipEndMs?: number, segments?: Pus
       scheduleTick(el)
       return
     }
+    const pieces = piecesRef.current
+    if (pieces.length) {
+      if (holdRef.current) return
+      // The piece the timeline is in: the video plays it from its own moment
+      const i = Math.max(0, pieceIndexAt(liveTime.get()))
+      const p = pieces[i]
+      if (p.hold != null) { enterHold(el, p, Math.max(p.at, liveTime.get()), usePlayerStore.getState().playing); return }
+      const v = el.currentTime * 1000 - clipStartMs
+      const from = p.from ?? 0
+      if (v >= from + p.ms - JOIN_LOOKAHEAD_MS) { enterPiece(el, i + 1, usePlayerStore.getState().playing); return }
+      if (v < from - SEEK_SLACK_MS) el.currentTime = (clipStartMs + from) / 1000
+      setCurrentTimeMs(p.at + Math.max(0, v - from))
+      scheduleTick(el)
+      return
+    }
     const absoluteMs = el.currentTime * 1000
     if (clipEndMs !== undefined && absoluteMs >= clipEndMs) {
       el.pause()
       el.currentTime = (clipEndMs - 1) / 1000  // stay on last valid frame, not the continuation
       setPlaying(false)
-      insertRef.current = null
-      setCurrentTimeMs(Math.max(0, videoToTimeline(clipEndMs - clipStartMs)))
+      setCurrentTimeMs(Math.max(0, clipEndMs - clipStartMs - 1))
       return
     }
-    const videoMs = absoluteMs - clipStartMs
-    const segs = segmentsRef.current ?? []
-
-    // Are we in a pushed segment's video range?
-    const pushedMatch = segs.find(s =>
-      s.video_offset_ms != null &&
-      videoMs >= (s.video_offset_ms as number) &&
-      videoMs < (s.video_offset_ms as number) + (s.end_ms - s.start_ms),
-    )
-
-    if (pushedMatch?.video_offset_ms != null) {
-      if (playingThroughRef.current === pushedMatch.video_offset_ms) {
-        // Legitimately playing through pushed seg after INSERT ended — normal mapping
-        setCurrentTimeMs(Math.max(0, videoToTimeline(videoMs)))
-      } else {
-        // Entered pushed range naturally (video played past A_left) → trigger INSERT playback
-        // Set state BEFORE pause so onPause guard fires correctly
-        // Do NOT backward-seek to video_offset_ms: the video is already at or just past
-        // that position (tick fired because videoMs >= video_offset_ms). A backward seek
-        // to the same approximate position triggers a CORS re-validation cycle in Chromium
-        // which can leave subsequent ctx.drawImage calls drawing black frames.
-        insertRef.current = {
-          insertStartMs: pushedMatch.video_offset_ms,
-          insertEndMs: pushedMatch.start_ms,
-          videoHoldMs: pushedMatch.video_offset_ms,
-          startWallMs: Date.now(),
-        }
-        playingThroughRef.current = null
-        el.pause()
-        setCurrentTimeMs(pushedMatch.video_offset_ms)
-        setPlaying(true)  // keep UI in playing state while INSERT wall-clock runs
-        isVFCRef.current = false  // INSERT RAF uses rAF, not VFC
-        rafRef.current = requestAnimationFrame(doInsertTick) as unknown as number
-        return
-      }
-    } else {
-      playingThroughRef.current = null
-      setCurrentTimeMs(Math.max(0, videoToTimeline(videoMs)))
-    }
-
+    setCurrentTimeMs(Math.max(0, absoluteMs - clipStartMs))
     scheduleTick(el)
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clipStartMs, clipEndMs, setCurrentTimeMs, setPlaying])
@@ -273,25 +268,18 @@ export function useVideoSync(clipStartMs = 0, clipEndMs?: number, segments?: Pus
 
     const onPlay = () => {
       setPlaying(true)
-      const current = liveTime.get()
-      const ins = insertRef.current
-      // Only honour INSERT state if the playhead is actually inside the INSERT range.
-      // A stale insertRef (from a previous INSERT that the user seeked away from) must
-      // not re-freeze the video — it would make the player appear broken.
-      if (ins && current >= ins.insertStartMs && current < ins.insertEndMs) {
-        // Video started playing but we're in INSERT mode — re-pause and resume INSERT RAF
-        const elapsed = Math.max(0, current - ins.insertStartMs)
-        insertRef.current = { ...ins, startWallMs: Date.now() - elapsed }
-        el.pause()  // re-freeze video; onPause guard will suppress setPlaying(false)
-        isVFCRef.current = false
-        rafRef.current = requestAnimationFrame(doInsertTick) as unknown as number
-      } else {
-        insertRef.current = null  // drop any stale INSERT state
-        scheduleTick(el)
+      const h = holdRef.current
+      const now = liveTime.get()
+      if (h && now >= h.piece.at && now < h.piece.at + h.piece.ms) {
+        // In a video put in between: the main video waits, the clock plays it
+        enterHold(el, h.piece, now, true)
+        return
       }
+      holdRef.current = null
+      scheduleTick(el)
     }
     const onPause = () => {
-      if (insertRef.current) return  // we paused the video ourselves for INSERT — ignore
+      if (holdRef.current && usePlayerStore.getState().playing) return  // held for an insert: still playing
       setPlaying(false)
       cancelTick(el)
     }
@@ -300,6 +288,11 @@ export function useVideoSync(clipStartMs = 0, clipEndMs?: number, segments?: Pus
       if (k) {
         setDurationMs(keptLength(k))
         if (k[0][0] > 0) el.currentTime = k[0][0] / 1000
+        return
+      }
+      if (piecesRef.current.length) {
+        setDurationMs(piecesTotal())
+        el.currentTime = (clipStartMs + videoOfTime(0)) / 1000
         return
       }
       const clipDuration = clipEndMs !== undefined
@@ -324,7 +317,7 @@ export function useVideoSync(clipStartMs = 0, clipEndMs?: number, segments?: Pus
         }
         return
       }
-      if (clipEndMs === undefined) return
+      if (piecesRef.current.length || clipEndMs === undefined || holdRef.current) return
       const absMs = el.currentTime * 1000
       if (absMs >= clipEndMs) {
         cancelTick(el)
@@ -332,8 +325,7 @@ export function useVideoSync(clipStartMs = 0, clipEndMs?: number, segments?: Pus
         el.pause()
         el.currentTime = (clipEndMs - 1) / 1000  // stay on the last valid frame
         setPlaying(false)
-        insertRef.current = null
-        setCurrentTimeMs(Math.max(0, videoToTimeline(clipEndMs - clipStartMs)))
+        setCurrentTimeMs(Math.max(0, clipEndMs - clipStartMs - 1))
       }
     }
 
@@ -341,7 +333,7 @@ export function useVideoSync(clipStartMs = 0, clipEndMs?: number, segments?: Pus
     const onEnded = () => {
       cancelTick(el)
       cancelAnimationFrame(rafRef.current)
-      insertRef.current = null
+      holdRef.current = null
       setPlaying(false)
       const k = keptRef.current
       if (k) {
@@ -349,9 +341,10 @@ export function useVideoSync(clipStartMs = 0, clipEndMs?: number, segments?: Pus
         setCurrentTimeMs(keptLength(k))
         return
       }
+      if (piecesRef.current.length) { setCurrentTimeMs(Math.max(0, piecesTotal() - 1)); return }
       if (clipEndMs !== undefined) {
         el.currentTime = (clipEndMs - 1) / 1000
-        setCurrentTimeMs(Math.max(0, videoToTimeline(clipEndMs - clipStartMs)))
+        setCurrentTimeMs(Math.max(0, clipEndMs - clipStartMs - 1))
       }
     }
 
@@ -380,128 +373,102 @@ export function useVideoSync(clipStartMs = 0, clipEndMs?: number, segments?: Pus
     }
   }, [tick, clipStartMs, clipEndMs, setDurationMs, setPlaying, setCurrentTimeMs])
 
-  // The clip's length follows the kept parts when they change (a part removed, an undo)
+  // The clip's length follows the kept parts and the pieces when they change (a part removed, a
+  // video put in, an undo)
   const keptKey = kept && kept.length ? kept.map(r => r.join('-')).join(',') : ''
+  const piecesKey = piecesRef.current.map(p => `${p.at}+${p.ms}:${p.from ?? ''}@${p.hold ?? ''}`).join(',')
   useEffect(() => {
     const k = keptRef.current
     if (k) setDurationMs(keptLength(k))
+    else if (piecesRef.current.length) setDurationMs(piecesTotal())
     else if (clipEndMs !== undefined) setDurationMs(clipEndMs - clipStartMs)
+    // A held piece that changed under a running clock: off it (the playhead stays put)
+    const h = holdRef.current
+    if (h && !piecesRef.current.some(p => p.at === h.piece.at && p.ms === h.piece.ms && p.hold === h.piece.hold)) holdRef.current = null
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [keptKey, clipStartMs, clipEndMs, setDurationMs])
+  }, [keptKey, piecesKey, clipStartMs, clipEndMs, setDurationMs])
 
   // ── Public controls ───────────────────────────────────────────────────────────
 
   const play = useCallback(() => {
     const el = videoRef.current; if (!el) return
-    const current = liveTime.get()
-    // Discard stale INSERT state when playhead is outside the INSERT range.
-    if (insertRef.current) {
-      const { insertStartMs, insertEndMs } = insertRef.current
-      if (current < insertStartMs || current >= insertEndMs) insertRef.current = null
-    }
-    if (insertRef.current) {
-      // Resume INSERT at the current timeline position
-      const elapsed = Math.max(0, current - insertRef.current.insertStartMs)
-      insertRef.current = { ...insertRef.current, startWallMs: Date.now() - elapsed }
-      setPlaying(true)
-      rafRef.current = requestAnimationFrame(doInsertTick) as unknown as number
-    } else {
+    const pieces = piecesRef.current
+    if (!keptRef.current && pieces.length) {
+      let now = liveTime.get()
+      if (now >= piecesTotal() - 1) now = 0   // (at the end: from the start again)
+      const i = Math.max(0, pieceIndexAt(now)), p = pieces[i]
+      if (p.hold != null) { setPlaying(true); enterHold(el, p, Math.max(p.at, now), true); return }
+      holdRef.current = null
+      const want = clipStartMs + (p.from ?? 0) + Math.max(0, now - p.at)
+      if (Math.abs(el.currentTime * 1000 - want) > CONTIGUOUS_MS) el.currentTime = want / 1000
+      setCurrentTimeMs(now)
       safePlay(el)
+      return
     }
+    holdRef.current = null
+    safePlay(el)
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [setPlaying])
+  }, [setPlaying, clipStartMs])
 
   const pause = useCallback(() => {
-    // Cancel whichever tick type is running (INSERT RAF = rAF, main tick = rAF or VFC)
     cancelTick(videoRef.current)
-    cancelAnimationFrame(rafRef.current)  // also cancel if it was a plain rAF (INSERT RAF)
-    // Keep insertRef.current so user can resume from within INSERT
+    cancelAnimationFrame(rafRef.current)  // also the insert clock (a plain rAF)
     setPlaying(false)
     videoRef.current?.pause()
+    // (holdRef stays: play resumes in the inserted video from here)
   }, [setPlaying])
 
   const togglePlay = useCallback(() => {
-    const isPlaying = usePlayerStore.getState().playing
-    if (isPlaying) {
-      cancelTick(videoRef.current)
-      cancelAnimationFrame(rafRef.current)  // also cancel INSERT RAF if running
-      setPlaying(false)
-      videoRef.current?.pause()
-    } else {
-      play()
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [play, setPlaying])
+    if (usePlayerStore.getState().playing) pause()
+    else play()
+  }, [play, pause])
 
   const seekToMs = useCallback((ms: number) => {
     const el = videoRef.current; if (!el) return
     cancelTick(el)
-    cancelAnimationFrame(rafRef.current)  // also cancel INSERT RAF if running
-    playingThroughRef.current = null
+    cancelAnimationFrame(rafRef.current)  // also the insert clock
+    const playing = usePlayerStore.getState().playing
 
     // Removed parts: the timeline runs over the kept parts only
     const k = keptRef.current
     if (k) {
-      insertRef.current = null
+      holdRef.current = null
       const at = Math.max(0, Math.min(ms, keptLength(k)))
       seekVideo(el, Math.min(keptToVideo(k, at), k[k.length - 1][1] - 1) / 1000)
       setCurrentTimeMs(at)
-      if (usePlayerStore.getState().playing) {
+      if (playing) {
         if (el.paused) safePlay(el)
         else scheduleTick(el)
       }
       return
     }
 
-    // Seeking into INSERT range: park video at video_offset_ms, keep currentTimeMs = ms
-    const insertOwner = findInsertOwner(ms)
-    if (insertOwner?.video_offset_ms != null) {
-      seekVideo(el, (clipStartMs + insertOwner.video_offset_ms) / 1000)
-      setCurrentTimeMs(ms)
-      // Preserve INSERT state so pressing play resumes from this point within INSERT
-      insertRef.current = {
-        insertStartMs: insertOwner.video_offset_ms,
-        insertEndMs: insertOwner.start_ms,
-        videoHoldMs: insertOwner.video_offset_ms,
-        startWallMs: Date.now() - (ms - insertOwner.video_offset_ms),
-      }
-      if (usePlayerStore.getState().playing) {
-        rafRef.current = requestAnimationFrame(doInsertTick) as unknown as number
-      }
-      return
-    }
-
-    // Seeking into pushed segment range
-    insertRef.current = null
-    const pushedSeg = (segmentsRef.current ?? []).find(
-      s => s.video_offset_ms != null && ms >= s.start_ms && ms < s.end_ms,
-    )
-    if (pushedSeg?.video_offset_ms != null) {
-      const videoMs = pushedSeg.video_offset_ms + (ms - pushedSeg.start_ms)
-      seekVideo(el, (clipStartMs + videoMs) / 1000)
-      playingThroughRef.current = pushedSeg.video_offset_ms  // tick can play through normally
-      setCurrentTimeMs(ms)
-      if (usePlayerStore.getState().playing) {
-        // If INSERT froze the video, resume it; onPlay will call scheduleTick.
-        // If already playing (normal seek), onPlay won't fire — scheduleTick manually.
+    const pieces = piecesRef.current
+    if (pieces.length) {
+      const at = Math.max(0, Math.min(ms, piecesTotal() - 1))
+      const p = pieces[Math.max(0, pieceIndexAt(at))]
+      // Into a video put in between: the main video waits where it goes in, the clock takes over
+      if (p.hold != null) { enterHold(el, p, at, playing); return }
+      holdRef.current = null
+      seekVideo(el, (clipStartMs + videoOfTime(at)) / 1000)
+      setCurrentTimeMs(at)
+      if (playing) {
         if (el.paused) safePlay(el)
         else scheduleTick(el)
       }
       return
     }
 
-    // Normal segment
-    insertRef.current = null
-    seekVideo(el, (clipStartMs + ms) / 1000)
-    setCurrentTimeMs(Math.max(0, ms))
-    if (usePlayerStore.getState().playing) {
-      // If INSERT froze the video, resume it; onPlay will call scheduleTick.
-      // If already playing (normal seek), onPlay won't fire — scheduleTick manually.
+    holdRef.current = null
+    const at = Math.max(0, clipEndMs !== undefined ? Math.min(ms, clipEndMs - clipStartMs) : ms)
+    seekVideo(el, (clipStartMs + at) / 1000)
+    setCurrentTimeMs(at)
+    if (playing) {
       if (el.paused) safePlay(el)
       else scheduleTick(el)
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [clipStartMs, setCurrentTimeMs])
+  }, [clipStartMs, clipEndMs, setCurrentTimeMs])
 
   return { videoRef, play, pause, togglePlay, seekToMs }
 }

@@ -466,6 +466,13 @@ interface Props {
   onUpdateSegment: (id: string, updates: { start_ms?: number; end_ms?: number }) => void
   /** Move one edge of a format. Formats are independent: neighbours never move. */
   onSetEdge?: (segId: string, edge: 'start' | 'end', tMs: number) => void
+  /**
+   * Edges trim the video itself (as in InShot), live as the clip's own ends do: dragging a part's
+   * edge inwards cuts that piece out and what follows moves up; outwards brings back video cut
+   * there before. Called as it is dragged (`done` false: each time from the clip as it was when the
+   * drag began) and once more on release (`onSetEdge` isn't used then).
+   */
+  onEdgeTrim?: (segId: string, edge: 'start' | 'end', fromMs: number, toMs: number, done: boolean) => void
   /** Move the shared edge of two touching formats together. */
   onMoveJunction?: (leftId: string, rightId: string, tMs: number) => void
   onInsertBrollAfter?: (afterSegId: string) => void
@@ -536,7 +543,7 @@ interface Props {
    * A sub timeline's icon (or its empty row): add that kind of media at the playhead. From a "+"
    * on a join of the strip: `atMs` is that join (timeline ms).
    */
-  onAddKind?: (kind: 'video' | 'broll' | 'photo' | 'music' | 'text', atMs?: number) => void
+  onAddKind?: (kind: 'video' | 'broll' | 'photo' | 'music' | 'text' | 'insert' | 'pip', atMs?: number) => void
   /** Where a removed part of the clip closed up (timeline ms): each gets a "+" like a join between sections */
   cutJoins?: number[]
   /** A video on top that is stock footage (B-roll): it sits on the B-roll lane; the others (the user's own videos) on the Video lane */
@@ -556,7 +563,9 @@ interface Props {
   /** Something dragged from the Media library (its JSON, see MEDIA_DRAG_TYPE) and dropped at `atMs` on `lane` */
   onDropMedia?: (json: string, atMs: number, lane: string | null) => void
   /** Photos over the clip, on their own lane: drag to move, drag the ends to trim, click to pick */
-  photos?: { id: string; start_ms: number; end_ms: number; url?: string; hidden?: boolean; locked?: boolean; /** its track */ track?: number }[]
+  photos?: { id: string; start_ms: number; end_ms: number; url?: string; hidden?: boolean; locked?: boolean; /** its track */ track?: number
+    /** A video in a window over the clip (picture in picture): its link and where in it the bar starts */
+    video?: { url?: string; offset: number; muted?: boolean } }[]
   /**
    * Something dragged up or down to another track (`'new'`: past the last one, a new track), or
    * released on its own track after a change in time (it may now overlap something there)
@@ -590,6 +599,7 @@ export function SegmentTimeline({
   onSelectSegment,
   onUpdateSegment,
   onSetEdge,
+  onEdgeTrim,
   onMoveJunction,
   onSwallowSection,
   textOverlays = [],
@@ -702,6 +712,10 @@ export function SegmentTimeline({
   /** A ◆ being dragged: where it is now (its moment's frame floats above it) */
   const [viewDragT, setViewDragT] = useState<number | null>(null)
   const [snapLine, setSnapLine] = useState<number | null>(null)
+  // An edge being dragged to trim the video (onEdgeTrim): what letting go will cut (red) or bring back (lime)
+  const [edgeGhost, setEdgeGhost] = useState<{ from: number; to: number; edge: 'start' | 'end'; other: number } | null>(null)
+  // While a part's edge is dragged the timeline keeps its scale (the clip's length changes under it)
+  const [frozenDur, setFrozenDur] = useState<number | null>(null)
   // A join dragged onto the next join: the section that goes when it's released
   const [doomed, setDoomed] = useState<{ id: string; label: string; start: number; end: number } | null>(null)
   // A B-roll shot being dragged: where it would land
@@ -1041,6 +1055,46 @@ export function SegmentTimeline({
     if (seg.locked) { onSeek(edge === 'start' ? seg.start_ms : Math.max(seg.start_ms, seg.end_ms - 100)); return }
     const sx = e.clientX
     let moved = false
+    // Trimming the video itself: the store is only changed on release; meanwhile the piece to cut
+    // (or bring back) shows. Inwards up to the part's shortest; outwards as far as the strip goes.
+    if (onEdgeTrim) {
+      const from = edge === 'start' ? seg.start_ms : seg.end_ms
+      let to = from
+      // ms per pixel as the drag began (the timeline keeps that scale meanwhile: frozenDur)
+      const rect0 = trackRef.current?.getBoundingClientRect()
+      const msPerPx = rect0 && rect0.width > 0 ? duration / rect0.width : 0
+      setDragging(`${edge}-${seg.id}`)
+      let raf = 0
+      const apply = () => { raf = 0; onEdgeTrim(seg.id, edge, Math.round(from), Math.round(to), false) }
+      const move = (ev: PointerEvent) => {
+        if (!moved && Math.abs(ev.clientX - sx) < 3) return
+        if (!moved) setFrozenDur(duration)
+        moved = true
+        // How far it was dragged (not where the pointer is: an edge at the clip's start or end can be
+        // pulled outwards past the strip, to bring back video from before or after it)
+        const t = from + (ev.clientX - sx) * msPerPx
+        to = edge === 'start' ? Math.min(seg.end_ms - MIN_FORMAT_MS, t) : Math.max(seg.start_ms + MIN_FORMAT_MS, t)
+        setEdgeGhost({ from, to, edge, other: edge === 'start' ? seg.end_ms : seg.start_ms })
+        // An end: live, the clip changes as it is dragged and what follows moves with it (once a
+        // frame at most). A start: as the clip's own start — the edge follows the pointer, what it
+        // passes over goes (or comes back), and the timeline closes up on release.
+        if (edge === 'end' && !raf) raf = requestAnimationFrame(apply)
+      }
+      const up = () => {
+        window.removeEventListener('pointermove', move)
+        window.removeEventListener('pointerup', up)
+        if (raf) cancelAnimationFrame(raf)
+        setDragging(null)
+        setSnapLine(null)
+        setEdgeGhost(null)
+        setFrozenDur(null)
+        if (!moved) { onSeek(edge === 'start' ? seg.start_ms : Math.max(seg.start_ms, seg.end_ms - 100)); return }
+        onEdgeTrim(seg.id, edge, Math.round(from), Math.round(to), true)
+      }
+      window.addEventListener('pointermove', move)
+      window.addEventListener('pointerup', up)
+      return
+    }
     // Only carry the playhead along if it started inside the format being trimmed
     const playheadInside = nowRef.current >= seg.start_ms && nowRef.current < seg.end_ms
     setDragging(`${edge}-${seg.id}`)
@@ -1350,7 +1404,7 @@ export function SegmentTimeline({
   const clipAdd = clipDrag && (clipDrag.edge === 'start' ? clipDrag.delta < 0 : clipDrag.delta > 0) ? Math.abs(clipDrag.delta) : 0
   /** Video being added before the start: everything already there sits that much later meanwhile */
   const addBefore = clipDrag?.edge === 'start' ? clipAdd : 0
-  const viewDur = duration + clipAdd
+  const viewDur = Math.max(duration + clipAdd, frozenDur ?? 0)
   /** A length (ms) as a share (%) of the timeline */
   const pct = (ms: number) => (viewDur > 0 ? (ms / viewDur) * 100 : 0)
   /** Where a time (ms) sits on the timeline (%) */
@@ -1370,6 +1424,8 @@ export function SegmentTimeline({
     : sourceAt
   const stripClip = clipCut > 0
     ? (clipDrag!.edge === 'start' ? `inset(0 0 0 ${pct(clipCut)}% round 12px)` : `inset(0 ${pct(clipCut)}% 0 0 round 12px)`)
+    // (a part's edge being dragged in: the clip is shorter than the timeline kept still — nothing past its end)
+    : frozenDur != null && frozenDur > duration + clipAdd ? `inset(0 ${pct(frozenDur - duration - clipAdd)}% 0 0 round 12px)`
     : undefined
   const [majorMs, minorPerMajor] = TICK_STEPS.find(([ms]) => (ms / Math.max(viewDur, 1)) * contentW >= MIN_LABEL_GAP_PX) ?? TICK_STEPS[TICK_STEPS.length - 1]
   const minorMs = majorMs / minorPerMajor
@@ -1381,6 +1437,7 @@ export function SegmentTimeline({
   // whole under them. The strip, its ◆ keys and joins are about the sections that frame the main video.
   const brolls = byTime.filter(sg => isShot(sg, mainVideoId))
   const mains = byTime.filter(sg => !isShot(sg, mainVideoId))
+  useEffect(() => { timelineOpenedAt = performance.now() }, [])
   // An editor that doesn't keep layers (no mainVideoId: the phone editor) still has each video as
   // a part of its own between the sections, not over them
   const layered = mainVideoId != null
@@ -1562,13 +1619,15 @@ export function SegmentTimeline({
     const fits = fitLabel(ph.start_ms, ph.end_ms)
     return (
       <div key={ph.id} onPointerDown={e => handlePhotoDrag(e, ph, 'body')}
-        title={`Photo · ${msToLabel(ph.start_ms)}–${msToLabel(ph.end_ms)} · click to change it, drag to move (up or down: another track), drag the ends to trim`}
+        title={`${ph.video ? 'Picture in picture' : 'Photo'} · ${msToLabel(ph.start_ms)}–${msToLabel(ph.end_ms)} · click to change it, drag to move (up or down: another track), drag the ends to trim`}
         className="absolute inset-y-0 flex flex-col overflow-hidden"
-        style={barStyle(MEDIA_COLORS.photo, ph.start_ms, ph.end_ms, sel, on, !!fits, ph)}>
-        <MediaGrip onPointerDown={e => handlePhotoDrag(e, ph, 'start')} side="left" label="Trim the start of the photo" />
-        {barHead('photo', 'Photo', ph.end_ms - ph.start_ms, ph, (sel || on) && fitTag(fits))}
-        {/* The photo, side by side across the bar */}
-        {barBody(null, ph.url ? { backgroundImage: `url("${ph.url}")`, backgroundSize: 'auto 100%', backgroundRepeat: 'repeat-x', backgroundPosition: 'left center' } : undefined)}
+        style={barStyle(ph.video ? MEDIA_COLORS.video : MEDIA_COLORS.photo, ph.start_ms, ph.end_ms, sel, on, !!fits, ph)}>
+        <MediaGrip onPointerDown={e => handlePhotoDrag(e, ph, 'start')} side="left" label={`Trim the start of the ${ph.video ? 'video' : 'photo'}`} />
+        {barHead(ph.video ? 'video' : 'photo', ph.video ? 'PIP' : 'Photo', ph.end_ms - ph.start_ms, ph.video ? { ...ph, muted: ph.video.muted } : ph, (sel || on) && fitTag(fits))}
+        {/* The photo side by side across the bar; a video's own frames */}
+        {ph.video
+          ? barBody(ph.video.url && <VideoThumbnails tile videoUrl={ph.video.url} startMs={ph.video.offset} durationMs={ph.end_ms - ph.start_ms} radius={0} dim={false} />)
+          : barBody(null, ph.url ? { backgroundImage: `url("${ph.url}")`, backgroundSize: 'auto 100%', backgroundRepeat: 'repeat-x', backgroundPosition: 'left center' } : undefined)}
         <MediaGrip onPointerDown={e => handlePhotoDrag(e, ph, 'end')} side="right" label="Trim the end of the photo" />
       </div>
     )
@@ -1655,12 +1714,34 @@ export function SegmentTimeline({
                   // (under its button when there's room, else above it: the timeline sits low on the screen)
                   style={{ zIndex: 91, left: Math.min(addMenu.left, window.innerWidth - 176),
                     ...(addMenu.bottom + 6 + 200 <= window.innerHeight ? { top: addMenu.bottom + 6 } : { bottom: window.innerHeight - addMenu.top + 6 }), minWidth: 168, background: 'var(--ed-popover, var(--ed-panel))', border: '1px solid rgb(var(--ed-fg) / 0.14)', boxShadow: '0 12px 32px rgba(0,0,0,0.55)' }}>
-                  {ADD_KINDS.map(({ kind, label }) => (
+                  {/* Insert: a video put in between — the main video waits for it, the rest moves later */}
+                  <button type="button" role="menuitem" onClick={() => { setAddMenu(null); onAddKind('insert', addAt ?? undefined); setAddAt(null) }}
+                    title="The video plays here, then the clip carries on: everything after it moves later"
+                    className="flex items-center gap-2.5 px-3 py-1.5 text-[12.5px] font-semibold text-left transition-colors hover:bg-[rgb(var(--ed-fg)/0.07)]"
+                    style={{ color: 'var(--ed-text)' }}>
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke={ACCENT} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                      <rect x="2" y="6" width="5" height="12" rx="1.5" /><rect x="17" y="6" width="5" height="12" rx="1.5" /><path d="M12 8v8M9 12h6" />
+                    </svg>
+                    {addAt === null ? 'Insert video here' : 'Video (plays in between)'}
+                  </button>
+                  {/* Picture in picture: a video in a small window over the clip (both play) */}
+                  <button type="button" role="menuitem" onClick={() => { setAddMenu(null); onAddKind('pip', addAt ?? undefined); setAddAt(null) }}
+                    title="A video in a small window over the clip: move it and resize it on the preview"
+                    className="flex items-center gap-2.5 px-3 py-1.5 text-[12.5px] font-semibold text-left transition-colors hover:bg-[rgb(var(--ed-fg)/0.07)]"
+                    style={{ color: 'var(--ed-text)' }}>
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke={MEDIA_COLORS.video} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                      <rect x="2.5" y="4.5" width="19" height="15" rx="2.5" /><rect x="12" y="11" width="7" height="6" rx="1.2" fill={MEDIA_COLORS.video} fillOpacity=".35" />
+                    </svg>
+                    Picture in picture
+                  </button>
+                  <div className="my-1 mx-3" style={{ height: 1, background: 'rgb(var(--ed-fg) / 0.1)' }} aria-hidden="true" />
+                  {/* (on a join a video always goes in between, as in other editors: no "video on top" there) */}
+                  {ADD_KINDS.filter(k => addAt === null || k.kind !== 'video').map(({ kind, label }) => (
                     <button key={kind} type="button" role="menuitem" onClick={() => { setAddMenu(null); onAddKind(kind, addAt ?? undefined); setAddAt(null) }}
                       className="flex items-center gap-2.5 px-3 py-1.5 text-[12.5px] font-medium text-left transition-colors hover:bg-[rgb(var(--ed-fg)/0.07)]"
                       style={{ color: 'var(--ed-text)' }}>
                       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke={MEDIA_COLORS[kind]} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{LANE_META[kind].icon}</svg>
-                      {label}
+                      {kind === 'video' ? 'Video on top' : label}
                     </button>
                   ))}
                 </div>
@@ -1833,6 +1914,21 @@ export function SegmentTimeline({
               {videoUrl
                 ? <VideoThumbnails videoUrl={videoUrl} startMs={clipStartMs - addBefore} durationMs={viewDur} radius={12} dim={false} sourceAt={stripSourceAt} sourceKey={sourceKey} />
                 : <div className="absolute inset-0" style={{ background: 'var(--ed-raise)' }} />}
+
+              {/* Videos put in between: their own frames over their stretch of the strip, tagged */}
+              {mains.filter(sg => sg.video_offset_ms != null && sg.crop_boxes[0]?.source_video_id).map(sg => {
+                const box = sg.crop_boxes[0]
+                const url = videoUrls[box.source_video_id ?? '']
+                const name = (videoTitles[box.source_video_id ?? ''] ?? 'Video').replace(/^(Pixabay|Pexels): /, '').split(',')[0]
+                return (
+                  <div key={`ins-${sg.id}`} className="absolute inset-y-0 pointer-events-none overflow-hidden"
+                    title={`Inserted video · ${name} · ${msToLabel(sg.start_ms)}–${msToLabel(sg.end_ms)}: the clip waits while it plays`}
+                    style={{ left: `${at(sg.start_ms)}%`, width: `${pct(sg.end_ms - sg.start_ms)}%`, borderRadius: 12, background: 'var(--ed-raise)', zIndex: 1 }}>
+                    {url && <VideoThumbnails tile videoUrl={url} startMs={box.source_offset_ms ?? 0} durationMs={sg.end_ms - sg.start_ms} radius={12} dim={false} />}
+                    <InsertTag id={`${box.source_video_id}@${sg.video_offset_ms}`} name={name} />
+                  </div>
+                )
+              })}
 
               {gaps.map(g => (
                 <div key={`gap-${g.start_ms}`} className="absolute inset-y-0 pointer-events-none flex items-center justify-center overflow-hidden"
@@ -2010,7 +2106,8 @@ export function SegmentTimeline({
                 closed up — sitting on the strip's bottom edge (clear of the trim grips at the seam):
                 it opens the add menu for that very moment, so something can go in between */}
             {onAddKind && !dragging && !clipDrag && (() => {
-              const raw = [...junctions.map(j => j.left.end_ms), ...(cutJoins ?? [])]
+              // (every edge of a part of the main strip: also where a part meets "Default framing")
+              const raw = [...junctions.map(j => j.left.end_ms), ...mains.flatMap(m => [m.start_ms, m.end_ms]), ...(cutJoins ?? [])]
                 .map(t => Math.round(t)).filter(t => t > 50 && t < duration - 50).sort((a, b) => a - b)
               const seams = raw.filter((t, i) => i === 0 || t - raw[i - 1] > 30)
               return seams.map(t => {
@@ -2166,6 +2263,49 @@ export function SegmentTimeline({
                 ]
               })
             })}
+
+            {/* An edge dragged to trim the video, as the clip's own ends look: what goes is gone from
+                the strip, the part as it will be is outlined in lime, and under its edge where it
+                will start (or end) and how long it will be */}
+            {edgeGhost && (() => {
+              const start = edgeGhost.edge === 'start'
+              const cut = start ? edgeGhost.to > edgeGhost.from : edgeGhost.to < edgeGhost.from
+              const d = Math.abs(edgeGhost.to - edgeGhost.from)
+              // The part as it will be, on the strip as it is now (what comes back is shown over its neighbour)
+              let keepFrom = start ? edgeGhost.to : edgeGhost.other, keepTo = start ? edgeGhost.other : edgeGhost.to
+              keepFrom = Math.max(0, keepFrom); keepTo = Math.min(duration, keepTo)
+              const len = Math.abs(edgeGhost.other - edgeGhost.from) + (cut ? -d : d)
+              const [goneFrom, goneTo] = start ? [edgeGhost.from, edgeGhost.to] : [edgeGhost.to, edgeGhost.from]
+              const edgeAt = start ? keepFrom : keepTo
+              void goneFrom; void goneTo
+              return (
+                <>
+                  {start && cut && (
+                    <div className="absolute pointer-events-none" style={{
+                      left: `${at(Math.max(0, edgeGhost.from))}%`, width: `${pct(Math.max(0, edgeGhost.to - edgeGhost.from))}%`, top: STRIP_TOP - 1, height: STRIP_H + 2, zIndex: 34,
+                      background: 'var(--ed-track)',
+                    }} />
+                  )}
+                  {start && (
+                    <div className="absolute pointer-events-none" style={{
+                      left: `${at(Math.max(0, edgeGhost.to))}%`, width: `${pct(Math.max(0, edgeGhost.other - Math.max(0, edgeGhost.to)))}%`, top: STRIP_TOP, height: STRIP_H, zIndex: 35,
+                      borderRadius: 12, boxShadow: `inset 0 0 0 2px ${ACCENT}, 0 0 14px rgba(200,255,0,0.25)`,
+                      ...(!cut ? { background: 'linear-gradient(rgba(200,255,0,0.1), rgba(200,255,0,0.1))' } : {}),
+                    }} />
+                  )}
+                  <span className="absolute pointer-events-none px-2.5 rounded-full text-[11px] font-semibold tabular-nums whitespace-nowrap leading-[20px]"
+                    style={{
+                      left: `${at(edgeAt)}%`, top: STRIP_TOP + STRIP_H + 6, zIndex: 45,
+                      transform: start ? 'translateX(-12px)' : 'translateX(calc(-100% + 12px))',
+                      background: '#1b1b1f', color: '#fff', boxShadow: '0 0 0 1px rgba(255,255,255,0.12), 0 6px 16px rgba(0,0,0,0.55)',
+                    }}>
+                    {start ? 'Starts' : 'Ends'} at {msToLabel(Math.max(0, start ? edgeGhost.to : edgeGhost.to))}
+                    <span style={{ opacity: 0.45 }}> · </span>
+                    <span style={{ color: ACCENT }}>{durLabel(Math.max(0, len))}</span>
+                  </span>
+                </>
+              )
+            })()}
 
             {/* Snap guide while trimming */}
             {snapLine !== null && (
@@ -2431,6 +2571,35 @@ const LANE_META: Record<string, LaneMeta> = {
 }
 
 // Media rows under the strip: one colour per kind (video is the orange bar over the strip)
+/** When the timeline opened: inserted videos that come with the clip (loaded just after) show no name tag */
+let timelineOpenedAt = 0
+/**
+ * The name of a video just put in between, on its stretch of the strip: shown for 3 s after it
+ * goes in, then it fades away (the name stays in the stretch's tooltip). Not shown for videos
+ * that were already there when the clip was opened.
+ */
+/** Inserted videos (video@where it goes in) whose name tag has had its turn */
+const insertTagsSeen = new Set<string>()
+function InsertTag({ id, name }: { id: string; name: string }) {
+  const [shown, setShown] = useState(() => {
+    const fresh = typeof performance !== 'undefined' && performance.now() - timelineOpenedAt > 1500 && !insertTagsSeen.has(id)
+    insertTagsSeen.add(id)
+    return fresh
+  })
+  useEffect(() => {
+    if (!shown) return
+    const t = setTimeout(() => setShown(false), 3000)
+    return () => clearTimeout(t)
+  }, [id, shown])
+  return (
+    <span className="absolute left-1.5 top-1.5 flex items-center gap-1 max-w-[calc(100%-12px)] px-1.5 h-[17px] rounded-md text-[10px] font-bold transition-opacity duration-500"
+      style={{ background: ACCENT, color: '#0a0a0a', boxShadow: '0 1px 4px rgba(0,0,0,0.5)', opacity: shown ? 1 : 0 }} aria-hidden={!shown}>
+      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" aria-hidden="true"><path d="M12 6v12M6 12h12" /></svg>
+      <span className="truncate">{name}</span>
+    </span>
+  )
+}
+
 const MEDIA_COLORS = { video: '#f97316', broll: '#eab308', photo: '#60a5fa', text: '#f472b6', music: '#c084fc' } as const
 /** The main video's strip on the timeline */
 const STRIP_H = 42
