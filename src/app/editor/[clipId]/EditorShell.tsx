@@ -4112,7 +4112,7 @@ export function EditorShell({
                   )}
                 </div>
               ) : (
-                <OutputCanvas live segmentAt={viewAt} transitionCuts={transitionCuts}
+                <OutputCanvas live segmentAt={viewAt} transitionCuts={transitionCuts} timelineToVideo={trimmed ? trim.toSource : undefined}
                   videoRef={videoRef} currentTimeMs={currentTimeMs} clipStartMs={clip.start_ms} videoToTimeline={videoToTimeline}
                   activeSegment={viewSegment} getPositionAt={viewGetPositionAt} sourceFor={brollSource} slotSourceFor={borrowed.slotSourceFor}
                   skipTransitionRef={skipCanvasTransitionRef} words={displayWords}

@@ -705,15 +705,16 @@ export type TransitionCut = { at: number; ms: number; type: string }
  */
 function drawTransition(ctx: CanvasRenderingContext2D, a: HTMLCanvasElement, b: HTMLCanvasElement, p: number, type: string) {
   const W = ctx.canvas.width, H = ctx.canvas.height
-  const e = easeInOut(Math.max(0, Math.min(1, p)))
+  // (linear, as ffmpeg's xfade runs: the preview keeps the export's timing)
+  const e = Math.max(0, Math.min(1, p))
   ctx.save()
   switch (type) {
     case 'fadeblack': case 'fadewhite': {
       // Into the colour over the first half, out of it over the second
       ctx.fillStyle = type === 'fadeblack' ? '#000' : '#fff'
       ctx.fillRect(0, 0, W, H)
-      ctx.globalAlpha = p < 0.5 ? 1 - easeInOut(p * 2) : easeInOut(p * 2 - 1)
-      ctx.drawImage(p < 0.5 ? a : b, 0, 0, W, H)
+      ctx.globalAlpha = e < 0.5 ? 1 - e * 2 : e * 2 - 1
+      ctx.drawImage(e < 0.5 ? a : b, 0, 0, W, H)
       break
     }
     case 'slideleft':
@@ -1571,6 +1572,8 @@ interface OutputCanvasProps {
    * section with none is a hard cut, as in the export — not the soft blend shown otherwise.
    */
   transitionCuts?: TransitionCut[]
+  /** Clip time → the main video's own time (ms), when parts of the clip were removed (else clipStartMs + t) */
+  timelineToVideo?: (t: number) => number
   /** Other videos and photos shown in frame slots */
   frameMedia?: FrameMediaPool | null
   /** "+" on an empty frame slot or band: takes the user to that lane on the timeline */
@@ -1594,7 +1597,7 @@ export function OutputCanvas({
   className, style, skipTransitionRef,
   words, captionStyle, captionTextCase = 'title', showCaptions = false,
   textOverlays = [], activeTextOverlayId, onTextOverlayChange, onSelectTextOverlay, onDeleteTextOverlay, editTextOverlayId, onEditTextDone,
-  onCaptionPositionChange, onCaptionSizeChange, transitionCuts, frameMedia, onFrameLaneClick, onFrameItemClick, activeFrameItemId, onFrameItemChange, onDeleteFrameItem, onFrameRowsChange, onFrameMainRectChange,
+  onCaptionPositionChange, onCaptionSizeChange, transitionCuts, timelineToVideo, frameMedia, onFrameLaneClick, onFrameItemClick, activeFrameItemId, onFrameItemChange, onDeleteFrameItem, onFrameRowsChange, onFrameMainRectChange,
 }: OutputCanvasProps) {
   // Where the captions are drawn right now (from the canvas, each frame), for their box on the
   // preview: kept in state only when it moves noticeably, at most ~10 times a second
@@ -1636,6 +1639,8 @@ export function OutputCanvas({
   const snapshotRef     = useRef<HTMLCanvasElement | null>(null)
   const transitionStart = useRef<number | null>(null)
   const transitionCutsRef = useRef(transitionCuts)
+  const timelineToVideoRef = useRef(timelineToVideo)
+  timelineToVideoRef.current = timelineToVideo
   transitionCutsRef.current = transitionCuts
   // The two sections of a transition, each drawn whole off screen, then blended onto the canvas
   const trCanvases = useRef<[HTMLCanvasElement, HTMLCanvasElement] | null>(null)
@@ -1679,6 +1684,41 @@ export function OutputCanvas({
     // clean cut — never one frame of the new shot with the old view
     let shownMs: number | null = null
     const stopShown = videoRef.current ? trackPresentedFrame(videoRef.current, ms => { shownMs = ms }) : () => {}
+
+    // Held frames for transitions. The two sides of a join are usually the same continuous video,
+    // so drawing both from the player at one moment gives two copies of one picture (a dissolve
+    // shows nothing). The export holds frames instead (render.py): before the join the incoming
+    // part's first frame, after it the outgoing part's last frame. Two hidden copies of the video
+    // are parked on those two frames ahead of time (from 2.5 s before a transition).
+    let peek: { a: HTMLVideoElement; b: HTMLVideoElement; at: number | null; src: string } | null = null
+    const peekReady = (v: HTMLVideoElement) => v.readyState >= 2 && !v.seeking
+    const toVideoMs = (t: number) => (timelineToVideoRef.current ? timelineToVideoRef.current(t) : clipStartMsRef.current + t)
+    function parkPeek(main: HTMLVideoElement, at: number) {
+      const src = main.currentSrc || main.src
+      if (!src) return
+      if (!peek || peek.src !== src) {
+        disposePeek()
+        const make = () => {
+          const v = document.createElement('video')
+          v.crossOrigin = main.crossOrigin
+          v.muted = true; v.playsInline = true; v.preload = 'auto'
+          v.src = src
+          return v
+        }
+        peek = { a: make(), b: make(), at: null, src }
+      }
+      if (peek.at === at) return
+      peek.at = at
+      // (a frame and a half before the join: inside the outgoing part)
+      peek.a.currentTime = Math.max(0, toVideoMs(Math.max(0, at - 50))) / 1000
+      peek.b.currentTime = Math.max(0, toVideoMs(at)) / 1000
+    }
+    function disposePeek() {
+      if (!peek) return
+      for (const v of [peek.a, peek.b]) { v.removeAttribute('src'); v.load() }
+      peek = null
+    }
+
     const loop = () => {
       const canvas = canvasRef.current
       const video  = videoRef.current
@@ -1729,7 +1769,11 @@ export function OutputCanvas({
           const other = sourceForRef.current?.(seg)
           // Inside a transition: the section before the join and the one after it, both drawn,
           // blended by how far through it is
-          const tc = transitionCutsRef.current?.find(c => c.ms > 0 && clipMsNow >= c.at - c.ms / 2 && clipMsNow < c.at + c.ms / 2)
+          const cuts = transitionCutsRef.current
+          // Coming up to a transition (or in it): its held frames parked in good time
+          const soon = cuts?.find(c => c.ms > 0 && clipMsNow >= c.at - c.ms / 2 - 2500 && clipMsNow < c.at + c.ms / 2 + 300)
+          if (soon) parkPeek(video, soon.at)
+          const tc = cuts?.find(c => c.ms > 0 && clipMsNow >= c.at - c.ms / 2 && clipMsNow < c.at + c.ms / 2)
           const segA = tc && segmentAtRef.current ? segmentAtRef.current(Math.max(0, tc.at - 1)) : null
           const segB = tc && segmentAtRef.current ? segmentAtRef.current(tc.at) : null
           if (tc && segA && segB && segA.id !== segB.id) {
@@ -1737,14 +1781,18 @@ export function OutputCanvas({
             const [ca, cb] = trCanvases.current
             for (const c of [ca, cb]) if (c.width !== canvas.width || c.height !== canvas.height) { c.width = canvas.width; c.height = canvas.height }
             const slots = slotSourceForRef.current ? (sg: SegmentLocal, box: SegmentLocal['crop_boxes'][number]) => slotSourceForRef.current!(sg, box) : null
-            const paint = (c: HTMLCanvasElement, sg: SegmentLocal, t: number) => {
+            const paint = (c: HTMLCanvasElement, sg: SegmentLocal, t: number, held: HTMLVideoElement | null) => {
               const cx = c.getContext('2d')!
               const src = sourceForRef.current?.(sg)
               if (sg.hidden) { cx.fillStyle = '#000'; cx.fillRect(0, 0, c.width, c.height); return }
-              if (!src || src.readyState >= 2) paintSegment(cx, src ?? video, sg, t, getPositionAtRef.current, frameMediaRef.current, slots)
+              if (!src || src.readyState >= 2) paintSegment(cx, src ?? held ?? video, sg, t, getPositionAtRef.current, frameMediaRef.current, slots)
             }
-            paint(ca, segA, Math.min(clipMsNow, tc.at - 1))
-            paint(cb, segB, Math.max(clipMsNow, tc.at))
+            // Before the join: the outgoing part plays, the incoming one holds its first frame;
+            // after it, the other way round (a held frame not parked yet: the player's own frame)
+            const pk = peek && peek.at === tc.at ? peek : null
+            const before = clipMsNow < tc.at
+            paint(ca, segA, before ? clipMsNow : tc.at - 1, !before && pk && peekReady(pk.a) ? pk.a : null)
+            paint(cb, segB, before ? tc.at : clipMsNow, before && pk && peekReady(pk.b) ? pk.b : null)
             drawTransition(ctx, ca, cb, (clipMsNow - (tc.at - tc.ms / 2)) / tc.ms, tc.type)
           } else if (seg?.hidden) {
             // The main video hidden here (shownSegment): black, as in the export; captions and text still go on top
@@ -1792,7 +1840,7 @@ export function OutputCanvas({
     }
 
     rafId = requestAnimationFrame(loop)
-    return () => { cancelAnimationFrame(rafId); stopShown() }
+    return () => { cancelAnimationFrame(rafId); stopShown(); disposePeek() }
   }, [videoRef])
 
   // Active overlays at current time
