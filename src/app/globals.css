@@ -1310,47 +1310,99 @@ body {
 .pl-stage { position: absolute; inset: 0; }
 
 /* ── The clip board's scene (data-scene="clipboard"): the panda walks along, typing on its laptop,
-   puzzling something out. Its picture is in three layers the same size (540 × 690: the back leg,
-   the body, the front leg), so the legs swing about the hips while the body bobs — a walk, one
-   stride a second. Round it: only a shadow under its feet, ground marks sliding by, and the
-   thought over its head (a scribble that draws itself, two question marks). ── */
-.pl[data-scene="clipboard"] { aspect-ratio: 600 / 540; }
-.pw-fig { position: absolute; left: 22%; width: 56%; bottom: 5.5%; aspect-ratio: 540 / 690; animation: pw-bob 1s ease-in-out infinite; }
+   puzzling something out. Its picture is in three layers the same size (the back leg, the body,
+   the front leg). One walk cycle (--pw-cycle) is two steps, as a walk is animated by hand:
+     • each leg reaches forward, plants (contact), carries the weight back (push), then lifts and
+       swings through (passing) — the two legs half a cycle apart, turning about their hips;
+     • the body drops onto each planted foot (a little squash), rises as the legs pass (a little
+       stretch), rocks with the stride and leans into it — following the legs a beat late, so the
+       weight reads;
+     • the shadow tightens as it rises and spreads as it lands; dust puffs where each foot lands;
+     • the ground runs by at the walk's own speed (a planted foot doesn't skate).
+   Over its head, a thought that floats a beat behind the bob (a scribble drawing itself, two
+   question marks), and the laptop's mark glows as it types. ── */
+.pl[data-scene="clipboard"] { aspect-ratio: 600 / 540; --pw-cycle: 1.15s; }
+.pw-fig {
+  position: absolute; left: 22%; width: 56%; bottom: 5.5%; aspect-ratio: 540 / 690;
+  transform-origin: 40% 100%; animation: pw-body var(--pw-cycle) cubic-bezier(.37,0,.63,1) infinite;
+}
 .pw-fig img { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; user-select: none; }
 .pw-body { filter: drop-shadow(0 10px 18px rgba(0,0,0,0.5)); }
-/* each leg turns about its hip (where it is in the picture) */
-.pw-leg-front { transform-origin: 37.4% 70.6%; animation: pw-leg-front 1s cubic-bezier(.45,0,.55,1) infinite; }
-.pw-leg-back { transform-origin: 16.1% 73.6%; animation: pw-leg-back 1s cubic-bezier(.45,0,.55,1) infinite; }
+/* each leg turns about its hip (where it is in the picture); negative = foot forward */
+.pw-leg-front { transform-origin: 37.4% 70.6%; animation: pw-leg-front var(--pw-cycle) linear infinite; }
+.pw-leg-back { transform-origin: 16.1% 73.6%; animation: pw-leg-back var(--pw-cycle) linear infinite; }
 .pw-markglow {
   position: absolute; left: 76.5%; top: 43.2%; width: 22%; aspect-ratio: 1; translate: -50% -50%; border-radius: 50%; pointer-events: none;
-  mix-blend-mode: screen; background: radial-gradient(closest-side, rgba(200,255,0,0.7), rgba(200,255,0,0.18) 55%, transparent);
-  animation: pl-mark 1.6s cubic-bezier(.65,0,.35,1) infinite;
+  mix-blend-mode: screen; background: radial-gradient(closest-side, rgba(200,255,0,0.75), rgba(200,255,0,0.2) 55%, transparent);
+  animation: pw-type calc(var(--pw-cycle) / 2) steps(1, end) infinite, pl-mark 2.3s cubic-bezier(.65,0,.35,1) infinite;
 }
 .pw-shadow {
   position: absolute; left: 24%; width: 50%; bottom: 2.6%; height: 6.5%; border-radius: 50%; pointer-events: none;
-  background: radial-gradient(closest-side, rgba(0,0,0,0.75), rgba(0,0,0,0.3) 60%, transparent); filter: blur(3px);
-  animation: pw-shadow 1s ease-in-out infinite;
+  background: radial-gradient(closest-side, rgba(0,0,0,0.78), rgba(0,0,0,0.3) 60%, transparent); filter: blur(3px);
+  animation: pw-shadow calc(var(--pw-cycle) / 2) cubic-bezier(.37,0,.63,1) infinite;
 }
-/* the ground sliding by: short lime marks, fading out at both ends (it walks to the right, so they go left) */
+/* dust where a foot lands: a soft puff that spreads and fades (front foot, then back foot) */
+.pw-dust {
+  position: absolute; bottom: 4.2%; width: 9%; aspect-ratio: 2.2; border-radius: 50%; pointer-events: none; opacity: 0;
+  background: radial-gradient(closest-side, rgba(220,230,200,0.38), rgba(200,255,0,0.08) 60%, transparent);
+  filter: blur(1.5px); transform-origin: 50% 100%; animation: pw-dust var(--pw-cycle) cubic-bezier(.2,.7,.3,1) infinite;
+}
+.pw-dust-front { left: 49%; }
+.pw-dust-back { left: 27%; animation-delay: calc(var(--pw-cycle) / -2); }
+/* the ground running by: short lime marks, fading out at both ends (it walks to the right, so they go
+   left), one mark spacing per step — about the length of a stride at this size */
 .pw-ground {
   position: absolute; left: 0; right: 0; bottom: 4.6%; height: 2px; pointer-events: none; opacity: .7;
-  background: repeating-linear-gradient(90deg, rgba(200,255,0,0.75) 0 16px, transparent 16px 54px);
+  background: repeating-linear-gradient(90deg, rgba(200,255,0,0.75) 0 14px, transparent 14px 62px);
   -webkit-mask-image: linear-gradient(90deg, transparent, #000 22%, #000 78%, transparent);
           mask-image: linear-gradient(90deg, transparent, #000 22%, #000 78%, transparent);
-  animation: pw-ground 1s linear infinite;
+  animation: pw-ground calc(var(--pw-cycle) / 2) linear infinite;
 }
-/* the thought over its head */
-.pw-think { position: absolute; left: 60%; top: 0; width: 27%; overflow: visible; pointer-events: none; animation: pw-think 3.6s ease-in-out infinite; }
+/* the thought over its head: floats with the walk, a beat behind */
+.pw-think { position: absolute; left: 60%; top: 0; width: 27%; overflow: visible; pointer-events: none; transform-origin: 30% 100%; animation: pw-think 3.6s cubic-bezier(.45,0,.55,1) infinite, pw-think-bob calc(var(--pw-cycle) / 2) cubic-bezier(.37,0,.63,1) calc(var(--pw-cycle) / -8) infinite; }
 .pw-scribble { fill: none; stroke: #f4f4f5; stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; stroke-dasharray: 1; stroke-dashoffset: 1; animation: pw-draw 3.6s ease-in-out infinite; }
 .pw-tail { stroke-width: 2.2; animation-name: pw-draw-tail; }
 .pw-q { fill: #f4f4f5; font: 800 17px var(--font-display), system-ui, sans-serif; opacity: 0; transform-box: fill-box; transform-origin: 50% 100%; animation: pw-q 3.6s cubic-bezier(.3,1.5,.4,1) infinite; }
 .pw-q2 { font-size: 13px; animation-delay: .25s; }
-@keyframes pw-bob { 0%, 50%, 100% { transform: translateY(0) rotate(0.6deg); } 25%, 75% { transform: translateY(-1.7%) rotate(-0.6deg); } }
-@keyframes pw-leg-front { 0%, 100% { transform: rotate(0deg); } 50% { transform: rotate(24deg) translateY(-0.6%); } }
-@keyframes pw-leg-back { 0%, 100% { transform: rotate(0deg); } 50% { transform: rotate(-24deg) translateY(-0.6%); } }
-@keyframes pw-shadow { 0%, 50%, 100% { transform: scaleX(1); opacity: 1; } 25%, 75% { transform: scaleX(.9); opacity: .8; } }
-@keyframes pw-ground { to { background-position: -54px 0; } }
-@keyframes pw-think { 0%, 100% { transform: translateY(0) rotate(-2deg); } 50% { transform: translateY(-3%) rotate(2deg); } }
+/* The body over one cycle: down on a planted foot (0%, 50%: a little squash, rocking towards that
+   foot's side), up as the legs pass (25%, 75%: a little stretch), leaning into the walk */
+@keyframes pw-body {
+  0%   { transform: translateY(0.6%) rotate(1.4deg) scale(1.012, .985); }
+  10%  { transform: translateY(0.9%) rotate(1.2deg) scale(1.016, .98); }
+  25%  { transform: translateY(-2.1%) rotate(0.4deg) scale(.994, 1.012); }
+  50%  { transform: translateY(0.6%) rotate(-0.2deg) scale(1.012, .985); }
+  60%  { transform: translateY(0.9%) rotate(0deg) scale(1.016, .98); }
+  75%  { transform: translateY(-2.1%) rotate(0.9deg) scale(.994, 1.012); }
+  100% { transform: translateY(0.6%) rotate(1.4deg) scale(1.012, .985); }
+}
+/* A leg: contact (forward, planted) → push (back, still planted: a steady sweep) → toe-off → swing
+   through, lifted (eased, quick) → contact. Front and back are half a cycle apart. */
+@keyframes pw-leg-front {
+  0%   { transform: rotate(-9deg); animation-timing-function: cubic-bezier(.33,0,.67,1); }
+  50%  { transform: rotate(15deg); animation-timing-function: cubic-bezier(.5,0,.3,1); }
+  72%  { transform: rotate(2deg) translateY(-3.2%); animation-timing-function: cubic-bezier(.4,0,.2,1); }
+  100% { transform: rotate(-9deg); }
+}
+@keyframes pw-leg-back {
+  0%   { transform: rotate(12deg); animation-timing-function: cubic-bezier(.5,0,.3,1); }
+  22%  { transform: rotate(-1deg) translateY(-3%); animation-timing-function: cubic-bezier(.4,0,.2,1); }
+  50%  { transform: rotate(-14deg); animation-timing-function: cubic-bezier(.33,0,.67,1); }
+  100% { transform: rotate(12deg); }
+}
+/* the shadow: full at each landing, tighter and lighter as the body rises (two per cycle) */
+@keyframes pw-shadow { 0%, 100% { transform: scaleX(1.02); opacity: 1; } 50% { transform: scaleX(.88); opacity: .72; } }
+/* dust: a puff just after the foot lands, then gone */
+@keyframes pw-dust {
+  0%, 2% { opacity: 0; transform: translateX(0) scale(.35, .5); }
+  8%     { opacity: .9; }
+  30%    { opacity: 0; transform: translateX(-35%) scale(1.25, 1); }
+  100%   { opacity: 0; transform: translateX(-35%) scale(1.25, 1); }
+}
+@keyframes pw-ground { to { background-position: -62px 0; } }
+/* the laptop's mark flickers a touch with each keystroke (two a step) */
+@keyframes pw-type { 0% { filter: brightness(1.15); } 50% { filter: brightness(.9); } }
+@keyframes pw-think { 0%, 100% { transform: rotate(-2deg); } 50% { transform: rotate(2deg); } }
+@keyframes pw-think-bob { 0%, 100% { translate: 0 0; } 50% { translate: 0 -2.5%; } }
 @keyframes pw-draw { 0%, 6% { stroke-dashoffset: 1; opacity: 0; } 10% { opacity: 1; } 46%, 82% { stroke-dashoffset: 0; opacity: 1; } 94%, 100% { stroke-dashoffset: 0; opacity: 0; } }
 @keyframes pw-draw-tail { 0%, 40% { stroke-dashoffset: 1; opacity: 0; } 44% { opacity: 1; } 56%, 82% { stroke-dashoffset: 0; opacity: 1; } 94%, 100% { stroke-dashoffset: 0; opacity: 0; } }
 @keyframes pw-q { 0%, 54% { opacity: 0; transform: scale(.2) rotate(-20deg); } 62%, 82% { opacity: 1; transform: rotate(8deg); } 94%, 100% { opacity: 0; transform: translateY(-20%) rotate(8deg); } }
@@ -1359,7 +1411,7 @@ body {
 .bls[data-mascot] .bls-glow { top: 42%; width: 720px; height: 720px; }
 @media (prefers-reduced-motion: reduce) {
   .pl-art, .pl-floor, .pl-aura, .pl-lid i, .pl-markglow, .pl-clip, .pl-z, .pl-spark,
-  .pw-fig, .pw-leg-front, .pw-leg-back, .pw-markglow, .pw-shadow, .pw-ground, .pw-think, .pw-scribble, .pw-q { animation: none; }
+  .pw-fig, .pw-leg-front, .pw-leg-back, .pw-markglow, .pw-shadow, .pw-ground, .pw-think, .pw-scribble, .pw-q, .pw-dust { animation: none; }
   .pw-scribble { stroke-dashoffset: 0; }
   .pw-q { opacity: 1; }
   .pl-lid i { opacity: 0; }
