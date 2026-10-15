@@ -106,7 +106,12 @@ export interface FrameSettings {
 export type AnimationType = 'karaoke' | 'fade' | 'none'
   // Animated presets (render.py _preset_events, VideoPreview drawPresetCaptions)
   | 'pop' | 'highlight' | 'bounce' | 'word' | 'hormozi' | 'box' | 'glow'
-export type TransitionType = 'cut' | 'fade' | 'wipe'
+/**
+ * How one section gives way to the next (transitions.type). The names are ffmpeg's xfade
+ * transitions, which the export draws them with (render.py), except the two older ones: 'fade' (a
+ * dissolve) and 'wipe' (= wipeleft). 'cut': none.
+ */
+export type TransitionType = 'cut' | 'fade' | 'wipe' | 'fadeblack' | 'fadewhite' | 'slideleft' | 'slideup' | 'zoomin' | 'circleopen'
 
 export interface Video {
   id: string

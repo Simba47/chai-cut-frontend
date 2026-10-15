@@ -686,6 +686,61 @@ function paintFrame(
   }
 }
 
+/** A transition the preview plays: centred on the join at `at` (clip ms), `ms` long */
+export type TransitionCut = { at: number; ms: number; type: string }
+
+/**
+ * One frame of a transition: `a` (the outgoing section) giving way to `b` (the incoming one),
+ * `p` from 0 to 1 — drawn the way the export's ffmpeg xfade draws that kind (render.py), so the
+ * preview shows what will be made.
+ */
+function drawTransition(ctx: CanvasRenderingContext2D, a: HTMLCanvasElement, b: HTMLCanvasElement, p: number, type: string) {
+  const W = ctx.canvas.width, H = ctx.canvas.height
+  const e = easeInOut(Math.max(0, Math.min(1, p)))
+  ctx.save()
+  switch (type) {
+    case 'fadeblack': case 'fadewhite': {
+      // Into the colour over the first half, out of it over the second
+      ctx.fillStyle = type === 'fadeblack' ? '#000' : '#fff'
+      ctx.fillRect(0, 0, W, H)
+      ctx.globalAlpha = p < 0.5 ? 1 - easeInOut(p * 2) : easeInOut(p * 2 - 1)
+      ctx.drawImage(p < 0.5 ? a : b, 0, 0, W, H)
+      break
+    }
+    case 'slideleft':
+      ctx.drawImage(a, -e * W, 0, W, H)
+      ctx.drawImage(b, (1 - e) * W, 0, W, H)
+      break
+    case 'slideup':
+      ctx.drawImage(a, 0, -e * H, W, H)
+      ctx.drawImage(b, 0, (1 - e) * H, W, H)
+      break
+    case 'wipe': case 'wipeleft':
+      // The new picture comes in from the right edge, moving left
+      ctx.drawImage(a, 0, 0, W, H)
+      ctx.beginPath(); ctx.rect(W * (1 - e), 0, W * e + 1, H); ctx.clip()
+      ctx.drawImage(b, 0, 0, W, H)
+      break
+    case 'zoomin': {
+      ctx.drawImage(b, 0, 0, W, H)
+      const z = 1 + e * 0.6
+      ctx.globalAlpha = 1 - e
+      ctx.drawImage(a, (W - W * z) / 2, (H - H * z) / 2, W * z, H * z)
+      break
+    }
+    case 'circleopen':
+      ctx.drawImage(a, 0, 0, W, H)
+      ctx.beginPath(); ctx.arc(W / 2, H / 2, e * Math.hypot(W, H) / 2, 0, Math.PI * 2); ctx.clip()
+      ctx.drawImage(b, 0, 0, W, H)
+      break
+    default:   // 'fade': a dissolve
+      ctx.drawImage(a, 0, 0, W, H)
+      ctx.globalAlpha = e
+      ctx.drawImage(b, 0, 0, W, H)
+  }
+  ctx.restore()
+}
+
 function paintSegment(
   ctx: CanvasRenderingContext2D,
   video: HTMLVideoElement,
@@ -936,12 +991,17 @@ function templateFont(key: string): DrawFont | null {
   return { family, em: f.em, weight: f.weight, italic: !!f.italic }
 }
 
+/** Where the captions were drawn (shares of the canvas): for the box that moves and resizes them on the preview */
+type CaptionRect = { x: number; y: number; w: number; h: number }
+type CaptionRectOut = { rect: CaptionRect | null }
+
 function drawPresetCaptions(
   ctx: CanvasRenderingContext2D,
   chunk: FlatWord[],
   tMs: number,
   style: Partial<CaptionStyle>,
   band?: { y: number; h: number } | null,
+  out?: CaptionRectOut,
 ) {
   const W = ctx.canvas.width, H = ctx.canvas.height
   const k = W / 1080                                   // export is laid out at 1080 wide
@@ -1019,6 +1079,15 @@ function drawPresetCaptions(
     let x = (W - total) / 2
     items.forEach((_, j) => { at.push({ x, y }); x += widths[j] + space })
   }
+  if (out) {
+    let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity
+    items.forEach((it, j) => {
+      const h = lineH * it.scale
+      x0 = Math.min(x0, at[j].x); x1 = Math.max(x1, at[j].x + widths[j])
+      y0 = Math.min(y0, at[j].y - h / 2); y1 = Math.max(y1, at[j].y + h / 2)
+    })
+    if (isFinite(x0)) out.rect = { x: x0 / W, y: y0 / H, w: (x1 - x0) / W, h: (y1 - y0) / H }
+  }
   if (anim === 'box' || (tpl?.box && !tpl.stack)) {
     // One box round the whole line (libass BorderStyle 3: the text's full height plus the padding):
     // dark glass, or a template's colour
@@ -1080,12 +1149,14 @@ function drawCaptions(
   textCase: TextCase,
   /** A frame's text band showing the captions: centre them in it instead of at position_y */
   band?: { y: number; h: number } | null,
+  /** Filled in with where the captions were drawn */
+  out?: CaptionRectOut,
 ) {
   const W = ctx.canvas.width, H = ctx.canvas.height
   const chunk = findCaptionChunk(chunks, tMs)
   if (!chunk) return
   // (a caption style — style.template — is a preset in its own look)
-  if (isPreset(style.animation) || templateOf(style)) { drawPresetCaptions(ctx, chunk, tMs, style, band); return }
+  if (isPreset(style.animation) || templateOf(style)) { drawPresetCaptions(ctx, chunk, tMs, style, band, out); return }
 
   const color     = style.color    ?? '#FFFFFF'
   const animation = style.animation ?? 'karaoke'
@@ -1132,6 +1203,10 @@ function drawCaptions(
     ? (band.y + band.h / 2) * H - totalH / 2 + lineHeight / 2
     // centred on position_y, as libass centres the line there (\pos with alignment 5)
     : (style.position_y ?? 0.84) * H - totalH / 2 + lineHeight / 2
+  if (out) {
+    const maxW = Math.max(...lines.map(ln => ctx.measureText(ln.join(' ')).width))
+    out.rect = { x: (W - maxW) / 2 / W, y: (yBase - lineHeight / 2) / H, w: maxW / W, h: totalH / H }
+  }
 
   // Only do per-word karaoke when timestamps are real (not evenly distributed from a phrase split).
   // Estimated words (_est=true) have proportional-but-approximate timestamps that look wrong when highlighted.
@@ -1428,6 +1503,13 @@ interface OutputCanvasProps {
   onSelectTextOverlay?: (id: string | null) => void
   onDeleteTextOverlay?: (id: string) => void
   onCaptionPositionChange?: (y: number) => void
+  /** The captions' corner handles dragged on the preview: their new size (as the Size slider) */
+  onCaptionSizeChange?: (size: number) => void
+  /**
+   * The clip's transitions, where each join of sections has one. Given (the editor), a change of
+   * section with none is a hard cut, as in the export — not the soft blend shown otherwise.
+   */
+  transitionCuts?: TransitionCut[]
   /** Other videos and photos shown in frame slots */
   frameMedia?: FrameMediaPool | null
   /** "+" on an empty frame slot or band: takes the user to that lane on the timeline */
@@ -1451,8 +1533,13 @@ export function OutputCanvas({
   className, style, skipTransitionRef,
   words, captionStyle, captionTextCase = 'title', showCaptions = false,
   textOverlays = [], activeTextOverlayId, onTextOverlayChange, onSelectTextOverlay, onDeleteTextOverlay, editTextOverlayId, onEditTextDone,
-  onCaptionPositionChange, frameMedia, onFrameLaneClick, onFrameItemClick, activeFrameItemId, onFrameItemChange, onDeleteFrameItem, onFrameRowsChange, onFrameMainRectChange,
+  onCaptionPositionChange, onCaptionSizeChange, transitionCuts, frameMedia, onFrameLaneClick, onFrameItemClick, activeFrameItemId, onFrameItemChange, onDeleteFrameItem, onFrameRowsChange, onFrameMainRectChange,
 }: OutputCanvasProps) {
+  // Where the captions are drawn right now (from the canvas, each frame), for their box on the
+  // preview: kept in state only when it moves noticeably, at most ~10 times a second
+  const capOut = useRef<CaptionRectOut>({ rect: null })
+  const [capRect, setCapRect] = useState<CaptionRect | null>(null)
+  const capSent = useRef<{ rect: CaptionRect | null; at: number }>({ rect: null, at: 0 })
   const liveMs = useLiveTimeMs(live)
   const currentTimeMs = live ? liveMs : timeProp
   // With the live time, the format here too (what's drawn on the canvas already follows segmentAt every frame)
@@ -1487,6 +1574,10 @@ export function OutputCanvas({
   const prevSegIdRef    = useRef<string | null>(null)
   const snapshotRef     = useRef<HTMLCanvasElement | null>(null)
   const transitionStart = useRef<number | null>(null)
+  const transitionCutsRef = useRef(transitionCuts)
+  transitionCutsRef.current = transitionCuts
+  // The two sections of a transition, each drawn whole off screen, then blended onto the canvas
+  const trCanvases = useRef<[HTMLCanvasElement, HTMLCanvasElement] | null>(null)
 
   // Caption refs — updated synchronously at render time (same pattern as above)
   const captionStyleRef  = useRef(captionStyle)
@@ -1547,7 +1638,8 @@ export function OutputCanvas({
           // Detect segment boundary — snapshot MUST be captured before paintSegment
           // overwrites the canvas with new-segment content.
           if (newId !== prevSegIdRef.current && prevSegIdRef.current !== null) {
-            const skip = hardCutsRef.current || (skipTransitionRef?.current ?? false)
+            // (with the clip's own transitions known, a section change is a cut unless it has one)
+            const skip = hardCutsRef.current || transitionCutsRef.current !== undefined || (skipTransitionRef?.current ?? false)
             if (skipTransitionRef) skipTransitionRef.current = false
             if (!skip) {
               if (!snapshotRef.current) snapshotRef.current = document.createElement('canvas')
@@ -1574,7 +1666,26 @@ export function OutputCanvas({
           frameMediaRef.current?.sync(seg, clipRelativeMs, !video.paused, video)
           // A B-roll shot whose video is still seeking keeps the last frame (never flashes the main video)
           const other = sourceForRef.current?.(seg)
-          if (seg?.hidden) {
+          // Inside a transition: the section before the join and the one after it, both drawn,
+          // blended by how far through it is
+          const tc = transitionCutsRef.current?.find(c => c.ms > 0 && clipMsNow >= c.at - c.ms / 2 && clipMsNow < c.at + c.ms / 2)
+          const segA = tc && segmentAtRef.current ? segmentAtRef.current(Math.max(0, tc.at - 1)) : null
+          const segB = tc && segmentAtRef.current ? segmentAtRef.current(tc.at) : null
+          if (tc && segA && segB && segA.id !== segB.id) {
+            if (!trCanvases.current) trCanvases.current = [document.createElement('canvas'), document.createElement('canvas')]
+            const [ca, cb] = trCanvases.current
+            for (const c of [ca, cb]) if (c.width !== canvas.width || c.height !== canvas.height) { c.width = canvas.width; c.height = canvas.height }
+            const slots = slotSourceForRef.current ? (sg: SegmentLocal, box: SegmentLocal['crop_boxes'][number]) => slotSourceForRef.current!(sg, box) : null
+            const paint = (c: HTMLCanvasElement, sg: SegmentLocal, t: number) => {
+              const cx = c.getContext('2d')!
+              const src = sourceForRef.current?.(sg)
+              if (sg.hidden) { cx.fillStyle = '#000'; cx.fillRect(0, 0, c.width, c.height); return }
+              if (!src || src.readyState >= 2) paintSegment(cx, src ?? video, sg, t, getPositionAtRef.current, frameMediaRef.current, slots)
+            }
+            paint(ca, segA, Math.min(clipMsNow, tc.at - 1))
+            paint(cb, segB, Math.max(clipMsNow, tc.at))
+            drawTransition(ctx, ca, cb, (clipMsNow - (tc.at - tc.ms / 2)) / tc.ms, tc.type)
+          } else if (seg?.hidden) {
             // The main video hidden here (shownSegment): black, as in the export; captions and text still go on top
             ctx.fillStyle = '#000'
             ctx.fillRect(0, 0, canvas.width, canvas.height)
@@ -1600,7 +1711,13 @@ export function OutputCanvas({
           // Draw captions on top of the video frame
           if (showCaptionsRef.current && captionChunksRef.current.length > 0) {
             const captionLookupMs = liveMs - (captionStyleRef.current?.timing_offset_ms ?? 0)
-            drawCaptions(ctx, captionChunksRef.current, captionLookupMs, captionStyleRef.current ?? {}, captionCaseRef.current, captionBandAt(seg, clipRelativeMs))
+            capOut.current.rect = null
+            drawCaptions(ctx, captionChunksRef.current, captionLookupMs, captionStyleRef.current ?? {}, captionCaseRef.current, captionBandAt(seg, clipRelativeMs), capOut.current)
+            const r = capOut.current.rect as CaptionRect | null, last = capSent.current, now = performance.now()
+            if (r && now - last.at > 100 && (!last.rect || Math.abs(r.x - last.rect.x) + Math.abs(r.y - last.rect.y) + Math.abs(r.w - last.rect.w) + Math.abs(r.h - last.rect.h) > 0.006)) {
+              capSent.current = { rect: r, at: now }
+              setCapRect(r)
+            }
           }
 
           // Draw text overlays (clip-relative time)
@@ -1750,11 +1867,14 @@ export function OutputCanvas({
           onEndEdit={() => { setEditingTextId(null); onEditTextDone?.() }}
         />
       ))}
-      {/* Caption position drag handle */}
+      {/* The captions' box: drag to move them up or down, the corners to make them bigger or smaller */}
       {showCaptions && onCaptionPositionChange && (
-        <CaptionDragHandle
+        <CaptionBox
+          rect={capRect}
           position_y={captionStyle?.position_y ?? 0.84}
-          onChange={onCaptionPositionChange}
+          size={captionStyle?.size ?? 52}
+          onMove={onCaptionPositionChange}
+          onSize={onCaptionSizeChange}
         />
       )}
     </div>
@@ -2093,44 +2213,122 @@ function OverlayBox({ overlay, isActive, onChange, onSelect, onDelete }: Overlay
   )
 }
 
-// ── CaptionDragHandle — drag to set caption vertical position ────────────────
+// ── CaptionBox — the captions on the preview: moved and resized like a text ────
 
-function CaptionDragHandle({ position_y, onChange }: { position_y: number; onChange: (y: number) => void }) {
+/** The caption sizes the Size slider allows (CaptionStyler) */
+const CAPTION_SIZE_MIN = 20, CAPTION_SIZE_MAX = 100
+
+/**
+ * A box round the captions where they are drawn (`rect`, from the canvas). Pointed at: a faint
+ * outline; clicked: picked, with a lime outline and a handle at each corner. Dragging the box
+ * moves the captions up or down (they always stay centred left to right, as the export draws
+ * them), snapping to the middle; dragging a corner makes them bigger or smaller (the Size slider).
+ */
+function CaptionBox({ rect, position_y, size, onMove, onSize }: {
+  rect: CaptionRect | null
+  position_y: number
+  size: number
+  onMove: (y: number) => void
+  onSize?: (size: number) => void
+}) {
   const ref = useRef<HTMLDivElement>(null)
+  const setGuides = useContext(GuideContext)
+  const [picked, setPicked] = useState(false)
+  const [moving, setMoving] = useState(false)
 
-  function startDrag(e: React.MouseEvent) {
+  // A click anywhere else lets go of it
+  useEffect(() => {
+    if (!picked) return
+    const away = (e: MouseEvent) => { if (!ref.current?.contains(e.target as Node)) setPicked(false) }
+    window.addEventListener('mousedown', away, true)
+    return () => window.removeEventListener('mousedown', away, true)
+  }, [picked])
+
+  const area = () => ref.current?.parentElement?.getBoundingClientRect() ?? null
+
+  function startMove(e: React.MouseEvent) {
     e.stopPropagation()
-    const sy = e.clientY
-    const oy = position_y
+    e.preventDefault()
+    setPicked(true)
+    setMoving(true)
+    const sy = e.clientY, oy = position_y
     function move(ev: MouseEvent) {
-      const h = ref.current?.parentElement?.getBoundingClientRect().height ?? 1
-      onChange(Math.max(0.05, Math.min(0.98, oy + (ev.clientY - sy) / h)))
+      const r = area()
+      if (!r) return
+      let y = Math.max(0.05, Math.min(0.95, oy + (ev.clientY - sy) / r.height))
+      const [cy, onH] = snapTo(y, 0.5)
+      if (onH) y = cy
+      setGuides(onH ? { h: 0.5 } : null)
+      onMove(y)
+    }
+    function up() {
+      window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up)
+      setGuides(null); setMoving(false)
+    }
+    window.addEventListener('mousemove', move)
+    window.addEventListener('mouseup', up)
+  }
+
+  /** A corner dragged: the size follows how far the pointer is from the captions' middle */
+  function startSize(e: React.MouseEvent) {
+    e.stopPropagation()
+    e.preventDefault()
+    if (!onSize) return
+    const r = area()
+    if (!r) return
+    const cx = r.left + r.width / 2
+    const d0 = Math.max(8, Math.abs(e.clientX - cx))
+    const s0 = size
+    function move(ev: MouseEvent) {
+      const d = Math.max(4, Math.abs(ev.clientX - cx))
+      onSize!(Math.max(CAPTION_SIZE_MIN, Math.min(CAPTION_SIZE_MAX, Math.round(s0 * d / d0))))
     }
     function up() { window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up) }
     window.addEventListener('mousemove', move)
     window.addEventListener('mouseup', up)
   }
 
+  // Where the captions are; before any have been drawn, about where they will be
+  const r = rect ?? { x: 0.1, w: 0.8, h: (size / 1080) * (9 / 16) * 1.4, y: position_y - (size / 1080) * (9 / 16) * 0.7 }
+  // (while dragged, it follows the pointer at once; the canvas catches up a frame later)
+  const midY = moving || !rect ? position_y : r.y + r.h / 2
+  const PAD = 1.2   // % of the preview round the words
+  const accent = '#c8ff00'
+  const corner = (pos: React.CSSProperties, cursor: string): React.CSSProperties => ({
+    position: 'absolute', width: 10, height: 10, background: accent, border: '2px solid #111', borderRadius: 3, cursor, ...pos,
+  })
+
   return (
     <div
       ref={ref}
-      onMouseDown={startDrag}
-      title="Drag to reposition captions"
+      onMouseDown={startMove}
+      onClick={e => e.stopPropagation()}
+      title="Captions: drag to move them, drag a corner to resize"
+      className="cap-box"
+      data-picked={picked || undefined}
       style={{
         position: 'absolute',
-        left: 0,
-        right: 0,
-        top: `${position_y * 100}%`,
-        transform: 'translateY(-50%)',
-        height: 40,
-        cursor: 'ns-resize',
-        userSelect: 'none',
+        left: `${(r.x * 100) - PAD}%`, width: `${r.w * 100 + PAD * 2}%`,
+        top: `${(midY - r.h / 2) * 100 - PAD / 2}%`, height: `${r.h * 100 + PAD}%`,
+        minHeight: 18,
+        cursor: 'move', userSelect: 'none',
+        borderRadius: 4,
+        border: `1.5px solid ${picked ? accent : 'transparent'}`,
+        background: picked ? 'rgba(200,255,0,0.1)' : 'transparent',
         // Above frame layout's own draggable boxes (main video: 18, row divider: 25) so their
-        // drag handlers don't steal clicks meant for repositioning captions
+        // drag handlers don't steal clicks meant for the captions
         zIndex: 30,
-        background: 'transparent',
       }}
-    />
+    >
+      {picked && onSize && (
+        <>
+          <div onMouseDown={startSize} style={corner({ left: -6, top: -6 }, 'nwse-resize')} aria-label="Resize the captions" />
+          <div onMouseDown={startSize} style={corner({ right: -6, top: -6 }, 'nesw-resize')} aria-label="Resize the captions" />
+          <div onMouseDown={startSize} style={corner({ left: -6, bottom: -6 }, 'nesw-resize')} aria-label="Resize the captions" />
+          <div onMouseDown={startSize} style={corner({ right: -6, bottom: -6 }, 'nwse-resize')} aria-label="Resize the captions" />
+        </>
+      )}
+    </div>
   )
 }
 

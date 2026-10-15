@@ -908,6 +908,85 @@ body {
 }
 .cap-tile-name { font-size: 11.5px; font-weight: 500; text-align: center; color: rgb(var(--ed-fg) / 0.6); }
 .cap-tile[data-on] .cap-tile-name { color: #fff; font-weight: 600; }
+/* ── Transitions tool (components/editor/TransitionsPanel.tsx) ── a card per join of the clip,
+   with tiles for the kinds of transition. A tile's little screen shows the outgoing picture (dark)
+   giving way to the incoming one (light) the way that transition does; it plays on the picked tile
+   and the one pointed at. */
+.tr-join {
+  display: flex; flex-direction: column; gap: 10px; padding: 12px; border-radius: 14px;
+  background: rgb(var(--ed-fg) / 0.03); box-shadow: inset 0 0 0 1px rgb(var(--ed-fg) / 0.07);
+}
+.tr-join[data-near] { box-shadow: inset 0 0 0 1px rgb(var(--ed-fg) / 0.16); }
+.tr-join-num {
+  flex-shrink: 0; width: 22px; height: 22px; border-radius: 7px; display: grid; place-items: center;
+  font-size: 11px; font-weight: 800; color: rgb(var(--ed-fg) / 0.75); background: rgb(var(--ed-fg) / 0.08);
+}
+.tr-join-title { font-size: 12.5px; font-weight: 700; color: var(--ed-text); line-height: 1.2; }
+.tr-join-sub { font-size: 11px; color: rgb(var(--ed-fg) / 0.5); line-height: 1.3; }
+.tr-play {
+  flex-shrink: 0; display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 0 10px; border-radius: 8px;
+  font-size: 11px; font-weight: 600; color: rgb(var(--ed-fg) / 0.8); box-shadow: inset 0 0 0 1px rgb(var(--ed-fg) / 0.14);
+  transition: background-color .15s, color .15s;
+}
+.tr-play:hover { color: var(--ed-text); background: rgb(var(--ed-fg) / 0.07); }
+.tr-tile { display: flex; flex-direction: column; gap: 5px; padding: 4px 4px 6px; border-radius: 11px; background: rgb(var(--ed-fg) / 0.03); box-shadow: inset 0 0 0 1px rgb(var(--ed-fg) / 0.07); transition: background-color .15s, box-shadow .15s, transform .12s; }
+.tr-tile:hover { background: rgb(var(--ed-fg) / 0.06); }
+.tr-tile:active { transform: scale(.96); }
+.tr-tile[data-on] { background: rgba(200,255,0,0.06); box-shadow: inset 0 0 0 1.5px #c8ff00; }
+.tr-tile:focus-visible { outline: 2px solid rgba(200,255,0,0.6); outline-offset: 1px; }
+.tr-name { font-size: 11px; font-weight: 500; text-align: center; color: rgb(var(--ed-fg) / 0.6); }
+.tr-tile[data-on] .tr-name { color: var(--ed-text); font-weight: 600; }
+.tr-range { width: 100%; accent-color: #c8ff00; }
+.tr-all { align-self: flex-start; font-size: 11.5px; font-weight: 600; color: rgb(var(--ed-fg) / 0.7); text-decoration: underline; text-underline-offset: 3px; }
+.tr-all:hover { color: var(--ed-text); }
+.tr-empty { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 28px 22px; text-align: center; }
+.tr-empty-icon { width: 44px; height: 44px; border-radius: 13px; display: grid; place-items: center; color: rgb(var(--ed-fg) / 0.6); background: rgb(var(--ed-fg) / 0.06); }
+.tr-empty-title { font-size: 13px; font-weight: 700; color: var(--ed-text); }
+.tr-empty-text { font-size: 12px; line-height: 1.5; color: rgb(var(--ed-fg) / 0.5); }
+
+/* the little screen: A (outgoing) and B (incoming); a loop = hold A, change, hold B */
+.tr-demo { position: relative; display: block; height: 34px; border-radius: 7px; overflow: hidden; background: #000; }
+.tr-demo i { position: absolute; inset: 0; border-radius: inherit; }
+.tr-a { background: linear-gradient(135deg, #4a4a52, #26262b); }
+.tr-b { background: linear-gradient(135deg, #f4f4f5, #b8b8c0); opacity: 0; }
+.tr-demo[data-kind="fadewhite"] { background: #fff; }
+/* (a still, before the loop starts: the incoming picture half in, so each tile already reads as its kind) */
+.tr-demo[data-kind="slideleft"] .tr-b { opacity: 1; transform: translateX(55%); }
+.tr-demo[data-kind="slideleft"] .tr-a { transform: translateX(-45%); }
+.tr-demo[data-kind="slideup"] .tr-b { opacity: 1; transform: translateY(55%); }
+.tr-demo[data-kind="slideup"] .tr-a { transform: translateY(-45%); }
+.tr-demo[data-kind="wipe"] .tr-b { opacity: 1; clip-path: inset(0 0 0 55%); }
+.tr-demo[data-kind="circleopen"] .tr-b { opacity: 1; clip-path: circle(28% at 50% 50%); }
+.tr-demo[data-kind="fade"] .tr-b, .tr-demo[data-kind="zoomin"] .tr-b { opacity: .5; }
+.tr-demo[data-kind="zoomin"] .tr-a { transform: scale(1.3); }
+.tr-demo[data-kind="fadeblack"] .tr-a, .tr-demo[data-kind="fadewhite"] .tr-a { opacity: .45; }
+/* the loop: on the picked tile and the one pointed at */
+:is(.tr-tile[data-on], .tr-tile:hover) .tr-demo i { animation-duration: 2.2s; animation-iteration-count: infinite; animation-timing-function: ease-in-out; }
+:is(.tr-tile[data-on], .tr-tile:hover) .tr-demo[data-kind="cut"] .tr-b { animation-name: tr-cut; animation-timing-function: steps(1, end); }
+:is(.tr-tile[data-on], .tr-tile:hover) .tr-demo[data-kind="fade"] .tr-b { animation-name: tr-in; }
+:is(.tr-tile[data-on], .tr-tile:hover) .tr-demo:is([data-kind="fadeblack"], [data-kind="fadewhite"]) .tr-a { animation-name: tr-dip-out; }
+:is(.tr-tile[data-on], .tr-tile:hover) .tr-demo:is([data-kind="fadeblack"], [data-kind="fadewhite"]) .tr-b { animation-name: tr-dip-in; }
+:is(.tr-tile[data-on], .tr-tile:hover) .tr-demo[data-kind="slideleft"] .tr-a { animation-name: tr-slide-a; }
+:is(.tr-tile[data-on], .tr-tile:hover) .tr-demo[data-kind="slideleft"] .tr-b { animation-name: tr-slide-b; }
+:is(.tr-tile[data-on], .tr-tile:hover) .tr-demo[data-kind="slideup"] .tr-a { animation-name: tr-up-a; }
+:is(.tr-tile[data-on], .tr-tile:hover) .tr-demo[data-kind="slideup"] .tr-b { animation-name: tr-up-b; }
+:is(.tr-tile[data-on], .tr-tile:hover) .tr-demo[data-kind="wipe"] .tr-b { animation-name: tr-wipe; }
+:is(.tr-tile[data-on], .tr-tile:hover) .tr-demo[data-kind="zoomin"] .tr-a { animation-name: tr-zoom-a; }
+:is(.tr-tile[data-on], .tr-tile:hover) .tr-demo[data-kind="zoomin"] .tr-b { animation-name: tr-in; }
+:is(.tr-tile[data-on], .tr-tile:hover) .tr-demo[data-kind="circleopen"] .tr-b { animation-name: tr-circle; }
+@keyframes tr-cut { 0%, 49% { opacity: 0; } 50%, 100% { opacity: 1; } }
+@keyframes tr-in { 0%, 30% { opacity: 0; } 62%, 100% { opacity: 1; } }
+@keyframes tr-dip-out { 0%, 25% { opacity: 1; } 45%, 100% { opacity: 0; } }
+@keyframes tr-dip-in { 0%, 48% { opacity: 0; } 68%, 100% { opacity: 1; } }
+@keyframes tr-slide-a { 0%, 30% { transform: none; } 62%, 100% { transform: translateX(-100%); } }
+@keyframes tr-slide-b { 0%, 30% { opacity: 1; transform: translateX(100%); } 62%, 100% { opacity: 1; transform: none; } }
+@keyframes tr-up-a { 0%, 30% { transform: none; } 62%, 100% { transform: translateY(-100%); } }
+@keyframes tr-up-b { 0%, 30% { opacity: 1; transform: translateY(100%); } 62%, 100% { opacity: 1; transform: none; } }
+@keyframes tr-wipe { 0%, 30% { opacity: 1; clip-path: inset(0 0 0 100%); } 62%, 100% { opacity: 1; clip-path: inset(0 0 0 0); } }
+@keyframes tr-zoom-a { 0%, 30% { transform: none; opacity: 1; } 62%, 100% { transform: scale(1.7); opacity: 0; } }
+@keyframes tr-circle { 0%, 30% { opacity: 1; clip-path: circle(0% at 50% 50%); } 62%, 100% { opacity: 1; clip-path: circle(75% at 50% 50%); } }
+@media (prefers-reduced-motion: reduce) { .tr-tile .tr-demo i { animation: none !important; } }
+
 /* Colour swatches */
 .cap-swatch {
   width: 26px; height: 26px; border-radius: 50%; flex-shrink: 0;

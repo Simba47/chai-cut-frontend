@@ -532,8 +532,13 @@ interface Props {
   /** The music bar selected for Trim / Delete (it gets a white ring), and clicking a bar selects it */
   selectedMusicId?: string | null
   onSelectMusic?: (id: string) => void
-  /** A sub timeline's icon (or its empty row): add that kind of media at the playhead */
-  onAddKind?: (kind: 'video' | 'broll' | 'photo' | 'music' | 'text') => void
+  /**
+   * A sub timeline's icon (or its empty row): add that kind of media at the playhead. From a "+"
+   * on a join of the strip: `atMs` is that join (timeline ms).
+   */
+  onAddKind?: (kind: 'video' | 'broll' | 'photo' | 'music' | 'text', atMs?: number) => void
+  /** Where a removed part of the clip closed up (timeline ms): each gets a "+" like a join between sections */
+  cutJoins?: number[]
   /** A video on top that is stock footage (B-roll): it sits on the B-roll lane; the others (the user's own videos) on the Video lane */
   isStock?: (seg: SegmentLocal) => boolean
   /**
@@ -621,6 +626,7 @@ export function SegmentTimeline({
   onZoomChange,
   onDeleteSegment,
   onAddKind,
+  cutJoins,
   isStock,
   onDropFiles,
   onDropStock,
@@ -702,6 +708,8 @@ export function SegmentTimeline({
   const [brollGhost, setBrollGhost] = useState<{ id: string; start: number; end: number } | null>(null)
   // The + at the top of the lane column: its menu (where the button is on screen), or closed
   const [addMenu, setAddMenu] = useState<DOMRect | null>(null)
+  // The menu opened from a "+" on a join of the strip: the join's time (null: from the lane column's +, the playhead)
+  const [addAt, setAddAt] = useState<number | null>(null)
   useEffect(() => {
     if (!addMenu) return
     const close = (e: KeyboardEvent) => { if (e.key === 'Escape') setAddMenu(null) }
@@ -1632,21 +1640,23 @@ export function SegmentTimeline({
         {/* + : add a video, B-roll, photo, music or text at the playhead (beside the ruler) */}
         {onAddKind && (
           <>
-            <button type="button" onClick={e => { const r = e.currentTarget.getBoundingClientRect(); setAddMenu(m => (m ? null : r)) }}
-              aria-haspopup="menu" aria-expanded={!!addMenu} aria-label="Add media at the playhead" title="Add media at the playhead"
+            <button type="button" onClick={e => { const r = e.currentTarget.getBoundingClientRect(); const open = !!addMenu && addAt === null; setAddAt(null); setAddMenu(open ? null : r) }}
+              aria-haspopup="menu" aria-expanded={!!addMenu && addAt === null} aria-label="Add media at the playhead" title="Add media at the playhead"
               className="absolute flex items-center justify-center rounded-lg transition-transform active:scale-95"
               style={{ top: 2, left: 4, width: 32, height: 26, background: ACCENT, color: '#000', boxShadow: '0 2px 8px rgba(200,255,0,0.25)' }}>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" aria-hidden="true">
-                <path d={addMenu ? 'M6 6l12 12M18 6L6 18' : 'M12 5v14M5 12h14'} />
+                <path d={addMenu && addAt === null ? 'M6 6l12 12M18 6L6 18' : 'M12 5v14M5 12h14'} />
               </svg>
             </button>
             {addMenu && (
               <>
                 <div className="fixed inset-0" style={{ zIndex: 90 }} onClick={() => setAddMenu(null)} aria-hidden="true" />
-                <div role="menu" aria-label="Add at the playhead" className="fixed flex flex-col py-1.5 rounded-xl"
-                  style={{ zIndex: 91, left: addMenu.left, top: Math.min(addMenu.bottom + 6, window.innerHeight - 214), minWidth: 168, background: 'var(--ed-popover, var(--ed-panel))', border: '1px solid rgb(var(--ed-fg) / 0.14)', boxShadow: '0 12px 32px rgba(0,0,0,0.55)' }}>
+                <div role="menu" aria-label={addAt === null ? 'Add at the playhead' : `Add at ${msToLabel(addAt)}`} className="fixed flex flex-col py-1.5 rounded-xl"
+                  // (under its button when there's room, else above it: the timeline sits low on the screen)
+                  style={{ zIndex: 91, left: Math.min(addMenu.left, window.innerWidth - 176),
+                    ...(addMenu.bottom + 6 + 200 <= window.innerHeight ? { top: addMenu.bottom + 6 } : { bottom: window.innerHeight - addMenu.top + 6 }), minWidth: 168, background: 'var(--ed-popover, var(--ed-panel))', border: '1px solid rgb(var(--ed-fg) / 0.14)', boxShadow: '0 12px 32px rgba(0,0,0,0.55)' }}>
                   {ADD_KINDS.map(({ kind, label }) => (
-                    <button key={kind} type="button" role="menuitem" onClick={() => { setAddMenu(null); onAddKind(kind) }}
+                    <button key={kind} type="button" role="menuitem" onClick={() => { setAddMenu(null); onAddKind(kind, addAt ?? undefined); setAddAt(null) }}
                       className="flex items-center gap-2.5 px-3 py-1.5 text-[12.5px] font-medium text-left transition-colors hover:bg-[rgb(var(--ed-fg)/0.07)]"
                       style={{ color: 'var(--ed-text)' }}>
                       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke={MEDIA_COLORS[kind]} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{LANE_META[kind].icon}</svg>
@@ -1995,6 +2005,32 @@ export function SegmentTimeline({
                 </span>
               )
             })}
+
+            {/* A "+" on every join of the strip — where two sections meet, and where a removed part
+                closed up — sitting on the strip's bottom edge (clear of the trim grips at the seam):
+                it opens the add menu for that very moment, so something can go in between */}
+            {onAddKind && !dragging && !clipDrag && (() => {
+              const raw = [...junctions.map(j => j.left.end_ms), ...(cutJoins ?? [])]
+                .map(t => Math.round(t)).filter(t => t > 50 && t < duration - 50).sort((a, b) => a - b)
+              const seams = raw.filter((t, i) => i === 0 || t - raw[i - 1] > 30)
+              return seams.map(t => {
+                const open = !!addMenu && addAt === t
+                return (
+                  <button key={`seam-${t}`} type="button"
+                    onClick={e => { e.stopPropagation(); const r = e.currentTarget.getBoundingClientRect(); setAddAt(open ? null : t); setAddMenu(open ? null : r) }}
+                    onPointerDown={e => e.stopPropagation()}
+                    aria-haspopup="menu" aria-expanded={open}
+                    aria-label={`Add media between the parts at ${msToLabel(t)}`} title={`Add here · ${msToLabel(t)}`}
+                    className="tl-seam-add absolute grid place-items-center"
+                    data-open={open || undefined}
+                    style={{ left: `${at(t)}%`, top: STRIP_TOP + STRIP_H, zIndex: 38 }}>
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3.4" strokeLinecap="round" aria-hidden="true">
+                      <path d={open ? 'M6 6l12 12M18 6L6 18' : 'M12 5v14M5 12h14'} />
+                    </svg>
+                  </button>
+                )
+              })
+            })()}
 
             {/* A section about to go (its join dragged onto the next one): red, with what releasing does */}
             {doomed && (

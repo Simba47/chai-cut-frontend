@@ -54,9 +54,10 @@ import { frameSlotSize } from '@/modules/editor/frames'
 import { getBoxPositionAtLerp } from '@/lib/interpolation'
 import { SubjectsPanel, type SubjectItem, type AnglesView } from '@/components/editor/SubjectsPanel'
 import { angleRows, angleAt, type Angle } from '@/modules/editor/angles'
-import type { SegmentLocal, CropBoxLocal, FrameLayout, FrameLane, FrameItem } from '@chai-cut/shared'
+import type { SegmentLocal, CropBoxLocal, FrameLayout, FrameLane, FrameItem, TransitionType } from '@chai-cut/shared'
+import { TransitionsPanel, type TransitionJoin } from '@/components/editor/TransitionsPanel'
 
-type Tool = 'format' | 'subjects' | 'frames' | 'captions' | 'text' | 'media' | 'music' | 'cleanup' | 'post'
+type Tool = 'format' | 'subjects' | 'frames' | 'captions' | 'transitions' | 'text' | 'media' | 'music' | 'cleanup' | 'post'
 /** Media: the user's imported media, or Library (stock footage) */
 type MediaFilter = 'all' | 'video' | 'audio' | 'image'
 type SaveState = 'idle' | 'saving' | 'saved' | 'error' | 'retrying'
@@ -94,9 +95,11 @@ const PLATFORM_OPTIONS: { id: Platform; label: string; icon: React.ReactNode }[]
 // Options sidebar width (px)
 const OPTIONS_W = 272
 const PREVIEW_W = 360
-// The editing panel (timeline) opens this tall: room for the strip and the media lanes under it
-// (dragging the line above the play bar changes it for that visit; a double-click puts this back)
-const TIMELINE_DEFAULT_H = '35vh'
+// The editing panel (timeline) opens just as tall as what is on it — the ruler, the clip's strip
+// and any media lanes — so a clip with nothing added leaves the room to the video. It grows as
+// lanes are added, up to this, then its lanes scroll (dragging the line above the play bar sets a
+// height for that visit; a double-click goes back to fitting)
+const TIMELINE_MAX_H = '35vh'
 // How wide the side columns can be dragged
 const OPTIONS_RANGE: [number, number] = [220, 520]
 const PREVIEW_RANGE: [number, number] = [260, 620]
@@ -124,6 +127,11 @@ const TOOLS: { id: Tool; label: string; title: string; hint: string; icon: React
     id: 'captions', label: 'Captions', title: 'Captions',
     hint: 'Auto-generated from the audio. Style changes show on the preview straight away.',
     icon: <><rect x="2.5" y="5" width="19" height="14" rx="3" stroke="currentColor" strokeWidth="1.8" fill="none" /><path d="M10 10.2a2.2 2.2 0 100 3.6M17 10.2a2.2 2.2 0 100 3.6" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" fill="none" /></>,
+  },
+  {
+    id: 'transitions', label: 'Transition', title: 'Transitions',
+    hint: 'How one part of the clip gives way to the next: a dissolve, a slide, a wipe… Pick one for each join; it plays in the preview and the export.',
+    icon: <><rect x="2.5" y="5" width="8" height="14" rx="2" stroke="currentColor" strokeWidth="1.8" fill="none" /><rect x="13.5" y="5" width="8" height="14" rx="2" stroke="currentColor" strokeWidth="1.8" fill="none" strokeDasharray="2.4 2" /><path d="M8.5 12h7M13.5 9.5L16 12l-2.5 2.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" fill="none" /></>,
   },
   {
     id: 'text', label: 'Text', title: 'Text',
@@ -463,6 +471,39 @@ export function EditorShell({
   const sections = useMemo(() => segments.filter(s => !isShot(s, mainVideoId)), [segments, mainVideoId])
   const shots = useMemo(() => segments.filter(s => isShot(s, mainVideoId)).sort((a, b) => a.start_ms - b.start_ms), [segments, mainVideoId])
   const playParts = useMemo(() => flattenShots(segments, mainVideoId), [segments, mainVideoId])
+
+  // ── Transitions: where one section of the main strip ends exactly where the next begins ──
+  const transitionJoins = useMemo<TransitionJoin[]>(() => {
+    const byTime = [...sections].sort((a, b) => a.start_ms - b.start_ms)
+    const name = (sg: SegmentLocal) => isFrameLayout(sg.layout) ? `Frame · ${FRAME_TEMPLATES[sg.layout].name}` : LAYOUTS.find(l => l.id === sg.layout)?.label ?? sg.layout
+    const out: TransitionJoin[] = []
+    for (let i = 0; i + 1 < byTime.length; i++) {
+      const a = byTime[i], b = byTime[i + 1]
+      if (Math.abs(b.start_ms - a.end_ms) <= 1) out.push({ afterId: a.id, at: a.end_ms, from: name(a), to: name(b) })
+    }
+    return out
+  }, [sections])
+  /** What the preview plays at each join that has a transition (timeline ms) */
+  const transitionCuts = useMemo(() => transitionJoins.flatMap(j => {
+    const tr = transitions.find(t => t.after_segment_id === j.afterId)
+    return tr && tr.type !== 'cut' ? [{ at: j.at, ms: tr.duration_ms ?? 500, type: tr.type }] : []
+  }), [transitionJoins, transitions])
+  /** A join's transition picked (or its length changed): 'cut' takes it away */
+  function setTransitionAt(afterId: string, type: TransitionType, durationMs: number) {
+    setTransitions(prev => {
+      const rest = prev.filter(t => t.after_segment_id !== afterId)
+      if (type === 'cut') return rest
+      const had = prev.find(t => t.after_segment_id === afterId)
+      return [...rest, { id: had?.id ?? crypto.randomUUID(), clip_id: clip.id, after_segment_id: afterId, type, duration_ms: Math.round(durationMs) }]
+    })
+  }
+  /** "Preview" on a join: the preview opens and plays the clip from a moment before it */
+  function previewJoin(at: number, durationMs: number) {
+    pause()
+    togglePreview(true)
+    seekToMs(Math.max(0, at - durationMs / 2 - 900))
+    setTimeout(() => togglePlay(), 150)
+  }
   const brollSource = useBrollSources(videoRef, clip.start_ms, id => videoLibraryRef.current[id]?.url, mainVideoId, videoToTimeline)
   // Borrowed reaction slots (Make my clips): the clip's own video from another moment, per slot
   const borrowed = useBorrowedSlots(videoRef, clip.start_ms, mainVideoId, videoUrl, videoToTimeline)
@@ -3803,6 +3844,11 @@ export function EditorShell({
               )
             })()}
 
+            {tool === 'transitions' && (
+              <TransitionsPanel joins={transitionJoins} transitions={transitions} currentTimeMs={currentTimeMs}
+                onSet={setTransitionAt} onPreview={previewJoin} />
+            )}
+
             {tool === 'text' && (
               <>
               <FrameTextPanel
@@ -4051,7 +4097,7 @@ export function EditorShell({
                   )}
                 </div>
               ) : (
-                <OutputCanvas live segmentAt={viewAt}
+                <OutputCanvas live segmentAt={viewAt} transitionCuts={transitionCuts}
                   videoRef={videoRef} currentTimeMs={currentTimeMs} clipStartMs={clip.start_ms} videoToTimeline={videoToTimeline}
                   activeSegment={viewSegment} getPositionAt={viewGetPositionAt} sourceFor={brollSource} slotSourceFor={borrowed.slotSourceFor}
                   skipTransitionRef={skipCanvasTransitionRef} words={displayWords}
@@ -4062,6 +4108,7 @@ export function EditorShell({
                   onTextOverlayChange={(id, u) => { if (!blocked({ kind: 'text', id })) updateTextOverlay(id, u) }} onSelectTextOverlay={id => { if (id) pickText(id, false); else setActiveTextOverlayId(null) }}
                   editTextOverlayId={previewOpen ? editTextId : null} onEditTextDone={() => setEditTextId(null)} onDeleteTextOverlay={askDeleteTextOverlay}
                   onCaptionPositionChange={y => updateCaptionStyle({ position_y: y })}
+                  onCaptionSizeChange={size => updateCaptionStyle({ size })}
                   frameMedia={framePool}
                   onFrameLaneClick={focusLane}
                   activeFrameItemId={activeFrameItemId}
@@ -4236,7 +4283,7 @@ export function EditorShell({
       {/* Timeline (hidden with "Hide timeline") */}
       {/* (it doesn't scroll as a whole: the ruler and the main video stay, the tracks under them scroll) */}
       <div ref={timelineRef} data-tour="timeline" data-layout-panel="Editing panel" hidden={timelineHidden} className="shrink-0 flex flex-col overflow-hidden px-4 pt-3 pb-4"
-        style={{ height: timelineH ?? TIMELINE_DEFAULT_H, background: 'var(--ed-track)', borderTop: '1px solid rgb(var(--ed-fg) / 0.06)', borderRadius: '0 0 11px 11px' }}>
+        style={{ ...(timelineH != null ? { height: timelineH } : { maxHeight: TIMELINE_MAX_H }), background: 'var(--ed-track)', borderTop: '1px solid rgb(var(--ed-fg) / 0.06)', borderRadius: '0 0 11px 11px' }}>
         <SegmentTimeline
           selectedMusicId={pickedMusicId} onSelectMusic={id => pickMusicTrack(id, doubleTap(`m${id}`))}
           photos={overlays.filter(o => o.type === 'image').map(o => ({ id: o.id, start_ms: o.start_ms, end_ms: o.end_ms, url: o.preview_url, hidden: o.hidden, locked: isLocked({ kind: 'photo', id: o.id }), track: o.track }))}
@@ -4257,7 +4304,9 @@ export function EditorShell({
             const len = t.end_ms != null ? t.end_ms - t.start_ms : null
             return { ...t, start_ms: startMs, ...(len != null ? { end_ms: startMs + len } : {}) }
           }))}
-          onAddKind={kind => addMediaAt(kind, Math.round(currentTimeMs))}
+          // (a "+" on a join of the strip adds at that join; the lane column's + at the playhead)
+          onAddKind={(kind, atMs) => addMediaAt(kind, Math.round(atMs ?? currentTimeMs))}
+          cutJoins={trim.starts.slice(1)}
           zoom={timelineZoom} onZoomChange={setTimelineZoom} showToolbar={false}
           segments={segments} mainVideoId={mainVideoId} isStock={isStockShot} clipStartMs={clip.start_ms} clipEndMs={clip.end_ms}
           onDropFiles={dropFiles} onDropStock={dropStock} onDropMedia={dropMedia}
