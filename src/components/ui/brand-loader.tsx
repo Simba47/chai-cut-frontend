@@ -52,8 +52,9 @@ export function BrandLoaderScreen({ label, overlay = false, mascot = false }: { 
       <div className="bls-grid" aria-hidden="true" />
       <div className="bls-glow" aria-hidden="true" />
       {mascot ? (
-        // (the plain mark shows until the mascot's picture has loaded)
-        <div className="bls-mascot"><PandaLoader scene={mascot === true ? 'editor' : mascot} fallback={<BrandLoader size={52} />} /></div>
+        // (nothing in its place until the panda's picture has loaded — not the plain mark: a mark
+        // that then turns into the panda looked like two loaders — the panda fades in on its own)
+        <div className="bls-mascot"><PandaLoader scene={mascot === true ? 'editor' : mascot} /></div>
       ) : (
         <div className="bls-center">
           <BrandLoader size={52} />

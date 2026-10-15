@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { MASCOT, MASCOT_WALK, type MascotScene } from '@/components/ui/mascot'
 
 /**
@@ -17,22 +17,43 @@ import { MASCOT, MASCOT_WALK, type MascotScene } from '@/components/ui/mascot'
  *
  * Nothing shows until the pictures have loaded (the effects alone, around an empty space, look
  * broken): `fallback` is shown meanwhile, and the scene fades in over it, its animations starting
- * together. Positions are % of the scene, so it scales to any width.
+ * together. Pictures already downloaded (the usual case: pages that lead to a loader fetch them
+ * ahead, and one loader often hands over to the next) show at once, with no fade.
+ * Positions are % of the scene, so it scales to any width.
+ *
+ * A loader in the page as the server sends it (a refresh, a page's loading screen) switches itself
+ * on: a few lines of script inside it (READY_SCRIPT) mark it ready the moment its pictures arrive,
+ * long before the page's own code has started — otherwise the text showed alone until then.
  */
+
+/**
+ * Runs where it stands, as the page arrives: marks its loader ready (and with no fade, if the
+ * pictures were already there) once every picture in it has loaded. Handed over as HTML in a hidden
+ * span (READY_HTML), not as a <script> element: React warns about one of those when it builds the
+ * loader in the browser (moving between pages), where it would never run anyway — the component's
+ * own code switches the loader on there.
+ */
+const READY_SCRIPT = `(function(){var s=document.currentScript,p=s&&s.closest('.pl');if(!p)return;var im=p.querySelectorAll('img'),n=im.length,c=0,now=true;function one(){if(++c>=n){if(now)p.setAttribute('data-instant','');p.setAttribute('data-ready','')}}for(var i=0;i<n;i++){if(im[i].complete&&im[i].naturalWidth)one();else im[i].addEventListener('load',one,{once:true})}now=false})()`
+const READY_HTML = `<script>${READY_SCRIPT}</script>`
 export function PandaLoader({ scene = 'editor', width, fallback }: { scene?: MascotScene; width?: number; fallback?: ReactNode }) {
   const walk = scene === 'clipboard'
   const need = walk ? 3 : 1
   const [loaded, setLoaded] = useState(0)
+  // The pictures were already there when it appeared: shown at once, no fade
+  const [instant, setInstant] = useState(false)
   const box = useRef<HTMLDivElement>(null)
-  // (pictures already in the cache have loaded before React listens for them)
-  useEffect(() => {
+  // (pictures already in the cache have loaded before React listens for them: checked before the
+  // first paint, so the panda is there in the very first frame)
+  useLayoutEffect(() => {
     const done = [...(box.current?.querySelectorAll('img') ?? [])].filter(im => im.complete && im.naturalWidth > 0).length
+    if (done >= need) setInstant(true)
     setLoaded(n => Math.max(n, done))
-  }, [])
+  }, [need])
   const ready = loaded >= need
   const one = () => setLoaded(n => n + 1)
   return (
-    <div ref={box} className="pl" data-scene={scene} data-ready={ready || undefined} role="img" style={{ width: width ?? (walk ? 330 : 400) }}
+    // (suppressHydrationWarning: READY_SCRIPT may have marked it ready before the page's code took over)
+    <div ref={box} className="pl" data-scene={scene} data-ready={ready || undefined} data-instant={instant || undefined} role="img" suppressHydrationWarning style={{ width: width ?? (walk ? 330 : 400) }}
       aria-label={walk ? 'The Shortcut panda walks along, working out the best moments of your video' : 'The Shortcut panda relaxes while its laptop makes your clips'}>
       {fallback && <div className="pl-fallback" aria-hidden={ready || undefined}>{fallback}</div>}
       {walk ? (
@@ -72,7 +93,7 @@ export function PandaLoader({ scene = 'editor', width, fallback }: { scene?: Mas
             ))}
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img className="pl-art" src={MASCOT.src} width={MASCOT.w} height={MASCOT.h} alt="" draggable={false}
-              decoding="async" fetchPriority="high" onLoad={one} />
+              fetchPriority="high" onLoad={one} />
             {/* the lid: a lime glow on the mark, and a light sweeping across */}
             <span className="pl-lid" aria-hidden="true"><i /></span>
             <span className="pl-markglow" aria-hidden="true" />
@@ -85,6 +106,7 @@ export function PandaLoader({ scene = 'editor', width, fallback }: { scene?: Mas
           </div>
         </div>
       )}
+      <span hidden dangerouslySetInnerHTML={{ __html: READY_HTML }} />
     </div>
   )
 }

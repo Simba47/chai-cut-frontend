@@ -961,7 +961,9 @@ body {
 .pl { position: relative; max-width: 86vw; font-size: clamp(11px, 1.15vw, 15px); user-select: none; }
 /* Until the picture has loaded only the fallback (the plain mark) shows: the effects alone, round
    an empty space, look broken. Then the whole scene fades in, its animations starting together. */
-.pl-scene { position: absolute; inset: 0; opacity: 0; transform: translateY(10px) scale(.97); transition: opacity .5s ease, transform .7s cubic-bezier(.2,.9,.3,1); }
+.pl-scene { position: absolute; inset: 0; opacity: 0; transform: translateY(6px) scale(.985); transition: opacity .25s ease, transform .4s cubic-bezier(.2,.9,.3,1); }
+/* (pictures already there when it appeared: no fade at all) */
+.pl[data-instant] .pl-scene, .pl[data-instant] .pl-fallback { transition: none; }
 .pl[data-ready] .pl-scene { opacity: 1; transform: none; }
 .pl:not([data-ready]) .pl-scene, .pl:not([data-ready]) .pl-scene * { animation-play-state: paused !important; }
 .pl-fallback { position: absolute; inset: 0; display: grid; place-items: center; transition: opacity .35s ease; }
