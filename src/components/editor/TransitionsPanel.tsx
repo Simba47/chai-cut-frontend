@@ -11,6 +11,8 @@ export interface TransitionJoin {
   /** The two formats, as names ("Vertical", "Split screen") */
   from: string
   to: string
+  /** Both sides are one continuous shot framed the same (an edge-only change won't show) */
+  sameShot?: boolean
 }
 
 /**
@@ -45,6 +47,14 @@ function fmt(ms: number) {
   return `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`
 }
 const nameOf = (t: TransitionType) => TRANSITION_KINDS.find(k => k.type === t)?.name ?? 'None'
+/**
+ * Kinds that only blend or uncover the new picture in place: between two (almost) identical
+ * pictures — one continuous shot split in two, framed the same — they look like a plain cut,
+ * in the preview and in the export alike (measured). The moving ones (slides, Whip, Zoom,
+ * the flashes, Blur, Pixelate) still show there.
+ */
+const NEEDS_CHANGE: TransitionType[] = ['fade', 'wipe', 'circleopen', 'radial']
+const SAME_SHOT_TIP = 'Dissolve, Wipe, Circle and Clock look like a plain cut there. Pick a slide, Whip, Zoom, Flash, Blur or Pixelate — or change the framing of one side.'
 
 /**
  * The Transitions tool, one set of controls for the whole clip:
@@ -58,7 +68,7 @@ const nameOf = (t: TransitionType) => TRANSITION_KINDS.find(k => k.type === t)?.
  * With no joins yet the tiles still show: picking one splits the clip at the playhead and puts
  * that transition on the new join (onAddHere).
  */
-export function TransitionsPanel({ joins, transitions, currentTimeMs, canAddHere, onAddHere, onSet, onPreview, onSeek }: {
+export function TransitionsPanel({ joins, transitions, currentTimeMs, canAddHere, onAddHere, onSet, onPreview, onSeek, savedAsDissolve }: {
   joins: TransitionJoin[]
   transitions: Transition[]
   currentTimeMs: number
@@ -71,6 +81,8 @@ export function TransitionsPanel({ joins, transitions, currentTimeMs, canAddHere
   onPreview: (at: number, durationMs: number) => void
   /** Move the playhead (to a cut picked in "Apply to") */
   onSeek?: (ms: number) => void
+  /** The last save kept newer kinds as Dissolve: the database doesn't take them until the backend restarts */
+  savedAsDissolve?: boolean
 }) {
   // What the controls apply to: every cut, or one (its section id)
   const [scope, setScope] = useState<'all' | string>('all')
@@ -93,8 +105,9 @@ export function TransitionsPanel({ joins, transitions, currentTimeMs, canAddHere
             </p>
           </div>
         </div>
-        <KindTiles picked={null} label="Add a transition at the playhead" disabled={!canAddHere}
+        <KindTiles picked={null} label="Add a transition at the playhead" disabled={!canAddHere} weak
           onPick={t => { if (t !== 'cut') onAddHere(t) }} />
+        {canAddHere && <span className="tr-hint">This splits one shot in two, framed the same on both sides: {SAME_SHOT_TIP}</span>}
       </div>
     )
   }
@@ -114,6 +127,10 @@ export function TransitionsPanel({ joins, transitions, currentTimeMs, canAddHere
 
   function apply(type: TransitionType, len = ms) {
     for (const j of targets) onSet(j.afterId, type, len)
+    // (and it plays through the cut — the one picked, or the nearest — so what was picked is seen)
+    if (type === 'cut') return
+    const near = one ?? [...targets].sort((a, b) => Math.abs(a.at - currentTimeMs) - Math.abs(b.at - currentTimeMs))[0]
+    if (near) onPreview(near.at, len)
   }
 
   return (
@@ -140,7 +157,18 @@ export function TransitionsPanel({ joins, transitions, currentTimeMs, canAddHere
         )}
       </div>
 
-      <KindTiles picked={picked} label={one ? `Transition at ${fmt(one.at)}` : 'Transition on every cut'} onPick={t => apply(t)} />
+      <KindTiles picked={picked} label={one ? `Transition at ${fmt(one.at)}` : 'Transition on every cut'} onPick={t => apply(t)}
+        weak={targets.every(j => j.sameShot)} />
+      {targets.some(j => j.sameShot) && (
+        <span className="tr-hint" data-tone="warn">
+          {targets.every(j => j.sameShot) ? 'Both sides of this cut are the same shot, framed the same: ' : 'Some cuts have the same shot on both sides, framed the same: '}{SAME_SHOT_TIP}
+        </span>
+      )}
+      {savedAsDissolve && (
+        <span className="tr-hint" data-tone="warn">
+          The database doesn&apos;t take the newer transitions yet, so they were saved as Dissolve. Restart the backend once (it updates the database), then pick them again.
+        </span>
+      )}
 
       {anyOn && (
         <div className="flex flex-col gap-1">
@@ -173,17 +201,20 @@ export function TransitionsPanel({ joins, transitions, currentTimeMs, canAddHere
 }
 
 /** The tiles of every kind; `picked` is lit */
-function KindTiles({ picked, label, disabled, onPick }: {
+function KindTiles({ picked, label, disabled, weak, onPick }: {
   picked: TransitionType | null
   label: string
   disabled?: boolean
+  /** Both sides are the same shot: the kinds that won't show there are marked */
+  weak?: boolean
   onPick: (type: TransitionType) => void
 }) {
   return (
     <div className="grid grid-cols-3 gap-1.5" role="radiogroup" aria-label={label}>
       {TRANSITION_KINDS.map(k => (
         <button key={k.type} type="button" role="radio" aria-checked={picked === k.type} disabled={disabled}
-          className="tr-tile" data-on={picked === k.type || undefined}
+          className="tr-tile" data-on={picked === k.type || undefined} data-weak={(weak && NEEDS_CHANGE.includes(k.type)) || undefined}
+          title={weak && NEEDS_CHANGE.includes(k.type) ? `${k.name} barely shows between two parts of the same shot` : undefined}
           onClick={() => onPick(k.type)}>
           <span className="tr-demo" data-kind={k.type} aria-hidden="true"><i className="tr-a" /><i className="tr-b" /></span>
           <span className="tr-name">{k.name}</span>

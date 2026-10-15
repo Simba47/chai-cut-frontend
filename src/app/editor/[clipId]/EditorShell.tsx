@@ -524,13 +524,25 @@ export function EditorShell({
   const transitionJoins = useMemo<TransitionJoin[]>(() => {
     const byTime = [...sections].sort((a, b) => a.start_ms - b.start_ms)
     const name = (sg: SegmentLocal) => isFrameLayout(sg.layout) ? `Frame · ${FRAME_TEMPLATES[sg.layout].name}` : LAYOUTS.find(l => l.id === sg.layout)?.label ?? sg.layout
+    // Both sides one continuous shot, framed the same: the main video carrying straight on, the same
+    // layout and every slot where it was — a blend of two (almost) identical pictures
+    const toVideo = (t: number) => (timelineToVideo ? timelineToVideo(t) : clip.start_ms + t)
+    const own = (sg: SegmentLocal) => sg.crop_boxes.every(bx => !bx.source_video_id || bx.source_video_id === mainVideoId)
+    const sameShot = (a: SegmentLocal, b: SegmentLocal, at: number) => {
+      if (a.layout !== b.layout || isFrameLayout(a.layout) || !own(a) || !own(b) || a.crop_boxes.length !== b.crop_boxes.length) return false
+      if (Math.abs(toVideo(at) - toVideo(at - 1) - 1) > 80) return false
+      return a.crop_boxes.every((bx, k) => {
+        const p = getPositionAt(bx.id, at - 1), q = getPositionAt(b.crop_boxes[k].id, at)
+        return Math.abs(p.x - q.x) + Math.abs(p.y - q.y) + Math.abs(p.w - q.w) + Math.abs(p.h - q.h) < 0.04
+      })
+    }
     const out: TransitionJoin[] = []
     for (let i = 0; i + 1 < byTime.length; i++) {
       const a = byTime[i], b = byTime[i + 1]
-      if (Math.abs(b.start_ms - a.end_ms) <= 1) out.push({ afterId: a.id, at: a.end_ms, from: name(a), to: name(b) })
+      if (Math.abs(b.start_ms - a.end_ms) <= 1) out.push({ afterId: a.id, at: a.end_ms, from: name(a), to: name(b), sameShot: sameShot(a, b, a.end_ms) })
     }
     return out
-  }, [sections])
+  }, [sections, keyframes, timelineToVideo, mainVideoId, clip.start_ms]) // eslint-disable-line react-hooks/exhaustive-deps
   /** What the preview plays at each join that has a transition (timeline ms) */
   const transitionCuts = useMemo(() => transitionJoins.flatMap(j => {
     const tr = transitions.find(t => t.after_segment_id === j.afterId)
@@ -558,15 +570,28 @@ export function EditorShell({
     skipCanvasTransitionRef.current = true
     if (!splitAtMs(seg.id, currentTimeMs, getPositionAt)) return
     setTransitionAt(seg.id, type, TRANSITION_DEFAULT_MS)
+    // (and it plays at once, so what was picked is seen)
+    previewJoin(currentTimeMs, TRANSITION_DEFAULT_MS)
   }
-  /** "Preview" on a join: the preview opens and plays the clip from a moment before it */
+  /**
+   * "Preview" on a join: the preview opens and plays the clip from a moment before it. It waits a
+   * moment first, so the preview has the transition's held frames ready (OutputCanvas stills).
+   */
+  const previewTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   function previewJoin(at: number, durationMs: number) {
     pause()
     togglePreview(true)
-    seekToMs(Math.max(0, at - durationMs / 2 - 900))
-    setTimeout(() => togglePlay(), 150)
+    seekToMs(Math.max(0, at - durationMs / 2 - 1200))
+    if (previewTimer.current) clearTimeout(previewTimer.current)
+    previewTimer.current = setTimeout(() => { previewTimer.current = null; if (!usePlayerStore.getState().playing) togglePlay() }, 500)
   }
-  const brollSource = useBrollSources(videoRef, clip.start_ms, id => videoLibraryRef.current[id]?.url, mainVideoId, videoToTimeline)
+  // (with videos put in between, the clip's clock runs the added videos: the main video waits during one)
+  const brollSource = useBrollSources(videoRef, clip.start_ms, id => videoLibraryRef.current[id]?.url, mainVideoId, videoToTimeline,
+    hasInserts ? () => ({ ms: liveTime.get(), playing: usePlayerStore.getState().playing }) : undefined)
+  heldPlayedRef.current = id => {
+    const seg = useEditorStore.getState().segments.find(s => s.id === id)
+    return seg ? brollSource.playedMs(seg) : null
+  }
   // Borrowed reaction slots (Make my clips): the clip's own video from another moment, per slot
   const borrowed = useBorrowedSlots(videoRef, clip.start_ms, mainVideoId, videoUrl, videoToTimeline)
   const [pendingBrollMs, setPendingBrollMs] = useState<number | null>(null)
@@ -587,6 +612,8 @@ export function EditorShell({
   const [renderStuckSince, setRenderStuckSince] = useState<number | null>(clip.status === 'rendering' ? Date.now() : null)
   const [renderElapsed, setRenderElapsed] = useState(0)
   const [saveState, setSaveState] = useState<SaveState>('idle')
+  /** The last save had to keep newer transitions as a Dissolve (the database doesn't take them yet) */
+  const [trAsDissolve, setTrAsDissolve] = useState(false)
   const [motionMode, setMotionMode] = useState(false)
   const [timelineZoom, setTimelineZoom] = useState(1)
   const [timelineHidden, setTimelineHidden] = useState(false)
@@ -1166,6 +1193,7 @@ export function EditorShell({
         const msg = await res.json().then(j => j.error, () => null)
         throw Object.assign(new Error(msg ?? 'Save failed'), { status: res.status })
       }
+      setTrAsDissolve(await res.json().then(j => (j?.transitionsAsDissolve ?? 0) > 0, () => false))
       // Only clear "unsaved" if nothing changed while this save was in flight
       if (editVersionRef.current === version) unsavedRef.current = false
       retryDelayRef.current = 2000
@@ -4337,7 +4365,7 @@ export function EditorShell({
             {tool === 'transitions' && (
               <TransitionsPanel joins={transitionJoins} transitions={transitions} currentTimeMs={currentTimeMs}
                 canAddHere={canAddTransitionAt(activeSegment, currentTimeMs)} onAddHere={addTransitionHere}
-                onSet={setTransitionAt} onPreview={previewJoin} onSeek={ms => { pause(); seekToMs(ms) }} />
+                onSet={setTransitionAt} onPreview={previewJoin} onSeek={ms => { pause(); seekToMs(ms) }} savedAsDissolve={trAsDissolve} />
             )}
 
             {tool === 'text' && (

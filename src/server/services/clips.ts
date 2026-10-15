@@ -166,6 +166,11 @@ export async function saveClip(userId: string, clipId: string, body: SaveClipInp
   const original = body.originalSound
   const hasOriginal = !!original && typeof original.volume === 'number' && await hasColumn('clips', 'original_volume')
 
+  // Transitions the database can't take yet (before the backend widens its check): saved as a
+  // Dissolve, and the editor is told how many, so it can say so
+  const keepsKind = (type: string) => allTransitionKinds || type === 'cut' || type === 'fade' || type === 'wipe'
+  const asDissolve = transitions.filter(t => segIds.includes(t.after_segment_id) && !keepsKind(t.type)).length
+
   // Every statement is built up front and pipelined in one transaction: the database is far
   // from the server (~300–500 ms per round trip), and awaiting each statement made saves take
   // 10–20 s, long enough for the next auto-save to overlap and collide with this one.
@@ -284,7 +289,7 @@ export async function saveClip(userId: string, clipId: string, body: SaveClipInp
     if (liveTransitions.length > 0) {
       q.push(tx`INSERT INTO transitions ${tx(liveTransitions.map(({ id, after_segment_id, type, duration_ms }) => ({
         id, clip_id: clipId, after_segment_id,
-        type: allTransitionKinds || type === 'cut' || type === 'fade' || type === 'wipe' ? type : 'fade',
+        type: keepsKind(type) ? type : 'fade',
         duration_ms: ms(duration_ms),
       })))}`)
     }
@@ -302,6 +307,7 @@ export async function saveClip(userId: string, clipId: string, body: SaveClipInp
 
     return q
   })
+  return { transitionsAsDissolve: asDissolve }
 }
 
 /**
