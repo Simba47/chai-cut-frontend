@@ -1,9 +1,9 @@
 'use client'
 
+import { preloadMascot } from '@/components/ui/mascot'
 import './dashboard.css'
 import { useState, useEffect, useRef, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
-import Link from 'next/link'
 import type { Video } from '@chai-cut/shared'
 import { ACCEPTED_VIDEO_EXTENSIONS } from '@chai-cut/shared'
 import { Breadcrumbs } from '@/components/ui/breadcrumbs'
@@ -44,6 +44,10 @@ function useDismiss(open: boolean, close: () => void) {
 }
 
 export default function DashboardPage() {
+  // (the clip board's and the editing board's loaders have the mascot: their pictures are
+  // fetched now, so they show at once — the dashboard is where people come from)
+  preloadMascot('clipboard')
+  preloadMascot('editor')
   const router = useRouter()
   const [videos, setVideos] = useState<DashVideo[]>([])
   const [loading, setLoading] = useState(true)
@@ -61,7 +65,9 @@ export default function DashboardPage() {
   const dragDepth = useRef(0)
   // Resumable upload straight to storage (see useVideoUpload); problems before it starts
   // (wrong type, too big, plan full) show in uploadError
-  const upload = useVideoUpload(videoId => router.push(`/videos/${videoId}`))
+  // "Make clips" (and an upload that has finished) first asks how: AI edit or manual edit
+  const [choosing, setChoosing] = useState<{ id: string; title: string; videoUrl?: string | null; durationMs?: number | null } | null>(null)
+  const upload = useVideoUpload(videoId => setChoosing({ id: videoId, title: 'your video' }))
   const uploading = upload.state.phase === 'uploading' || upload.state.phase === 'finishing'
   const [uploadError, setUploadError] = useState<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -335,6 +341,7 @@ export default function DashboardPage() {
                 onToggle={() => toggleSelected(video.id)}
                 onRename={t => renameVideo(video.id, t)}
                 onDelete={() => setPendingDelete([{ video, title }])}
+                onOpen={() => setChoosing({ id: video.id, title, videoUrl: video.video_url, durationMs: video.duration_ms })}
               />
             ))}
           </div>
@@ -375,6 +382,11 @@ export default function DashboardPage() {
           onFile={f => { setChooserOpen(false); startUpload(f) }}
           onImported={() => { setChooserOpen(false); fetchVideos(); fetchPlan() }}
         />
+      )}
+
+      {choosing && (
+        <EditModeDialog title={choosing.title} videoUrl={choosing.videoUrl} durationMs={choosing.durationMs} onClose={() => setChoosing(null)}
+          onPick={mode => router.push(`/videos/${choosing.id}?start=${mode}`)} />
       )}
 
       {pendingDelete && pendingDelete.length > 0 && (
@@ -471,9 +483,11 @@ function SortMenu({ value, onChange }: { value: SortKey; onChange: (v: SortKey) 
   )
 }
 
-function VideoCard({ video, title, selecting, selected, onToggle, onRename, onDelete }: {
+function VideoCard({ video, title, selecting, selected, onToggle, onRename, onDelete, onOpen }: {
   video: DashVideo
   title: string
+  /** "Make clips": asks AI edit or manual edit, then opens the clip board */
+  onOpen: () => void
   /** Select mode: the whole card toggles its tick; rename, delete and "Make clips" step aside */
   selecting: boolean
   selected: boolean
@@ -640,9 +654,9 @@ function VideoCard({ video, title, selecting, selected, onToggle, onRename, onDe
         </div>
         {/* The only way into the clip picker, so a stray click on the card doesn't navigate */}
         {ready && !selecting && (
-          <Link href={`/videos/${video.id}`} className="vcard-open fill-btn fill-btn-sm" aria-label={`Make clips from ${title}`}>
+          <button type="button" onClick={onOpen} className="vcard-open fill-btn fill-btn-sm" aria-haspopup="dialog" aria-label={`Make clips from ${title}`}>
             <FillButtonContent icon="scissors">Make clips</FillButtonContent>
-          </Link>
+          </button>
         )}
       </div>
     </div>
@@ -854,6 +868,116 @@ function DeleteDialog({ items, onClose, onDeleted }: {
             {deleting ? <><span className="dash-spinner" /> Deleting</> : one ? 'Delete' : `Delete ${items.length} videos`}
           </button>
         </div>
+      </div>
+    </div>
+  )
+}
+
+/**
+ * Before the clip board: how the user wants to make clips. AI edit — AI finds the best moments
+ * and makes the clips; Manual edit — they pick the moments themselves. Either opens the clip board
+ * (its loading screen first), which points at the matching tools (?start=ai | manual).
+ * The header shows which video (its first frame, length and name). Each option is a card with a
+ * small moving picture of how it works (styles: .emd-* in dashboard.css): AI's strip has the
+ * best moments light up one after another; Manual's has a stretch held between two handles with
+ * the playhead running through it. Esc, the ✕ or a click outside closes it (the video stays).
+ */
+function EditModeDialog({ title, videoUrl, durationMs, onClose, onPick }: {
+  title: string
+  videoUrl?: string | null
+  durationMs?: number | null
+  onClose: () => void
+  onPick: (mode: 'ai' | 'manual') => void
+}) {
+  const [picked, setPicked] = useState<'ai' | 'manual' | null>(null)
+  const [thumbOk, setThumbOk] = useState(false)
+  useEffect(() => {
+    const esc = (e: KeyboardEvent) => { if (e.key === 'Escape' && !picked) onClose() }
+    window.addEventListener('keydown', esc)
+    return () => window.removeEventListener('keydown', esc)
+  }, [onClose, picked])
+  const pick = (mode: 'ai' | 'manual') => { if (picked) return; setPicked(mode); onPick(mode) }
+  const options = [
+    {
+      mode: 'ai' as const, name: 'AI edit', tag: 'Recommended', cta: 'Start with AI',
+      desc: 'AI watches your video and turns its best moments into ready-to-post clips.',
+      points: ['Best moments found for you', 'Captions and titles added', 'Ready in a few minutes'],
+    },
+    {
+      mode: 'manual' as const, name: 'Manual edit', tag: 'Full control', cta: 'Pick my moments',
+      desc: 'Play through the video and choose exactly where each clip starts and ends.',
+      points: ['Scrub to any moment', 'Set each start and end', 'Fine-tune in the editor'],
+    },
+  ]
+  // The strip's sound wave in the pictures: fixed heights (%), so it looks the same every time
+  const wave = [38, 62, 45, 80, 55, 30, 68, 90, 52, 40, 74, 58, 35, 64, 86, 48, 60, 42, 70, 50, 33, 66, 78, 44]
+  return (
+    <div className="dash-modal-backdrop" onClick={() => { if (!picked) onClose() }}>
+      <div className="dash-modal emd" role="dialog" aria-modal="true" aria-labelledby="emd-title" aria-describedby="emd-sub" onClick={e => e.stopPropagation()}>
+        <div className="emd-head">
+          <div className="emd-thumb" aria-hidden="true">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><rect x="2" y="4" width="20" height="16" rx="3" stroke="currentColor" strokeWidth="1.6" /><path d="M10 9v6l5-3-5-3z" fill="currentColor" /></svg>
+            {videoUrl && (
+              <video src={`${videoUrl}#t=1`} preload="metadata" muted playsInline disablePictureInPicture
+                onLoadedData={() => setThumbOk(true)} style={{ opacity: thumbOk ? 1 : 0 }} />
+            )}
+            {!!durationMs && <span className="emd-thumb-len">{formatDuration(durationMs)}</span>}
+          </div>
+          <div className="emd-head-text">
+            <h2 id="emd-title">How do you want to make clips?</h2>
+            <p id="emd-sub" className="emd-sub">From <b title={title}>{title}</b></p>
+          </div>
+          <button type="button" className="emd-close" onClick={onClose} disabled={!!picked} aria-label="Close">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
+          </button>
+        </div>
+
+        <div className="emd-options">
+          {options.map((o, i) => (
+            <button key={o.mode} type="button" className="emd-card" data-kind={o.mode} data-picked={picked === o.mode || undefined}
+              disabled={!!picked && picked !== o.mode} onClick={() => pick(o.mode)} autoFocus={i === 0}>
+              {/* How it works, as a picture: the video's strip, its sound wave, and what happens on it */}
+              <span className="emd-art" aria-hidden="true">
+                <span className="emd-strip">
+                  {wave.map((h, j) => <i key={j} style={{ height: `${h}%` }} />)}
+                  {o.mode === 'ai' ? (
+                    <>
+                      <b className="emd-pick" style={{ left: '8%', width: '17%' }} />
+                      <b className="emd-pick" style={{ left: '41%', width: '14%', animationDelay: '.35s' }} />
+                      <b className="emd-pick" style={{ left: '70%', width: '19%', animationDelay: '.7s' }} />
+                      <svg className="emd-spark" width="18" height="18" viewBox="0 0 24 24"><path d="M12 3l1.9 5.6L19.5 10.5l-5.6 1.9L12 18l-1.9-5.6L4.5 10.5l5.6-1.9z" fill="currentColor" /></svg>
+                    </>
+                  ) : (
+                    <>
+                      <b className="emd-range" />
+                      <b className="emd-handle" data-side="in" />
+                      <b className="emd-handle" data-side="out" />
+                      <b className="emd-playhead" />
+                    </>
+                  )}
+                </span>
+              </span>
+              <span className="emd-body">
+                <span className="emd-name">{o.name}<span className="emd-tag">{o.tag}</span></span>
+                <span className="emd-desc">{o.desc}</span>
+                <span className="emd-points">
+                  {o.points.map(p => (
+                    <span key={p}>
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5" /></svg>
+                      {p}
+                    </span>
+                  ))}
+                </span>
+              </span>
+              <span className="emd-cta">
+                {picked === o.mode ? <><span className="dash-spinner" />Opening…</> : <>{o.cta}
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6" /></svg></>}
+              </span>
+            </button>
+          ))}
+        </div>
+
+        <p className="emd-foot">Not sure? Either way opens the clip board, where both are there, so you can switch any time.</p>
       </div>
     </div>
   )

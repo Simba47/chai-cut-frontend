@@ -1,7 +1,10 @@
 'use client'
 
+import { preloadMascot } from '@/components/ui/mascot'
 import { InfoTip } from '@/components/ui/info-tip'
 import { useFrameAt } from '@/modules/clips/thumbs'
+import { ScrubPlayer } from '@/components/clips/ScrubPlayer'
+import { useLocalVideo } from '@/modules/clips/localVideo'
 import { useState, useRef, useEffect, useCallback, useSyncExternalStore } from 'react'
 import { useRouter } from 'next/navigation'
 import { Breadcrumbs } from '@/components/ui/breadcrumbs'
@@ -104,21 +107,34 @@ type AutoOption = 'captions' | 'title' | 'motion' | 'layouts'
 const AUTO_OPTIONS: Array<{ id: AutoOption; label: string; tip: string }> = [
   { id: 'captions', label: 'Captions', tip: 'Word-by-word captions at the bottom' },
   { id: 'title', label: 'Title', tip: 'A short hook as a title over the first 3 seconds' },
-  { id: 'motion', label: 'Motion', tip: 'The frame follows people as they move. Off: it holds still in each shot' },
-  { id: 'layouts', label: 'Cuts (split, trio)', tip: 'Split and trio when 2 or more people are in the shot. Off: always vertical, on one person' },
+  { id: 'motion', label: 'Follow people', tip: 'The frame follows people as they move. Off: it holds still in each shot' },
+  { id: 'layouts', label: 'Split screen', tip: 'Split and trio when 2 or more people are in the shot. Off: always vertical, on one person' },
 ]
+// Each option's little picture (a 16 × 16 drawing): what it does, in one glance. The marked parts
+// (mmc-i-*) move when the tile is hovered or just ticked (styles: .mmc-opt in globals.css).
+const AUTO_ICONS: Record<AutoOption, React.ReactNode> = {
+  // two lines of words, the one being spoken lit up
+  captions: <><path d="M2 5.5h7M11 5.5h3M2 10.5h3" /><path className="mmc-i-word" d="M7 10.5h7" strokeWidth="2.8" /></>,
+  // a headline letter over a line of text
+  title: <><path className="mmc-i-head" d="M4 3.5h8M8 3.5v6.5" strokeWidth="2.2" /><path d="M4.5 13h7" opacity=".55" /></>,
+  // a viewfinder keeping up with someone
+  motion: <><path className="mmc-i-frame" d="M2 5V3.5A1.5 1.5 0 0 1 3.5 2H5M11 2h1.5A1.5 1.5 0 0 1 14 3.5V5M14 11v1.5a1.5 1.5 0 0 1-1.5 1.5H11M5 14H3.5A1.5 1.5 0 0 1 2 12.5V11" /><circle className="mmc-i-dot" cx="8" cy="8" r="2" fill="currentColor" stroke="none" /></>,
+  // a vertical frame cut in two
+  layouts: <><rect x="3.5" y="2" width="9" height="12" rx="2" /><path className="mmc-i-cut" d="M3.5 8h9" /></>,
+}
 const AUTO_OPTIONS_KEY = 'clipboard.makeOptions'
 // What the captions and the title are written in (speech in an Indian language; English speech stays English)
 type CaptionLanguage = 'native' | 'roman'
 type TitleLanguage = 'roman' | 'english' | 'native'
+// (each choice shows the same word written that way: an example says it faster than a name)
 const CAPTION_LANGUAGES: Array<{ id: CaptionLanguage; label: string }> = [
-  { id: 'native', label: 'Original script (తెలుగు, हिंदी)' },
-  { id: 'roman', label: 'English letters (Tenglish, Hinglish…)' },
+  { id: 'native', label: 'Native letters · నమస్తే, नमस्ते' },
+  { id: 'roman', label: 'English letters · Namaste' },
 ]
 const TITLE_LANGUAGES: Array<{ id: TitleLanguage; label: string }> = [
-  { id: 'roman', label: 'English letters (Tenglish, Hinglish…)' },
-  { id: 'english', label: 'English' },
-  { id: 'native', label: 'Original script (తెలుగు, हिंदी)' },
+  { id: 'roman', label: 'English letters · Namaste' },
+  { id: 'english', label: 'English · Hello' },
+  { id: 'native', label: 'Native letters · నమస్తే, नमस्ते' },
 ]
 const AUTO_LANGUAGE_KEY = 'clipboard.makeLanguages'
 
@@ -128,6 +144,12 @@ const AUTO_MAX = 10
 interface Props {
   video: VideoData
   videoUrl: string
+  /** The file's storage path: the whole video is downloaded once and kept under it (modules/clips/localVideo.ts) */
+  videoKey?: string | null
+  /** The video has no editing copy yet: ask the worker for one (page.tsx) */
+  needsProxy?: boolean
+  /** Picked on the dashboard: AI edit or manual edit — that part of the clip board is pointed at on arrival */
+  startWith?: 'ai' | 'manual'
   savedClips: SavedClip[]
 }
 
@@ -191,7 +213,15 @@ const stageLabel = (pct: number) =>
 
 // ── main component ─────────────────────────────────────────────────────────────
 
-export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: Props) {
+export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, videoKey, needsProxy, startWith, savedClips }: Props) {
+  // (the loader shown when a clip is opened has the mascot: its picture is fetched now)
+  preloadMascot()
+  // The whole video is downloaded once (modules/clips/localVideo.ts), then the player and the clip
+  // previews play it from the computer: no waiting on the network when playing from or dragging
+  // to any moment. Until it is all here, the link streams as before. (The thumbnails keep the
+  // link: their frames are already grabbed, and switching would grab them all again.)
+  const playUrl = useLocalVideo(signedUrl, videoKey)
+  const videoUrl = signedUrl
   const router = useRouter()
   const videoRef = useRef<HTMLVideoElement>(null)
 
@@ -767,6 +797,29 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: P
   // The second AI card: Ask AI or Best moments (one at a time, switched at its top)
   const [aiPane, setAiPane] = useState<'ask' | 'best'>('ask')
 
+  // A video from before editing copies were made: ask the worker for one, so dragging along it is
+  // quick from the next visit (until then the original plays)
+  useEffect(() => {
+    if (needsProxy) fetch(`/api/videos/${initialVideo.id}/proxy`, { method: 'POST' }).catch(() => {})
+  }, [needsProxy, initialVideo.id])
+
+  // Arrived from the dashboard's "AI edit / Manual edit" choice: that part of the clip board (the
+  // Make my clips card, or New clip under the video) is scrolled into view and glows for a moment.
+  // The choice then leaves the address, so a refresh doesn't point again.
+  useEffect(() => {
+    if (!startWith) return
+    const t = setTimeout(() => {
+      const el = document.querySelector<HTMLElement>(`[data-start-target="${startWith}"]`)
+      if (el) {
+        el.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+        el.setAttribute('data-start-glow', '')
+        setTimeout(() => el.removeAttribute('data-start-glow'), 2600)
+      }
+      window.history.replaceState(window.history.state, '', window.location.pathname)
+    }, 350)
+    return () => clearTimeout(t)
+  }, [startWith])
+
   const wide = useWide()
   // Clip previews are 9:16; the video keeps its own shape
   // The frame takes the video's own proportions once it loads, so it fits exactly (no empty bars)
@@ -779,17 +832,31 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: P
   }, [videoUrl])
   const frameRatio = viewMode === 'preview' ? 9 / 16 : ratio
 
+  // The video's link stopped working (it expires; the network dropped): a fresh one is fetched
+  // (the page reloads its data) and the video carries on from the same moment. At most once a
+  // minute, so a video that is really gone doesn't reload forever.
+  const resumeAt = useRef<number | null>(null)
+  const lastRelink = useRef(0)
+  function relink(v: HTMLVideoElement) {
+    if (Date.now() - lastRelink.current < 60_000) return
+    lastRelink.current = Date.now()
+    resumeAt.current = v.currentTime
+    router.refresh()
+  }
+
   // ── The player (or its processing / failed state) ──
   const player = isReady && videoUrl ? (
-    <video
-      ref={videoRef}
-      src={videoUrl}
-      controls
-      className="w-full h-full object-contain"
-      onLoadedMetadata={e => { const v = e.currentTarget; if (v.videoWidth && v.videoHeight) setRatio(v.videoWidth / v.videoHeight) }}
-      onTimeUpdate={e => setNowMs(e.currentTarget.currentTime * 1000)}
-      onSeeked={e => setNowMs(e.currentTarget.currentTime * 1000)}
-    />
+    // Our own controls (components/clips/ScrubPlayer.tsx): dragging along the video shows each
+    // moment at once and never piles up jumps, however heavy the file is
+    <ScrubPlayer src={playUrl} videoRef={videoRef} durationMs={initialVideo.duration_ms}
+      loadKey={videoKey || signedUrl}
+      onTime={setNowMs}
+      onMeta={v => {
+        if (v.videoWidth && v.videoHeight) setRatio(v.videoWidth / v.videoHeight)
+        // (a fresh link after the old one stopped working: back to where the video was)
+        if (resumeAt.current !== null) { v.currentTime = resumeAt.current; resumeAt.current = null }
+      }}
+      onError={relink} />
   ) : (
     <div className="flex flex-col items-center gap-4 px-10 text-center">
       {video.status === 'failed' ? (
@@ -819,7 +886,7 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: P
   const previewPane = (
     <div className="w-full h-full flex items-center justify-center">
       {momentPreview ? (
-        <ClipPlayer key={`m-${momentPreview.s.id}`} videoUrl={videoUrl} mainVideoId={video.id}
+        <ClipPlayer key={`m-${momentPreview.s.id}`} videoUrl={playUrl} mainVideoId={video.id}
           startMs={momentPreview.s.start_ms} endMs={momentPreview.s.end_ms}
           segments={previewSegments([], momentPreview.s.end_ms - momentPreview.s.start_ms, ratio)}
           words={[]} captionStyle={null} textOverlays={[]} />
@@ -830,7 +897,7 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: P
       ) : 'error' in previewData ? (
         <p className="text-sm px-6 text-center" style={{ color: '#f87171' }}>{previewData.error}</p>
       ) : (
-        <ClipPlayer key={previewData.id} videoUrl={videoUrl} mainVideoId={previewData.video_id} stockUrls={previewData.stockUrls}
+        <ClipPlayer key={previewData.id} videoUrl={playUrl} mainVideoId={previewData.video_id} stockUrls={previewData.stockUrls}
           startMs={previewData.start_ms} endMs={previewData.end_ms}
           segments={previewSegments(previewData.segments, previewData.end_ms - previewData.start_ms, ratio)}
           words={previewData.words}
@@ -916,8 +983,8 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: P
         </div>
         {/* Start → how long → End */}
         <div className="flex items-center gap-2.5">
-          <div style={{ width: withHours ? 118 : 96 }}>
-            <TimeField id="clip-start" label="Start" value={formStart} onChange={setFormStart} showHours={withHours} />
+          <div style={{ width: withHours ? 140 : 100 }}>
+            <TimeField id="clip-start" label="Start" value={formStart} onChange={setFormStart} showHours={withHours} nextId="clip-end" />
           </div>
           {(() => {
             const a = parseTime(formStart), z = parseTime(formEnd)
@@ -934,7 +1001,7 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: P
               </span>
             )
           })()}
-          <div style={{ width: withHours ? 118 : 96 }}>
+          <div style={{ width: withHours ? 140 : 100 }}>
             <TimeField id="clip-end" label="End" value={formEnd} onChange={setFormEnd} showHours={withHours} />
           </div>
         </div>
@@ -996,11 +1063,12 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: P
   // ── AI tools: Ask AI + Best moments (left column on wide screens, under the video otherwise) ──
   const aiTools = (
     <>
-      <section className="mmc shrink-0 p-3.5 flex flex-col gap-3 rounded-2xl" style={CARD}>
-        {/* Header: a lime spark badge, the title and its ⓘ */}
+      {/* (styles: .mmc-* in globals.css) */}
+      <section className="mmc shrink-0 p-3.5 flex flex-col gap-3 rounded-2xl" data-start-target="ai">
+        {/* Header: a spark badge (glass, the spark lime), the title and its ⓘ; on the right, the way to the clips already made */}
         <div className="flex items-center gap-2.5">
-          <span aria-hidden="true" className="mmc-badge shrink-0 w-8 h-8 rounded-[10px] grid place-items-center"
-            style={{ background: 'rgba(200,255,0,0.1)', color: ACCENT, boxShadow: 'inset 0 0 0 1px rgba(200,255,0,0.22)' }}>
+          <span aria-hidden="true" className="shrink-0 w-8 h-8 rounded-[10px] grid place-items-center"
+            style={{ background: 'rgba(255,255,255,0.06)', color: ACCENT, boxShadow: 'inset 0 0 0 1px rgba(255,255,255,0.1)' }}>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
               <path d="M12 2l1.9 5.6L19.5 9.5l-5.6 1.9L12 17l-1.9-5.6L4.5 9.5l5.6-1.9z" />
               <path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z" opacity=".7" />
@@ -1008,16 +1076,21 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: P
           </span>
           <h2 className="flex-1 min-w-0 flex items-center gap-1.5 text-sm font-semibold text-white">
             Make my clips
-            <InfoTip label="About Make my clips">AI picks the best moments, frames them vertically and adds captions. Type or step how many clips you want (1 to {AUTO_MAX}), and tick what AI should add: captions, a title, motion (the frame follows people) and cuts (split / trio for 2+ people).</InfoTip>
+            <InfoTip label="About Make my clips">AI picks the best moments of the video and frames each one vertically. Choose how many clips (up to {AUTO_MAX} at a time) and what each one gets. You can change everything in the editor afterwards.</InfoTip>
           </h2>
+          {autoClips.length > 0 && !autoRunning && (
+            <button type="button" onClick={() => router.push(`/videos/${video.id}/clips`)} className="mmc-link">
+              View {autoClips.length} clip{autoClips.length === 1 ? '' : 's'}
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden><path d="M9 6l6 6-6 6" /></svg>
+            </button>
+          )}
         </div>
 
-        {/* How many clips: type a number or step it with − / + (styles: .mmc-* in globals.css) */}
-        <div className="flex items-center justify-between gap-3 pl-3 pr-1.5 py-1.5 rounded-xl"
-          style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)' }}>
+        {/* How many clips: type a number or step it with − / + */}
+        <div className="mmc-block flex items-center justify-between gap-3 pl-3 pr-1.5 py-1.5">
           <label htmlFor={`clip-count-${video.id}`} className="flex flex-col leading-tight">
             <span className="text-xs font-medium" style={{ color: 'rgba(255,255,255,0.8)' }}>How many clips?</span>
-            <span className="text-[10px]" style={{ color: countOver ? '#fbbf24' : 'rgba(255,255,255,0.38)' }}>
+            <span className="text-[10px]" style={{ color: countOver ? '#fbbf24' : 'rgba(255,255,255,0.5)' }}>
               {countOver ? `Up to ${AUTO_MAX} at a time` : `1 to ${AUTO_MAX}`}
             </span>
           </label>
@@ -1032,7 +1105,8 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: P
                 const t = e.target.value.replace(/\D/g, '').slice(0, 2)
                 setCountText(t)
                 const n = Number(t)
-                if (t && n >= 1 && n <= AUTO_MAX) setAutoCount(n)
+                // (more than a run makes: the most it can, so the button never says another number)
+                if (t && n >= 1) setAutoCount(Math.min(AUTO_MAX, n))
               }}
               onBlur={() => setCount(Number(countText) || autoCount)}
               onKeyDown={e => {
@@ -1048,47 +1122,44 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: P
           </div>
         </div>
 
-        {/* What AI adds: four checkboxes (styles: .mmc-opt in globals.css) */}
+        {/* What AI adds: four tiles, each a checkbox — its little picture turns white and a lime tick
+            shows on the right when it's on (styles: .mmc-opt in globals.css) */}
         <div className="grid grid-cols-2 gap-1.5" role="group" aria-label="What AI adds to each clip">
           {AUTO_OPTIONS.map(o => (
             <label key={o.id} title={o.tip} className="mmc-opt" data-on={autoOpts[o.id] || undefined} data-off={autoRunning || undefined}>
               <input type="checkbox" className="sr-only" checked={autoOpts[o.id]} disabled={autoRunning}
                 onChange={() => toggleAutoOpt(o.id)} />
-              <span className="mmc-opt-box" aria-hidden="true">
-                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3.4" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5" /></svg>
+              <span className="mmc-opt-icon" aria-hidden="true">
+                <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">{AUTO_ICONS[o.id]}</svg>
               </span>
-              <span className="min-w-0 truncate">{o.label}</span>
+              <span className="flex-1 min-w-0 truncate">{o.label}</span>
+              <span className="mmc-opt-box" aria-hidden="true">
+                <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="4.2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5" /></svg>
+              </span>
             </label>
           ))}
         </div>
 
-        {/* What the captions and the title are written in (each only while its box is ticked) */}
-        {(autoOpts.captions || autoOpts.title) && (
-          <div className="flex flex-col gap-1.5">
-            {autoOpts.captions && (
-              <label className="flex items-center gap-2 text-[11px]" style={{ color: 'rgba(255,255,255,0.55)' }}>
-                <span className="shrink-0 w-[68px]">Captions in</span>
-                <select value={captionLang} disabled={autoRunning} onChange={e => pickLanguage({ caption: e.target.value as CaptionLanguage })}
-                  aria-label="What the captions are written in"
-                  className="flex-1 min-w-0 px-2 py-1.5 rounded-md text-[11px] text-white outline-none disabled:opacity-50"
-                  style={{ background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.12)' }}>
-                  {CAPTION_LANGUAGES.map(l => <option key={l.id} value={l.id} style={{ color: '#000' }}>{l.label}</option>)}
+        {/* What the captions and the title are written in. Both rows always show (one whose box is
+            unticked is dimmed), so the button below never moves. */}
+        <div className="flex flex-col gap-1.5">
+          {([
+            { name: 'Captions', what: 'captions are', on: autoOpts.captions, list: CAPTION_LANGUAGES, value: captionLang, pick: (id: string) => pickLanguage({ caption: id as CaptionLanguage }) },
+            { name: 'Title', what: 'title is', on: autoOpts.title, list: TITLE_LANGUAGES, value: titleLang, pick: (id: string) => pickLanguage({ title: id as TitleLanguage }) },
+          ]).map(row => {
+            const off = autoRunning || !row.on
+            return (
+              <label key={row.name} className="mmc-row flex items-center gap-2 text-[11px]" data-off={off || undefined} style={{ color: 'rgba(255,255,255,0.6)' }}>
+                <span className="shrink-0 w-[52px]">{row.name}</span>
+                <select value={row.value} disabled={off} onChange={e => row.pick(e.target.value)}
+                  aria-label={`What the ${row.what} written in`}
+                  className="mmc-select flex-1 min-w-0 px-2 py-1.5 rounded-md text-[11px] text-white outline-none">
+                  {row.list.map(l => <option key={l.id} value={l.id}>{l.label}</option>)}
                 </select>
               </label>
-            )}
-            {autoOpts.title && (
-              <label className="flex items-center gap-2 text-[11px]" style={{ color: 'rgba(255,255,255,0.55)' }}>
-                <span className="shrink-0 w-[68px]">Title in</span>
-                <select value={titleLang} disabled={autoRunning} onChange={e => pickLanguage({ title: e.target.value as TitleLanguage })}
-                  aria-label="What the title is written in"
-                  className="flex-1 min-w-0 px-2 py-1.5 rounded-md text-[11px] text-white outline-none disabled:opacity-50"
-                  style={{ background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.12)' }}>
-                  {TITLE_LANGUAGES.map(l => <option key={l.id} value={l.id} style={{ color: '#000' }}>{l.label}</option>)}
-                </select>
-              </label>
-            )}
-          </div>
-        )}
+            )
+          })}
+        </div>
 
         {autoError && <p className="text-xs" style={{ color: '#f87171' }}>{autoError}</p>}
         {/* Fewer good moments than clips asked for: nothing is made until the user says yes */}
@@ -1154,18 +1225,10 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: P
               : <>Making clips failed{autoJob.error ? `: ${autoJob.error}` : ''}. Try again, or make clips by hand below.</>}
           </p>
         )}
-        {autoClips.length > 0 && !autoRunning && (
-          <button onClick={() => router.push(`/videos/${video.id}/clips`)}
-            className="flex items-center justify-center gap-2 py-2 rounded-lg text-xs font-semibold transition-colors hover:bg-white/10"
-            style={{ color: '#fff', border: '1px solid rgba(255,255,255,0.14)' }}>
-            ▶ AI edits ({autoClips.length} clip{autoClips.length === 1 ? '' : 's'})
-          </button>
-        )}
-        {/* Main action last, under AI edits */}
-        <button onClick={() => { setMakePulse(n => n + 1); makeClips() }} disabled={autoRunning || autoStarting}
+        {/* Main action last: quiet — a lime tint and lime words, not a filled block (.mmc-go) */}
+        <button type="button" onClick={() => { setMakePulse(n => n + 1); makeClips() }} disabled={autoRunning || autoStarting}
           data-busy={autoRunning || autoStarting || undefined}
-          className="ai-btn ai-make flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-lg text-xs font-bold disabled:opacity-40"
-          style={{ background: ACCENT, color: '#000' }}>
+          className="ai-btn ai-make mmc-go flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-lg text-xs font-semibold disabled:opacity-40">
           <span key={makePulse} className={`ai-fire${makePulse ? ' is-on' : ''}`} aria-hidden="true" />
           {autoStarting || autoRunning ? <Spinner /> : (
             <span key={`s${makePulse}`} className={`ai-spark${makePulse ? ' is-on' : ''}`} aria-hidden="true">
@@ -1178,7 +1241,7 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: P
       {/* Ask AI and Best moments share one card: a switch at the top picks which one shows */}
       <section className="flex-1 min-h-[260px] p-3.5 flex flex-col gap-2.5 rounded-2xl" style={CARD}>
         <div className="shrink-0 flex items-center gap-2">
-          {/* Segmented switch: a lime-edged tile slides under the picked side (styles: .ai-seg in globals.css) */}
+          {/* Segmented switch: a tile of light glass slides under the picked side (styles: .ai-seg in globals.css) */}
           <div role="tablist" aria-label="Find clips with AI" className="ai-seg flex-1" data-side={aiPane === 'best' ? 'right' : 'left'}
             onKeyDown={e => {
               if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
@@ -1197,13 +1260,15 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: P
                     <path d="M21 12a8 8 0 0 1-11.6 7.1L4 20.5l1.4-4.8A8 8 0 1 1 21 12z" />
                     <path d="M12 8.5l.9 2.1 2.1.9-2.1.9-.9 2.1-.9-2.1-2.1-.9 2.1-.9z" fill="currentColor" stroke="none" />
                   </svg>
+                ) : suggestions?.length ? (
+                  // (moments found: how many, in the star's place — both would not fit beside the words)
+                  <span className="ai-seg-badge tabular-nums" aria-label={`${suggestions.length} found`}>{suggestions.length}</span>
                 ) : (
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinejoin="round" aria-hidden>
                     <path d="M12 3.5l2.6 5.3 5.8.8-4.2 4.1 1 5.8L12 16.8l-5.2 2.7 1-5.8-4.2-4.1 5.8-.8z" />
                   </svg>
                 )}
                 <span>{label}</span>
-                {id === 'best' && suggestions?.length ? <span className="ai-seg-badge tabular-nums">{suggestions.length}</span> : null}
               </button>
             ))}
           </div>
@@ -1338,7 +1403,7 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: P
   return (
     <div className="h-screen flex flex-col overflow-hidden" style={{ background: '#0d0d0d' }}>
       {/* Opening a clip: covers the page while the clip is created and the editor loads */}
-      {busy && <BrandLoaderScreen overlay label="Getting your clip ready, please wait…" />}
+      {busy && <BrandLoaderScreen mascot overlay label="Getting your clip ready, please wait…" />}
       {/* Nav */}
       <nav className="flex items-center gap-3 px-4 shrink-0"
         style={{ height: 56, background: '#111', borderBottom: '1px solid rgba(255,255,255,0.07)' }}>
@@ -1378,7 +1443,7 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: P
             </div>
           )}
 
-          {isReady && newClipBar}
+          {isReady && <div className="shrink-0 rounded-2xl" data-start-target="manual">{newClipBar}</div>}
 
           {!wide && isReady && <div className="grid grid-cols-1 md:grid-cols-2 gap-4" style={{ height: 420 }}>{aiTools}</div>}
         </main>
@@ -1565,8 +1630,9 @@ export function ClipPickerShell({ video: initialVideo, videoUrl, savedClips }: P
  * does ":" or "."; Backspace in an empty part goes back; ↑ / ↓ step a part; a pasted time
  * (1:42:08 or 4:05) fills all three. Empty parts count as 00.
  * Under an hour of video (`showHours` false) the hours part isn't shown: the box reads 4:05.
+ * `nextId`: the time field to go on to once the seconds are typed (Start → End).
  */
-function TimeField({ id, label, value, onChange, showHours = true }: { id: string; label: string; value: string; onChange: (v: string) => void; showHours?: boolean }) {
+function TimeField({ id, label, value, onChange, showHours = true, nextId }: { id: string; label: string; value: string; onChange: (v: string) => void; showHours?: boolean; nextId?: string }) {
   type Parts = [string, string, string]
   const pad = (n: number) => String(n).padStart(2, '0')
   const split = (v: string): Parts => {
@@ -1595,6 +1661,12 @@ function TimeField({ id, label, value, onChange, showHours = true }: { id: strin
     if (!el) return
     el.focus()
     requestAnimationFrame(() => (at === 'all' ? el.select() : el.setSelectionRange(el.value.length, el.value.length)))
+  }
+  /** The seconds are done: on to the next time field's first part (Start → End), or stay selected */
+  const finish = (el: HTMLInputElement | null) => {
+    const next = nextId ? document.getElementById(`${nextId}-${'hms'[first]}`) as HTMLInputElement | null : null
+    if (next) { next.focus(); requestAnimationFrame(() => next.select()) }
+    else requestAnimationFrame(() => el?.select())
   }
   const put = (next: Parts) => {
     live.current = next
@@ -1625,7 +1697,7 @@ function TimeField({ id, label, value, onChange, showHours = true }: { id: strin
     if (done) {
       typing.current = null
       if (i < 2) go(i + 1)
-      else requestAnimationFrame(() => refs[i].current?.select())
+      else finish(refs[i].current)
     }
   }
 
@@ -1640,6 +1712,7 @@ function TimeField({ id, label, value, onChange, showHours = true }: { id: strin
     next[i] = d
     put(next)
     if (done && i < 2) go(i + 1)
+    else if (done) finish(refs[i].current)
   }
   function key(i: number, e: React.KeyboardEvent<HTMLInputElement>) {
     const el = e.currentTarget
@@ -1676,14 +1749,15 @@ function TimeField({ id, label, value, onChange, showHours = true }: { id: strin
   }
   const names = ['hours', 'minutes', 'seconds']
   return (
-    <div className="flex items-center justify-center h-[52px] px-3 rounded-xl transition-[border-color,box-shadow] focus-within:border-[#c8ff00] focus-within:shadow-[0_0_0_3px_rgba(200,255,0,0.12)]"
+    <div className="flex items-center justify-center h-[52px] px-3 rounded-xl transition-[border-color,background-color] focus-within:border-white/30 focus-within:bg-white/[0.07]"
       style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)' }}>
       <div className="min-w-0 flex flex-col items-center justify-center">
         <label htmlFor={`${id}-${'hms'[first]}`} className="text-[10px] font-semibold uppercase leading-none" style={{ color: 'rgba(255,255,255,0.45)', letterSpacing: '0.08em' }}>{label}</label>
-        <div className="flex items-center mt-1.5 text-[17px] font-semibold tabular-nums leading-none text-white">
+        <div className="flex items-center mt-1.5 text-[18px] font-semibold tabular-nums leading-none text-white">
           {parts.map((p, i) => i < first ? null : (
             <span key={i} className="flex items-center">
-              {i > first && <span aria-hidden="true" className="select-none" style={{ color: 'rgba(255,255,255,0.35)' }}>:</span>}
+              {/* (a clear gap round the ":" between the parts) */}
+              {i > first && <span aria-hidden="true" className="select-none mx-1.5 -translate-y-px" style={{ color: 'rgba(255,255,255,0.55)' }}>:</span>}
               <input ref={refs[i]} id={`${id}-${'hms'[i]}`} type="text" inputMode="numeric" autoComplete="off"
                 aria-label={`${label} ${names[i]}`} placeholder={i === first && !showHours ? '0' : '00'} value={i === first && !showHours && p.startsWith('0') && p.length === 2 ? p.slice(1) : p}
                 onChange={e => type(i, e.target.value)} onKeyDown={e => key(i, e)} onPaste={paste}
@@ -1691,8 +1765,9 @@ function TimeField({ id, label, value, onChange, showHours = true }: { id: strin
                 // (the click that focused it would otherwise drop the selection and leave the cursor in the old digits)
                 onMouseUp={e => e.preventDefault()}
                 onBlur={() => { const cur = live.current; if (cur[i].length === 1) { const next = [...cur] as Parts; next[i] = pad(Number(cur[i])); put(next) } }}
-                className="bg-transparent outline-none text-center rounded-md placeholder:text-white/30 focus:bg-white/10"
-                style={{ width: i === first && !showHours ? '1.6ch' : '2.2ch', padding: 0 }} />
+                // The part being typed in: a plain light pill, instead of the browser's blue selection
+                className="bg-transparent outline-none text-center rounded-md py-1 placeholder:text-white/30 focus:bg-white/15 selection:bg-transparent selection:text-white transition-colors"
+                style={{ width: i === first && !showHours ? '2ch' : '2.6ch' }} />
             </span>
           ))}
         </div>

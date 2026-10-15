@@ -130,6 +130,10 @@ export async function saveClip(userId: string, clipId: string, body: SaveClipInp
 
   const hasEnabledField = await captionEnabledField()
   const hasPresetFields = await captionPresetFields()
+  // The caption style (template): saved once the backend has added its field
+  const hasTemplateField = await hasColumn('caption_styles', 'template')
+  // The newer kinds of transition: saved as they are once the backend allows them (else the nearest older kind)
+  const allTransitionKinds = await transitionKindsAllowed()
   const hasRemoveFillers = typeof body.removeFillers === 'boolean' && await clipsHasRemoveFillers()
   const hasFades = await hasColumn('audio_tracks', 'fade_in')
   const hasTextW = await hasColumn('text_overlays', 'w')
@@ -207,7 +211,8 @@ export async function saveClip(userId: string, clipId: string, body: SaveClipInp
     } else if (Object.keys(captionStyle).length > 0) {
       const styleFields = ['font', 'size', 'color', 'position', 'position_y', 'animation', 'language', 'translated_from_language', 'timing_offset_ms',
         // Animated presets. Not emphasis: the export fills that in, and the editor's copy may be stale.
-        ...(hasPresetFields ? PRESET_STYLE_FIELDS : [])]
+        ...(hasPresetFields ? PRESET_STYLE_FIELDS : []),
+        ...(hasTemplateField ? ['template'] : [])]
       const onOff = hasEnabledField ? { enabled: captionEnabled } : {}
       const entries = Object.entries(captionStyle).filter(([k, v]) => styleFields.includes(k) && v !== undefined)
       const fields: Record<string, unknown> = Object.fromEntries(entries)
@@ -268,7 +273,9 @@ export async function saveClip(userId: string, clipId: string, body: SaveClipInp
     const liveTransitions = transitions.filter(t => segIds.includes(t.after_segment_id))
     if (liveTransitions.length > 0) {
       q.push(tx`INSERT INTO transitions ${tx(liveTransitions.map(({ id, after_segment_id, type, duration_ms }) => ({
-        id, clip_id: clipId, after_segment_id, type, duration_ms: ms(duration_ms),
+        id, clip_id: clipId, after_segment_id,
+        type: allTransitionKinds || type === 'cut' || type === 'fade' || type === 'wipe' ? type : 'fade',
+        duration_ms: ms(duration_ms),
       })))}`)
     }
 
@@ -393,6 +400,22 @@ export async function hasColumn(table: string, column: string): Promise<boolean>
   const rows = await sql`SELECT 1 FROM information_schema.columns WHERE table_name = ${table} AND column_name = ${column}`.catch(() => [])
   if (rows.length) knownColumns.add(key)
   return rows.length > 0
+}
+
+/**
+ * Whether transitions.type takes every kind the editor offers (fadeblack, slideleft… pixelize):
+ * the backend widens the table's check when it starts (its index.ts). Before that only cut / fade
+ * / wipe are sure to save — anything else would fail the whole save. Known once it's true.
+ */
+let transitionKindsKnown = false
+export async function transitionKindsAllowed(): Promise<boolean> {
+  if (transitionKindsKnown) return true
+  const rows = await sql`
+    SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint
+    WHERE conrelid = 'transitions'::regclass AND conname = 'transitions_type_check'`.catch(() => null)
+  // (no check at all also takes every kind)
+  if (rows && (rows.length === 0 || String(rows[0].def).includes('pixelize'))) transitionKindsKnown = true
+  return transitionKindsKnown
 }
 
 // clips.remove_fillers (added by the backend with "Remove pauses and filler words"): same rule
