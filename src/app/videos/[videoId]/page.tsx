@@ -8,29 +8,44 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 
 export default async function VideoPickerPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ videoId: string }>
+  searchParams: Promise<{ start?: string }>
 }) {
   const { videoId } = await params
+  // How the dashboard said to start (its "AI edit / Manual edit" choice): the clip board points at those tools
+  const { start } = await searchParams
+  const startWith = start === 'ai' || start === 'manual' ? start : undefined
   const user = await requireUser()
   if (!user) redirect('/login')
 
-  type VideoRow = { id: string; user_id: string; title: string | null; status: string; download_progress: number; duration_ms: number | null; created_at: string; storage_path: string | null }
-  const [video] = await sql`
-    SELECT id, user_id, title, status, download_progress, duration_ms, created_at, storage_path
+  type VideoRow = { id: string; user_id: string; title: string | null; status: string; download_progress: number; duration_ms: number | null; created_at: string; storage_path: string | null; proxy_path: string | null; stock_ref: string | null }
+  const [row] = await sql`
+    SELECT id, user_id, title, status, download_progress, duration_ms, created_at, storage_path,
+      -- (read through to_jsonb: works before the worker adds the columns)
+      to_jsonb(videos)->>'proxy_path' AS proxy_path, to_jsonb(videos)->>'stock_ref' AS stock_ref
     FROM videos WHERE id = ${videoId}
   ` as unknown as VideoRow[]
-  if (!video || video.user_id !== user.id) notFound()
+  if (!row || row.user_id !== user.id) notFound()
+  const { proxy_path, stock_ref, ...video } = row
 
   // Captions are not made here (they cost money): only when someone asks — captions switched on
   // in the editor, Make my clips, Best moments, Ask AI
 
+  // The clip board plays the video's editing copy when it has one, as the editor does (the
+  // worker's jobs/proxy.ts: a full picture every half second, so dragging along the video shows
+  // each moment at once; the original has one every few seconds and goes black while dragged).
+  // Only watched here — the copy's frames keep their times, and exports use the original.
   let videoUrl = ''
   if (video.status === 'ready' && video.storage_path) {
     videoUrl = await getSignedUrl(
-      r2, new GetObjectCommand({ Bucket: R2_BUCKET, Key: video.storage_path }), { expiresIn: 3600 }
+      // (12 hours, as the editor's: a clip board left open must keep loading the video as it is dragged)
+      r2, new GetObjectCommand({ Bucket: R2_BUCKET, Key: proxy_path || video.storage_path }), { expiresIn: 43200 }
     ).catch(() => '')
   }
+  // A video from before copies were made: the page asks the worker for one (used from the next visit)
+  const needsProxy = video.status === 'ready' && !!video.storage_path && !proxy_path && !stock_ref
 
   type RawClip = {
     id: string; title: string | null; start_ms: number; end_ms: number
@@ -80,6 +95,8 @@ export default async function VideoPickerPage({
     <ClipPickerShell
       video={video}
       videoUrl={videoUrl}
+      needsProxy={needsProxy}
+      startWith={startWith}
       savedClips={savedClips}
     />
   )

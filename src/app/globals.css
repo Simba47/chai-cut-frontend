@@ -561,27 +561,107 @@ body {
 @media (prefers-reduced-motion: reduce) { .ai-hint-caret { animation: none; } }
 
 
-/* Clip count picker (clip board "Make my clips"): a highlight glides to the picked number
-   with a little overshoot, and the number pops as it's picked */
-/* Make my clips: what AI adds — tick tiles (lime tick box when on) */
-.mmc-opt {
-  display: flex; align-items: center; gap: 8px; height: 34px; padding: 0 10px; border-radius: 10px; cursor: pointer;
-  font-size: 12px; font-weight: 600; color: rgba(255,255,255,0.55); user-select: none;
-  background: rgba(255,255,255,0.03); box-shadow: inset 0 0 0 1px rgba(255,255,255,0.08);
-  transition: color .15s, background-color .15s, box-shadow .15s;
+/* Clip board, arrived from the dashboard's "AI edit / Manual edit" choice: the part picked glows
+   lime for a moment (ClipPickerShell data-start-target) */
+[data-start-glow] { animation: start-glow 2.6s ease-out; }
+@keyframes start-glow {
+  0% { box-shadow: 0 0 0 0 rgba(200,255,0,0); }
+  15%, 55% { box-shadow: 0 0 0 2px rgba(200,255,0,0.75), 0 0 28px rgba(200,255,0,0.25); }
+  100% { box-shadow: 0 0 0 0 rgba(200,255,0,0); }
 }
-.mmc-opt:hover { color: rgba(255,255,255,0.85); }
-.mmc-opt[data-on] { color: #fff; background: rgba(200,255,0,0.05); box-shadow: inset 0 0 0 1px rgba(200,255,0,0.3); }
+@media (prefers-reduced-motion: reduce) { [data-start-glow] { animation: none; box-shadow: 0 0 0 2px rgba(200,255,0,0.6); } }
+
+/* ── Make my clips (clip board, ClipPickerShell): one calm card. Lime is kept for three small
+   things — the spark in the header, the ticks of what is on, and the main button's words and
+   edge; everything else is neutral glass. ── */
+.mmc {
+  background: linear-gradient(180deg, rgba(255,255,255,0.05), rgba(255,255,255,0.02));
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.08), inset 0 1px 0 rgba(255,255,255,0.06), 0 12px 32px -18px rgba(0,0,0,0.8);
+}
+.mmc-block { border-radius: 12px; background: rgba(0,0,0,0.22); box-shadow: inset 0 0 0 1px rgba(255,255,255,0.07); }
+/* the way to the clips already made (header, right) */
+.mmc-link {
+  flex-shrink: 0; display: inline-flex; align-items: center; gap: 3px; height: 26px; padding: 0 6px 0 9px; border-radius: 8px;
+  font-size: 11px; font-weight: 600; white-space: nowrap; color: rgba(255,255,255,0.75);
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.12); transition: color .15s, background-color .15s, box-shadow .15s;
+}
+.mmc-link:hover { color: #fff; background: rgba(255,255,255,0.07); box-shadow: inset 0 0 0 1px rgba(255,255,255,0.2); }
+.mmc-link svg { transition: transform .15s; }
+.mmc-link:hover svg { transform: translateX(2px); }
+
+/* What AI adds: four tiles, each a checkbox. A tile has a little picture of what it does in a
+   on the left, its name, and a round tick on the right. On: the tile is lighter glass, the
+   picture and name are white, and the tick fills lime — the tile's only lime. Off: all grey.
+   The picture acts out what it does when the tile is hovered or just ticked:
+   the spoken word fills in, the headline drops in, the viewfinder follows, the frame is cut. */
+.mmc-opt {
+  position: relative; display: flex; align-items: center; gap: 6px; height: 40px; padding: 0 8px 0 9px; border-radius: 12px;
+  cursor: pointer; user-select: none; font-size: 12px; font-weight: 600; letter-spacing: -.01em; color: rgba(255,255,255,0.55);
+  background: linear-gradient(180deg, rgba(255,255,255,0.035), rgba(255,255,255,0.012));
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.06);
+  transition: color .2s, box-shadow .2s, transform .12s;
+}
+/* (the lighter glass of a tile that is on: its own layer, so it can fade in) */
+.mmc-opt::before {
+  content: ''; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; opacity: 0; transition: opacity .25s;
+  background: linear-gradient(180deg, rgba(255,255,255,0.07), rgba(255,255,255,0.03));
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.12), inset 0 1px 0 rgba(255,255,255,0.06);
+}
+.mmc-opt > * { position: relative; }
+.mmc-opt[data-on] { color: #fff; }
+.mmc-opt[data-on]::before { opacity: 1; }
+.mmc-opt:not([data-off]):hover { color: #fff; box-shadow: inset 0 0 0 1px rgba(255,255,255,0.14); }
+.mmc-opt:not([data-off]):active { transform: scale(.975); }
 .mmc-opt[data-off] { opacity: .45; cursor: not-allowed; }
 .mmc-opt:focus-within { outline: 2px solid rgba(200,255,0,0.6); outline-offset: 1px; }
+.mmc-opt-icon { flex-shrink: 0; display: grid; place-items: center; color: rgba(255,255,255,0.38); transition: color .2s; }
+.mmc-opt[data-on] .mmc-opt-icon { color: rgba(255,255,255,0.92); }
+.mmc-opt-icon svg { overflow: visible; }
+.mmc-opt-icon svg * { transform-box: fill-box; transform-origin: center; }
 .mmc-opt-box {
-  flex-shrink: 0; width: 16px; height: 16px; border-radius: 5px; display: grid; place-items: center; color: transparent;
-  box-shadow: inset 0 0 0 1.5px rgba(255,255,255,0.35); transition: background-color .15s, color .15s, box-shadow .15s, transform .15s;
+  flex-shrink: 0; width: 12px; height: 12px; border-radius: 50%; display: grid; place-items: center; color: transparent;
+  box-shadow: inset 0 0 0 1.5px rgba(255,255,255,0.22); transition: background-color .15s, color .15s, box-shadow .15s;
 }
-.mmc-opt[data-on] .mmc-opt-box { background: #c8ff00; color: #000; box-shadow: none; }
-.mmc-opt:active .mmc-opt-box { transform: scale(.88); }
+.mmc-opt[data-on] .mmc-opt-box { background: #c8ff00; color: #000; box-shadow: none; animation: mmc-tick .32s cubic-bezier(.34,1.56,.64,1); }
+@keyframes mmc-tick { from { transform: scale(.4); } }
+/* the pictures act: once when a tile is ticked, and again while it is hovered */
+.mmc-opt[data-on] .mmc-i-word, .mmc-opt:not([data-off]):hover .mmc-i-word { transform-origin: left center; animation: mmc-i-word .7s cubic-bezier(.3,.8,.3,1); }
+.mmc-opt[data-on] .mmc-i-head, .mmc-opt:not([data-off]):hover .mmc-i-head { animation: mmc-i-head .5s cubic-bezier(.34,1.56,.64,1); }
+.mmc-opt[data-on] .mmc-i-frame, .mmc-opt:not([data-off]):hover .mmc-i-frame { animation: mmc-i-frame 1s cubic-bezier(.45,0,.55,1); }
+.mmc-opt[data-on] .mmc-i-dot, .mmc-opt:not([data-off]):hover .mmc-i-dot { animation: mmc-i-dot 1s cubic-bezier(.45,0,.55,1); }
+.mmc-opt[data-on] .mmc-i-cut, .mmc-opt:not([data-off]):hover .mmc-i-cut { animation: mmc-i-cut .55s cubic-bezier(.65,0,.35,1); }
+.mmc-opt:not([data-off]):hover .mmc-i-word, .mmc-opt:not([data-off]):hover .mmc-i-head, .mmc-opt:not([data-off]):hover .mmc-i-frame,
+.mmc-opt:not([data-off]):hover .mmc-i-dot, .mmc-opt:not([data-off]):hover .mmc-i-cut { animation-name: var(--again); }
+.mmc-i-word { --again: mmc-i-word-2; } .mmc-i-head { --again: mmc-i-head-2; } .mmc-i-frame { --again: mmc-i-frame-2; }
+.mmc-i-dot { --again: mmc-i-dot-2; } .mmc-i-cut { --again: mmc-i-cut-2; }
+@keyframes mmc-i-word { from { transform: scaleX(0); opacity: .3; } }
+@keyframes mmc-i-head { from { transform: translateY(-3px) scale(.6); opacity: 0; } }
+@keyframes mmc-i-frame { 30% { transform: translateX(-1.2px); } 75% { transform: translateX(1.2px); } }
+@keyframes mmc-i-dot { 22% { transform: translateX(-2.4px); } 66% { transform: translateX(2.4px); } }
+@keyframes mmc-i-cut { from { transform: scaleX(0); } }
+/* (the same moves under a second name: a hover plays them again on a tile that is already on) */
+@keyframes mmc-i-word-2 { from { transform: scaleX(0); opacity: .3; } }
+@keyframes mmc-i-head-2 { from { transform: translateY(-3px) scale(.6); opacity: 0; } }
+@keyframes mmc-i-frame-2 { 30% { transform: translateX(-1.2px); } 75% { transform: translateX(1.2px); } }
+@keyframes mmc-i-dot-2 { 22% { transform: translateX(-2.4px); } 66% { transform: translateX(2.4px); } }
+@keyframes mmc-i-cut-2 { from { transform: scaleX(0); } }
+@media (prefers-reduced-motion: reduce) {
+  .mmc-opt .mmc-opt-box, .mmc-opt .mmc-opt-icon svg * { animation: none !important; }
+}
 
-/* Make my clips: the count box ( − 5 + ) — a dark pill whose border turns lime while typing */
+/* Captions in / Title in: dark dropdowns (the list that opens is dark too) */
+.mmc-row { transition: opacity .15s; }
+.mmc-row[data-off] { opacity: .38; }
+.mmc-select {
+  color-scheme: dark; cursor: pointer; background: rgba(0,0,0,0.3); box-shadow: inset 0 0 0 1px rgba(255,255,255,0.1);
+  transition: box-shadow .15s, background-color .15s;
+}
+.mmc-select:not(:disabled):hover { background: rgba(255,255,255,0.05); box-shadow: inset 0 0 0 1px rgba(255,255,255,0.18); }
+.mmc-select:focus-visible { box-shadow: inset 0 0 0 1px rgba(200,255,0,0.55), 0 0 0 3px rgba(200,255,0,0.1); }
+.mmc-select:disabled { cursor: not-allowed; }
+.mmc-select option { background: #1b1b1f; color: #fff; }
+
+/* The count box ( − 5 + ): a dark pill whose border turns lime while typing */
 .mmc-count {
   background: rgba(0,0,0,0.35); box-shadow: inset 0 0 0 1px rgba(255,255,255,0.12);
   transition: box-shadow .15s;
@@ -592,13 +672,23 @@ body {
   width: 30px; height: 32px; display: grid; place-items: center; border-radius: 7px;
   color: rgba(255,255,255,0.6); transition: color .15s, background-color .15s, transform .1s;
 }
-.mmc-step:not(:disabled):hover { color: #c8ff00; background: rgba(200,255,0,0.08); }
+.mmc-step:not(:disabled):hover { color: #fff; background: rgba(255,255,255,0.08); }
 .mmc-step:not(:disabled):active { transform: scale(.88); }
 .mmc-step:disabled { opacity: .3; cursor: not-allowed; }
 .mmc-input::selection { background: rgba(200,255,0,0.3); }
-.mmc-badge { animation: mmc-glow 3.2s ease-in-out infinite; }
-@keyframes mmc-glow { 50% { box-shadow: inset 0 0 0 1px rgba(200,255,0,0.4), 0 0 14px rgba(200,255,0,0.15); } }
-@media (prefers-reduced-motion: reduce) { .mmc-badge { animation: none; } }
+
+/* The main button, kept quiet: a faint lime tint with a thin lime edge and lime words (no filled
+   block, no glow). Its click effects (.ai-spark, .ai-fire) are toned to match. */
+.mmc-go {
+  color: #c8ff00; background: rgba(200,255,0,0.06); box-shadow: inset 0 0 0 1px rgba(200,255,0,0.22);
+  transition: transform .12s ease, background-color .2s, box-shadow .2s;
+}
+.mmc-go:not(:disabled):hover { filter: none; background: rgba(200,255,0,0.11); box-shadow: inset 0 0 0 1px rgba(200,255,0,0.4); }
+.mmc-go:focus-visible { outline: 2px solid rgba(200,255,0,0.6); outline-offset: 2px; }
+.mmc-go .ai-spark i { background: currentColor; }
+.mmc-go .ai-fire.is-on, .mmc-go[data-busy] .ai-fire {
+  background-image: linear-gradient(105deg, transparent 30%, rgba(200,255,0,0.22) 50%, transparent 70%);
+}
 
 /* Video ⇄ Clip preview switch (clip board): a pill track with two equal halves and a lime knob
    that slides to the picked side, stretching mid-way like a real switch */
@@ -628,48 +718,94 @@ body {
 .view-switch-opt:focus-visible { outline: 2px solid rgba(200,255,0,0.6); outline-offset: 1px; }
 @media (prefers-reduced-motion: reduce) { .view-switch-knob, .view-switch[data-side] .view-switch-knob { transition: none; animation: none; } }
 
-/* Ask AI ⇄ Best moments (clip board): a dark rounded track, an icon + label per side and a
-   lime-edged tile that slides under the picked one, squashing a little mid-way */
+/* ── The clip board's player (components/clips/ScrubPlayer.tsx): its own controls over the
+   bottom of the video on a soft shade — a bar (loaded part, played part, a round handle that
+   grows while held) and under it play, the time, sound and full screen. Hovering the bar shows
+   that moment's time above it. The controls fade while playing and the mouse rests. ── */
+.sp { outline: none; background: #000; }
+.sp:focus-visible { box-shadow: inset 0 0 0 2px rgba(200,255,0,0.5); }
+.sp[data-idle] { cursor: none; }
+.sp-controls {
+  position: absolute; left: 0; right: 0; bottom: 0; padding: 28px 12px 6px; opacity: 0; transition: opacity .25s;
+  background: linear-gradient(to top, rgba(0,0,0,0.78), rgba(0,0,0,0.35) 60%, transparent);
+}
+.sp-controls[data-show] { opacity: 1; }
+.sp-bar { position: relative; height: 18px; display: flex; align-items: center; cursor: pointer; touch-action: none; }
+.sp-track { position: relative; width: 100%; height: 4px; border-radius: 999px; background: rgba(255,255,255,0.22); overflow: hidden; transition: height .15s; }
+.sp-bar:hover .sp-track, .sp-bar[data-drag] .sp-track { height: 6px; }
+.sp-buf { position: absolute; inset: 0 auto 0 0; background: rgba(255,255,255,0.3); }
+.sp-done { position: absolute; inset: 0 auto 0 0; background: #fff; }
+.sp-thumb {
+  position: absolute; top: 50%; width: 12px; height: 12px; margin: -6px 0 0 -6px; border-radius: 50%; background: #fff;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.5); transition: transform .15s; pointer-events: none;
+}
+.sp-bar:hover .sp-thumb { transform: scale(1.15); }
+.sp-bar[data-drag] .sp-thumb { transform: scale(1.35); }
+/* the time of the moment under the mouse, above the bar */
+.sp-tip { position: absolute; bottom: 20px; translate: -50% 0; pointer-events: none; }
+.sp-tip-time {
+  padding: 2px 7px; border-radius: 6px; font-size: 11px; font-weight: 700; font-variant-numeric: tabular-nums; color: #fff;
+  background: rgba(0,0,0,0.75);
+}
+.sp-row { display: flex; align-items: center; gap: 4px; height: 34px; }
+.sp-btn {
+  width: 34px; height: 34px; display: grid; place-items: center; border-radius: 8px; color: #fff; opacity: .9;
+  transition: background-color .15s, opacity .15s;
+}
+.sp-btn:hover { opacity: 1; background: rgba(255,255,255,0.12); }
+.sp-btn:focus-visible { outline: 2px solid rgba(200,255,0,0.6); outline-offset: 1px; }
+.sp-time { margin-left: 4px; font-size: 13px; font-weight: 600; color: #fff; }
+.sp-time-of { color: rgba(255,255,255,0.6); font-weight: 500; }
+@media (prefers-reduced-motion: reduce) { .sp-controls, .sp-track, .sp-thumb { transition: none; } }
+
+/* Ask AI ⇄ Best moments (clip board): a plain segmented switch. A dark track; under the picked
+   side a tile of light glass slides across (smoothly: no bounce, no glow). The picked side's
+   words are white and its icon lime — the only colour; the other side is grey. */
 .ai-seg {
-  position: relative; display: grid; grid-template-columns: 1fr 1fr; padding: 4px; border-radius: 12px;
-  background: rgba(0,0,0,0.35);
-  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.08), inset 0 2px 4px rgba(0,0,0,0.45);
+  position: relative; display: grid; grid-template-columns: 1fr 1fr; padding: 3px; border-radius: 11px;
+  background: rgba(0,0,0,0.3); box-shadow: inset 0 0 0 1px rgba(255,255,255,0.07);
 }
 .ai-seg-knob {
-  position: absolute; top: 4px; bottom: 4px; left: 4px; width: calc(50% - 4px); border-radius: 9px; pointer-events: none;
-  background: linear-gradient(180deg, rgba(200,255,0,0.14), rgba(200,255,0,0.05)), #121212;
-  box-shadow: inset 0 0 0 1px rgba(200,255,0,0.4), inset 0 1px 0 rgba(255,255,255,0.07),
-    0 4px 14px -6px rgba(200,255,0,0.35), 0 2px 6px -2px rgba(0,0,0,0.8);
-  transition: transform .42s cubic-bezier(.34,1.3,.64,1);
+  position: absolute; top: 3px; bottom: 3px; left: 3px; width: calc(50% - 3px); border-radius: 8px; pointer-events: none;
+  background: linear-gradient(180deg, rgba(255,255,255,0.11), rgba(255,255,255,0.07));
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.1), inset 0 1px 0 rgba(255,255,255,0.08), 0 1px 3px rgba(0,0,0,0.5);
+  transition: transform .28s cubic-bezier(.4,0,.2,1);
 }
 .ai-seg[data-side="right"] .ai-seg-knob { transform: translateX(100%); }
-.ai-seg[data-side="left"]  .ai-seg-knob { animation: ai-seg-squash-l .42s ease; }
-.ai-seg[data-side="right"] .ai-seg-knob { animation: ai-seg-squash-r .42s ease; }
-@keyframes ai-seg-squash-l { 0%, 100% { scale: 1 1; } 40% { scale: 1.08 .9; } }
-@keyframes ai-seg-squash-r { 0%, 100% { scale: 1 1; } 40% { scale: 1.08 .9; } }
 .ai-seg-opt {
   position: relative; z-index: 1; display: flex; align-items: center; justify-content: center; gap: 6px;
-  height: 32px; padding: 0 10px; border-radius: 9px; white-space: nowrap;
-  font-size: 12px; font-weight: 600; color: rgba(255,255,255,0.5); transition: color .25s ease;
+  min-width: 0; height: 30px; padding: 0 8px; border-radius: 8px; white-space: nowrap;
+  font-size: 12px; font-weight: 600; color: rgba(255,255,255,0.5); transition: color .2s ease;
 }
-.ai-seg-opt { min-width: 0; }
 .ai-seg-opt > span:not(.ai-seg-badge) { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .ai-seg-opt svg, .ai-seg-badge { flex-shrink: 0; }
-.ai-seg-opt svg { transition: transform .35s cubic-bezier(.34,1.56,.64,1), opacity .25s; opacity: .7; }
+.ai-seg-opt svg { transition: color .2s; }
 .ai-seg-opt:hover:not([data-on]) { color: rgba(255,255,255,0.85); }
-.ai-seg-opt[data-on] { color: #c8ff00; }
-.ai-seg-opt[data-on] svg { opacity: 1; transform: scale(1.12); }
+.ai-seg-opt[data-on] { color: #fff; }
+.ai-seg-opt[data-on] svg { color: #c8ff00; }
 .ai-seg-opt:focus-visible { outline: 2px solid rgba(200,255,0,0.6); outline-offset: 1px; }
 .ai-seg-badge {
-  min-width: 18px; height: 16px; padding: 0 5px; border-radius: 999px; display: inline-grid; place-items: center;
-  font-size: 10px; font-weight: 700; line-height: 1; color: rgba(255,255,255,0.75); background: rgba(255,255,255,0.1);
-  transition: background-color .25s, color .25s;
+  min-width: 16px; height: 16px; padding: 0 4px; border-radius: 999px; display: inline-grid; place-items: center; box-sizing: border-box;
+  font-size: 10px; font-weight: 700; line-height: 1; color: rgba(255,255,255,0.7); background: rgba(255,255,255,0.1);
+  transition: background-color .2s, color .2s;
 }
+/* (the count of moments found, where the star was: lime on the picked side, as the star is) */
 .ai-seg-opt[data-on] .ai-seg-badge { color: #000; background: #c8ff00; }
-@media (prefers-reduced-motion: reduce) {
-  .ai-seg-knob, .ai-seg[data-side] .ai-seg-knob { transition: none; animation: none; }
-  .ai-seg-opt svg { transition: none; }
+@media (prefers-reduced-motion: reduce) { .ai-seg-knob { transition: none; } }
+
+/* The captions' box on the editor's preview (VideoPreview CaptionBox): a faint outline when
+   pointed at, so it's clear the captions can be grabbed (a picked box has its own lime outline) */
+.cap-box:not([data-picked]):hover { border-color: rgba(255,255,255,0.55) !important; border-style: dashed !important; }
+
+/* The "+" on a join of the editor's film strip (SegmentTimeline): a small round button on the
+   strip's bottom edge, right on the seam — quiet until pointed at, then lime */
+.tl-seam-add {
+  width: 18px; height: 18px; translate: -50% -50%; border-radius: 50%; cursor: pointer;
+  color: #0a0a0a; background: #f4f4f5; box-shadow: 0 0 0 2px var(--ed-ruler, #111), 0 2px 6px rgba(0,0,0,0.6);
+  transition: background-color .15s, transform .15s;
 }
+.tl-seam-add:hover, .tl-seam-add[data-open] { background: #c8ff00; transform: scale(1.15); }
+.tl-seam-add:focus-visible { outline: 2px solid #c8ff00; outline-offset: 2px; }
 
 /* ── Editor timeline bar (EditorShell): quiet icon buttons, a thin divider, a zoom slider ── */
 .ed-tl-btn {
