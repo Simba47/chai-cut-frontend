@@ -2271,7 +2271,7 @@ export function EditorShell({
       const next = rippleCut(state, Math.round(a), Math.round(b), rippleDelete)
       skipCanvasTransitionRef.current = true
       seekAfterInsertRef.current = a
-      editor.applyTrim(next.segments, next.keyframes, editor.trims)
+      editor.applyTrim(next.segments, next.keyframes, editor.trims, rangeAfterPieces(next.segments))
       useMediaStore.setState({ overlays: next.overlays, textOverlays: next.textOverlays, audioTracks: next.audioTracks, transitions: next.transitions })
       return
     }
@@ -2416,6 +2416,18 @@ export function EditorShell({
     skipCanvasTransitionRef.current = true
     st.applyTrim(segs, st.keyframes, [])
   }
+  /**
+   * A clip of pieces whose last video put in between (and last skip) goes in an edit plays simply
+   * again — over its stretch of the video (rawClip). Video cut from its end meanwhile must stay cut:
+   * the clip's own end comes in to where its last part now ends (same undo step). Undefined: no change.
+   */
+  function rangeAfterPieces(segs: SegmentLocal[]): [number, number] | undefined {
+    const all = piecesOf(segs, mainVideoId, s => isShot(s, mainVideoId))
+    if (!all.length || insertsOf(segs, mainVideoId).length || all.some(p => p.from != null && Math.abs(p.from - p.at) > 1)) return undefined
+    const last = all[all.length - 1]
+    const end = rawClip.start_ms + (last.from ?? last.at) + last.ms
+    return end < rawClip.end_ms - 1 ? [rawClip.start_ms, Math.round(end)] : undefined
+  }
   /** An inserted video taken out: what came after it moves back, and the parts it had cut in two join again */
   function removeInsert(segId: string) {
     const editor = useEditorStore.getState(), media = useMediaStore.getState()
@@ -2429,7 +2441,7 @@ export function EditorShell({
     const next = rippleCut(state, ins.start_ms, ins.end_ms, rippleDelete)
     skipCanvasTransitionRef.current = true
     seekAfterInsertRef.current = ins.start_ms
-    editor.applyTrim(next.segments, next.keyframes, editor.trims)
+    editor.applyTrim(next.segments, next.keyframes, editor.trims, rangeAfterPieces(next.segments))
     useMediaStore.setState({ overlays: next.overlays, textOverlays: next.textOverlays, audioTracks: next.audioTracks, transitions: next.transitions })
     // The part before it and the part after it are one stretch of the video again
     const before = next.segments.find(s => !isShot(s, mainVideoId) && Math.abs(s.end_ms - ins.start_ms) <= 1)
@@ -2505,7 +2517,7 @@ export function EditorShell({
       if (ins.end_ms - ins.start_ms - (b - a) < 300) return
       const next = rippleCut(state, Math.round(a), Math.round(b), rippleDelete)
       skipCanvasTransitionRef.current = true
-      editor.applyTrim(next.segments, next.keyframes, editor.trims)
+      editor.applyTrim(next.segments, next.keyframes, editor.trims, rangeAfterPieces(next.segments))
       useMediaStore.setState({ overlays: next.overlays, textOverlays: next.textOverlays, audioTracks: next.audioTracks, transitions: next.transitions })
       return
     }
