@@ -107,8 +107,13 @@ export default async function EditorPage({
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let segments: any[] = segmentsRaw as any[]
 
-  // Heal segments with accidental absolute timestamps
-  const clipDuration = clip.end_ms - clip.start_ms
+  // Heal segments with accidental absolute timestamps. Videos put in between make the clip longer
+  // than its stretch of the video (modules/editor/inserts.ts): that time is the clip's too.
+  const insertedMs = segments
+    .filter(s => s.video_offset_ms != null && !String(s.layout).startsWith('frame_')
+      && s.crop_boxes?.[0]?.source_video_id && s.crop_boxes[0].source_video_id !== clip.video_id)
+    .reduce((t, s) => t + Math.max(0, Number(s.end_ms) - Number(s.start_ms)), 0)
+  const clipDuration = clip.end_ms - clip.start_ms + insertedMs
   const healPromises: Promise<unknown>[] = []
   for (const seg of segments) {
     if (seg.start_ms >= clipDuration || seg.end_ms > clipDuration) {

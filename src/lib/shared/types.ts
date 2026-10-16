@@ -170,6 +170,11 @@ export interface Segment {
   hidden?: boolean
   muted?: boolean
   locked?: boolean
+  /**
+   * An inserted video (modules/editor/inserts.ts): where the main video stands still while it
+   * plays (clip-relative ms of the main video). Null for every other section.
+   */
+  video_offset_ms?: number | null
 }
 
 export interface CropBox {

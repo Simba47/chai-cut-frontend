@@ -173,7 +173,6 @@ function useWide() {
     () => true,
   )
 }
-const DEFAULT_CLIP_MS = 60_000
 
 // ── helpers ────────────────────────────────────────────────────────────────────
 
@@ -525,12 +524,10 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
   }
 
   function openForm() {
-    // Start from wherever the user has scrubbed to — they usually just found the moment
-    const start = Math.floor(nowMs / 1000) * 1000
-    const end = maxMs > 0 ? Math.min(maxMs, start + DEFAULT_CLIP_MS) : start + DEFAULT_CLIP_MS
+    // Every new clip starts from zero: the user types (or picks) its start and end
     setFormTitle('')
-    setFormStart(msToDisplay(start))
-    setFormEnd(msToDisplay(end))
+    setFormStart(msToDisplay(0))
+    setFormEnd(msToDisplay(0))
     setFormError(null)
     setShowForm(true)
   }
@@ -990,7 +987,9 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
             const a = parseTime(formStart), z = parseTime(formEnd)
             const ok = a != null && z != null && z > a
             return (
-              <span className="shrink-0 flex flex-col items-center gap-1" title="Clip length">
+              <button type="button" className="shrink-0 flex flex-col items-center gap-1 rounded-lg px-1 py-1 transition-colors hover:bg-white/5" title="Clip length · go to the end time"
+                aria-label="Go to the end time"
+                onClick={() => { const el = document.getElementById(`clip-end-${withHours ? 'h' : 'm'}`) as HTMLInputElement | null; el?.focus(); requestAnimationFrame(() => el?.select()) }}>
                 <span className="px-2 py-0.5 rounded-full text-[11px] font-bold tabular-nums"
                   style={ok ? { color: ACCENT, background: 'rgba(200,255,0,0.1)' } : { color: 'rgba(255,255,255,0.35)', background: 'rgba(255,255,255,0.05)' }}>
                   {ok ? msToDisplay(z! - a!) : '–'}
@@ -998,7 +997,7 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
                 <svg width="34" height="6" viewBox="0 0 34 6" fill="none" aria-hidden="true">
                   <path d="M1 3h31M29 1l3 2-3 2" stroke={ok ? ACCENT : 'rgba(255,255,255,0.3)'} strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
                 </svg>
-              </span>
+              </button>
             )
           })()}
           <div style={{ width: withHours ? 140 : 100 }}>
@@ -1732,6 +1731,10 @@ function TimeField({ id, label, value, onChange, showHours = true, nextId }: { i
     if (e.key === 'Backspace' && (!el.value || atStart) && i > first) { e.preventDefault(); go(i - 1, 'end'); return }
     if (e.key === 'ArrowLeft' && atStart && i > first) { e.preventDefault(); go(i - 1, 'end'); return }
     if (e.key === 'ArrowRight' && atEnd && i < 2) { e.preventDefault(); go(i + 1); return }
+    // Next: → from the seconds (or Enter anywhere in Start) goes on to the End time
+    if (nextId && ((e.key === 'ArrowRight' && i === 2 && (atEnd || el.selectionEnd === el.value.length)) || e.key === 'Enter')) {
+      e.preventDefault(); finish(el); return
+    }
     if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
       e.preventDefault()
       const n = (Number(live.current[i] || 0) + (e.key === 'ArrowUp' ? 1 : -1) + max(i) + 1) % (max(i) + 1)
@@ -1761,6 +1764,8 @@ function TimeField({ id, label, value, onChange, showHours = true, nextId }: { i
               <input ref={refs[i]} id={`${id}-${'hms'[i]}`} type="text" inputMode="numeric" autoComplete="off"
                 aria-label={`${label} ${names[i]}`} placeholder={i === first && !showHours ? '0' : '00'} value={i === first && !showHours && p.startsWith('0') && p.length === 2 ? p.slice(1) : p}
                 onChange={e => type(i, e.target.value)} onKeyDown={e => key(i, e)} onPaste={paste}
+                // (a phone keyboard's action key: "next" moves on, as Enter does here)
+                enterKeyHint={nextId ? 'next' : 'done'}
                 onFocus={e => { typing.current = null; e.currentTarget.select() }}
                 // (the click that focused it would otherwise drop the selection and leave the cursor in the old digits)
                 onMouseUp={e => e.preventDefault()}

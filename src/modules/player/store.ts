@@ -9,11 +9,10 @@ import { create } from 'zustand'
 // redraws from) follows at most every STORE_EVERY_MS — the first change at once, the last one
 // always. What has to move every frame (the playhead line, the time, the preview's overlays)
 // reads the exact time from the live feed below instead (useLiveTimeMs, liveTime.get()).
-// While playing the editor needs it even less often: everything that plays (the preview, the
+// While playing the editor doesn't need it at all: everything that plays (the preview, the
 // sound, the music, the playhead, the timeline's scrolling) follows the live feed, and the rest
-// (which section the panels show as current) can be a moment behind.
+// (which section the panels show as current) catches up when playing stops.
 const STORE_EVERY_MS = 100
-const STORE_EVERY_PLAYING_MS = 1000
 let liveMs = 0
 const listeners = new Set<() => void>()
 export const liveTime = {
@@ -66,7 +65,11 @@ function requestStore() {
   if (painting) { wantAfterPaint = true; return }
   const st = usePlayerStore.getState()
   if (st.scrubbing || st.currentTimeMs === liveMs) return
-  const every = st.playing ? STORE_EVERY_PLAYING_MS : STORE_EVERY_MS
+  // While playing nothing waits on it (everything that plays follows the live feed): the editor
+  // isn't redrawn at all then — each redraw froze the picture for a moment, at every join and
+  // every second — and catches up when playing stops (setPlaying)
+  if (st.playing) return
+  const every = STORE_EVERY_MS
   const since = performance.now() - lastStoreAt
   if (since >= every) { storeNow(); return }
   storeTimer = setTimeout(() => { storeTimer = null; storeNow() }, every - since)
@@ -92,5 +95,10 @@ export const usePlayerStore = create<PlayerState & PlayerActions>()((set, get) =
     if (!on && get().currentTimeMs !== liveMs) storeNow()
   },
   setDurationMs: (ms) => set({ durationMs: ms }),
-  setPlaying: (playing) => set({ playing }),
+  setPlaying: (playing) => {
+    if (get().playing === playing) return
+    set({ playing })
+    // Stopped: the editor catches up with where the playhead is now
+    if (!playing && get().currentTimeMs !== liveMs) storeNow()
+  },
 }))
