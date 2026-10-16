@@ -2274,7 +2274,7 @@ export function SegmentTimeline({
                   const mainId = `main:${lane.lane}`
                   const pulsing = pulseLane === lane.lane
                   return (
-                    <div key={laneKey} className="group/lane relative" style={{ height: FRAME_LANE_H, cursor: 'pointer' }}
+                    <div key={laneKey} data-lane={`frame:${laneKey}`} className="group/lane relative" style={{ height: FRAME_LANE_H, cursor: 'pointer' }}
                       onPointerDown={e => { onSelectFrameItem?.(null); handleTrackDrag(e) }}>
                       {frames.filter(o => o.id !== seg?.id).map(o => otherFrame(o, lane.lane))}
                       {seg && frame && row && (<>
