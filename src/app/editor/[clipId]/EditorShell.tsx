@@ -34,7 +34,7 @@ import { useConfirm } from '@/components/editor/ConfirmDialog'
 import { EditorTour, hasSeenEditorTour } from '@/components/editor/EditorTour'
 import { FrameAddMenu, type AddChoice } from '@/components/editor/FrameAddMenu'
 import { createFrameMediaPool } from '@/modules/editor/frameMedia'
-import { FRAME_TEMPLATES, isFrameLayout, frameOf, mainAudioVolume, frameLanes, frameSlotLabels, emptySlotStretches, slotOffers, DEFAULT_CORNERS, isTextLane, textLaneLook, type TextLane } from '@/modules/editor/frames'
+import { FRAME_TEMPLATES, isFrameLayout, frameOf, mainAudioVolume, frameLanes, frameSlotLabels, emptySlotStretches, slotOffers, newItemCorners, frameSlotCount, itemAt, isTextLane, textLaneLook, type TextLane } from '@/modules/editor/frames'
 import { signOut } from 'next-auth/react'
 import { PlatformOverlay, PLATFORM_SAFE, type Platform } from '@/components/editor/PlatformOverlay'
 // ── Domain stores ──────────────────────────────────────────────────────────────
@@ -2113,7 +2113,7 @@ export function EditorShell({
     if (!videoLibraryRef.current[videoId]) loadVideoLibrary()
     if (!p) return
     if (p.replaceId) { updateFrameItem(p.segId, p.replaceId, { kind: 'video', source_video_id: videoId, source_offset_ms: 0, image_path: null, image_url: null }); return }
-    if (p.lane !== undefined) addToLane(p.segId, p.lane, p.t ?? currentTimeMs, { kind: 'video', source_video_id: videoId, source_offset_ms: 0, volume: 1, muted: false, corners: DEFAULT_CORNERS })
+    if (p.lane !== undefined) addToLane(p.segId, p.lane, p.t ?? currentTimeMs, { kind: 'video', source_video_id: videoId, source_offset_ms: 0, volume: 1, muted: false, corners: cornersFor(p.segId, p.lane) })
   }
 
   function handlePickedPhoto(storagePath: string, url: string) {
@@ -2121,7 +2121,55 @@ export function EditorShell({
     setFramePicker(null)
     if (!p) return
     if (p.replaceId) { updateFrameItem(p.segId, p.replaceId, { kind: 'photo', image_path: storagePath, image_url: url || null, source_video_id: null }); return }
-    if (p.lane !== undefined) addToLane(p.segId, p.lane, p.t ?? currentTimeMs, { kind: 'photo', image_path: storagePath, image_url: url || null, motion: 'none', corners: DEFAULT_CORNERS })
+    if (p.lane !== undefined) addToLane(p.segId, p.lane, p.t ?? currentTimeMs, { kind: 'photo', image_path: storagePath, image_url: url || null, motion: 'none', corners: cornersFor(p.segId, p.lane) })
+  }
+  /** Corners a photo or video put in a frame's slot starts with: the frame's own (newItemCorners) */
+  function cornersFor(segId: string, lane: FrameLane): number {
+    const seg = segments.find(x => x.id === segId)
+    return seg && isFrameLayout(seg.layout) && typeof lane === 'number' ? newItemCorners(seg.layout, lane) : 0
+  }
+
+  /**
+   * Where a photo or video put in at `atMs` goes when a frame shows there. Dropped on one of its
+   * lanes (`frame:<slot>`): that slot — or `refused` (with why) when the slot doesn't take it.
+   * Added without a lane (the Media library's +): the first slot that takes it and is free at that
+   * moment (no photo or video of its own, not showing the main video). Null: not into a frame
+   * (it goes on top, as anywhere else).
+   */
+  function frameSlotFor(atMs: number, lane: string | null, kind: 'video' | 'photo'): { segId: string; slot: number } | 'refused' | null {
+    const seg = sections.find(s => atMs >= s.start_ms && atMs < s.end_ms && isFrameLayout(s.layout))
+    if (!seg || !isFrameLayout(seg.layout)) return null
+    const m = lane ? /^frame:(.+)$/.exec(lane) : null
+    const what = kind === 'photo' ? 'a photo' : 'a video'
+    if (m) {
+      const slot = Number(m[1])
+      if (!Number.isInteger(slot)) { notifyLocked(`That’s a text area: drop ${what} on a picture lane`); return 'refused' }
+      if (slot >= frameSlotCount(seg.layout) || !slotOffers(seg.layout, slot)[kind]) {
+        notifyLocked(`This slot doesn’t take ${what}`); return 'refused'
+      }
+      if (sectionBlocked(seg.id)) return 'refused'
+      return { segId: seg.id, slot }
+    }
+    if (lane !== null || sectionBlocked(seg.id)) return null
+    const f = frameOf(seg)
+    const main = f.main_slots ?? [0]
+    for (let slot = 0; slot < frameSlotCount(seg.layout); slot++) {
+      if (!slotOffers(seg.layout, slot)[kind] || main.includes(slot) || itemAt(f, slot, atMs, seg)) continue
+      return { segId: seg.id, slot }
+    }
+    return null
+  }
+  /** A video from the user's library put in a frame's slot at `atMs` */
+  function videoIntoSlot(target: { segId: string; slot: number }, videoId: string, atMs: number) {
+    pause()
+    seekToMs(atMs)
+    addToLane(target.segId, target.slot, atMs, { kind: 'video', source_video_id: videoId, source_offset_ms: 0, volume: 1, muted: false, corners: cornersFor(target.segId, target.slot) })
+  }
+  /** A stored photo put in a frame's slot at `atMs` */
+  function photoIntoSlot(target: { segId: string; slot: number }, storagePath: string, url: string | null, atMs: number) {
+    pause()
+    seekToMs(atMs)
+    addToLane(target.segId, target.slot, atMs, { kind: 'photo', image_path: storagePath, image_url: url || null, motion: 'none', corners: cornersFor(target.segId, target.slot) })
   }
 
   // "+" in the preview (or an empty lane in the panel) points at the lane on the timeline.
@@ -3029,11 +3077,13 @@ export function EditorShell({
 
   // ── Drag and drop: files from the computer (on the timeline or the sidebar), stock footage
   //    from the B-roll search (on the timeline) ──
-  const dropTargetRef = useRef<{ atMs: number; lane: 'broll' | 'video' | 'insert' } | null>(null)
+  const dropTargetRef = useRef<{ atMs: number; lane: 'broll' | 'video' | 'insert'; frame?: { segId: string; slot: number } } | null>(null)
   const dropUpload = useVideoUpload(videoId => {
     const t = dropTargetRef.current
     dropTargetRef.current = null
-    if (t?.lane === 'insert') {
+    // Dropped on a frame's lane: into that slot once it's uploaded
+    if (t?.frame && segments.some(x => x.id === t.frame!.segId)) { loadVideoLibrary(); videoIntoSlot(t.frame, videoId, t.atMs) }
+    else if (t?.lane === 'insert') {
       // Into the main strip, in between (inserts.ts)
       loadVideoLibrary().then(() => videoLengthMs(videoId)).then(len => insertVideo(videoId, t.atMs, len))
         .catch(e => notifyLocked(e instanceof Error ? e.message : 'Could not put the video in'))
@@ -3197,6 +3247,16 @@ export function EditorShell({
       return
     }
     preferTrack(lane)
+    // A frame showing there: into its slot (the one dropped on, or the first free one)
+    if (item.kind === 'image' || item.kind === 'video') {
+      const target = frameSlotFor(atMs, lane, item.kind === 'image' ? 'photo' : 'video')
+      if (target === 'refused') return
+      if (target) {
+        if (item.kind === 'image') photoIntoSlot(target, item.id, item.url, atMs)
+        else { if (!videoLibraryRef.current[item.id]) loadVideoLibrary(); videoIntoSlot(target, item.id, atMs) }
+        return
+      }
+    }
     if (item.kind === 'image') { addPhotoPathAt(item.id, item.url, atMs); return }
     if (item.kind === 'audio') { addStoredMusic(item.id, item.url, atMs); return }
     addUploadedVideo(item.id, atMs, lane === 'broll' ? 'broll' : 'video').catch(e => notifyLocked(e instanceof Error ? e.message : 'Could not add the video'))
@@ -3219,11 +3279,21 @@ export function EditorShell({
     pause()
     preferTrack(lane)
     if (kind === 'music') { addMusicTrack(f, Math.round(atMs)); openSettings('music'); return }
-    if (kind === 'photo') { addPhotoFileAt(f, atMs).catch(e => notifyLocked(e instanceof Error ? e.message : 'Could not add the photo')); return }
+    // Dropped on a frame's lane: into that slot
+    const target = (kind === 'photo' || kind === 'video') && lane?.startsWith('frame:') ? frameSlotFor(atMs, lane, kind) : null
+    if (target === 'refused') return
+    if (kind === 'photo') {
+      if (target) {
+        uploadPhotoFile(f).then(d => { photoIntoSlot(target, d.storage_path, d.preview_url, atMs); loadLibrary() })
+          .catch(e => notifyLocked(e instanceof Error ? e.message : 'Could not add the photo'))
+        return
+      }
+      addPhotoFileAt(f, atMs).catch(e => notifyLocked(e instanceof Error ? e.message : 'Could not add the photo')); return
+    }
     if (kind === 'video') {
       if (dropUploading) { notifyLocked('Wait for the upload in progress to finish'); return }
       const asBroll = lane === 'broll' || (lane === null && tool === 'media' && mediaSection === 'library')
-      dropTargetRef.current = { atMs, lane: lane === 'main' ? 'insert' : asBroll ? 'broll' : 'video' }
+      dropTargetRef.current = { atMs, lane: lane === 'main' ? 'insert' : asBroll ? 'broll' : 'video', ...(target ? { frame: target } : {}) }
       openMedia(asBroll ? 'library' : 'media')
       dropUpload.start(f)
       return
@@ -3238,6 +3308,14 @@ export function EditorShell({
     const len = item.duration > 0 ? Math.round(item.duration * 1000) : 5000
     pause()
     preferTrack(lane ?? null)
+    // Dropped on a frame's lane: into that slot
+    const target = lane?.startsWith('frame:') ? frameSlotFor(atMs, lane, 'video') : null
+    if (target === 'refused') return
+    if (target) {
+      importStock(item).then(videoId => videoIntoSlot(target, videoId, atMs))
+        .catch(e => notifyLocked(e instanceof Error ? e.message : 'Could not add that video'))
+      return
+    }
     addStockBroll(item, len, atMs).catch(e => notifyLocked(e instanceof Error ? e.message : 'Could not add that video'))
   }
   /** A video on top picked (on its lane, in a list): Hide / Mute / Lock, Trim and Delete act on it (its ends trim it on the timeline). The section under it is not picked. */
@@ -3282,9 +3360,8 @@ export function EditorShell({
   }
 
   /** Save the stock video as the user's asset, then put it in at the playhead as a muted cutaway */
-  async function addStockBroll(item: StockResult, lengthMs: number, atMs?: number) {
-    const at = Math.max(0, Math.min(atMs ?? currentTimeMs, clipLengthMs - 500))
-    if (rangeBlocked(at, Math.min(clipLengthMs, at + lengthMs))) return
+  /** Stock footage copied into the user's videos (it becomes one of their videos): its id */
+  async function importStock(item: StockResult): Promise<string> {
     const res = await fetch('/api/stock/import', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ref: item.ref, url: item.url, title: item.title }),
@@ -3293,8 +3370,14 @@ export function EditorShell({
     if (!res.ok) throw new Error(data.error ?? 'Could not add that video')
     videoLibraryRef.current = { ...videoLibraryRef.current, [data.video_id]: { url: data.url, title: data.title, stock: true } }
     setVideoLibrary(videoLibraryRef.current)
+    return data.video_id as string
+  }
+  async function addStockBroll(item: StockResult, lengthMs: number, atMs?: number) {
+    const at = Math.max(0, Math.min(atMs ?? currentTimeMs, clipLengthMs - 500))
+    if (rangeBlocked(at, Math.min(clipLengthMs, at + lengthMs))) return
+    const videoId = await importStock(item)
     const end = Math.min(clipLengthMs, at + lengthMs)
-    const segId = placeBroll(data.video_id, at, end, undefined, freeTrack(at, end))
+    const segId = placeBroll(videoId, at, end, undefined, freeTrack(at, end))
     pickShot(segId)
     seekToMs(at)
   }

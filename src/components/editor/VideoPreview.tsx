@@ -10,7 +10,7 @@ import type { BoxPosition } from '@/lib/interpolation'
 import type { TextCase } from './CaptionStyler'
 import { applyCase } from './CaptionStyler'
 import { normalizedSlotAspect, fitToAspect } from '@/modules/editor/utils'
-import { isFrameLayout, frameSlotLabels, frameLanesFor, frameBandShown, frameOf, itemAt, captionBandAt, cornerGeometry, MIN_ROW_H, mainRect, boxRect, MIN_BOX as MIN_MAIN_BOX, frameAreas, frameBase, areaRadius, frameSlotSize, isTextLane, frameRows } from '@/modules/editor/frames'
+import { isFrameLayout, frameSlotLabels, frameLanesFor, frameBandShown, frameOf, itemAt, captionBandAt, cornerGeometry, MIN_ROW_H, mainRect, boxRect, MIN_BOX as MIN_MAIN_BOX, frameAreas, frameBase, areaRadius, frameSlotSize, isTextLane, frameRows, BLUR_SOURCE_SLOT } from '@/modules/editor/frames'
 import type { FrameMediaPool } from '@/modules/editor/frameMedia'
 import { useLiveTimeMs, liveTime, usePlayerStore } from '@/modules/player/store'
 import { addedVideoBox } from '@/modules/editor/visibility'
@@ -579,13 +579,15 @@ function FrameTextBox({ row, item, selected, editing, onSelect, onChange, onDele
 function inSlot(ctx: CanvasRenderingContext2D, corners: CornerStyle | undefined, a: AreaPx,
   draw: (dx: number, dy: number, dw: number, dh: number) => void,
   /** The media's box inside the slot (shares of the slot) when it was resized / moved; absent = the whole slot */
-  rect?: { x: number; y: number; w: number; h: number } | null, fill = '#000') {
+  rect?: { x: number; y: number; w: number; h: number } | null, fill = '#000',
+  /** Round the box's corners. Off for media shown whole (contain): the export keeps those square */
+  round = true) {
   const W = ctx.canvas.width
   const g = cornerGeometry(corners)
   ctx.save()
   clipArea(ctx, a)
   if (!g && !rect) { draw(a.x, a.y, a.w, a.h); ctx.restore(); return }
-  const k = W / 1080, m = g ? g.inset * k : 0, r = g ? g.radius * k : 0
+  const k = W / 1080, m = g ? g.inset * k : 0, r = g && round ? g.radius * k : 0
   const bx = a.x + (rect?.x ?? 0) * a.w, by = a.y + (rect?.y ?? 0) * a.h, bw = (rect?.w ?? 1) * a.w, bh = (rect?.h ?? 1) * a.h
   if (fill !== 'none') { ctx.fillStyle = fill; ctx.fillRect(a.x, a.y, a.w, a.h) }
   ctx.beginPath()
@@ -625,11 +627,24 @@ function paintFrame(
   const base = frameBase(layout)
   ctx.fillStyle = base === 'band' ? bandBg : '#000'
   ctx.fillRect(0, 0, W, H)
-  if (base === 'blur' && vW && vH) {
-    ctx.save()
-    ctx.filter = `blur(${Math.round(W / 22)}px) brightness(0.65)`
-    coverSource(ctx, video, vW, vH, -W * 0.05, -H * 0.05, W * 1.1, H * 1.1)
-    ctx.restore()
+  if (base === 'blur') {
+    // The blurred picture follows what its slot shows: a photo or video put there, else the main video
+    const over = itemAt(frame, BLUR_SOURCE_SLOT, tMs, seg)
+    let src: CanvasImageSource | null = null, sw = 0, sh = 0
+    if (over && !over.hidden && over.kind === 'photo') {
+      const img = over.image_url ? pool?.image(over.image_url) : null
+      if (img && img.complete && img.naturalWidth) { src = img; sw = img.naturalWidth; sh = img.naturalHeight }
+    } else if (over && !over.hidden && over.kind === 'video') {
+      const v = pool?.video(over)
+      if (v && v.readyState >= 2) { src = v; sw = v.videoWidth; sh = v.videoHeight }
+    }
+    if (!src && vW && vH) { src = video; sw = vW; sh = vH }
+    if (src) {
+      ctx.save()
+      ctx.filter = `blur(${Math.round(W / 22)}px) brightness(0.65)`
+      coverSource(ctx, src, sw, sh, -W * 0.05, -H * 0.05, W * 1.1, H * 1.1)
+      ctx.restore()
+    }
   }
   for (const area of frameAreas(layout, frameBandShown(seg), seg.frame?.row_h)) {
     const a = px(area)
@@ -659,8 +674,11 @@ function paintFrame(
     if (main.has(area.slot) && vW && vH) {
       const box = seg.crop_boxes.find(b => b.slot_index === area.slot)
       if (contain) {
-        // Shown whole: the video isn't cropped here
-        inSlot(ctx, frame.main_corners?.[String(area.slot)], a, (dx, dy, dw, dh) => containSource(ctx, video, vW, vH, dx, dy, dw, dh), mainRect(frame, area.slot), 'none')
+        // Shown whole: the video isn't cropped here. A photo or video put in this slot replaces it
+        // while it shows (shown whole too, it wouldn't cover it: the main video would peek around)
+        if (!(it && (it.kind === 'photo' || it.kind === 'video'))) {
+          inSlot(ctx, frame.main_corners?.[String(area.slot)], a, (dx, dy, dw, dh) => containSource(ctx, video, vW, vH, dx, dy, dw, dh), mainRect(frame, area.slot), 'none', false)
+        }
       } else if (box) {
         const p = getPositionAt(box.id, tMs)
         inSlot(ctx, frame.main_corners?.[String(area.slot)], a,
@@ -677,12 +695,12 @@ function paintFrame(
       if (img && img.complete && img.naturalWidth) {
         const from = Math.max(it.start_ms, seg.start_ms), to = Math.min(it.end_ms, seg.end_ms)
         const m = photoMotion(it.motion, (tMs - from) / Math.max(1, to - from))
-        inSlot(ctx, it.corners, a, put(img, img.naturalWidth, img.naturalHeight, m.zoom, m.panX), boxRect(it.rect), contain ? fill : '#000')
+        inSlot(ctx, it.corners, a, put(img, img.naturalWidth, img.naturalHeight, m.zoom, m.panX), boxRect(it.rect), contain ? fill : '#000', !contain)
       }
       continue
     }
     const v = pool?.video(it)
-    if (v && v.readyState >= 2) inSlot(ctx, it.corners, a, put(v, v.videoWidth, v.videoHeight), boxRect(it.rect), contain ? fill : '#000')
+    if (v && v.readyState >= 2) inSlot(ctx, it.corners, a, put(v, v.videoWidth, v.videoHeight), boxRect(it.rect), contain ? fill : '#000', !contain)
   }
 }
 
