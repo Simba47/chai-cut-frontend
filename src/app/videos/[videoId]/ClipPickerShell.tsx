@@ -376,7 +376,9 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
     return () => clearInterval(t)
   }, [waitingDl])
   // Which section of the clip list is showing
-  const [clipTab, setClipTab] = useState<ClipTab>('all')
+  // Manual edit (picked on the dashboard): no AI tools, and only "Your clips" and "Favorites" in the list
+  const manualOnly = startWith === 'manual'
+  const [clipTab, setClipTab] = useState<ClipTab>(manualOnly ? 'yours' : 'all')
   const shownClips = clipTab === 'all' ? clips : clipTab === 'fav' ? clips.filter(c => c.favorite) : clips.filter(c => c.origin === clipTab)
   // A clip to bring into view and flash in the list (e.g. the clip a Best moment was saved as)
   const [focusClipId, setFocusClipId] = useState<string | null>(null)
@@ -812,7 +814,8 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
         el.setAttribute('data-start-glow', '')
         setTimeout(() => el.removeAttribute('data-start-glow'), 2600)
       }
-      window.history.replaceState(window.history.state, '', window.location.pathname)
+      // (Manual edit keeps its choice in the address, so a refresh stays on the manual board)
+      if (startWith !== 'manual') window.history.replaceState(window.history.state, '', window.location.pathname)
     }, 350)
     return () => clearTimeout(t)
   }, [startWith])
@@ -1415,7 +1418,7 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
       <div className="flex-1 flex gap-3 p-3 min-h-0 overflow-hidden" style={{ background: '#090909' }}>
 
         {/* ── Left: AI tools (wide screens) ─────────────────────── */}
-        {wide && isReady && (
+        {wide && isReady && !manualOnly && (
           <aside className="shrink-0 flex flex-col gap-3 p-3 min-h-0 overflow-y-auto" style={{ ...PANEL_CARD, width: 340 }}>
             {aiTools}
           </aside>
@@ -1444,7 +1447,7 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
 
           {isReady && <div className="shrink-0 rounded-2xl" data-start-target="manual">{newClipBar}</div>}
 
-          {!wide && isReady && <div className="grid grid-cols-1 md:grid-cols-2 gap-4" style={{ height: 420 }}>{aiTools}</div>}
+          {!wide && isReady && !manualOnly && <div className="grid grid-cols-1 md:grid-cols-2 gap-4" style={{ height: 420 }}>{aiTools}</div>}
         </main>
 
         {/* ── Right: your clips ─────────────────────────────────── */}
@@ -1478,7 +1481,7 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
           {/* Sections: every clip, or only those from one place */}
           {clips.length > 0 && (
             <div role="tablist" aria-label="Clip sections" className="px-4 pb-3 flex flex-wrap gap-1.5 shrink-0">
-              {CLIP_TABS.map(t => {
+              {CLIP_TABS.filter(t => !manualOnly || t.id === 'yours' || t.id === 'fav').map(t => {
                 const n = t.id === 'all' ? clips.length : t.id === 'fav' ? clips.filter(c => c.favorite).length : clips.filter(c => c.origin === t.id).length
                 const on = clipTab === t.id
                 const dot = t.id === 'all' || t.id === 'fav' ? null : ORIGIN_BADGE[t.id].color
