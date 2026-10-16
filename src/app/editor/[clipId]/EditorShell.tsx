@@ -2,7 +2,7 @@
 
 import { InfoTip } from '@/components/ui/info-tip'
 import { musicGainAt, speechRangesInVideo, speechRanges, heardSpeech, type Range as SpeechRange } from '@/modules/editor/musicGain'
-import { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback, Fragment } from 'react'
+import { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback } from 'react'
 import type { Clip, Segment, CropBox, BoxKeyframe, CaptionStyle, TextOverlay, AudioTrack, Transition, TranscriptWord, LayoutType, Overlay } from '@chai-cut/shared'
 import { VideoPreview, OutputCanvas } from '@/components/editor/VideoPreview'
 import { computeCutRanges, reactionRanges, removedMs, withoutRanges } from '@/lib/cuts'
@@ -81,6 +81,8 @@ interface Props {
   initialOriginalSound?: { volume: number; muted: boolean }
   initialTransitions: Transition[]
   initialOverlays: Overlay[]
+  /** The clip board it was opened from (the dashboard's AI edit / Manual edit choice), so "Clip board" returns to it */
+  backStart?: 'ai' | 'manual'
 }
 
 const LAYOUTS: { id: LayoutType; label: string }[] = [
@@ -164,7 +166,7 @@ const TOOLS: { id: Tool; label: string; title: string; hint: string; icon: React
 export function EditorShell({
   clip: savedClip, videoUrl, words: initialWords, initialSegments,
   initialCaptionStyles, initialTextOverlays, initialAudioTracks, initialTransitions, initialOverlays,
-  initialMusicUrls, initialOriginalSound,
+  initialMusicUrls, initialOriginalSound, backStart,
 }: Props) {
   // ── Removed parts of the video (lib/trims.ts, modules/editor/trimState.ts) ───
   // The editor works on the clip as it plays. `rawClip` is the clip's stretch of the source video
@@ -785,6 +787,8 @@ export function EditorShell({
   // Format panel: sections whose "what's in it" list is open, the kind of item shown, and the list
   const [openSections, setOpenSections] = useState<Set<string>>(() => new Set())
   const [sectionFilter, setSectionFilter] = useState<'all' | SectionItemKind>('all')
+  // Format panel: layout groups (Vertical, Split screen, Trio, Default framing) that are unfolded; all start folded shut
+  const [openGroups, setOpenGroups] = useState<Set<string>>(() => new Set())
   const sectionListRef = useRef<HTMLDivElement>(null)
   // Picking a photo, text or music (timeline, preview or its panel) opens its settings on the left
   const openSettings = (t: Tool) => { setTool(t); toggleOptions(true) }
@@ -940,6 +944,7 @@ export function EditorShell({
   const clipTitle = (clip as unknown as { title?: string | null }).title?.trim() || 'Untitled clip'
   const videoId = (clip as unknown as { video_id: string }).video_id
   const videoTitle = (clip as unknown as { video_title?: string | null }).video_title?.trim() || 'Video'
+  const clipBoardHref = backStart ? `/videos/${videoId}?start=${backStart}` : `/videos/${videoId}`
 
   // Crop positions in playback order — sort_order drifts from time order after splits and B-roll inserts
   const cropPositions = useMemo(
@@ -1791,7 +1796,10 @@ export function EditorShell({
    * shot's own — wherever the clip shows the same shot again (the same people in the same places),
    * it gets this format and these views, over following whoever is talking.
    */
+  // A press while the last one is still being saved is ignored: it would make a second group (and a second "Group 2")
+  const markingShotRef = useRef(false)
   async function markShot() {
+    if (markingShotRef.current) return
     setSubjectNotice(null)
     setMarking(false)
     const seg = activeSegment
@@ -1806,6 +1814,7 @@ export function EditorShell({
       const v = getPositionAt(b.id, t)
       return { slot_index: b.slot_index, x: v.x, y: v.y, w: v.w, h: v.h }
     })
+    markingShotRef.current = true
     try {
       const { subject } = await subjectsCall(subjectsUrl, {
         method: 'POST',
@@ -1814,6 +1823,7 @@ export function EditorShell({
       setSubjects(list => [...list, { ...subject, seen: null, stale: false }])
       setSubjectsError(null)
     } catch (e) { setSubjectsError(e instanceof Error ? e.message : 'Could not mark the shot') }
+    finally { markingShotRef.current = false }
   }
   /**
    * Mark in the whole clip: once everyone and every group is marked, they are all looked for through
@@ -3572,6 +3582,9 @@ export function EditorShell({
     if (!id) return
     setActiveSegmentId(id)
     setOpenSections(prev => new Set(prev).add(id))
+    // Its group must be open for the card to be there to scroll to
+    const seg = segments.find(sg => sg.id === id)
+    if (seg) setOpenGroups(prev => { const g = formatLayoutOf(seg.layout); return prev.has(g) ? prev : new Set(prev).add(g) })
     if (open) openSettings('format')
   }
   useEffect(() => {
@@ -3848,7 +3861,7 @@ export function EditorShell({
             Dashboard
           </a>
           <BreadcrumbChevron />
-          <a href={`/videos/${videoId}`} onClick={e => leaveTo(e, `/videos/${videoId}`)} title={`Clip board: ${videoTitle}`}
+          <a href={clipBoardHref} onClick={e => leaveTo(e, clipBoardHref)} title={`Clip board: ${videoTitle}`}
             className="shrink-0 transition-colors hover:text-[var(--ed-text)]" style={{ color: 'rgb(var(--ed-fg) / 0.5)' }}>
             Clip board
           </a>
@@ -3996,16 +4009,8 @@ export function EditorShell({
                 </div>
                 </div>
                 <div ref={sectionListRef} className="px-3 pb-3 flex flex-col gap-1.5">
-                  {uncovered.filter(g => g.start_ms < (cropPositions[0]?.start_ms ?? Infinity)).map(g => (
-                    <GapRow key={`gap-${g.start_ms}`} gap={g} active={currentGap?.start_ms === g.start_ms}
-                      onSelect={() => seekToMs(g.start_ms)} onAdd={() => addFormatInGap(g)} />
-                  ))}
-                  {cropPositions.map((seg, i) => {
-                    const gapAfter = uncovered.find(g => g.start_ms === seg.end_ms)
-                    const gapRow = gapAfter && (
-                      <GapRow gap={gapAfter} active={currentGap?.start_ms === gapAfter.start_ms}
-                        onSelect={() => seekToMs(gapAfter.start_ms)} onAdd={() => addFormatInGap(gapAfter)} />
-                    )
+                  {(() => {
+                  const renderSection = (seg: (typeof cropPositions)[number], i: number) => {
                     // A frame is one vertical 9:16 reel, so as a format it's Vertical (its contents live in Frames)
                     const shown = formatLayoutOf(seg.layout)
                     const col = LAYOUT_COLORS[shown]
@@ -4021,8 +4026,8 @@ export function EditorShell({
                     const open = openSections.has(seg.id) || (sectionFilter !== 'all' && items.length > 0)
                     const faded = sectionFilter !== 'all' && items.length === 0
                     return (
-                      <Fragment key={seg.id}>
                       <div
+                        key={seg.id}
                         data-section-id={seg.id}
                         role="button" tabIndex={0}
                         aria-current={isActiveSeg || undefined}
@@ -4128,10 +4133,49 @@ export function EditorShell({
                           </div>
                         )}
                       </div>
-                      {gapRow}
-                      </Fragment>
                     )
-                  })}
+                  }
+                  // Same layout together (Vertical, Split screen, Trio, …); inside a group the sections stay in time order
+                  const layoutRank = (l: LayoutType) => { const n = LAYOUTS.findIndex(x => x.id === l); return n < 0 ? LAYOUTS.length : n }
+                  const groups: { key: LayoutType; rows: { seg: (typeof cropPositions)[number]; i: number }[] }[] = []
+                  cropPositions.forEach((seg, i) => {
+                    const key = formatLayoutOf(seg.layout)
+                    let g = groups.find(x => x.key === key)
+                    if (!g) { g = { key, rows: [] }; groups.push(g) }
+                    g.rows.push({ seg, i })
+                  })
+                  groups.sort((a, b) => layoutRank(a.key) - layoutRank(b.key))
+                  const toggleGroup = (key: string) => setOpenGroups(prev => { const n = new Set(prev); if (n.has(key)) n.delete(key); else n.add(key); return n })
+                  return (
+                    <>
+                      {groups.map(g => {
+                        const label = LAYOUTS.find(l => l.id === g.key)?.label ?? g.key
+                        // A kind picked in the chips opens the groups that have some
+                        const hasMatch = sectionFilter !== 'all' && g.rows.some(({ seg }) => (itemsBySection.get(seg.id) ?? []).some(x => x.kind === sectionFilter))
+                        const open = openGroups.has(g.key) || hasMatch
+                        return (
+                          <div key={g.key} className="flex flex-col gap-1.5">
+                            <SectionGroupHead label={label} layout={g.key} count={g.rows.length}
+                              lengthMs={g.rows.reduce((n, { seg }) => n + seg.end_ms - seg.start_ms, 0)}
+                              open={open} playing={g.rows.some(({ seg }) => seg.id === activeSegment?.id)} onToggle={() => toggleGroup(g.key)} />
+                            {open && g.rows.map(({ seg, i }) => renderSection(seg, i))}
+                          </div>
+                        )
+                      })}
+                      {uncovered.length > 0 && (
+                        <div className="flex flex-col gap-1.5">
+                          <SectionGroupHead label="Default framing" count={uncovered.length}
+                            lengthMs={uncovered.reduce((n, g) => n + g.end_ms - g.start_ms, 0)}
+                            open={openGroups.has('gaps')} playing={!!currentGap} onToggle={() => toggleGroup('gaps')} />
+                          {openGroups.has('gaps') && uncovered.map(g => (
+                            <GapRow key={`gap-${g.start_ms}`} gap={g} active={currentGap?.start_ms === g.start_ms}
+                              onSelect={() => seekToMs(g.start_ms)} onAdd={() => addFormatInGap(g)} />
+                          ))}
+                        </div>
+                      )}
+                    </>
+                  )
+                  })()}
                   <p className="flex items-center gap-2 mt-1 px-1 text-[11px]" style={{ color: 'rgb(var(--ed-fg) / 0.38)' }}>
                     <kbd className="px-1.5 py-px rounded text-[10px] font-semibold" style={{ background: 'rgb(var(--ed-fg) / 0.08)', color: 'rgb(var(--ed-fg) / 0.7)', boxShadow: 'inset 0 -1px 0 rgb(var(--ed-fg) / 0.12)' }}>S</kbd>
                     Split at the playhead to add a section
@@ -5182,6 +5226,31 @@ const SECTION_KINDS: { id: SectionItemKind; one: string; plural: string; color: 
 function lengthLabel(ms: number): string {
   const s = Math.max(0, Math.round(ms / 1000))
   return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s`
+}
+
+/** A fold-away heading over the sections that share a layout (or the uncovered "Default framing" stretches) */
+function SectionGroupHead({ label, layout, count, lengthMs, open, playing, onToggle }: {
+  label: string
+  layout?: LayoutType
+  count: number
+  lengthMs: number
+  open: boolean
+  /** The playhead is inside this group (shown while it is folded shut) */
+  playing: boolean
+  onToggle: () => void
+}) {
+  return (
+    <button type="button" onClick={onToggle} aria-expanded={open} aria-label={`${open ? 'Hide' : 'Show'} ${label} (${count})`}
+      className="flex items-center gap-2 h-8 px-2 mt-1 rounded-lg text-left transition-colors hover:bg-[rgb(var(--ed-fg)/0.05)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[rgba(200,255,0,0.6)]">
+      {layout && <LayoutGlyph layout={layout} color="#9ca3af" active={false} />}
+      <span className="text-[12px] font-semibold truncate text-[var(--ed-text)]">{label}</span>
+      <span className="shrink-0 px-1.5 rounded-full text-[10.5px] font-semibold tabular-nums" style={{ background: 'rgb(var(--ed-fg) / 0.08)', color: 'rgb(var(--ed-fg) / 0.7)' }}>{count}</span>
+      {!open && playing && <span className="shrink-0 w-1.5 h-1.5 rounded-full" style={{ background: '#c8ff00' }} title="Under the playhead" />}
+      <span className="ml-auto shrink-0 text-[11px] tabular-nums" style={{ color: 'rgb(var(--ed-fg) / 0.42)' }}>{lengthLabel(lengthMs)}</span>
+      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"
+        className="shrink-0" style={{ color: 'rgb(var(--ed-fg) / 0.55)', transform: open ? 'rotate(180deg)' : 'none', transition: 'transform .2s' }}><path d="M6 9l6 6 6-6" /></svg>
+    </button>
+  )
 }
 
 function GapRow({ gap, active, onSelect, onAdd }: {

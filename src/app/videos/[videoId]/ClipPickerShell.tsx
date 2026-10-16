@@ -43,7 +43,7 @@ interface SavedClip {
 
 /** Where a clip came from, so the clip list can be split into sections */
 export type ClipOrigin = 'yours' | 'ask' | 'auto' | 'best'
-type ClipTab = 'all' | ClipOrigin | 'fav'
+type ClipTab = 'all' | ClipOrigin | 'fav' | 'edited'
 /** Typed one after another as the Ask AI hint */
 const ASK_EXAMPLES = ['funny reactions', 'controversial takes', 'emotional moments', 'big announcements', 'best advice']
 const CLIP_TABS: Array<{ id: ClipTab; label: string; empty: string }> = [
@@ -52,6 +52,7 @@ const CLIP_TABS: Array<{ id: ClipTab; label: string; empty: string }> = [
   { id: 'ask', label: 'Ask AI', empty: 'Describe what you want in Ask AI, then press Use on a result.' },
   { id: 'auto', label: 'Make my clips', empty: 'Clips AI makes for you with Make my clips show here.' },
   { id: 'best', label: 'Best moments', empty: 'Find best moments, then press + on the ones you want.' },
+  { id: 'edited', label: 'Edited clips', empty: 'Clips you open in the editor show here.' },
   { id: 'fav', label: 'Favorites', empty: 'Tap the heart on a clip to keep it here.' },
 ]
 /** Ask AI: one-tap searches */
@@ -378,8 +379,19 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
   // Which section of the clip list is showing
   // Manual edit (picked on the dashboard): no AI tools, and only "Your clips" and "Favorites" in the list
   const manualOnly = startWith === 'manual'
+  // The editor remembers which board it was opened from, so its "Clip board" link comes back to this one
+  const editorHref = (id: string) => `/editor/${id}${startWith ? `?from=${startWith}` : ''}`
   const [clipTab, setClipTab] = useState<ClipTab>(manualOnly ? 'yours' : 'all')
-  const shownClips = clipTab === 'all' ? clips : clipTab === 'fav' ? clips.filter(c => c.favorite) : clips.filter(c => c.origin === clipTab)
+  // The clipboard badge: Manual edit counts only the user's own clips, as that board lists only those
+  // Clips on this board: Start with AI never lists the clips cut by hand (they belong to Pick my moments)
+  const boardClips = manualOnly ? clips : clips.filter(c => c.origin !== 'yours')
+  const badgeCount = manualOnly ? clips.filter(c => c.origin === 'yours').length : boardClips.length
+  // Edited = opened in the editor at least once (the editor creates a clip's formats on first open)
+  // (Manual edit lists only the user's own clips, so an AI-made clip never counts, even though it has formats)
+  const isEdited = (c: { layout: string | null; origin: ClipOrigin }) => c.layout != null && (!manualOnly || c.origin === 'yours')
+  const shownClips = clipTab === 'all' ? boardClips : clipTab === 'fav' ? boardClips.filter(c => c.favorite) : clipTab === 'edited' ? clips.filter(isEdited) : clips.filter(c => c.origin === clipTab)
+  // Clip preview plays 9:16 clips as edited: in Manual edit only the edited ones
+  const previewable = manualOnly ? clips.filter(isEdited) : boardClips
   // A clip to bring into view and flash in the list (e.g. the clip a Best moment was saved as)
   const [focusClipId, setFocusClipId] = useState<string | null>(null)
   function focusClip(id: string, origin: ClipOrigin | 'all') {
@@ -406,9 +418,18 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
       .then((d: ClipPreviewData) => setPreviews(p => ({ ...p, [id]: d })))
       .catch((e: unknown) => setPreviews(p => ({ ...p, [id]: { error: e instanceof Error ? e.message : 'Could not load the preview' } })))
   }
+  // Click a clip: an edited one plays in Clip preview; one not edited yet shows in the source Video at its start
+  function openClip(clip: { id: string; start_ms: number; layout: string | null; origin: ClipOrigin }) {
+    if (manualOnly && !isEdited(clip)) {
+      setMomentPreview(null)
+      setPreviewId(null)
+      setViewMode('video')
+      seek(clip.start_ms)
+    } else previewClip(clip.id)
+  }
   function showPreviewMode() {
     setMomentPreview(null)
-    const id = previewId && clips.some(c => c.id === previewId) ? previewId : (shownClips[0] ?? clips[0])?.id
+    const id = previewId && previewable.some(c => c.id === previewId) ? previewId : (shownClips.find(c => previewable.includes(c)) ?? previewable[0])?.id
     if (id) previewClip(id)
     else setViewMode('preview')
   }
@@ -525,15 +546,6 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
     if (play) v.play().catch(() => {})
   }
 
-  function openForm() {
-    // Every new clip starts from zero: the user types (or picks) its start and end
-    setFormTitle('')
-    setFormStart(msToDisplay(0))
-    setFormEnd(msToDisplay(0))
-    setFormError(null)
-    setShowForm(true)
-  }
-
   // Parsed form range, for the live duration readout
   const formStartMs = parseTime(formStart)
   const formEndMs = parseTime(formEnd)
@@ -577,18 +589,20 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
         // Add to board: the clip joins "Your clips" here, highlighted; the editor isn't opened
         setClips(prev => prev.some(c => c.id === clip_id) ? prev : [...prev, {
           id: clip_id, title: title ?? null, start_ms: startMs, end_ms: endMs, status: 'draft', output_url: null,
-          layout: 'vertical', created_at: new Date().toISOString(), index: prev.length + 1,
+          layout: null, created_at: new Date().toISOString(), index: prev.length + 1,
           origin: from?.source === 'best_moments' ? 'best' as const : from?.source === 'clip_search' ? 'ask' as const : 'yours' as const,
         }])
         setShowForm(false)
         setFormTitle('')
+        setFormStart(msToDisplay(0))
+        setFormEnd(msToDisplay(0))
         setBusy(null)
         focusClip(clip_id, from?.source === 'best_moments' ? 'best' : from?.source === 'clip_search' ? 'ask' : 'yours')
         router.refresh()
         return
       }
       // Every clip starts as one Vertical format over the whole clip
-      router.push(`/editor/${clip_id}`)
+      router.push(editorHref(clip_id))
     } catch (e) {
       console.error(e)
       setBusy(null)
@@ -740,7 +754,7 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
   /** Edit: opens it in the editor (made a clip first if it isn't one yet) */
   function editMoment(s: Suggestion, source: MomentSource) {
     const c = clipFor(s)
-    if (c) { setBusy('open'); router.push(`/editor/${c.id}`); return }
+    if (c) { setBusy('open'); router.push(editorHref(c.id)); return }
     createClip(s.start_ms, s.end_ms, s.id, s.title, { s, source })
   }
   /** Add: it joins the clip board (the editor isn't opened); once added, this shows it there */
@@ -881,7 +895,7 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
   // ── Clip preview (in place of the video): the clip played in 9:16 as edited ──
   const previewed = clips.find(c => c.id === previewId) ?? null
   const previewData = previewId ? previews[previewId] : undefined
-  const previewList = shownClips.some(c => c.id === previewId) ? shownClips : clips
+  const previewList = shownClips.some(c => c.id === previewId) ? shownClips.filter(c => previewable.includes(c)) : previewable
   const previewIdx = previewList.findIndex(c => c.id === previewId)
   const previewPane = (
     <div className="w-full h-full flex items-center justify-center">
@@ -918,7 +932,7 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
           <button key={mode} type="button" role="tab" aria-selected={viewMode === mode}
             onClick={() => (mode === 'preview' ? showPreviewMode() : setViewMode('video'))}
             className="view-switch-opt" data-on={viewMode === mode || undefined}>
-            {label}{mode === 'preview' && clips.length > 0 ? ` (${clips.length})` : ''}
+            {label}{mode === 'preview' && previewable.length > 0 ? ` (${previewable.length})` : ''}
           </button>
         ))}
       </div>
@@ -964,7 +978,9 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
   // (There is no "Edit full video": this makes clips out of a long video, it doesn't edit the whole of it.)
   const editingPreviewed = viewMode === 'preview' && !!previewId && clips.some(c => c.id === previewId)
   const editingMoment = viewMode === 'preview' && momentPreview ? momentPreview : null
-  const newClipBar = showForm ? (
+  // Manual edit: the form is always there, except while a clip is previewed (then only Edit this clip)
+  const formOpen = manualOnly ? !(editingPreviewed || editingMoment) : showForm
+  const newClipBar = formOpen ? (
     <form className="shrink-0 rounded-2xl p-4 flex flex-col gap-3" style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.14)' }}
       onSubmit={e => { e.preventDefault(); submitForm(true) }}>
       <div className="flex flex-wrap items-end gap-3">
@@ -976,7 +992,7 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
             placeholder="e.g. Best reaction"
             value={formTitle}
             onChange={e => setFormTitle(e.target.value)}
-            autoFocus
+            autoFocus={!manualOnly}
             className="w-full px-3 py-2 rounded-lg text-sm text-white outline-none focus:border-[#c8ff00]"
             style={{ background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.12)' }}
           />
@@ -1024,10 +1040,10 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
             )}
             Add to board
           </button>
-          <button type="button" onClick={() => setShowForm(false)}
+          {!manualOnly && <button type="button" onClick={() => setShowForm(false)}
             className="px-3.5 py-2 rounded-lg text-sm font-medium transition-colors hover:bg-white/10" style={{ color: 'rgba(255,255,255,0.6)' }}>
             Cancel
-          </button>
+          </button>}
         </div>
       </div>
       <p className="text-xs" style={{ color: formError ? '#f87171' : 'rgba(255,255,255,0.45)' }}>
@@ -1037,9 +1053,9 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
   ) : (
     // Previewing a clip or a moment: two equal-width, equal-height buttons (same border, weight and
     // icon size, so they read as a pair). Otherwise New clip alone.
-    <div className={`shrink-0 grid gap-3 w-full mx-auto ${editingPreviewed || editingMoment ? 'grid-cols-2 max-w-md' : 'grid-cols-1 max-w-[216px]'}`}>
+    <div className="shrink-0 flex flex-wrap justify-center gap-3 w-full mx-auto">
       {(editingPreviewed || editingMoment) && (
-        <button onClick={editingMoment ? () => editMoment(editingMoment.s, editingMoment.source) : () => { setBusy('open'); router.push(`/editor/${previewId}`) }} disabled={!!busy}
+        <button onClick={editingMoment ? () => editMoment(editingMoment.s, editingMoment.source) : () => { setBusy('open'); router.push(editorHref(previewId!)) }} disabled={!!busy}
           title={editingMoment ? 'Open the moment you’re previewing in the editor' : 'Open the clip you’re previewing in the editor'}
           className="h-12 flex items-center justify-center gap-2 px-5 rounded-xl text-sm font-semibold transition-colors hover:bg-white/10 disabled:opacity-40"
           style={{ color: 'rgba(255,255,255,0.9)', border: '1px solid rgba(255,255,255,0.16)', background: 'rgba(255,255,255,0.03)' }}>
@@ -1051,14 +1067,6 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
           {editingMoment ? 'Edit this moment' : 'Edit this clip'}
         </button>
       )}
-      <button onClick={openForm} disabled={!!busy}
-        className="h-12 flex items-center justify-center gap-2 px-5 rounded-xl text-sm font-semibold transition-opacity hover:opacity-90 disabled:opacity-40"
-        style={{ background: ACCENT, color: '#000', border: `1px solid ${ACCENT}` }}>
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" aria-hidden>
-          <path d="M12 5v14M5 12h14" />
-        </svg>
-        New clip from <span className="tabular-nums">{msToDisplay(nowMs)}</span>
-      </button>
     </div>
   )
 
@@ -1445,21 +1453,21 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
             </div>
           )}
 
-          {isReady && <div className="shrink-0 rounded-2xl" data-start-target="manual">{newClipBar}</div>}
+          {isReady && (manualOnly || editingPreviewed || editingMoment) && <div className="shrink-0 rounded-2xl" data-start-target="manual">{newClipBar}</div>}
 
           {!wide && isReady && !manualOnly && <div className="grid grid-cols-1 md:grid-cols-2 gap-4" style={{ height: 420 }}>{aiTools}</div>}
         </main>
 
         {/* ── Right: your clips ─────────────────────────────────── */}
-        <aside className="shrink-0 flex flex-col min-h-0 overflow-hidden" style={{ ...PANEL_CARD, width: 340 }}>
+        <aside className="shrink-0 flex flex-col min-h-0 overflow-hidden" style={{ ...PANEL_CARD, width: manualOnly ? 420 : 340 }}>
           <div className="px-4 pt-4 pb-3 flex items-center gap-2 shrink-0">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={ACCENT} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
               <rect x="5" y="4" width="14" height="17" rx="2" /><path d="M9 4V3h6v1M9 10h6M9 14h4" />
             </svg>
             <h2 className="text-sm font-semibold text-white">Clipboard</h2>
-            {clips.length > 0 && (
+            {(
               <span className="text-[11px] font-bold px-2 py-0.5 rounded-full" style={{ color: ACCENT, background: 'rgba(200,255,0,0.1)', border: '1px solid rgba(200,255,0,0.25)' }}>
-                {clips.length} clip{clips.length === 1 ? '' : 's'}
+                {badgeCount} clip{badgeCount === 1 ? '' : 's'}
               </span>
             )}
             <div className="flex-1" />
@@ -1479,12 +1487,12 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
             })()}
           </div>
           {/* Sections: every clip, or only those from one place */}
-          {clips.length > 0 && (
+          {(
             <div role="tablist" aria-label="Clip sections" className="px-4 pb-3 flex flex-wrap gap-1.5 shrink-0">
-              {CLIP_TABS.filter(t => !manualOnly || t.id === 'yours' || t.id === 'fav').map(t => {
-                const n = t.id === 'all' ? clips.length : t.id === 'fav' ? clips.filter(c => c.favorite).length : clips.filter(c => c.origin === t.id).length
+              {CLIP_TABS.filter(t => manualOnly ? (t.id === 'yours' || t.id === 'edited' || t.id === 'fav') : (t.id !== 'edited' && t.id !== 'yours')).map(t => {
+                const n = t.id === 'all' ? boardClips.length : t.id === 'fav' ? boardClips.filter(c => c.favorite).length : t.id === 'edited' ? clips.filter(isEdited).length : clips.filter(c => c.origin === t.id).length
                 const on = clipTab === t.id
-                const dot = t.id === 'all' || t.id === 'fav' ? null : ORIGIN_BADGE[t.id].color
+                const dot = t.id === 'all' || t.id === 'fav' || t.id === 'edited' ? null : ORIGIN_BADGE[t.id].color
                 return (
                   <button key={t.id} type="button" role="tab" aria-selected={on}
                     onClick={() => { setClipTab(t.id); setSelected(new Set()) }}
@@ -1508,14 +1516,12 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
             </div>
           )}
           <div className="flex-1 min-h-0 overflow-y-auto px-4 pb-4 flex flex-col gap-2">
-            {clips.length === 0 && (
+            {boardClips.length === 0 && !isReady && (
               <p className="text-xs leading-relaxed" style={{ color: 'rgba(255,255,255,0.45)' }}>
-                {isReady
-                  ? 'Pause the video on a moment you like, then press New clip under it. Or let AI find moments for you.'
-                  : 'You can start clipping once the video has finished processing.'}
+                You can start clipping once the video has finished processing.
               </p>
             )}
-            {clips.length > 0 && shownClips.length === 0 && (
+            {boardClips.length > 0 && shownClips.length === 0 && (
               <p className="text-xs leading-relaxed" style={{ color: 'rgba(255,255,255,0.45)' }}>
                 {CLIP_TABS.find(t => t.id === clipTab)?.empty}
               </p>
@@ -1526,7 +1532,7 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
                 id={clip.id}
                 focused={focusClipId === clip.id}
                 number={idx + 1}
-                origin={clipTab === 'all' || clipTab === 'fav' ? clip.origin : undefined}
+                origin={clipTab === 'all' || clipTab === 'fav' || clipTab === 'edited' ? clip.origin : undefined}
                 videoUrl={videoUrl}
                 favorite={!!clip.favorite}
                 reason={clip.reason ?? null}
@@ -1540,12 +1546,14 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
                 outputUrl={clip.output_url}
                 playing={nowMs >= clip.start_ms && nowMs < clip.end_ms}
                 onSeek={() => seek(clip.start_ms)}
-                onEdit={() => { setBusy('open'); router.push(`/editor/${clip.id}`) }}
-                onPreview={() => previewClip(clip.id)}
+                onEdit={() => { setBusy('open'); router.push(editorHref(clip.id)) }}
+                onPreview={() => openClip(clip)}
                 previewing={viewMode === 'preview' && previewId === clip.id}
                 open={previewId === clip.id}
                 onClose={() => { setPreviewId(null); setViewMode('video') }}
                 onDownload={() => downloadClip(clip.id)}
+                manual={manualOnly}
+                edited={manualOnly && isEdited(clip)}
                 download={dlState[clip.id] === 'exporting' || clip.status === 'rendering' ? 'preparing'
                   : typeof dlState[clip.id] === 'object' ? 'failed' : 'ready'}
                 disabled={!!busy}
@@ -1554,7 +1562,7 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
                 onToggle={() => toggleSelected(clip.id)}
               />
             ))}
-            {clips.length > 0 && !selecting && (
+            {boardClips.length > 0 && !selecting && !manualOnly && (
               <div className="mt-1 shrink-0 flex items-start gap-2.5 px-3 py-2.5 rounded-xl" style={{ border: '1px solid rgba(200,255,0,0.25)', background: 'rgba(200,255,0,0.04)' }}>
                 <svg className="shrink-0 mt-0.5" width="14" height="14" viewBox="0 0 24 24" fill={ACCENT} aria-hidden="true"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8L12 3z" /></svg>
                 <span className="flex flex-col">
@@ -2054,8 +2062,12 @@ function SubEditOverlay({ startedAt, estimate, ahead, onStop }: { startedAt: num
   )
 }
 
-function ClipCard({ id, focused, number, origin, title, startMs, endMs, status, outputUrl, playing, onSeek, onEdit, onPreview, previewing, open, onClose, disabled, selecting, selected, onToggle, videoUrl, favorite, reason, onFavorite, onDelete, onDownload, download, onSubEdited }: {
+function ClipCard({ id, focused, number, origin, title, startMs, endMs, status, outputUrl, playing, onSeek, onEdit, onPreview, previewing, open, onClose, disabled, selecting, selected, onToggle, videoUrl, favorite, reason, onFavorite, onDelete, onDownload, download, onSubEdited, manual, edited }: {
   id: string
+  /** Manual edit board: the slim card shows its start–end and Edit / Download on hover */
+  manual?: boolean
+  /** Manual edit board: opened in the editor already (a small green label) */
+  edited?: boolean
   /** Sub-edit finished: the clip's framing changed (the board reloads it) */
   onSubEdited?: () => void
   /** Download: saves the file, exporting it first if it isn't exported yet (e.g. AI's clips) */
@@ -2116,16 +2128,32 @@ function ClipCard({ id, focused, number, origin, title, startMs, endMs, status, 
         onClick={e => { if (!disabled && !(e.target as HTMLElement).closest('button')) onPreview() }}
         onKeyDown={e => { if ((e.key === 'Enter' || e.key === ' ') && !disabled && e.target === e.currentTarget) { e.preventDefault(); onPreview() } }}
         title={`${title} · click to open and preview`}
-        className="group flex items-center gap-3 rounded-xl p-2 min-h-[68px] cursor-pointer transition-colors hover:bg-white/[0.05] focus-visible:outline focus-visible:outline-2"
+        className="group shrink-0 flex items-center gap-3 rounded-xl p-2 min-h-[68px] cursor-pointer transition-colors hover:bg-white/[0.05] focus-visible:outline focus-visible:outline-2"
         style={{ background: 'rgba(255,255,255,0.03)', border: `1px solid ${playing ? 'rgba(255,255,255,0.3)' : 'rgba(255,255,255,0.07)'}`, outlineColor: ACCENT }}>
         <ClipThumb videoUrl={videoUrl} atMs={startMs} number={number} w={84} h={48} />
         <span className="flex-1 min-w-0 flex flex-col gap-1">
           <span className="text-sm font-semibold text-white leading-snug line-clamp-2 break-words">{title}</span>
-          <span className="flex items-center gap-1.5 text-[11px] tabular-nums" style={{ color: 'rgba(255,255,255,0.5)' }}>
-            <ClockIcon />{durLabel(startMs, endMs)}
+          <span className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-[11px] tabular-nums" style={{ color: 'rgba(255,255,255,0.5)' }}>
+            <ClockIcon />{manual ? <><span style={{ color: ACCENT }}>{msToDisplay(startMs)} – {msToDisplay(endMs)}</span> · {durLabel(startMs, endMs)}</> : durLabel(startMs, endMs)}
+            {edited && (
+              <span className="px-1.5 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wide" style={{ color: ACCENT, background: 'rgba(200,255,0,0.12)' }}>Edited</span>
+            )}
             {status === 'rendering' && <span className="flex items-center gap-1" style={{ color: ACCENT }}>· <Spinner /> Exporting</span>}
             {sub.busy && <SubEditInline startedAt={sub.startedAt} estimate={sub.estimate} ahead={sub.ahead} onStop={sub.stop} />}
           </span>
+          {manual && (
+            <span className="flex gap-1.5 mt-0.5 transition-opacity [@media(hover:hover)]:opacity-0 group-hover:opacity-100 group-focus-within:opacity-100">
+              <button type="button" onClick={e => { e.stopPropagation(); onEdit() }} disabled={disabled}
+                className="h-7 px-2.5 rounded-md text-[11px] font-semibold transition-colors hover:bg-white/10 disabled:opacity-40" style={{ color: 'rgba(255,255,255,0.85)', border: '1px solid rgba(255,255,255,0.18)' }}>
+                Edit
+              </button>
+              <button type="button" onClick={e => { e.stopPropagation(); onDownload() }} disabled={download === 'preparing'}
+                className="h-7 px-2.5 rounded-md text-[11px] font-semibold transition-colors hover:bg-white/10 disabled:opacity-70"
+                style={{ color: download === 'failed' ? '#f87171' : 'rgba(255,255,255,0.85)', border: `1px solid ${download === 'failed' ? 'rgba(239,68,68,0.45)' : 'rgba(255,255,255,0.18)'}` }}>
+                {download === 'preparing' ? 'Preparing…' : download === 'failed' ? 'Retry' : 'Download'}
+              </button>
+            </span>
+          )}
         </span>
         {heart}
       </div>

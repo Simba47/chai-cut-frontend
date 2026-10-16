@@ -16,10 +16,12 @@ export default async function EditorPage({
   searchParams,
 }: {
   params: Promise<{ clipId: string }>
-  searchParams: Promise<{ layout?: string }>
+  searchParams: Promise<{ layout?: string; from?: string }>
 }) {
   const { clipId } = await params
-  const { layout: layoutParam } = await searchParams
+  const { layout: layoutParam, from } = await searchParams
+  // Which clip board it was opened from (the dashboard's AI edit / Manual edit choice): "Clip board" goes back to that one
+  const backStart = from === 'ai' || from === 'manual' ? from : undefined
   const initialLayout = layoutParam === 'horizontal' ? 'horizontal' : 'vertical'
 
   const ua = (await headers()).get('user-agent') ?? ''
@@ -189,5 +191,5 @@ export default async function EditorPage({
     initialOverlays: overlays ?? [],
   }
 
-  return isMobile ? <EditorShellMobile {...shellProps} /> : <EditorShell {...shellProps} />
+  return isMobile ? <EditorShellMobile {...shellProps} /> : <EditorShell {...shellProps} backStart={backStart} />
 }
