@@ -167,6 +167,12 @@ function withFrameEdges(prev: SegmentLocal, next: SegmentLocal): SegmentLocal {
  * is the clip's own (hydrate): without it every part is a section, as before layers.
  */
 const onTop = (s: { mainVideoId: string | null }, seg: SegmentLocal) => s.mainVideoId != null && isShot(seg, s.mainVideoId)
+/**
+ * An inserted video (inserts.ts): the main video waits while it plays, so its length is part of
+ * the clip's — only putting it in and taking it out (which move everything after it) may change
+ * its time, not dragging an edge or a join. Nor does it take a format.
+ */
+const inserted = (seg: SegmentLocal | undefined) => seg?.video_offset_ms != null
 
 export const useEditorStore = create<EditorState & EditorActions>()((set, get) => ({
   segments: [],
@@ -218,6 +224,7 @@ export const useEditorStore = create<EditorState & EditorActions>()((set, get) =
     const i = byTime.findIndex(x => x.id === segId)
     if (i < 0) return s
     const seg = byTime[i], prev = byTime[i - 1], next = byTime[i + 1]
+    if (inserted(seg)) return s
     if (edge === 'start') {
       const t = Math.round(Math.max(prev?.end_ms ?? 0, Math.min(seg.end_ms - MIN_FORMAT_MS, tMs)))
       if (t === seg.start_ms) return s
@@ -230,7 +237,7 @@ export const useEditorStore = create<EditorState & EditorActions>()((set, get) =
 
   moveJunction: (leftId, rightId, tMs) => set(s => {
     const left = s.segments.find(x => x.id === leftId), right = s.segments.find(x => x.id === rightId)
-    if (!left || !right) return s
+    if (!left || !right || inserted(left) || inserted(right)) return s
     const t = Math.round(Math.max(left.start_ms + MIN_FORMAT_MS, Math.min(right.end_ms - MIN_FORMAT_MS, tMs)))
     if (t === left.end_ms && t === right.start_ms) return s
     return {
@@ -240,7 +247,7 @@ export const useEditorStore = create<EditorState & EditorActions>()((set, get) =
 
   absorbSection: (removeId, keepId) => set(s => {
     const gone = s.segments.find(x => x.id === removeId), keep = s.segments.find(x => x.id === keepId)
-    if (!gone || !keep) return s
+    if (!gone || !keep || inserted(gone) || inserted(keep)) return s
     const keepBefore = keep.end_ms <= gone.start_ms + 1
     return {
       segments: s.segments.filter(x => x.id !== removeId).map(x => x.id !== keepId ? x
@@ -275,21 +282,24 @@ export const useEditorStore = create<EditorState & EditorActions>()((set, get) =
 
   applyLayout: (segId, layout, videoAR, framing) => set(s => {
     const seg = s.segments.find(x => x.id === segId)
-    if (!seg) return s
+    if (!seg || inserted(seg)) return s
     const first = seg.crop_boxes[0]
     // Going to Vertical keeps the crop centred where the user had already framed the subject
     const prev = first ? getBoxPositionAtLerp(seg.start_ms, s.keyframes[first.id] ?? first.keyframes) : null
     const centerX = layout === 'vertical' && prev && seg.layout !== 'horizontal' ? prev.x + prev.w / 2 : undefined
     const toFrame = isFrameLayout(layout)
+    // Where in the main video this part is (its main box's moment: with videos put in between or
+    // parts cut, not always its start on the timeline)
+    const mainAt = seg.crop_boxes.find(b => !b.source_video_id && !b.image_path)?.source_offset_ms ?? seg.start_ms
     const crop_boxes: CropBoxLocal[] = Array.from({ length: LAYOUT_SLOT_COUNT[layout] }, (_, i) => {
       const keyframes = [{ t_ms: seg.start_ms, ...(framing?.[i] ?? defaultCropForSlot(layout, i, videoAR, i === 0 ? centerX : undefined)) }]
       const old = seg.crop_boxes[i]
       // Frame crop boxes always frame the main video — other media sits on the frame's lanes
       const kept = old && toFrame
-        ? { ...old, source_video_id: null, source_offset_ms: seg.start_ms, image_path: null, image_url: null, image_motion: null }
+        ? { ...old, source_video_id: null, source_offset_ms: mainAt, image_path: null, image_url: null, image_motion: null }
         : old ? { ...old, image_path: null, image_url: null, image_motion: null } : old
       // New boxes show the main video from this format's own point in it
-      return kept ? { ...kept, keyframes } : { ...makeBox(i, layout, seg.start_ms, keyframes), source_offset_ms: seg.start_ms, volume: 1, muted: false }
+      return kept ? { ...kept, keyframes } : { ...makeBox(i, layout, seg.start_ms, keyframes), source_offset_ms: mainAt, volume: 1, muted: false }
     })
     // Switching between frames keeps what's on the lanes the new frame still has. Leaving frames
     // keeps the frame settings unused, so switching back brings them back.
@@ -419,8 +429,8 @@ export const useEditorStore = create<EditorState & EditorActions>()((set, get) =
         ...makeBox(box.slot_index, seg.layout, tMs, [{ t_ms: tMs, ...getPos(box.id, tMs) }]),
         source_video_id: box.source_video_id,
         source_offset_ms: box.source_offset_ms + (tMs - seg.start_ms),
-        // A video on top cut in two: both halves keep its sound and hide switches
-        ...(onTop(s, seg) ? { volume: box.volume, muted: box.muted !== false, ...(box.hidden ? { hidden: true } : {}) } : {}),
+        // A video on top (or an inserted one) cut in two: both halves keep its sound and hide switches
+        ...(onTop(s, seg) || inserted(seg) ? { volume: box.volume, muted: box.muted !== false, ...(box.hidden ? { hidden: true } : {}) } : {}),
       }))
       return {
         segments: [
@@ -429,6 +439,8 @@ export const useEditorStore = create<EditorState & EditorActions>()((set, get) =
             id: newId, start_ms: tMs, end_ms: seg.end_ms, layout: seg.layout, sort_order: seg.sort_order + 0.5, crop_boxes: newBoxes,
             ...(seg.lane ? { lane: seg.lane } : {}),
             ...(seg.track ? { track: seg.track } : {}),
+            // (both halves of an inserted video hold the main video at the same moment)
+            ...(inserted(seg) ? { video_offset_ms: seg.video_offset_ms } : {}),
             // Each half keeps its own copy of the frame; items are cut to each half's range when shown
             frame: seg.frame ? { ...seg.frame, items: seg.frame.items?.map(it => ({ ...it, id: crypto.randomUUID() })) } : seg.frame,
           },

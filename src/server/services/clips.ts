@@ -82,10 +82,18 @@ export async function saveClip(userId: string, clipId: string, body: SaveClipInp
 
   // Hide / mute / lock (and music trims) once the database has those fields (the backend adds them when it starts)
   const hasControls = await itemControlFields()
+  // A video put in between: where the main video waits meanwhile (modules/editor/inserts.ts).
+  // Written for every row, so a part that is no longer one (or an older clip's leftover) is cleared.
+  const hasInsertField = await hasColumn('segments', 'video_offset_ms')
+  const holdOf = (seg: (typeof sortedSegments)[number]) => {
+    const v = (seg as { video_offset_ms?: unknown }).video_offset_ms
+    return typeof v === 'number' && isFinite(v) && v >= 0 && seg.crop_boxes[0]?.source_video_id ? ms(v) : null
+  }
   const segRows = sortedSegments.map((seg, si) => ({
     id: seg.id, clip_id: clipId, start_ms: ms(seg.start_ms), end_ms: ms(seg.end_ms), layout: seg.layout, sort_order: si,
     frame: seg.frame ? sql.json(cleanFrame(seg.frame) as never) : null,
     ...(hasControls ? { hidden: !!seg.hidden, muted: !!seg.muted, locked: !!seg.locked } : {}),
+    ...(hasInsertField ? { video_offset_ms: holdOf(seg) } : {}),
   }))
   const boxRows = sortedSegments.flatMap(seg => seg.crop_boxes.map(box => ({
     id: box.id, segment_id: seg.id, slot_index: box.slot_index,
@@ -158,6 +166,11 @@ export async function saveClip(userId: string, clipId: string, body: SaveClipInp
   const original = body.originalSound
   const hasOriginal = !!original && typeof original.volume === 'number' && await hasColumn('clips', 'original_volume')
 
+  // Transitions the database can't take yet (before the backend widens its check): saved as a
+  // Dissolve, and the editor is told how many, so it can say so
+  const keepsKind = (type: string) => allTransitionKinds || type === 'cut' || type === 'fade' || type === 'wipe'
+  const asDissolve = transitions.filter(t => segIds.includes(t.after_segment_id) && !keepsKind(t.type)).length
+
   // Every statement is built up front and pipelined in one transaction: the database is far
   // from the server (~300–500 ms per round trip), and awaiting each statement made saves take
   // 10–20 s, long enough for the next auto-save to overlap and collide with this one.
@@ -170,11 +183,13 @@ export async function saveClip(userId: string, clipId: string, body: SaveClipInp
         ON CONFLICT (id) DO UPDATE SET start_ms = EXCLUDED.start_ms, end_ms = EXCLUDED.end_ms,
           layout = EXCLUDED.layout, sort_order = EXCLUDED.sort_order, frame = EXCLUDED.frame,
           hidden = EXCLUDED.hidden, muted = EXCLUDED.muted, locked = EXCLUDED.locked
+          ${hasInsertField ? tx`, video_offset_ms = EXCLUDED.video_offset_ms` : tx``}
         WHERE segments.clip_id = ${clipId}
       ` : tx`
         INSERT INTO segments ${tx(segRows)}
         ON CONFLICT (id) DO UPDATE SET start_ms = EXCLUDED.start_ms, end_ms = EXCLUDED.end_ms,
           layout = EXCLUDED.layout, sort_order = EXCLUDED.sort_order, frame = EXCLUDED.frame
+          ${hasInsertField ? tx`, video_offset_ms = EXCLUDED.video_offset_ms` : tx``}
         WHERE segments.clip_id = ${clipId}
       `)
       // Formats removed in the editor (cascades to their crop boxes and keyframes)
@@ -274,7 +289,7 @@ export async function saveClip(userId: string, clipId: string, body: SaveClipInp
     if (liveTransitions.length > 0) {
       q.push(tx`INSERT INTO transitions ${tx(liveTransitions.map(({ id, after_segment_id, type, duration_ms }) => ({
         id, clip_id: clipId, after_segment_id,
-        type: allTransitionKinds || type === 'cut' || type === 'fade' || type === 'wipe' ? type : 'fade',
+        type: keepsKind(type) ? type : 'fade',
         duration_ms: ms(duration_ms),
       })))}`)
     }
@@ -292,6 +307,7 @@ export async function saveClip(userId: string, clipId: string, body: SaveClipInp
 
     return q
   })
+  return { transitionsAsDissolve: asDissolve }
 }
 
 /**

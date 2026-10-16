@@ -13,8 +13,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cli
   const body = await req.json().catch(() => null)
   if (!body) return NextResponse.json({ error: 'Invalid body' }, { status: 400 })
   try {
-    await saveClip(user.id, clipId, body)
-    return NextResponse.json({ ok: true })
+    const saved = await saveClip(user.id, clipId, body)
+    return NextResponse.json({ ok: true, ...saved })
   } catch (err) {
     return apiError(err)
   }

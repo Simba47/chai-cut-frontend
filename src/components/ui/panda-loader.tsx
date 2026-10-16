@@ -61,6 +61,9 @@ export function PandaLoader({ scene = 'editor', width, fallback }: { scene?: Mas
           {/* the ground: only what the walk needs — a shadow under its feet, and marks sliding by */}
           <span className="pw-ground" aria-hidden="true" />
           <span className="pw-shadow" aria-hidden="true" />
+          {/* dust where each foot lands */}
+          <span className="pw-dust pw-dust-front" aria-hidden="true" />
+          <span className="pw-dust pw-dust-back" aria-hidden="true" />
           {/* the panda, in three layers: the back leg, the body over it, the front leg over that */}
           <div className="pw-fig">
             {/* eslint-disable @next/next/no-img-element */}

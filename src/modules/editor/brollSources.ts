@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, type RefObject } from 'react'
+import { useCallback, useEffect, useMemo, useRef, type RefObject } from 'react'
 import type { CropBoxLocal, SegmentLocal } from '@chai-cut/shared'
 import { isFrameLayout } from './frames'
 
@@ -23,6 +23,11 @@ export function useBrollSources(
   mainVideoId?: string | null,
   /** Parts of the clip were removed (lib/trims.ts): the main video's time (ms) → clip time */
   videoToTimeline?: (videoMs: number) => number,
+  /**
+   * The clip's own clock, when it doesn't follow the main video: while a video put in between
+   * plays (inserts.ts) the main video waits, and the inserted video follows this instead
+   */
+  clock?: () => { ms: number; playing: boolean },
 ) {
   const els = useRef(new Map<string, HTMLVideoElement>())
   const active = useRef<string | null>(null)
@@ -30,8 +35,26 @@ export function useBrollSources(
   getUrlRef.current = getUrl
   const toTimelineRef = useRef(videoToTimeline)
   toTimelineRef.current = videoToTimeline
+  const clockRef = useRef(clock)
+  clockRef.current = clock
 
-  return useCallback((seg: SegmentLocal | null) => {
+  /** The element for a video (made, and loading, the first time it's asked for) */
+  const elFor = (id: string): HTMLVideoElement | null => {
+    let el = els.current.get(id)
+    if (el) return el
+    const url = getUrlRef.current(id)
+    if (!url) return null
+    el = document.createElement('video')
+    el.muted = true
+    el.playsInline = true
+    el.preload = 'auto'
+    el.crossOrigin = 'anonymous'
+    el.src = url
+    els.current.set(id, el)
+    return el
+  }
+
+  const source = useCallback((seg: SegmentLocal | null) => {
     const box = seg && !isFrameLayout(seg.layout) ? seg.crop_boxes[0] : undefined
     const pictureId = box?.source_video_id && box.source_video_id !== mainVideoId ? box.source_video_id : null
     // A hidden added video with its sound on: played for its sound only (the main video is the picture)
@@ -41,31 +64,70 @@ export function useBrollSources(
     active.current = id
     const main = videoRef.current
     if (!seg || !id || !main) return null
-    let el = els.current.get(id)
-    if (!el) {
-      const url = getUrlRef.current(id)
-      if (!url) return null
-      el = document.createElement('video')
-      el.muted = true
-      el.playsInline = true
-      el.preload = 'auto'
-      el.crossOrigin = 'anonymous'
-      el.src = url
-      els.current.set(id, el)
-    }
+    const el = elFor(id)
+    if (!el) return null
     // Its own sound when switched on (the main video is quiet under it then, as in the export)
     el.muted = sound ? false : box?.muted !== false
     el.volume = Math.max(0, Math.min(1, (sound ? sound.volume : box?.volume) ?? 1))
-    const rel = toTimelineRef.current ? toTimelineRef.current(main.currentTime * 1000) : main.currentTime * 1000 - clipStartMs
+    const c = clockRef.current?.()
+    const rel = c ? c.ms : toTimelineRef.current ? toTimelineRef.current(main.currentTime * 1000) : main.currentTime * 1000 - clipStartMs
+    const paused = c ? !c.playing : main.paused
     const want = ((sound ? sound.offset_ms : box?.source_offset_ms ?? 0) + rel - seg.start_ms) / 1000
     // Playing: only re-seek on real drift (a seek stalls the picture). Paused (dragging the
     // playhead): follow the main video's frame exactly. Never a new seek over one still running:
     // this runs every frame, so the next frame after it lands seeks to the latest time.
-    if (!el.seeking && Math.abs(el.currentTime - want) > (main.paused ? 0.04 : 0.3)) el.currentTime = Math.max(0, want)
-    if (main.paused && !el.paused) el.pause()
-    if (!main.paused && el.paused) el.play().catch(() => {})
+    if (!el.seeking && Math.abs(el.currentTime - want) > (paused ? 0.04 : 0.3)) el.currentTime = Math.max(0, want)
+    if (paused && !el.paused) el.pause()
+    if (!paused && el.paused) el.play().catch(() => {})
     return sound ? null : el
-  }, [videoRef, clipStartMs, mainVideoId])
+  }, [videoRef, clipStartMs, mainVideoId]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  return useMemo(() => Object.assign(source, {
+    /**
+     * Get the video of a part coming up ready ahead of time: loaded and parked on its first frame,
+     * so it plays at once when its turn comes (no stall at the join). Leaves the one playing alone.
+     */
+    prepare(seg: SegmentLocal) {
+      const box = !isFrameLayout(seg.layout) ? seg.crop_boxes[0] : undefined
+      const id = box?.source_video_id && box.source_video_id !== mainVideoId ? box.source_video_id : null
+      if (!id || id === active.current) return
+      const el = elFor(id)
+      if (!el) return
+      const want = Math.max(0, (box?.source_offset_ms ?? 0) / 1000)
+      if (!el.paused) el.pause()
+      if (!el.seeking && Math.abs(el.currentTime - want) > 0.05) el.currentTime = want
+    },
+    /**
+     * A part's picture held at one moment (clip ms), for a transition's still frame: undefined
+     * when the part shows the main video (the preview holds that itself), null while its video
+     * isn't on that frame yet — it is parked there, unless it's the one playing (never disturbed).
+     */
+    hold(seg: SegmentLocal, clipMs: number): HTMLVideoElement | null | undefined {
+      const box = !isFrameLayout(seg.layout) ? seg.crop_boxes[0] : undefined
+      const id = box?.source_video_id && box.source_video_id !== mainVideoId ? box.source_video_id : null
+      if (!id) return undefined
+      const el = elFor(id)
+      if (!el) return null
+      const want = Math.max(0, ((box?.source_offset_ms ?? 0) + clipMs - seg.start_ms) / 1000)
+      if (!el.seeking && el.readyState >= 2 && Math.abs(el.currentTime - want) < 0.12) return el
+      if (id !== active.current) {
+        if (!el.paused) el.pause()
+        if (!el.seeking && Math.abs(el.currentTime - want) > 0.05) el.currentTime = want
+      }
+      return null
+    },
+    /**
+     * How far a part's video has really played (ms into the part), or null while it isn't playing
+     * yet: a video put in between drives the clip's clock with it, so the clock never runs ahead
+     * of the picture (inserts.ts, useSync).
+     */
+    playedMs(seg: SegmentLocal): number | null {
+      const box = seg.crop_boxes[0]
+      const el = box?.source_video_id ? els.current.get(box.source_video_id) : undefined
+      if (!el || el.paused || el.seeking || el.readyState < 3) return null
+      return el.currentTime * 1000 - (box.source_offset_ms ?? 0)
+    },
+  }), [source]) // eslint-disable-line react-hooks/exhaustive-deps
 }
 
 /** How far ahead the next part's borrowed slots are parked on their first frame */

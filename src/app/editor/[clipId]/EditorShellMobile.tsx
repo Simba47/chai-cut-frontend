@@ -16,11 +16,13 @@ import { TranscriptPanel } from '@/components/editor/TranscriptPanel'
 import { useConfirm } from '@/components/editor/ConfirmDialog'
 import { useEditorStore, type KeyframeMap } from '@/modules/editor/store'
 import { editableSnapshot, sameEditable, type EditableSnapshot } from '@/modules/editor/history'
-import { usePlayerStore } from '@/modules/player/store'
+import { usePlayerStore, liveTime } from '@/modules/player/store'
 import { useVideoSync } from '@/modules/player/useSync'
 import { useCaptionStore } from '@/modules/captions/store'
 import { useMediaStore } from '@/modules/media/store'
 import { rowsToLocal, normalizeCoverage, msToLabel, uncoveredRanges } from '@/modules/editor/utils'
+import { insertsOf, insertedMs, piecesOf } from '@/modules/editor/inserts'
+import { isShot } from '@/modules/editor/shots'
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -97,7 +99,15 @@ export function EditorShellMobile({
   }
 
   // ── Video player ─────────────────────────────────────────────────────────────
-  const { videoRef, seekToMs, togglePlay, pause } = useVideoSync(clip.start_ms, clip.end_ms)
+  // Videos put in between (inserts.ts): the main video waits while one plays, the clip is longer
+  const mobileSegments = useEditorStore(s => s.segments)
+  const mobileInserts = useMemo(() => {
+    const vid = (clip as unknown as { video_id: string }).video_id
+    const all = piecesOf(mobileSegments, vid, s => isShot(s, vid))
+    // (pieces only once the parts don't simply follow the video: a video put in between, or a part cut)
+    return insertsOf(mobileSegments, vid).length || all.some(p => p.from != null && Math.abs(p.from - p.at) > 1) ? all : []
+  }, [mobileSegments, clip])
+  const { videoRef, seekToMs, togglePlay, pause } = useVideoSync(clip.start_ms, clip.end_ms, mobileInserts)
   const { currentTimeMs, durationMs, playing } = usePlayerStore()
   const clipVideoUrl = videoUrl && clip.start_ms > 0
     ? `${videoUrl}#t=${clip.start_ms / 1000}`
@@ -133,7 +143,9 @@ export function EditorShellMobile({
 
   // ── Hydrate stores from server props ─────────────────────────────────────────
   useEffect(() => {
-    const localSegments = normalizeCoverage(rowsToLocal(initialSegments), clip.end_ms - clip.start_ms)
+    // (videos put in between make the clip longer than its stretch of the video: nothing after them is cut off)
+    const rows = rowsToLocal(initialSegments)
+    const localSegments = normalizeCoverage(rows, clip.end_ms - clip.start_ms + insertedMs(insertsOf(rows, (clip as unknown as { video_id: string }).video_id)))
     const initialKeyframeMap: KeyframeMap = {}
     for (const seg of initialSegments) {
       for (const box of seg.crop_boxes) {
@@ -645,7 +657,7 @@ export function EditorShellMobile({
               </div>
             ) : (
               <OutputCanvas
-                videoRef={videoRef} currentTimeMs={currentTimeMs} clipStartMs={clip.start_ms}
+                videoRef={videoRef} currentTimeMs={currentTimeMs} clipStartMs={clip.start_ms} clock={mobileInserts.length ? liveTime.get : undefined}
                 activeSegment={playingSegment} getPositionAt={getPositionAt}
                 skipTransitionRef={skipCanvasTransitionRef}
                 words={displayWords} captionStyle={captionStyle} captionTextCase={captionTextCase} showCaptions={showCaptions}
@@ -1001,7 +1013,7 @@ export function EditorShellMobile({
                     </div>
                   ) : (
                     <OutputCanvas
-                      videoRef={videoRef} currentTimeMs={currentTimeMs} clipStartMs={clip.start_ms}
+                      videoRef={videoRef} currentTimeMs={currentTimeMs} clipStartMs={clip.start_ms} clock={mobileInserts.length ? liveTime.get : undefined}
                       activeSegment={playingSegment} getPositionAt={getPositionAt}
                       skipTransitionRef={skipCanvasTransitionRef}
                       words={displayWords} captionStyle={captionStyle} captionTextCase={captionTextCase} showCaptions={showCaptions}

@@ -19,8 +19,11 @@ import { addedVideoBox } from './visibility'
 
 type Main = string | null | undefined
 
-/** A video put over the clip (B-roll, an inserted video): a layer over the sections */
-export const isShot = (seg: SegmentLocal, mainVideoId: Main) => !!addedVideoBox(seg, mainVideoId)
+/**
+ * A video put over the clip (B-roll): a layer over the sections. An inserted video (it has
+ * video_offset_ms: the main video waits meanwhile, inserts.ts) is a part of the main row instead.
+ */
+export const isShot = (seg: SegmentLocal, mainVideoId: Main) => !!addedVideoBox(seg, mainVideoId) && seg.video_offset_ms == null
 
 const byStart = (a: SegmentLocal, b: SegmentLocal) => a.start_ms - b.start_ms || a.sort_order - b.sort_order
 

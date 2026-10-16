@@ -6,11 +6,15 @@ import { OutputCanvas } from '@/components/editor/VideoPreview'
 import { getBoxPositionAtLerp } from '@/lib/interpolation'
 import { BorrowedPool, isBorrowedSlot } from '@/modules/editor/brollSources'
 import { createFrameMediaPool } from '@/modules/editor/frameMedia'
+import { insertsOf, piecesOf, piecesLength, pieceAt, videoAtPieces, timelineAtPieces, type Piece } from '@/modules/editor/inserts'
+import { isShot } from '@/modules/editor/shots'
 
 /**
  * A clip played in 9:16 without exporting it: the source video drawn through the clip's framing,
  * captions and text, exactly as the editor's preview draws it (OutputCanvas), with hard cuts
  * between formats and the B-roll shots in place, as in the export.
+ * Videos put in between (modules/editor/inserts.ts): the source video waits where one goes in
+ * while a clock plays it, then carries on — the clip is that much longer.
  */
 export function ClipPlayer({ videoUrl, mainVideoId, stockUrls = {}, startMs, endMs, segments, words, captionStyle, textOverlays }: {
   videoUrl: string
@@ -29,7 +33,17 @@ export function ClipPlayer({ videoUrl, mainVideoId, stockUrls = {}, startMs, end
   const [playing, setPlaying] = useState(false)
   const [ready, setReady] = useState(false)
   const [tMs, setTMs] = useState(0)   // clip-relative
-  const lengthMs = endMs - startMs
+  // A clip of pieces (inserts.ts): each part from its own moment of the video (a part can skip
+  // video), and during a video put in between the clip's own clock runs while the source waits
+  const pieces = useMemo(() => {
+    const all = piecesOf(segments, mainVideoId, s => isShot(s, mainVideoId))
+    return insertsOf(segments, mainVideoId).length || all.some(p => p.from != null && Math.abs(p.from - p.at) > 1) ? all : []
+  }, [segments, mainVideoId])
+  const lengthMs = pieces.length ? piecesLength(pieces) : endMs - startMs
+  const tRef = useRef(0)
+  const holdRef = useRef<{ piece: Piece; wall: number } | null>(null)
+  /** Clip time → the source video's time (clip-relative ms); inside a video put in between: where the source waits */
+  const toVideo = (t: number) => (pieces.length ? videoAtPieces(pieces, t) : t)
 
   // Full screen: the reel as big as the screen allows, still 9:16 (black either side). Where a
   // page can't go full screen (iPhone Safari), it fills the window instead. Esc / the button leave.
@@ -112,11 +126,20 @@ export function ClipPlayer({ videoUrl, mainVideoId, stockUrls = {}, startMs, end
     }
   }
 
-  // Captions: Roman letters when the style says so
-  const shownWords = useMemo(
-    () => captionStyle?.language === 'roman' ? words.map(w => ({ ...w, word: w.word_roman ?? w.word, source_word: w.word })) : words,
-    [words, captionStyle?.language],
-  )
+  // Captions: Roman letters when the style says so; after a video put in between, later by its length
+  const shownWords = useMemo(() => {
+    const placed = pieces.length
+      ? words.flatMap(w => {
+        const rel = w.start_ms - startMs
+        if (rel < 0) return [w]
+        const mid = (w.start_ms + w.end_ms) / 2 - startMs
+        if (!pieces.some(p => p.from != null && mid >= p.from && mid < p.from + p.ms)) return []   // (in video cut out)
+        const d = timelineAtPieces(pieces, rel) - rel
+        return d ? [{ ...w, start_ms: w.start_ms + d, end_ms: w.end_ms + d }] : [w]
+      })
+      : words
+    return captionStyle?.language === 'roman' ? placed.map(w => ({ ...w, word: w.word_roman ?? w.word, source_word: w.word })) : placed
+  }, [words, captionStyle?.language, pieces, startMs])
   const showCaptions = !!captionStyle && captionStyle.enabled !== false && words.length > 0
 
   // Follow the video: the time drives which format is on screen; the clip loops within its range
@@ -126,33 +149,81 @@ export function ClipPlayer({ videoUrl, mainVideoId, stockUrls = {}, startMs, end
     const tick = () => {
       const v = videoRef.current
       if (v) {
-        const rel = v.currentTime * 1000 - startMs
-        if (rel >= lengthMs) { v.pause(); v.currentTime = startMs / 1000; setPlaying(false); setTMs(0); syncStock(0, false); syncBorrowed(0, false); return }
-        setTMs(Math.max(0, rel))
-        syncStock(Math.max(0, rel), true)
-        syncBorrowed(Math.max(0, rel), true)
+        let rel: number
+        const h = holdRef.current
+        /** On to piece `i`: a held one starts its clock, a played one its own moment of the video */
+        const enter = (i: number): number => {
+          const n = pieces[i]
+          if (!n) return lengthMs
+          if (n.hold != null) {
+            v.pause()
+            if (Math.abs(v.currentTime * 1000 - (startMs + n.hold)) > 80) v.currentTime = (startMs + n.hold) / 1000
+            holdRef.current = { piece: n, wall: performance.now() }
+          } else {
+            holdRef.current = null
+            if (Math.abs(v.currentTime * 1000 - (startMs + (n.from ?? 0))) > 80) v.currentTime = (startMs + (n.from ?? 0)) / 1000
+            if (v.paused) v.play().catch(() => {})
+          }
+          return n.at
+        }
+        if (!pieces.length) rel = v.currentTime * 1000 - startMs
+        else if (h) {
+          // In a video put in between: the clock runs it; through it, on to the next piece
+          rel = h.piece.at + (performance.now() - h.wall)
+          if (rel >= h.piece.at + h.piece.ms) rel = enter(pieces.indexOf(h.piece) + 1)
+        } else {
+          const p = pieceAt(pieces, tRef.current) ?? pieces[0]
+          if (p.hold != null) rel = enter(pieces.indexOf(p))
+          else {
+            const vm = v.currentTime * 1000 - startMs
+            // The end of this piece: on to the next (a jump over video cut out, or a held one)
+            rel = vm >= (p.from ?? 0) + p.ms - 34 ? enter(pieces.indexOf(p) + 1) : p.at + Math.max(0, vm - (p.from ?? 0))
+          }
+        }
+        if (rel >= lengthMs) { v.pause(); holdRef.current = null; v.currentTime = startMs / 1000; tRef.current = 0; setPlaying(false); setTMs(0); syncStock(0, false); syncBorrowed(0, false); return }
+        tRef.current = Math.max(0, rel)
+        setTMs(tRef.current)
+        syncStock(tRef.current, true)
+        syncBorrowed(tRef.current, true)
       }
       raf = requestAnimationFrame(tick)
     }
     raf = requestAnimationFrame(tick)
     return () => cancelAnimationFrame(raf)
-  }, [playing, startMs, lengthMs]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [playing, startMs, lengthMs, pieces]) // eslint-disable-line react-hooks/exhaustive-deps
 
   function toggle() {
     const v = videoRef.current
     if (!v) return
-    if (playing) { v.pause(); setPlaying(false); syncStock(tMs, false); syncBorrowed(tMs, false); return }
-    if (v.currentTime * 1000 < startMs || v.currentTime * 1000 >= endMs) v.currentTime = startMs / 1000
+    if (playing) { v.pause(); holdRef.current = null; setPlaying(false); syncStock(tRef.current, false); syncBorrowed(tRef.current, false); return }
+    if (tRef.current >= lengthMs - 1) tRef.current = 0
+    const t = tRef.current
+    const want = startMs + toVideo(t)
+    if (Math.abs(v.currentTime * 1000 - want) > 100) v.currentTime = want / 1000
+    const at = pieces.length ? pieceAt(pieces, t) : null
+    if (at?.hold != null) {
+      // Starting in a video put in between: the clock plays it, the source waits
+      holdRef.current = { piece: at, wall: performance.now() - (t - at.at) }
+      setPlaying(true)
+      return
+    }
+    holdRef.current = null
     v.play().then(() => setPlaying(true)).catch(() => setPlaying(false))
   }
 
   function seekTo(fraction: number) {
     const v = videoRef.current
     if (!v) return
-    v.currentTime = (startMs + fraction * lengthMs) / 1000
-    setTMs(fraction * lengthMs)
-    syncStock(fraction * lengthMs, playing)
-    syncBorrowed(fraction * lengthMs, playing)
+    const t = fraction * lengthMs
+    tRef.current = t
+    v.currentTime = (startMs + toVideo(t)) / 1000
+    const p = pieces.length ? pieceAt(pieces, t) : null
+    const held = p?.hold != null ? p : null
+    holdRef.current = held && playing ? { piece: held, wall: performance.now() - (t - held.at) } : null
+    if (playing) { if (held) v.pause(); else v.play().catch(() => {}) }
+    setTMs(t)
+    syncStock(t, playing)
+    syncBorrowed(t, playing)
   }
 
   const fmt = (ms: number) => { const s = Math.floor(ms / 1000); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}` }
@@ -177,6 +248,12 @@ export function ClipPlayer({ videoUrl, mainVideoId, stockUrls = {}, startMs, end
       ))}
       <OutputCanvas
         videoRef={videoRef} currentTimeMs={tMs} clipStartMs={startMs}
+        // (videos put in between: the clip's own clock and time map, the source waits during one)
+        {...(pieces.length ? {
+          clock: () => tRef.current,
+          videoToTimeline: (v: number) => timelineAtPieces(pieces, v - startMs),
+          timelineToVideo: (t: number) => startMs + videoAtPieces(pieces, t),
+        } : {})}
         activeSegment={activeSegment} getPositionAt={getPositionAt}
         segmentAt={segmentAt} hardCuts sourceFor={sourceFor} slotSourceFor={slotSourceFor} frameMedia={framePool}
         words={shownWords} captionStyle={captionStyle ?? {}} showCaptions={showCaptions}

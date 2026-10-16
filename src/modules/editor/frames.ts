@@ -370,6 +370,20 @@ export function textLaneLook(seg: Pick<SegmentLocal, 'layout' | 'frame'>, lane: 
 /** Rounded corners a video or photo starts with when it's put in a frame (the Corners slider, 0–100) */
 export const DEFAULT_CORNERS = 80
 
+/**
+ * Corners a photo or video put in a slot starts with: the frame's own (square in the frames drawn
+ * square, like its main video), and none in an area that has its own shape (a circle, a rounded
+ * box) — a rounded inset there would show a black ring inside it.
+ */
+export function newItemCorners(layout: FrameLayout, slot: number): number {
+  const area = frameAreas(layout).find(a => a.kind === 'slot' && a.slot === slot)
+  if (area && area.kind === 'slot' && area.radius) return 0
+  return FRAME_TEMPLATES[layout].corners ?? DEFAULT_CORNERS
+}
+
+/** The slot whose picture, blurred, fills a 'blur' frame's background (render.py frames.py BLUR_SOURCE_SLOT) */
+export const BLUR_SOURCE_SLOT = 0
+
 export const DEFAULT_BAND: FrameBand = { text: '', bg: '#000000', color: '#ffffff', size: 64, font: null }
 
 /** Names for a frame's slots by slot number, e.g. Top / Bottom (the template's own where it names them) */
@@ -414,12 +428,15 @@ export function slotOffers(layout: FrameLayout, slot: number): { video: boolean;
   const own = FRAME_TEMPLATES[layout].offers?.[slot]
   if (own) return { video: own.video, photo: own.photo, text: !!own.text }
   switch (layout) {
-    case 'frame_single': return { video: true, photo: false, text: true }
+    case 'frame_single': return { video: true, photo: true, text: true }
     case 'frame_video_photo': return { video: slot === 0, photo: slot !== 0, text: true }
-    case 'frame_dual': return { video: true, photo: false, text: false }
+    case 'frame_dual': return { video: true, photo: true, text: false }
     case 'frame_dual_letterbox': return { video: true, photo: false, text: false }
     case 'frame_triple': return { video: true, photo: true, text: false }
-    case 'frame_title_caption': return { video: true, photo: false, text: true }
+    case 'frame_title_caption': return { video: true, photo: true, text: true }
+    // Blur fill: a photo shows whole on its own blurred copy; Speaker names: a speaker's photo
+    case 'frame_blur_fill': return { video: true, photo: true, text: false }
+    case 'frame_name_tags': return { video: true, photo: true, text: false }
     case 'frame_big_small': return { video: true, photo: true, text: false }
     case 'frame_photo_story': return { video: false, photo: true, text: true }
     default: {

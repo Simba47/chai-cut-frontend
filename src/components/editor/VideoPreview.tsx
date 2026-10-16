@@ -10,9 +10,9 @@ import type { BoxPosition } from '@/lib/interpolation'
 import type { TextCase } from './CaptionStyler'
 import { applyCase } from './CaptionStyler'
 import { normalizedSlotAspect, fitToAspect } from '@/modules/editor/utils'
-import { isFrameLayout, frameSlotLabels, frameLanesFor, frameBandShown, frameOf, itemAt, captionBandAt, cornerGeometry, MIN_ROW_H, mainRect, boxRect, MIN_BOX as MIN_MAIN_BOX, frameAreas, frameBase, areaRadius, frameSlotSize, isTextLane, frameRows } from '@/modules/editor/frames'
+import { isFrameLayout, frameSlotLabels, frameLanesFor, frameBandShown, frameOf, itemAt, captionBandAt, cornerGeometry, MIN_ROW_H, mainRect, boxRect, MIN_BOX as MIN_MAIN_BOX, frameAreas, frameBase, areaRadius, frameSlotSize, isTextLane, frameRows, BLUR_SOURCE_SLOT } from '@/modules/editor/frames'
 import type { FrameMediaPool } from '@/modules/editor/frameMedia'
-import { useLiveTimeMs } from '@/modules/player/store'
+import { useLiveTimeMs, liveTime, usePlayerStore } from '@/modules/player/store'
 import { addedVideoBox } from '@/modules/editor/visibility'
 import { trackPresentedFrame } from '@/modules/player/presentedFrame'
 
@@ -579,13 +579,15 @@ function FrameTextBox({ row, item, selected, editing, onSelect, onChange, onDele
 function inSlot(ctx: CanvasRenderingContext2D, corners: CornerStyle | undefined, a: AreaPx,
   draw: (dx: number, dy: number, dw: number, dh: number) => void,
   /** The media's box inside the slot (shares of the slot) when it was resized / moved; absent = the whole slot */
-  rect?: { x: number; y: number; w: number; h: number } | null, fill = '#000') {
+  rect?: { x: number; y: number; w: number; h: number } | null, fill = '#000',
+  /** Round the box's corners. Off for media shown whole (contain): the export keeps those square */
+  round = true) {
   const W = ctx.canvas.width
   const g = cornerGeometry(corners)
   ctx.save()
   clipArea(ctx, a)
   if (!g && !rect) { draw(a.x, a.y, a.w, a.h); ctx.restore(); return }
-  const k = W / 1080, m = g ? g.inset * k : 0, r = g ? g.radius * k : 0
+  const k = W / 1080, m = g ? g.inset * k : 0, r = g && round ? g.radius * k : 0
   const bx = a.x + (rect?.x ?? 0) * a.w, by = a.y + (rect?.y ?? 0) * a.h, bw = (rect?.w ?? 1) * a.w, bh = (rect?.h ?? 1) * a.h
   if (fill !== 'none') { ctx.fillStyle = fill; ctx.fillRect(a.x, a.y, a.w, a.h) }
   ctx.beginPath()
@@ -625,11 +627,24 @@ function paintFrame(
   const base = frameBase(layout)
   ctx.fillStyle = base === 'band' ? bandBg : '#000'
   ctx.fillRect(0, 0, W, H)
-  if (base === 'blur' && vW && vH) {
-    ctx.save()
-    ctx.filter = `blur(${Math.round(W / 22)}px) brightness(0.65)`
-    coverSource(ctx, video, vW, vH, -W * 0.05, -H * 0.05, W * 1.1, H * 1.1)
-    ctx.restore()
+  if (base === 'blur') {
+    // The blurred picture follows what its slot shows: a photo or video put there, else the main video
+    const over = itemAt(frame, BLUR_SOURCE_SLOT, tMs, seg)
+    let src: CanvasImageSource | null = null, sw = 0, sh = 0
+    if (over && !over.hidden && over.kind === 'photo') {
+      const img = over.image_url ? pool?.image(over.image_url) : null
+      if (img && img.complete && img.naturalWidth) { src = img; sw = img.naturalWidth; sh = img.naturalHeight }
+    } else if (over && !over.hidden && over.kind === 'video') {
+      const v = pool?.video(over)
+      if (v && v.readyState >= 2) { src = v; sw = v.videoWidth; sh = v.videoHeight }
+    }
+    if (!src && vW && vH) { src = video; sw = vW; sh = vH }
+    if (src) {
+      ctx.save()
+      ctx.filter = `blur(${Math.round(W / 22)}px) brightness(0.65)`
+      coverSource(ctx, src, sw, sh, -W * 0.05, -H * 0.05, W * 1.1, H * 1.1)
+      ctx.restore()
+    }
   }
   for (const area of frameAreas(layout, frameBandShown(seg), seg.frame?.row_h)) {
     const a = px(area)
@@ -659,8 +674,11 @@ function paintFrame(
     if (main.has(area.slot) && vW && vH) {
       const box = seg.crop_boxes.find(b => b.slot_index === area.slot)
       if (contain) {
-        // Shown whole: the video isn't cropped here
-        inSlot(ctx, frame.main_corners?.[String(area.slot)], a, (dx, dy, dw, dh) => containSource(ctx, video, vW, vH, dx, dy, dw, dh), mainRect(frame, area.slot), 'none')
+        // Shown whole: the video isn't cropped here. A photo or video put in this slot replaces it
+        // while it shows (shown whole too, it wouldn't cover it: the main video would peek around)
+        if (!(it && (it.kind === 'photo' || it.kind === 'video'))) {
+          inSlot(ctx, frame.main_corners?.[String(area.slot)], a, (dx, dy, dw, dh) => containSource(ctx, video, vW, vH, dx, dy, dw, dh), mainRect(frame, area.slot), 'none', false)
+        }
       } else if (box) {
         const p = getPositionAt(box.id, tMs)
         inSlot(ctx, frame.main_corners?.[String(area.slot)], a,
@@ -677,12 +695,12 @@ function paintFrame(
       if (img && img.complete && img.naturalWidth) {
         const from = Math.max(it.start_ms, seg.start_ms), to = Math.min(it.end_ms, seg.end_ms)
         const m = photoMotion(it.motion, (tMs - from) / Math.max(1, to - from))
-        inSlot(ctx, it.corners, a, put(img, img.naturalWidth, img.naturalHeight, m.zoom, m.panX), boxRect(it.rect), contain ? fill : '#000')
+        inSlot(ctx, it.corners, a, put(img, img.naturalWidth, img.naturalHeight, m.zoom, m.panX), boxRect(it.rect), contain ? fill : '#000', !contain)
       }
       continue
     }
     const v = pool?.video(it)
-    if (v && v.readyState >= 2) inSlot(ctx, it.corners, a, put(v, v.videoWidth, v.videoHeight), boxRect(it.rect), contain ? fill : '#000')
+    if (v && v.readyState >= 2) inSlot(ctx, it.corners, a, put(v, v.videoWidth, v.videoHeight), boxRect(it.rect), contain ? fill : '#000', !contain)
   }
 }
 
@@ -693,6 +711,43 @@ function pixelCanvas(w: number, h: number) {
   if (pixelTmp.width !== w) pixelTmp.width = w
   if (pixelTmp.height !== h) pixelTmp.height = h
   return pixelTmp
+}
+
+/** Canvases for the sideways smear (Blur, Whip), kept between frames */
+const smearTmp: HTMLCanvasElement[] = []
+/**
+ * `src` smeared sideways over about `box` pixels (a horizontal box blur, as ffmpeg's hblur and
+ * avgblur=sizeY=1 make), onto `ctx`: squeezed narrow in halves (each halving averages, so wide
+ * smears don't shimmer), then stretched back. A few small draws — far cheaper than ctx.filter.
+ */
+function drawSmeared(ctx: CanvasRenderingContext2D, src: HTMLCanvasElement, box: number) {
+  const W = ctx.canvas.width, H = ctx.canvas.height
+  const target = Math.max(2, Math.round(W / Math.max(1, box)))
+  if (target >= W) { ctx.drawImage(src, 0, 0, W, H); return }
+  // (at half height: a sideways smear hides it, and it halves the work)
+  const h = Math.max(1, Math.ceil(H / 2))
+  let cur: CanvasImageSource = src, curW = W, curH = H, i = 0
+  while (curW > target) {
+    const w = Math.max(target, Math.ceil(curW / 2))
+    if (!smearTmp[i]) smearTmp[i] = document.createElement('canvas')
+    const c = smearTmp[i++]
+    if (c.width !== w) c.width = w
+    if (c.height !== h) c.height = h
+    const cx = c.getContext('2d')!
+    cx.imageSmoothingEnabled = true
+    cx.drawImage(cur, 0, 0, curW, curH, 0, 0, w, h)
+    cur = c; curW = w; curH = h
+  }
+  ctx.imageSmoothingEnabled = true
+  ctx.drawImage(cur, 0, 0, curW, curH, 0, 0, W, H)
+}
+/** A full-size canvas to put a transition frame together before smearing it */
+let mixTmp: HTMLCanvasElement | null = null
+function mixCanvas(W: number, H: number) {
+  if (!mixTmp) mixTmp = document.createElement('canvas')
+  if (mixTmp.width !== W) mixTmp.width = W
+  if (mixTmp.height !== H) mixTmp.height = H
+  return mixTmp
 }
 
 /** A transition the preview plays: centred on the join at `at` (clip ms), `ms` long */
@@ -735,20 +790,25 @@ function drawTransition(ctx: CanvasRenderingContext2D, a: HTMLCanvasElement, b: 
       break
     case 'smoothleft': {
       // Whip: a push to the left, smeared sideways over its middle (the export: slideleft, then
-      // avgblur over the middle 60%, render.py)
-      const blur = e > 0.2 && e < 0.8 ? Math.round(W * 0.012) : 0
-      if (blur > 0) ctx.filter = `blur(${blur}px)`
-      ctx.drawImage(a, -e * W, 0, W, H)
-      ctx.drawImage(b, (1 - e) * W, 0, W, H)
+      // avgblur=sizeX=28 over the middle 60% of a 1080-wide picture, render.py)
+      const smear = e > 0.2 && e < 0.8
+      const m = smear ? mixCanvas(W, H) : null
+      const t = m ? m.getContext('2d')! : ctx
+      t.drawImage(a, -e * W, 0, W, H)
+      t.drawImage(b, (1 - e) * W, 0, W, H)
+      if (m) drawSmeared(ctx, m, W * 57 / 1080)
       break
     }
     case 'hblur': {
-      // Blur: the picture goes soft, swaps at the softest, then comes back sharp
-      const blur = Math.round(Math.sin(Math.PI * e) * W * 0.03)
-      if (blur > 0) ctx.filter = `blur(${blur}px)`
-      ctx.drawImage(a, 0, 0, W, H)
-      ctx.globalAlpha = e
-      ctx.drawImage(b, 0, 0, W, H)
+      // Blur: smeared sideways ever wider (half the width at the middle), the new picture
+      // dissolving in under it, then sharp again — ffmpeg's hblur
+      const m = mixCanvas(W, H), t = m.getContext('2d')!
+      t.globalAlpha = 1
+      t.drawImage(a, 0, 0, W, H)
+      t.globalAlpha = e
+      t.drawImage(b, 0, 0, W, H)
+      t.globalAlpha = 1
+      drawSmeared(ctx, m, 1 + (W / 2) * (e <= 0.5 ? e * 2 : (1 - e) * 2))
       break
     }
     case 'radial': {
@@ -784,10 +844,17 @@ function drawTransition(ctx: CanvasRenderingContext2D, a: HTMLCanvasElement, b: 
       ctx.drawImage(b, 0, 0, W, H)
       break
     case 'zoomin': {
-      ctx.drawImage(b, 0, 0, W, H)
-      const z = 1 + e * 0.6
-      ctx.globalAlpha = 1 - e
-      ctx.drawImage(a, (W - W * z) / 2, (H - H * z) / 2, W * z, H * z)
+      // Zoom: the old picture rushes in to its centre over the first half, then the new one
+      // dissolves in over it — ffmpeg's zoomin (the export): the old picture sampled at
+      // smoothstep(0.5, 1, 1 - p) of its size, mixed with the new by smoothstep(0, 0.5, 1 - p)
+      const ss = (lo: number, hi: number, x: number) => { const t = Math.max(0, Math.min(1, (x - lo) / (hi - lo))); return t * t * (3 - 2 * t) }
+      const q = 1 - e
+      const zf = ss(0.5, 1, q)
+      const sw = Math.max(1, a.width * zf), sh = Math.max(1, a.height * zf)
+      ctx.imageSmoothingEnabled = true
+      ctx.drawImage(a, (a.width - sw) / 2, (a.height - sh) / 2, sw, sh, 0, 0, W, H)
+      const mixB = 1 - ss(0, 0.5, q)
+      if (mixB > 0) { ctx.globalAlpha = mixB; ctx.drawImage(b, 0, 0, W, H) }
       break
     }
     case 'circleopen':
@@ -1527,7 +1594,10 @@ interface OutputCanvasProps {
   /** Cut straight to the next format, as the export does (no crossfade) */
   hardCuts?: boolean
   /** The video a format shows, when it isn't the main one (B-roll) */
-  sourceFor?: (seg: SegmentLocal | null) => HTMLVideoElement | null
+  sourceFor?: ((seg: SegmentLocal | null) => HTMLVideoElement | null) & {
+    /** A part's picture held at a moment, for a transition's still (useBrollSources hold) */
+    hold?: (seg: SegmentLocal, clipMs: number) => HTMLVideoElement | null | undefined
+  }
   /** Split/trio slots that show their own picture (borrowed reactions): see useBorrowedSlots */
   slotSourceFor?: (seg: SegmentLocal | null, box: SegmentLocal['crop_boxes'][number]) => HTMLVideoElement | null | false
   currentTimeMs: number
@@ -1572,8 +1642,13 @@ interface OutputCanvasProps {
    * section with none is a hard cut, as in the export — not the soft blend shown otherwise.
    */
   transitionCuts?: TransitionCut[]
-  /** Clip time → the main video's own time (ms), when parts of the clip were removed (else clipStartMs + t) */
+  /** Clip time → the main video's own time (ms), when parts of the clip were removed or videos put in (else clipStartMs + t) */
   timelineToVideo?: (t: number) => number
+  /**
+   * The clip's time now, when it doesn't follow the main video: with videos put in between
+   * (inserts.ts) the main video waits while one plays, and the clip's own clock runs on
+   */
+  clock?: () => number
   /** Other videos and photos shown in frame slots */
   frameMedia?: FrameMediaPool | null
   /** "+" on an empty frame slot or band: takes the user to that lane on the timeline */
@@ -1597,7 +1672,7 @@ export function OutputCanvas({
   className, style, skipTransitionRef,
   words, captionStyle, captionTextCase = 'title', showCaptions = false,
   textOverlays = [], activeTextOverlayId, onTextOverlayChange, onSelectTextOverlay, onDeleteTextOverlay, editTextOverlayId, onEditTextDone,
-  onCaptionPositionChange, onCaptionSizeChange, transitionCuts, timelineToVideo, frameMedia, onFrameLaneClick, onFrameItemClick, activeFrameItemId, onFrameItemChange, onDeleteFrameItem, onFrameRowsChange, onFrameMainRectChange,
+  onCaptionPositionChange, onCaptionSizeChange, transitionCuts, timelineToVideo, clock, frameMedia, onFrameLaneClick, onFrameItemClick, activeFrameItemId, onFrameItemChange, onDeleteFrameItem, onFrameRowsChange, onFrameMainRectChange,
 }: OutputCanvasProps) {
   // Where the captions are drawn right now (from the canvas, each frame), for their box on the
   // preview: kept in state only when it moves noticeably, at most ~10 times a second
@@ -1641,6 +1716,8 @@ export function OutputCanvas({
   const transitionCutsRef = useRef(transitionCuts)
   const timelineToVideoRef = useRef(timelineToVideo)
   timelineToVideoRef.current = timelineToVideo
+  const clockRef = useRef(clock)
+  clockRef.current = clock
   transitionCutsRef.current = transitionCuts
   // The two sections of a transition, each drawn whole off screen, then blended onto the canvas
   const trCanvases = useRef<[HTMLCanvasElement, HTMLCanvasElement] | null>(null)
@@ -1718,6 +1795,19 @@ export function OutputCanvas({
       for (const v of [peek.a, peek.b]) { v.removeAttribute('src'); v.load() }
       peek = null
     }
+    // The stills of the transition coming up: started again for another join, when either part
+    // changes (an edit) or when the preview changes size
+    type Stills = { at: number; segA: SegmentLocal | null; segB: SegmentLocal | null; a: HTMLCanvasElement; b: HTMLCanvasElement; aOk: boolean; bOk: boolean; liveA: boolean }
+    let stills: Stills | null = null
+    function stillsFor(at: number, segA: SegmentLocal | null, segB: SegmentLocal | null, canvas: HTMLCanvasElement) {
+      if (!stills) stills = { at: -1, segA: null, segB: null, a: document.createElement('canvas'), b: document.createElement('canvas'), aOk: false, bOk: false, liveA: false }
+      const s = stills
+      if (s.at !== at || s.segA !== segA || s.segB !== segB || s.a.width !== canvas.width || s.a.height !== canvas.height) {
+        for (const c of [s.a, s.b]) { c.width = canvas.width; c.height = canvas.height }
+        Object.assign(s, { at, segA, segB, aOk: false, bOk: false, liveA: false })
+      }
+      return s
+    }
 
     const loop = () => {
       const canvas = canvasRef.current
@@ -1729,7 +1819,7 @@ export function OutputCanvas({
         const toTimeline = toTimelineRef.current
         const clockMs = video.currentTime * 1000
         const videoMs = shownMs != null && Math.abs(shownMs - clockMs) < 300 ? shownMs : clockMs
-        const clipMsNow = Math.max(0, toTimeline ? toTimeline(videoMs) : videoMs - clipStartMsRef.current)
+        const clipMsNow = Math.max(0, clockRef.current ? clockRef.current() : toTimeline ? toTimeline(videoMs) : videoMs - clipStartMsRef.current)
         const seg    = segmentAtRef.current
           ? segmentAtRef.current(clipMsNow)
           : activeSegmentRef.current
@@ -1772,28 +1862,50 @@ export function OutputCanvas({
           const cuts = transitionCutsRef.current
           // Coming up to a transition (or in it): its held frames parked in good time
           const soon = cuts?.find(c => c.ms > 0 && clipMsNow >= c.at - c.ms / 2 - 2500 && clipMsNow < c.at + c.ms / 2 + 300)
-          if (soon) parkPeek(video, soon.at)
+          const slots = slotSourceForRef.current ? (sg: SegmentLocal, box: SegmentLocal['crop_boxes'][number]) => slotSourceForRef.current!(sg, box) : null
+          // Coming up to a transition: its two held frames painted once into stills (each with its
+          // own part's view), as soon as they can be — so the transition itself only paints the
+          // part that plays, and never waits on a second decoder
+          const st = soon && segmentAtRef.current ? stillsFor(soon.at, segmentAtRef.current(Math.max(0, soon.at - 1)), segmentAtRef.current(soon.at), canvas) : null
+          if (soon && st && st.segA && st.segB && st.segA.id !== st.segB.id) {
+            const hold = sourceForRef.current?.hold
+            const held = (sg: SegmentLocal, t: number, side: 'a' | 'b') => {
+              const own = hold?.(sg, t)
+              if (own !== undefined) return own
+              parkPeek(video, soon.at)
+              const pk = peek && peek.at === soon.at ? peek : null
+              return pk && peekReady(pk[side]) ? pk[side] : null
+            }
+            const still = (c: HTMLCanvasElement, sg: SegmentLocal, t: number, side: 'a' | 'b') => {
+              const cx = c.getContext('2d')!
+              if (sg.hidden) { cx.fillStyle = '#000'; cx.fillRect(0, 0, c.width, c.height); return true }
+              const el = held(sg, t, side)
+              if (!el) return false
+              paintSegment(cx, el, sg, t, getPositionAtRef.current, frameMediaRef.current, slots)
+              return true
+            }
+            if (!st.bOk) st.bOk = still(st.b, st.segB, soon.at, 'b')
+            if (!st.aOk && clipMsNow < soon.at) st.aOk = still(st.a, st.segA, soon.at - 1, 'a')
+          }
           const tc = cuts?.find(c => c.ms > 0 && clipMsNow >= c.at - c.ms / 2 && clipMsNow < c.at + c.ms / 2)
-          const segA = tc && segmentAtRef.current ? segmentAtRef.current(Math.max(0, tc.at - 1)) : null
-          const segB = tc && segmentAtRef.current ? segmentAtRef.current(tc.at) : null
-          if (tc && segA && segB && segA.id !== segB.id) {
+          if (tc && st && st.at === tc.at && st.segA && st.segB && st.segA.id !== st.segB.id) {
             if (!trCanvases.current) trCanvases.current = [document.createElement('canvas'), document.createElement('canvas')]
             const [ca, cb] = trCanvases.current
             for (const c of [ca, cb]) if (c.width !== canvas.width || c.height !== canvas.height) { c.width = canvas.width; c.height = canvas.height }
-            const slots = slotSourceForRef.current ? (sg: SegmentLocal, box: SegmentLocal['crop_boxes'][number]) => slotSourceForRef.current!(sg, box) : null
-            const paint = (c: HTMLCanvasElement, sg: SegmentLocal, t: number, held: HTMLVideoElement | null) => {
-              const cx = c.getContext('2d')!
-              const src = sourceForRef.current?.(sg)
-              if (sg.hidden) { cx.fillStyle = '#000'; cx.fillRect(0, 0, c.width, c.height); return }
-              if (!src || src.readyState >= 2) paintSegment(cx, src ?? held ?? video, sg, t, getPositionAtRef.current, frameMediaRef.current, slots)
-            }
             // Before the join: the outgoing part plays, the incoming one holds its first frame;
-            // after it, the other way round (a held frame not parked yet: the player's own frame)
-            const pk = peek && peek.at === tc.at ? peek : null
+            // after it, the other way round (the same as the export, render.py)
             const before = clipMsNow < tc.at
-            paint(ca, segA, before ? clipMsNow : tc.at - 1, !before && pk && peekReady(pk.a) ? pk.a : null)
-            paint(cb, segB, before ? tc.at : clipMsNow, before && pk && peekReady(pk.b) ? pk.b : null)
-            drawTransition(ctx, ca, cb, (clipMsNow - (tc.at - tc.ms / 2)) / tc.ms, tc.type)
+            const live = before ? ca : cb
+            const lx = live.getContext('2d')!
+            if (seg?.hidden) { lx.fillStyle = '#000'; lx.fillRect(0, 0, live.width, live.height) }
+            else if (!other || other.readyState >= 2) paintSegment(lx, other ?? video, seg, clipRelativeMs, getPositionAtRef.current, frameMediaRef.current, slots)
+            if (before) st.liveA = true
+            // (played into the join with no still of the outgoing part: its last frame played is it)
+            else if (!st.aOk && st.liveA) { st.a.getContext('2d')!.drawImage(ca, 0, 0); st.aOk = true }
+            const heldSide = before ? (st.bOk ? st.b : null) : (st.aOk ? st.a : null)
+            // A held frame not ready yet: a plain cut for now, never a picture blended with itself
+            if (heldSide) drawTransition(ctx, before ? ca : heldSide, before ? heldSide : cb, (clipMsNow - (tc.at - tc.ms / 2)) / tc.ms, tc.type)
+            else ctx.drawImage(live, 0, 0)
           } else if (seg?.hidden) {
             // The main video hidden here (shownSegment): black, as in the export; captions and text still go on top
             ctx.fillStyle = '#000'
@@ -2191,6 +2303,34 @@ function RotateHandle({ boxRef, rotation, onRotate, size = 20 }: {
 
 // ── OverlayBox — free-position drag+resize for image/video overlays ──────────
 
+/**
+ * Picture in picture: the video in its window, kept in step with the clip's playhead (the live
+ * time) and playing while the clip plays; its sound unless muted. Stretched to its box, as the
+ * export draws it (render.py video overlays).
+ */
+function PipVideo({ overlay }: { overlay: Overlay }) {
+  const ref = useRef<HTMLVideoElement>(null)
+  const playing = usePlayerStore(s => s.playing)
+  const sync = useCallback(() => {
+    const v = ref.current
+    if (!v) return
+    const want = Math.max(0, ((overlay.source_offset_ms ?? 0) + liveTime.get() - overlay.start_ms) / 1000)
+    const live = usePlayerStore.getState().playing
+    // Playing: only re-seek on real drift (a seek stalls the picture); paused: follow exactly
+    if (!v.seeking && Math.abs(v.currentTime - want) > (live ? 0.3 : 0.05)) v.currentTime = want
+    if (live && v.paused) v.play().catch(() => {})
+    if (!live && !v.paused) v.pause()
+  }, [overlay.source_offset_ms, overlay.start_ms])
+  useEffect(() => liveTime.subscribe(sync), [sync])
+  useEffect(() => { sync() }, [sync, playing])
+  useEffect(() => () => ref.current?.pause(), [])
+  return (
+    <video ref={ref} src={overlay.preview_url} muted={!!overlay.muted} playsInline preload="auto" crossOrigin="anonymous"
+      onLoadedData={sync}
+      style={{ width: '100%', height: '100%', objectFit: 'fill', pointerEvents: 'none', display: 'block' }} />
+  )
+}
+
 interface OverlayBoxProps {
   overlay: Overlay
   isActive: boolean
@@ -2257,7 +2397,7 @@ function OverlayBox({ overlay, isActive, onChange, onSelect, onDelete }: Overlay
     return overlay.preview_url ?? null
   }, [overlay.type, overlay.preview_url])
 
-  const color = '#f59e0b'
+  const color = overlay.type === 'video' ? '#f97316' : '#f59e0b'
   return (
     <div
       ref={ref}
@@ -2276,7 +2416,9 @@ function OverlayBox({ overlay, isActive, onChange, onSelect, onDelete }: Overlay
       {/* Image content: the whole picture stretched to fill its box, whatever its width and height
           (the export stretches it the same way: render.py image overlays) */}
       <div style={{ position: 'absolute', inset: 0, overflow: 'hidden', pointerEvents: 'none' }}>
-      {imageUrl
+      {overlay.type === 'video' && overlay.preview_url
+        ? <PipVideo overlay={overlay} />
+        : imageUrl
         // eslint-disable-next-line @next/next/no-img-element
         ? <img src={imageUrl} alt="" draggable={false} style={{ width: '100%', height: '100%', objectFit: 'fill', pointerEvents: 'none', display: 'block' }} />
         : <div style={{ width: '100%', height: '100%', background: `${color}22`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>

@@ -8,6 +8,7 @@ import { VideoPreview, OutputCanvas } from '@/components/editor/VideoPreview'
 import { computeCutRanges, reactionRanges, removedMs, withoutRanges } from '@/lib/cuts'
 import { cleanTrims, trimMap, addTrim, wordsOnTimeline, MAX_CLIP_MS, MIN_CLIP_MS } from '@/lib/trims'
 import { toTimelineState, toSourceState, rippleDelete, lockedInRange, insertAtStart, extendEnd, type TimedState } from '@/modules/editor/trimState'
+import { insertsOf, insertedMs, rippleInsert, isInsert, piecesOf, piecesLength, videoAtPieces, timelineAtPieces, rippleCut, pieceAt } from '@/modules/editor/inserts'
 import { PostText, type PostTextValue } from '@/components/clips/PostText'
 import { BrollPanel, type StockResult } from '@/components/editor/BrollPanel'
 import { VideoPanel, type PanelVideo } from '@/components/editor/VideoPanel'
@@ -32,7 +33,7 @@ import { useConfirm } from '@/components/editor/ConfirmDialog'
 import { EditorTour, hasSeenEditorTour } from '@/components/editor/EditorTour'
 import { FrameAddMenu, type AddChoice } from '@/components/editor/FrameAddMenu'
 import { createFrameMediaPool } from '@/modules/editor/frameMedia'
-import { FRAME_TEMPLATES, isFrameLayout, frameOf, mainAudioVolume, frameLanes, frameSlotLabels, emptySlotStretches, slotOffers, DEFAULT_CORNERS, isTextLane, textLaneLook, type TextLane } from '@/modules/editor/frames'
+import { FRAME_TEMPLATES, isFrameLayout, frameOf, mainAudioVolume, frameLanes, frameSlotLabels, emptySlotStretches, slotOffers, newItemCorners, frameSlotCount, itemAt, isTextLane, textLaneLook, type TextLane } from '@/modules/editor/frames'
 import { signOut } from 'next-auth/react'
 import { PlatformOverlay, PLATFORM_SAFE, type Platform } from '@/components/editor/PlatformOverlay'
 // ── Domain stores ──────────────────────────────────────────────────────────────
@@ -178,14 +179,49 @@ export function EditorShell({
   )
   const trim = useMemo(() => trimMap(trims, rawClip.start_ms, rawClip.end_ms), [trims, rawClip.start_ms, rawClip.end_ms])
   const trimmed = trims.length > 0
-  const clip = useMemo(() => (trimmed ? { ...rawClip, end_ms: rawClip.start_ms + trim.lengthMs } : rawClip), [rawClip, trimmed, trim.lengthMs])
-  /** The main video's own time (ms) → timeline time; undefined while nothing is removed */
-  const videoToTimeline = trimmed ? trim.toTimeline : undefined
+  // ── Videos put in between (modules/editor/inserts.ts) ──
+  // The main video waits where one goes in and carries on after it: the clip gets that much longer.
+  // (Not together with removed parts yet: a clip has one or the other.)
+  const storeSegments = useEditorStore(s => s.segments)
+  const ownVideoIdForInserts = (savedClip as unknown as { video_id: string }).video_id
+  const inserts = useMemo(() => (trimmed ? [] : insertsOf(storeSegments, ownVideoIdForInserts)), [trimmed, storeSegments, ownVideoIdForInserts])
+  const hasInserts = inserts.length > 0
+  // The clip as pieces (inserts.ts): each part from its own moment of the main video — so a part can
+  // skip video (cut from its edge) and an inserted video holds it. Used once the parts don't simply
+  // follow the video (a video put in between, or a part cut that way); otherwise the plain clip.
+  const allPieces = useMemo(
+    () => (trimmed ? [] : piecesOf(storeSegments, ownVideoIdForInserts, s => isShot(s, ownVideoIdForInserts))),
+    [trimmed, storeSegments, ownVideoIdForInserts],
+  )
+  const piecesOn = hasInserts || allPieces.some(p => p.from != null && Math.abs(p.from - p.at) > 1)
+  const pieces = useMemo(() => (piecesOn ? allPieces : []), [piecesOn, allPieces])
+  const insertsKey = pieces.map(p => `${p.id}:${p.at}+${p.ms}:${p.from ?? ''}@${p.hold ?? ''}`).join(',')
+  const clip = useMemo(
+    () => (trimmed ? { ...rawClip, end_ms: rawClip.start_ms + trim.lengthMs } : piecesOn ? { ...rawClip, end_ms: rawClip.start_ms + piecesLength(pieces) } : rawClip),
+    [rawClip, trimmed, trim.lengthMs, piecesOn, pieces],
+  )
+  /** The main video's own time (ms) → timeline time; undefined while the clip simply follows the video */
+  const videoToTimeline = useMemo(
+    () => (trimmed ? trim.toTimeline : piecesOn ? (v: number) => timelineAtPieces(pieces, v - rawClip.start_ms) : undefined),
+    [trimmed, trim, piecesOn, pieces, rawClip.start_ms],
+  )
+  /** Timeline time → the main video's own time (ms); undefined while the clip simply follows the video */
+  const timelineToVideo = useMemo(
+    () => (trimmed ? trim.toSource : piecesOn ? (t: number) => rawClip.start_ms + videoAtPieces(pieces, t) : undefined),
+    [trimmed, trim, piecesOn, pieces, rawClip.start_ms],
+  )
   /** Whether this database can save removed parts yet (its backend adds the field when it starts) */
   const canTrim = 'trim_ranges' in (rawClip as object)
+  /** Parts are cut out as removed parts of the source (trims): not in a clip of pieces (it cuts its own way) */
+  const trimOk = canTrim && !piecesOn
+  /** Parts can be cut out (from their edges, Delete) one way or the other */
+  const cutOk = trimOk || piecesOn
 
   // ── Video player ─────────────────────────────────────────────────────────────
-  const { videoRef, seekToMs, togglePlay, pause } = useVideoSync(rawClip.start_ms, rawClip.end_ms, undefined, trimmed ? trim.kept : undefined)
+  // (an inserted video drives the clock while it plays: it is asked how far it has got — brollSource, below)
+  const heldPlayedRef = useRef<(id: string) => number | null>(() => null)
+  const { videoRef, seekToMs, togglePlay, pause } = useVideoSync(rawClip.start_ms, rawClip.end_ms, pieces, trimmed ? trim.kept : undefined,
+    piecesOn ? p => (p.id ? heldPlayedRef.current(p.id) : null) : undefined)
   const { currentTimeMs, durationMs, playing } = usePlayerStore()
   // Append media fragment so browser seeks to clip start at network level,
   // preventing a flash of the video's frame 0 on page load / cache hit.
@@ -213,10 +249,21 @@ export function EditorShell({
     setRetranscribing, setRetranscribeElapsed, setRetranscribeError,
   } = useCaptionStore()
 
-  // Words where they are heard in the clip as it plays (those in removed parts are left out)
+  // Words where they are heard in the clip as it plays (those in removed parts are left out; after
+  // a video put in between, later by its length)
   const words = useMemo(
-    () => (trimmed ? wordsOnTimeline(sourceWords, trim, rawClip.start_ms, rawClip.end_ms) : sourceWords),
-    [sourceWords, trimmed, trim, rawClip.start_ms, rawClip.end_ms],
+    () => (trimmed ? wordsOnTimeline(sourceWords, trim, rawClip.start_ms, rawClip.end_ms)
+      : piecesOn ? sourceWords.flatMap(w => {
+        const s0 = w.start_ms - rawClip.start_ms
+        if (s0 < 0) return [w]
+        // Where the word is heard on the timeline; a word in video cut out is gone
+        const mid = (w.start_ms + w.end_ms) / 2 - rawClip.start_ms
+        if (!pieces.some(p => p.from != null && mid >= p.from && mid < p.from + p.ms)) return []
+        const d = timelineAtPieces(pieces, s0) - s0
+        return d ? [{ ...w, start_ms: w.start_ms + d, end_ms: w.end_ms + d }] : [w]
+      })
+      : sourceWords),
+    [sourceWords, trimmed, trim, rawClip.start_ms, rawClip.end_ms, piecesOn, pieces],
   )
 
   const {
@@ -235,9 +282,10 @@ export function EditorShell({
   useEffect(() => {
     // Saved as one row of parts, a video on top (B-roll) cutting the section under it: here the
     // sections are whole again and the videos lie over them (shots.ts)
-    const lenMs = savedClip.end_ms - savedClip.start_ms
     const ownVideoId = (savedClip as unknown as { video_id: string }).video_id
     const restored = restoreLayers(rowsToLocal(initialSegments), (savedClip as unknown as { layers?: unknown }).layers, ownVideoId)
+    // (videos put in between make the clip longer than its stretch of the video)
+    const lenMs = Math.max(savedClip.end_ms - savedClip.start_ms + insertedMs(insertsOf(restored.segments, ownVideoId)), ...restored.segments.map(s => s.end_ms))
     const localSegments = [
       ...normalizeCoverage(restored.segments.filter(s => !isShot(s, ownVideoId)), lenMs),
       ...restored.segments.filter(s => isShot(s, ownVideoId)).map(s => ({ ...s, end_ms: Math.min(s.end_ms, lenMs) })).filter(s => s.end_ms - s.start_ms >= 100),
@@ -476,13 +524,25 @@ export function EditorShell({
   const transitionJoins = useMemo<TransitionJoin[]>(() => {
     const byTime = [...sections].sort((a, b) => a.start_ms - b.start_ms)
     const name = (sg: SegmentLocal) => isFrameLayout(sg.layout) ? `Frame · ${FRAME_TEMPLATES[sg.layout].name}` : LAYOUTS.find(l => l.id === sg.layout)?.label ?? sg.layout
+    // Both sides one continuous shot, framed the same: the main video carrying straight on, the same
+    // layout and every slot where it was — a blend of two (almost) identical pictures
+    const toVideo = (t: number) => (timelineToVideo ? timelineToVideo(t) : clip.start_ms + t)
+    const own = (sg: SegmentLocal) => sg.crop_boxes.every(bx => !bx.source_video_id || bx.source_video_id === mainVideoId)
+    const sameShot = (a: SegmentLocal, b: SegmentLocal, at: number) => {
+      if (a.layout !== b.layout || isFrameLayout(a.layout) || !own(a) || !own(b) || a.crop_boxes.length !== b.crop_boxes.length) return false
+      if (Math.abs(toVideo(at) - toVideo(at - 1) - 1) > 80) return false
+      return a.crop_boxes.every((bx, k) => {
+        const p = getPositionAt(bx.id, at - 1), q = getPositionAt(b.crop_boxes[k].id, at)
+        return Math.abs(p.x - q.x) + Math.abs(p.y - q.y) + Math.abs(p.w - q.w) + Math.abs(p.h - q.h) < 0.04
+      })
+    }
     const out: TransitionJoin[] = []
     for (let i = 0; i + 1 < byTime.length; i++) {
       const a = byTime[i], b = byTime[i + 1]
-      if (Math.abs(b.start_ms - a.end_ms) <= 1) out.push({ afterId: a.id, at: a.end_ms, from: name(a), to: name(b) })
+      if (Math.abs(b.start_ms - a.end_ms) <= 1) out.push({ afterId: a.id, at: a.end_ms, from: name(a), to: name(b), sameShot: sameShot(a, b, a.end_ms) })
     }
     return out
-  }, [sections])
+  }, [sections, keyframes, timelineToVideo, mainVideoId, clip.start_ms]) // eslint-disable-line react-hooks/exhaustive-deps
   /** What the preview plays at each join that has a transition (timeline ms) */
   const transitionCuts = useMemo(() => transitionJoins.flatMap(j => {
     const tr = transitions.find(t => t.after_segment_id === j.afterId)
@@ -510,15 +570,28 @@ export function EditorShell({
     skipCanvasTransitionRef.current = true
     if (!splitAtMs(seg.id, currentTimeMs, getPositionAt)) return
     setTransitionAt(seg.id, type, TRANSITION_DEFAULT_MS)
+    // (and it plays at once, so what was picked is seen)
+    previewJoin(currentTimeMs, TRANSITION_DEFAULT_MS)
   }
-  /** "Preview" on a join: the preview opens and plays the clip from a moment before it */
+  /**
+   * "Preview" on a join: the preview opens and plays the clip from a moment before it. It waits a
+   * moment first, so the preview has the transition's held frames ready (OutputCanvas stills).
+   */
+  const previewTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   function previewJoin(at: number, durationMs: number) {
     pause()
     togglePreview(true)
-    seekToMs(Math.max(0, at - durationMs / 2 - 900))
-    setTimeout(() => togglePlay(), 150)
+    seekToMs(Math.max(0, at - durationMs / 2 - 1200))
+    if (previewTimer.current) clearTimeout(previewTimer.current)
+    previewTimer.current = setTimeout(() => { previewTimer.current = null; if (!usePlayerStore.getState().playing) togglePlay() }, 500)
   }
-  const brollSource = useBrollSources(videoRef, clip.start_ms, id => videoLibraryRef.current[id]?.url, mainVideoId, videoToTimeline)
+  // (with videos put in between, the clip's clock runs the added videos: the main video waits during one)
+  const brollSource = useBrollSources(videoRef, clip.start_ms, id => videoLibraryRef.current[id]?.url, mainVideoId, videoToTimeline,
+    hasInserts ? () => ({ ms: liveTime.get(), playing: usePlayerStore.getState().playing }) : undefined)
+  heldPlayedRef.current = id => {
+    const seg = useEditorStore.getState().segments.find(s => s.id === id)
+    return seg ? brollSource.playedMs(seg) : null
+  }
   // Borrowed reaction slots (Make my clips): the clip's own video from another moment, per slot
   const borrowed = useBorrowedSlots(videoRef, clip.start_ms, mainVideoId, videoUrl, videoToTimeline)
   const [pendingBrollMs, setPendingBrollMs] = useState<number | null>(null)
@@ -539,6 +612,8 @@ export function EditorShell({
   const [renderStuckSince, setRenderStuckSince] = useState<number | null>(clip.status === 'rendering' ? Date.now() : null)
   const [renderElapsed, setRenderElapsed] = useState(0)
   const [saveState, setSaveState] = useState<SaveState>('idle')
+  /** The last save had to keep newer transitions as a Dissolve (the database doesn't take them yet) */
+  const [trAsDissolve, setTrAsDissolve] = useState(false)
   const [motionMode, setMotionMode] = useState(false)
   const [timelineZoom, setTimelineZoom] = useState(1)
   const [timelineHidden, setTimelineHidden] = useState(false)
@@ -667,7 +742,7 @@ export function EditorShell({
     return heardSpeech({
       // Detached sound bars play the video's own file: the words in the video's own time
       speechInVideo: speechRangesInVideo(sourceWords, rawClip.start_ms, rawClip.end_ms),
-      ...(trimmed ? { speechInClip: speechRanges(words, clip.start_ms, clip.end_ms) } : {}),
+      ...(trimmed || hasInserts ? { speechInClip: speechRanges(words, clip.start_ms, clip.end_ms) } : {}),
       clipStartMs: clip.start_ms, clipLenMs: clip.end_ms - clip.start_ms,
       originals: originals.length ? originals : null,
       mainVolume: originalMuted ? 0 : originalVolume,
@@ -676,7 +751,7 @@ export function EditorShell({
         ? mainAudioVolume(frameOf(s)) <= 0
         : addedVideoBox(s, mainVideoId)?.muted === false).map(span),
     })
-  }, [words, sourceWords, trimmed, clip.start_ms, clip.end_ms, audioTracks, originalMuted, originalVolume, playParts, mainVideoId]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [words, sourceWords, trimmed, hasInserts, clip.start_ms, clip.end_ms, audioTracks, originalMuted, originalVolume, playParts, mainVideoId]) // eslint-disable-line react-hooks/exhaustive-deps
   // Keep every track's audio in step with the playhead: play while the playhead is inside it,
   // re-sync if it drifts, pause otherwise; follow each track's volume
   // (every frame while playing, from the live time: the editor itself redraws only now and then)
@@ -739,6 +814,7 @@ export function EditorShell({
   const [lockNote, setLockNote] = useState<string | null>(null)
   const lockNoteTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   function notifyLocked(msg: string) {
+    if (quietRef.current) return   // (a live drag: told once, on release)
     setLockNote(msg)
     if (lockNoteTimer.current) clearTimeout(lockNoteTimer.current)
     lockNoteTimer.current = setTimeout(() => setLockNote(null), 2200)
@@ -792,6 +868,22 @@ export function EditorShell({
       ?? byTime.find(s => s.end_ms >= clipLengthMs && t >= clipLengthMs && s.start_ms < clipLengthMs)
       ?? null
   }
+  // The next video coming up (an inserted video, a video on top): loaded and parked on its first
+  // frame 2.5 s ahead, so it plays at once at the join instead of stalling there
+  const preparePartsRef = useRef(playParts)
+  preparePartsRef.current = playParts
+  useEffect(() => {
+    let last: string | null = null
+    return liveTime.subscribe(() => {
+      const t = liveTime.get()
+      const next = preparePartsRef.current
+        .filter(s => s.start_ms > t && s.start_ms - t <= 2500 && addedVideoBox(s, mainVideoId))
+        .sort((a, b) => a.start_ms - b.start_ms)[0]
+      if (!next || next.id === last) return
+      last = next.id
+      brollSource.prepare(next)
+    })
+  }, [brollSource, mainVideoId])
   // What plays here: a video on top, else the section (default framing where no format is set)
   const playingSegment = useMemo(() => partAt(playParts, currentTimeMs), [playParts, currentTimeMs, clipLengthMs]) // eslint-disable-line react-hooks/exhaustive-deps
   // The section here, whatever lies over it: formats, views, frames and trims are about it
@@ -993,8 +1085,26 @@ export function EditorShell({
    * empty row). A video or photo lasts 5 s, text 3 s (moved back to fit before the clip's end);
    * music plays until the section ends.
    */
-  function addMediaAt(kind: 'video' | 'broll' | 'photo' | 'music' | 'text', atMs: number) {
+  function addMediaAt(kind: 'video' | 'broll' | 'photo' | 'music' | 'text' | 'insert' | 'pip', atMs: number) {
     pause()
+    // Picture in picture: the next video picked in Media goes in a small window over the clip here
+    if (kind === 'pip') {
+      const t = Math.max(0, Math.min(Math.round(atMs), clipLengthMs - 500))
+      setInsertAtMs(null)
+      setPipAtMs(t)
+      seekToMs(t)
+      openMedia('media', 'video')
+      return
+    }
+    // Insert: the next video picked in Media goes in here, in between (insertVideo)
+    if (kind === 'insert') {
+      const t = Math.max(0, Math.min(Math.round(atMs), clipLengthMs))
+      setPipAtMs(null)
+      setInsertAtMs(t)
+      seekToMs(Math.min(t, clipLengthMs - 1))
+      openMedia('media', 'video')
+      return
+    }
     // B-roll: stock footage is searched for in its panel, then added at the playhead
     if (kind === 'broll') { seekToMs(Math.max(0, Math.min(atMs, clipLengthMs - 50))); openMedia('library'); return }
     const t = Math.max(0, Math.min(atMs, clipLengthMs - 50))
@@ -1083,6 +1193,7 @@ export function EditorShell({
         const msg = await res.json().then(j => j.error, () => null)
         throw Object.assign(new Error(msg ?? 'Save failed'), { status: res.status })
       }
+      setTrAsDissolve(await res.json().then(j => (j?.transitionsAsDissolve ?? 0) > 0, () => false))
       // Only clear "unsaved" if nothing changed while this save was in flight
       if (editVersionRef.current === version) unsavedRef.current = false
       retryDelayRef.current = 2000
@@ -1334,14 +1445,8 @@ export function EditorShell({
       joinSameLayoutNeighbours(keepId, new Set(kept.map(tr => tr.after_segment_id)))
       if (pickedSegId === removeId) setPickedSegId(null)
     }
-    const n = isFrameLayout(gone.layout) ? (frameOf(gone).items ?? []).length : 0
-    if (n > 0) {
-      confirm({
-        title: `This frame has ${n} item${n === 1 ? '' : 's'}, remove it?`,
-        body: `${FRAME_TEMPLATES[gone.layout as FrameLayout]?.name ?? 'The frame'} ${msToLabel(gone.start_ms)}–${msToLabel(gone.end_ms)} goes, with the photos, videos and text in its slots. ${UNDO_NOTE}`,
-        confirmLabel: 'Remove',
-      }, go)
-    } else go()
+    // (straight away, no question: Ctrl+Z brings it back)
+    go()
   }
 
   // Split: cut the format under the playhead in two. Both halves keep its layout and views, so a
@@ -2007,7 +2112,7 @@ export function EditorShell({
     if (!videoLibraryRef.current[videoId]) loadVideoLibrary()
     if (!p) return
     if (p.replaceId) { updateFrameItem(p.segId, p.replaceId, { kind: 'video', source_video_id: videoId, source_offset_ms: 0, image_path: null, image_url: null }); return }
-    if (p.lane !== undefined) addToLane(p.segId, p.lane, p.t ?? currentTimeMs, { kind: 'video', source_video_id: videoId, source_offset_ms: 0, volume: 1, muted: false, corners: DEFAULT_CORNERS })
+    if (p.lane !== undefined) addToLane(p.segId, p.lane, p.t ?? currentTimeMs, { kind: 'video', source_video_id: videoId, source_offset_ms: 0, volume: 1, muted: false, corners: cornersFor(p.segId, p.lane) })
   }
 
   function handlePickedPhoto(storagePath: string, url: string) {
@@ -2015,7 +2120,55 @@ export function EditorShell({
     setFramePicker(null)
     if (!p) return
     if (p.replaceId) { updateFrameItem(p.segId, p.replaceId, { kind: 'photo', image_path: storagePath, image_url: url || null, source_video_id: null }); return }
-    if (p.lane !== undefined) addToLane(p.segId, p.lane, p.t ?? currentTimeMs, { kind: 'photo', image_path: storagePath, image_url: url || null, motion: 'none', corners: DEFAULT_CORNERS })
+    if (p.lane !== undefined) addToLane(p.segId, p.lane, p.t ?? currentTimeMs, { kind: 'photo', image_path: storagePath, image_url: url || null, motion: 'none', corners: cornersFor(p.segId, p.lane) })
+  }
+  /** Corners a photo or video put in a frame's slot starts with: the frame's own (newItemCorners) */
+  function cornersFor(segId: string, lane: FrameLane): number {
+    const seg = segments.find(x => x.id === segId)
+    return seg && isFrameLayout(seg.layout) && typeof lane === 'number' ? newItemCorners(seg.layout, lane) : 0
+  }
+
+  /**
+   * Where a photo or video put in at `atMs` goes when a frame shows there. Dropped on one of its
+   * lanes (`frame:<slot>`): that slot — or `refused` (with why) when the slot doesn't take it.
+   * Added without a lane (the Media library's +): the first slot that takes it and is free at that
+   * moment (no photo or video of its own, not showing the main video). Null: not into a frame
+   * (it goes on top, as anywhere else).
+   */
+  function frameSlotFor(atMs: number, lane: string | null, kind: 'video' | 'photo'): { segId: string; slot: number } | 'refused' | null {
+    const seg = sections.find(s => atMs >= s.start_ms && atMs < s.end_ms && isFrameLayout(s.layout))
+    if (!seg || !isFrameLayout(seg.layout)) return null
+    const m = lane ? /^frame:(.+)$/.exec(lane) : null
+    const what = kind === 'photo' ? 'a photo' : 'a video'
+    if (m) {
+      const slot = Number(m[1])
+      if (!Number.isInteger(slot)) { notifyLocked(`That’s a text area: drop ${what} on a picture lane`); return 'refused' }
+      if (slot >= frameSlotCount(seg.layout) || !slotOffers(seg.layout, slot)[kind]) {
+        notifyLocked(`This slot doesn’t take ${what}`); return 'refused'
+      }
+      if (sectionBlocked(seg.id)) return 'refused'
+      return { segId: seg.id, slot }
+    }
+    if (lane !== null || sectionBlocked(seg.id)) return null
+    const f = frameOf(seg)
+    const main = f.main_slots ?? [0]
+    for (let slot = 0; slot < frameSlotCount(seg.layout); slot++) {
+      if (!slotOffers(seg.layout, slot)[kind] || main.includes(slot) || itemAt(f, slot, atMs, seg)) continue
+      return { segId: seg.id, slot }
+    }
+    return null
+  }
+  /** A video from the user's library put in a frame's slot at `atMs` */
+  function videoIntoSlot(target: { segId: string; slot: number }, videoId: string, atMs: number) {
+    pause()
+    seekToMs(atMs)
+    addToLane(target.segId, target.slot, atMs, { kind: 'video', source_video_id: videoId, source_offset_ms: 0, volume: 1, muted: false, corners: cornersFor(target.segId, target.slot) })
+  }
+  /** A stored photo put in a frame's slot at `atMs` */
+  function photoIntoSlot(target: { segId: string; slot: number }, storagePath: string, url: string | null, atMs: number) {
+    pause()
+    seekToMs(atMs)
+    addToLane(target.segId, target.slot, atMs, { kind: 'photo', image_path: storagePath, image_url: url || null, motion: 'none', corners: cornersFor(target.segId, target.slot) })
   }
 
   // "+" in the preview (or an empty lane in the panel) points at the lane on the timeline.
@@ -2112,13 +2265,19 @@ export function EditorShell({
   }
 
   function addFormatInGap(gap: { start_ms: number; end_ms: number }) {
-    addFormat(gap.start_ms, gap.end_ms, 'vertical', getVideoAR())
+    const id = addFormat(gap.start_ms, gap.end_ms, 'vertical', getVideoAR())
+    // (a clip of pieces: the new part shows the video from where it is there)
+    if (piecesOn) {
+      const box = useEditorStore.getState().segments.find(s => s.id === id)?.crop_boxes[0]
+      if (box) updateBoxSource(id, box.id, null, Math.round(videoAtPieces(pieces, gap.start_ms)))
+    }
     seekToMs(gap.start_ms)
   }
 
   function handleResetPositions() {
     const first = [...sections].sort((a, b) => a.start_ms - b.start_ms)[0]
     if (!first) return
+    if (hasInserts) { notifyLocked('Remove the inserted videos first: resetting would cover them'); return }
     if (sections.some(x => x.locked)) { notifyLocked('Some sections are locked — unlock them first'); return }
     sections.filter(s => s.id !== first.id).forEach(s => removeSegment(s.id))
     updateSegment(first.id, { start_ms: 0, end_ms: clipLengthMs })
@@ -2152,6 +2311,18 @@ export function EditorShell({
     }
     const locked = lockedInRange(state, a, b)
     if (locked.length) { notifyLocked(`${locked[0][0].toUpperCase()}${locked[0].slice(1)} in this part is locked — unlock it first`); return }
+    if (piecesOn) {
+      // A clip of pieces: the parts keep their moments of the video, what follows moves up
+      if (segments.some(s => isInsert(s, mainVideoId) && s.start_ms < b && s.end_ms > a && !(s.start_ms >= a && s.end_ms <= b))) {
+        notifyLocked('Part of an inserted video is in the way: delete the inserted video itself instead'); return
+      }
+      const next = rippleCut(state, Math.round(a), Math.round(b), rippleDelete)
+      skipCanvasTransitionRef.current = true
+      seekAfterInsertRef.current = a
+      editor.applyTrim(next.segments, next.keyframes, editor.trims)
+      useMediaStore.setState({ overlays: next.overlays, textOverlays: next.textOverlays, audioTracks: next.audioTracks, transitions: next.transitions })
+      return
+    }
     const map = trimMap(editor.trims, rawClip.start_ms, rawClip.end_ms)
     const nextTrims = addTrim(editor.trims, map, Math.round(a), Math.round(b), rawClip.start_ms, rawClip.end_ms)
     const gone = map.lengthMs - trimMap(nextTrims, rawClip.start_ms, rawClip.end_ms).lengthMs
@@ -2166,6 +2337,349 @@ export function EditorShell({
     editor.applyTrim(next.segments, next.keyframes, nextTrims)
     useMediaStore.setState({ overlays: next.overlays, textOverlays: next.textOverlays, audioTracks: next.audioTracks, transitions: next.transitions })
   }
+  // ── A video put in between (modules/editor/inserts.ts) ──────────────────────────
+  /** "Insert video" picked: the next video chosen in Media goes in here (timeline ms) */
+  const [insertAtMs, setInsertAtMs] = useState<number | null>(null)
+  /** "Picture in picture" picked: the next video chosen in Media goes in a window over the clip here */
+  const [pipAtMs, setPipAtMs] = useState<number | null>(null)
+  /**
+   * Picture in picture (as in InShot): video `videoId` in a small window over the clip from
+   * `atMs`, its whole length (up to the clip's end), with its sound. Its box keeps the video's
+   * shape — 45% of the frame's width, top right — and is moved, resized and trimmed like a photo.
+   */
+  function addPip(videoId: string, atMs: number, ownMs: number | null) {
+    setPipAtMs(null)
+    const at = Math.max(0, Math.min(Math.round(atMs), clipLengthMs - 500))
+    const len = Math.min(ownMs && ownMs > 0 ? ownMs : 5000, clipLengthMs - at)
+    const id = crypto.randomUUID()
+    const url = videoLibraryRef.current[videoId]?.url
+    const place = (ar: number) => {
+      // The output is 9:16: a box w of the frame's width is w·(9/16)/ar of its height for the video's shape
+      const w = 0.45, h = Math.min(0.8, (w * (9 / 16)) / Math.max(0.2, ar))
+      return { x: 1 - w - 0.04, y: 0.05, w, h }
+    }
+    setOverlays(prev => [...prev, {
+      id, clip_id: clip.id, type: 'video' as const, storage_path: null, preview_url: url,
+      source_video_id: videoId, source_offset_ms: 0, ...place(16 / 9),
+      start_ms: at, end_ms: at + len, z_index: prev.length + 1, created_at: new Date().toISOString(), muted: false,
+    }])
+    // Its own shape once the video's size is known (left alone if it was moved or resized meanwhile)
+    if (url) {
+      const v = document.createElement('video')
+      v.preload = 'metadata'
+      v.onloadedmetadata = () => {
+        const ar = v.videoWidth / v.videoHeight
+        if (!(ar > 0) || !isFinite(ar)) return
+        const first = place(16 / 9)
+        setOverlays(prev => prev.map(o => (o.id === id && o.x === first.x && o.y === first.y && o.w === first.w && o.h === first.h ? { ...o, ...place(ar) } : o)))
+      }
+      v.src = url
+    }
+    pickPhoto(id)
+    seekToMs(at)
+  }
+  // (the playhead goes to a video just put in, once the player knows about it)
+  const seekAfterInsertRef = useRef<number | null>(null)
+  useEffect(() => {
+    const t = seekAfterInsertRef.current
+    if (t == null) return
+    seekAfterInsertRef.current = null
+    seekToMs(t)
+  }, [insertsKey]) // eslint-disable-line react-hooks/exhaustive-deps
+  /**
+   * Put video `videoId` in at timeline `atMs` (its whole length, `ownMs`, up to the clip's 5
+   * minutes): the main video waits there while it plays and carries on after it; everything
+   * after moves later (rippleInsert). A part of the clip running across the spot is cut in two.
+   * Close to a join, it goes in at the join. One undo step.
+   */
+  function insertVideo(videoId: string, atMs: number, ownMs: number | null, snapMs = 60) {
+    setInsertAtMs(null)
+    if (trimmed) {
+      // Parts cut out the older way (removed parts of the source): first the clip becomes pieces —
+      // each part keeps its own moment of the video, so nothing it plays changes — then the video
+      // goes in (once the editor has redrawn with the pieces)
+      pendingInsertRef.current = { videoId, atMs, ownMs, snapMs }
+      trimsToPieces()
+      return
+    }
+    pause()
+    const editor = useEditorStore.getState(), media = useMediaStore.getState()
+    const len = Math.round(Math.min(ownMs && ownMs > 0 ? ownMs : 5000, MAX_CLIP_MS - clipLengthMs))
+    if (len < 300) { notifyLocked('The clip is as long as a clip can be (5 minutes): there is no room for another video'); return }
+    // Close to where two parts meet: there, not a sliver beside it (the nearest one)
+    const joins = [0, clipLengthMs, ...sections.flatMap(s => [s.start_ms, s.end_ms])]
+    const near = joins.filter(j => Math.abs(j - atMs) <= snapMs).sort((a, b) => Math.abs(a - atMs) - Math.abs(b - atMs))[0]
+    const at = Math.round(Math.max(0, Math.min(clipLengthMs, near ?? atMs)))
+    const state: TimedState = {
+      segments: editor.segments, keyframes: editor.keyframes,
+      overlays: media.overlays, textOverlays: media.textOverlays, audioTracks: media.audioTracks, transitions: media.transitions,
+    }
+    if (state.segments.some(s => s.locked && s.start_ms < at && s.end_ms > at)) { notifyLocked('The part of the clip here is locked \u2014 unlock it first'); return }
+    const hold = Math.round(videoAtPieces(allPieces, at))
+    const next = rippleInsert(state, at, len)
+    const id = crypto.randomUUID(), boxId = crypto.randomUUID()
+    const view = { x: 0, y: 0, w: 1, h: 1 }
+    const box = {
+      id: boxId, slot_index: 0, source_video_id: videoId, source_offset_ms: 0,
+      image_path: null, image_motion: null, volume: 1, muted: false,
+      keyframes: [{ t_ms: at, ...view }],
+    } as CropBoxLocal
+    const seg: SegmentLocal = { id, start_ms: at, end_ms: at + len, layout: 'vertical', sort_order: 0, crop_boxes: [box], video_offset_ms: hold }
+    const segs = [...next.segments, seg].sort((a, b) => a.start_ms - b.start_ms || a.sort_order - b.sort_order).map((s, i) => ({ ...s, sort_order: i }))
+    skipCanvasTransitionRef.current = true
+    seekAfterInsertRef.current = at
+    editor.applyTrim(segs, { ...next.keyframes, [boxId]: [{ id: crypto.randomUUID(), box_id: boxId, t_ms: at, ...view }] }, editor.trims)
+    useMediaStore.setState({ overlays: next.overlays, textOverlays: next.textOverlays, audioTracks: next.audioTracks, transitions: next.transitions })
+    setActiveSegmentId(id)
+  }
+  /** A video waiting to go in until a clip with removed parts has become pieces (insertVideo) */
+  const pendingInsertRef = useRef<{ videoId: string; atMs: number; ownMs: number | null; snapMs: number } | null>(null)
+  useEffect(() => {
+    const p = pendingInsertRef.current
+    if (!p || trimmed) return
+    pendingInsertRef.current = null
+    insertVideo(p.videoId, p.atMs, p.ownMs, p.snapMs)
+  }, [trimmed]) // eslint-disable-line react-hooks/exhaustive-deps
+  /**
+   * The removed parts (trims) made into pieces: each part of the main row is cut where a removed
+   * part closed up, and says itself which moment of the video it starts at — then nothing is
+   * removed any more, and the clip plays exactly as before (its parts skip what was removed).
+   * Everything else already sits in the clip's time. One step (undo brings the removed parts back).
+   */
+  function trimsToPieces() {
+    const editor = useEditorStore.getState()
+    const map = trimMap(editor.trims, rawClip.start_ms, rawClip.end_ms)
+    const layer = (s: SegmentLocal) => isShot(s, mainVideoId)
+    // Cut the parts in two where a removed part closed up (each half from its own moment)
+    for (const t of map.starts.slice(1)) {
+      const s = useEditorStore.getState().segments.find(x => !layer(x) && x.start_ms < t - 100 && x.end_ms > t + 100)
+      if (s) useEditorStore.getState().splitAtMs(s.id, t, useEditorStore.getState().getPositionAt)
+    }
+    const st = useEditorStore.getState()
+    const segs = st.segments.map(s => (layer(s) || isInsert(s, mainVideoId) ? s : {
+      ...s,
+      crop_boxes: s.crop_boxes.map(b => (b.source_video_id || b.image_path ? b
+        : { ...b, source_offset_ms: Math.max(0, Math.round(map.toSource(s.start_ms) - rawClip.start_ms)) })),
+    }))
+    skipCanvasTransitionRef.current = true
+    st.applyTrim(segs, st.keyframes, [])
+  }
+  /** An inserted video taken out: what came after it moves back, and the parts it had cut in two join again */
+  function removeInsert(segId: string) {
+    const editor = useEditorStore.getState(), media = useMediaStore.getState()
+    const ins = editor.segments.find(s => s.id === segId)
+    if (!ins || !isInsert(ins, mainVideoId)) return
+    pause()
+    const state: TimedState = {
+      segments: editor.segments, keyframes: editor.keyframes,
+      overlays: media.overlays, textOverlays: media.textOverlays, audioTracks: media.audioTracks, transitions: media.transitions,
+    }
+    const next = rippleCut(state, ins.start_ms, ins.end_ms, rippleDelete)
+    skipCanvasTransitionRef.current = true
+    seekAfterInsertRef.current = ins.start_ms
+    editor.applyTrim(next.segments, next.keyframes, editor.trims)
+    useMediaStore.setState({ overlays: next.overlays, textOverlays: next.textOverlays, audioTracks: next.audioTracks, transitions: next.transitions })
+    // The part before it and the part after it are one stretch of the video again
+    const before = next.segments.find(s => !isShot(s, mainVideoId) && Math.abs(s.end_ms - ins.start_ms) <= 1)
+    if (before) joinSameLayoutNeighbours(before.id, new Set(next.transitions.map(t => t.after_segment_id)))
+  }
+
+  /**
+   * A part's edge being dragged (live, as the clip's own ends): each step starts again from the clip
+   * as it was when the drag began, so the cut (or what comes back) follows the pointer both ways;
+   * the whole drag is one undo step (history.ts counts a drag once). Problems are only told on release.
+   */
+  const liveEdgeRef = useRef<{ editor: Pick<ReturnType<typeof useEditorStore.getState>, 'segments' | 'keyframes' | 'trims' | 'clipRange'>; media: Pick<ReturnType<typeof useMediaStore.getState>, 'overlays' | 'textOverlays' | 'audioTracks' | 'transitions'> } | null>(null)
+  const quietRef = useRef(false)
+  function trimByEdgeLive(segId: string, edge: 'start' | 'end', from: number, to: number, done: boolean) {
+    const e = useEditorStore.getState(), m = useMediaStore.getState()
+    if (!liveEdgeRef.current) {
+      liveEdgeRef.current = {
+        editor: { segments: e.segments, keyframes: e.keyframes, trims: e.trims, clipRange: e.clipRange },
+        media: { overlays: m.overlays, textOverlays: m.textOverlays, audioTracks: m.audioTracks, transitions: m.transitions },
+      }
+    } else {
+      useEditorStore.setState(liveEdgeRef.current.editor)
+      useMediaStore.setState(liveEdgeRef.current.media)
+    }
+    if (done) liveEdgeRef.current = null
+    quietRef.current = !done
+    try { if (Math.abs(to - from) >= 50) trimByEdge(segId, edge, from, to, done) }
+    finally {
+      quietRef.current = false
+      // (a drag that went outwards at the clip's start or end and came back: its own base goes too)
+      if (done) edgeBaseRef.current = null
+    }
+  }
+  /**
+   * A part's edge dragged on the timeline (as in InShot): inwards, the piece it passed over is cut
+   * out (removePart: what follows moves up, no default framing is left); outwards, video cut at
+   * that join before comes back, as much as it was dragged (restoreAtJoin), and what follows moves
+   * later. At the clip's own start or end, outwards brings in more of the video (moveClipEdge).
+   */
+  function trimByEdge(segId: string, edge: 'start' | 'end', from: number, to: number, done = true) {
+    if (blocked({ kind: 'section', id: segId })) return
+    const inward = edge === 'start' ? to > from : to < from
+    // An inserted video's own edges trim it (what plays of it), the same way
+    const ins = useEditorStore.getState().segments.find(s => s.id === segId)
+    if (ins && isInsert(ins, mainVideoId)) { trimInsert(ins, edge, from, to, inward); return }
+    if (inward) {
+      const [a, b] = edge === 'start' ? [from, to] : [to, from]
+      if (clipLengthMs - (b - a) < MIN_CLIP_LEFT_MS) { notifyLocked('A clip must stay at least a second long'); return }
+      removePart(a, b)
+      return
+    }
+    const d = Math.abs(to - from)
+    if (piecesOn) { restorePiece(segId, edge, from, d); return }
+    if (edge === 'start' && from <= 1) { moveClipEdge('start', -d, done); return }
+    if (edge === 'end' && from >= clipLengthMs - 1) { moveClipEdge('end', d, done); return }
+    restoreAtJoin(segId, edge, from, d)
+  }
+  /**
+   * An inserted video's edge dragged: inwards, less of it plays (its start or end cut; what follows
+   * moves up); outwards, more of it again — as far as the video itself goes. The main video still
+   * waits where it went in.
+   */
+  function trimInsert(ins: SegmentLocal, edge: 'start' | 'end', from: number, to: number, inward: boolean) {
+    pause()
+    const editor = useEditorStore.getState(), media = useMediaStore.getState()
+    const state: TimedState = {
+      segments: editor.segments, keyframes: editor.keyframes,
+      overlays: media.overlays, textOverlays: media.textOverlays, audioTracks: media.audioTracks, transitions: media.transitions,
+    }
+    const box = ins.crop_boxes[0]
+    if (inward) {
+      const [a, b] = edge === 'start' ? [from, to] : [to, from]
+      if (ins.end_ms - ins.start_ms - (b - a) < 300) return
+      const next = rippleCut(state, Math.round(a), Math.round(b), rippleDelete)
+      skipCanvasTransitionRef.current = true
+      editor.applyTrim(next.segments, next.keyframes, editor.trims)
+      useMediaStore.setState({ overlays: next.overlays, textOverlays: next.textOverlays, audioTracks: next.audioTracks, transitions: next.transitions })
+      return
+    }
+    // Outwards: back to the video's own start (before what plays now), or on to its end
+    const own = videoLibraryRef.current[box?.source_video_id ?? '']?.duration_ms ?? null
+    const offset = box?.source_offset_ms ?? 0
+    const room = edge === 'start' ? offset : own != null ? own - (offset + (ins.end_ms - ins.start_ms)) : 0
+    const amount = Math.round(Math.min(Math.abs(to - from), Math.max(0, room), MAX_CLIP_MS - clipLengthMs))
+    if (amount < 50) { notifyLocked(room > 0 ? 'The clip is as long as a clip can be (5 minutes)' : edge === 'start' ? 'This is where the video starts' : 'This is where the video ends'); return }
+    const t = edge === 'start' ? ins.start_ms : ins.end_ms
+    const next = rippleInsert(state, t, amount)
+    const segs = next.segments.map(s => (s.id !== ins.id ? s : edge === 'start'
+      ? { ...s, start_ms: t, crop_boxes: s.crop_boxes.map((b, i) => (i === 0 ? { ...b, source_offset_ms: Math.max(0, (b.source_offset_ms ?? 0) - amount) } : b)) }
+      : { ...s, end_ms: s.end_ms + amount }))
+    const keyframes = { ...next.keyframes }
+    if (edge === 'start') for (const b of ins.crop_boxes) {
+      const kfs = keyframes[b.id] ?? []
+      if (kfs.length) keyframes[b.id] = [{ ...kfs[0], id: crypto.randomUUID(), t_ms: t }, ...kfs]
+    }
+    skipCanvasTransitionRef.current = true
+    editor.applyTrim(segs, keyframes, editor.trims)
+    useMediaStore.setState({ overlays: next.overlays, textOverlays: next.textOverlays, audioTracks: next.audioTracks, transitions: next.transitions })
+  }
+  /**
+   * A clip of pieces: video skipped at an edge of part `segId` comes back, up to `d` ms — before it
+   * (edge 'start': it starts that much earlier in the video, and grows at the front) or after it
+   * ('end': it plays on that much further). Only video the clip had skipped (or before its first
+   * part, within the clip's stretch of the video). Everything after moves later.
+   */
+  function restorePiece(segId: string, edge: 'start' | 'end', t: number, d: number) {
+    pause()
+    const editor = useEditorStore.getState(), media = useMediaStore.getState()
+    const seg = editor.segments.find(s => s.id === segId)
+    if (!seg || isInsert(seg, mainVideoId)) return
+    const all = piecesOf(editor.segments, mainVideoId, s => isShot(s, mainVideoId))
+    const me = all.find(p => p.id === segId)
+    if (!me || me.from == null) return
+    const mains = all.filter(p => p.from != null)
+    const i = mains.indexOf(me)
+    const lenSrc = rawClip.end_ms - rawClip.start_ms
+    // How much video lies skipped there: back to the part before it (or the clip's start) / on to the next one (or the clip's end)
+    const room = edge === 'start'
+      ? me.from - (i > 0 ? mains[i - 1].from! + mains[i - 1].ms : 0)
+      : (i + 1 < mains.length ? mains[i + 1].from! : lenSrc) - (me.from + me.ms)
+    const amount = Math.round(Math.min(d, Math.max(0, room), MAX_CLIP_MS - clipLengthMs))
+    if (amount < 50) { notifyLocked(room > 0 ? 'The clip is as long as a clip can be (5 minutes)' : 'Nothing was cut here: drag the edge inwards to cut, outwards brings back what was cut'); return }
+    const state: TimedState = {
+      segments: editor.segments, keyframes: editor.keyframes,
+      overlays: media.overlays, textOverlays: media.textOverlays, audioTracks: media.audioTracks, transitions: media.transitions,
+    }
+    const next = rippleInsert(state, t, amount)
+    const segs = next.segments.map(s => {
+      if (s.id !== segId) return s
+      return edge === 'start'
+        // (it starts earlier in the video: each main-video box from that much before)
+        ? { ...s, start_ms: t, crop_boxes: s.crop_boxes.map(b => (b.source_video_id || b.image_path ? b : { ...b, source_offset_ms: Math.max(0, (b.source_offset_ms ?? 0) - amount) })) }
+        : { ...s, end_ms: s.end_ms + amount }
+    })
+    const keyframes = { ...next.keyframes }
+    if (edge === 'start') {
+      for (const b of segs.find(s => s.id === segId)?.crop_boxes ?? []) {
+        const kfs = keyframes[b.id] ?? []
+        if (kfs.length) keyframes[b.id] = [{ ...kfs[0], id: crypto.randomUUID(), t_ms: t }, ...kfs]
+      }
+    }
+    skipCanvasTransitionRef.current = true
+    seekAfterInsertRef.current = edge === 'start' ? t : t + amount - 1
+    editor.applyTrim(segs, keyframes, editor.trims)
+    useMediaStore.setState({ overlays: next.overlays, textOverlays: next.textOverlays, audioTracks: next.audioTracks, transitions: next.transitions })
+  }
+  /**
+   * Video cut out at the join `t` comes back, up to `d` ms of it: before the part `segId` starts
+   * (edge 'start': it grows back towards the start) or after it ends ('end'). Everything after the
+   * join moves later by as much.
+   */
+  function restoreAtJoin(segId: string, edge: 'start' | 'end', t: number, d: number) {
+    pause()
+    const editor = useEditorStore.getState(), media = useMediaStore.getState()
+    const map = trimMap(editor.trims, rawClip.start_ms, rawClip.end_ms)
+    // The cut that closed up at this join (source ms): it ends where the part starts / starts where it ends
+    const at = edge === 'start' ? map.toSource(t) : map.toSourceEnd(t)
+    const cut = editor.trims.find(([a, b]) => (edge === 'start' ? Math.abs(b - at) <= 2 : Math.abs(a - at) <= 2))
+    if (!cut) { notifyLocked('Nothing was cut here: drag the edge inwards to cut, outwards brings back what was cut'); return }
+    const room = Math.max(0, Math.min(MAX_CLIP_MS - clipLengthMs, cut[1] - cut[0]))
+    const amount = Math.round(Math.min(d, room))
+    if (amount < 50) { if (!room) notifyLocked('The clip is as long as a clip can be (5 minutes)'); return }
+    const nextTrims = cleanTrims(editor.trims.flatMap(r => (r !== cut ? [r]
+      : edge === 'start' ? (r[1] - amount > r[0] ? [[r[0], r[1] - amount] as [number, number]] : [])
+        : (r[0] + amount < r[1] ? [[r[0] + amount, r[1]] as [number, number]] : []))), rawClip.start_ms, rawClip.end_ms)
+    const state: TimedState = {
+      segments: editor.segments, keyframes: editor.keyframes,
+      overlays: media.overlays, textOverlays: media.textOverlays, audioTracks: media.audioTracks, transitions: media.transitions,
+    }
+    // Room for it at the join, then the part grows over it (from the earlier frames it gets back)
+    const next = rippleInsert(state, t, amount)
+    const segs = next.segments.map(s => {
+      if (edge === 'start' && s.id === segId) {
+        // (its video position needs no change: it is kept relative to its start, and saving maps it
+        // through the removed parts — with less removed, it starts that much earlier in the video)
+        return { ...s, start_ms: t }
+      }
+      if (edge === 'end' && s.id === segId) return { ...s, end_ms: s.end_ms + amount }
+      return s
+    })
+    const keyframes = { ...next.keyframes }
+    if (edge === 'start') {
+      // The view it had at its first moment holds over what comes back
+      const grown = segs.find(s => s.id === segId)
+      for (const b of grown?.crop_boxes ?? []) {
+        const kfs = keyframes[b.id] ?? []
+        if (kfs.length) keyframes[b.id] = [{ ...kfs[0], id: crypto.randomUUID(), t_ms: t }, ...kfs]
+      }
+    }
+    // The video's own sound (detached) comes back with its picture
+    const audio = next.audioTracks.map(tr => {
+      if (!isMainAudio(tr)) return tr
+      if (edge === 'start' && Math.abs(tr.start_ms - (t + amount)) <= 1) return { ...tr, start_ms: t, ...(tr.offset_ms != null ? { offset_ms: tr.offset_ms - amount } : {}) }
+      if (edge === 'end' && tr.end_ms != null && Math.abs(tr.end_ms - t) <= 1) return { ...tr, end_ms: t + amount }
+      return tr
+    })
+    skipCanvasTransitionRef.current = true
+    seekAfterTrimRef.current = edge === 'start' ? t : t + amount - 1
+    editor.applyTrim(segs, keyframes, nextTrims)
+    useMediaStore.setState({ overlays: next.overlays, textOverlays: next.textOverlays, audioTracks: audio, transitions: next.transitions })
+  }
+
   // The removed parts changed (a part cut out, an undo, a redo): the video may be standing in a
   // part that no longer plays, so put the playhead back on the timeline — at the join after a cut
   const seekAfterTrimRef = useRef<number | null>(null)
@@ -2268,33 +2782,22 @@ export function EditorShell({
 
   function askDeleteFormat(segId: string) {
     if (blocked({ kind: 'section', id: segId })) return
-    const i = cropPositions.findIndex(x => x.id === segId)
-    const seg = cropPositions[i]
+    // Deleting from the timeline happens straight away, no question (as in other editors): Ctrl+Z brings it back
+    const ins = segments.find(x => x.id === segId)
+    if (ins && isInsert(ins, mainVideoId)) { removeInsert(segId); return }
+    const seg = cropPositions.find(x => x.id === segId)
     if (!seg) return
-    const range = `${msToLabel(seg.start_ms)}–${msToLabel(seg.end_ms)}`
-    const frameNote = isFrameLayout(seg.layout) ? ' Everything in its frame (photos, videos, text) is removed too.' : ''
-    const resetLook = cropPositions.length === 1
-      ? { title: 'Reset this format to Vertical?', body: `It becomes a plain Vertical format again.${frameNote} ${UNDO_NOTE}`, confirmLabel: 'Reset' }
-      : { title: `Delete format ${i + 1}?`, body: `${range} goes back to the default framing.${frameNote} ${UNDO_NOTE}` }
     // Deleting a section cuts that part of the video out — unless it is (nearly) the whole clip,
-    // or this database can't save removed parts yet: then only its look is reset, as before
+    // or parts can't be cut out now: then only its look is reset
     const length = seg.end_ms - seg.start_ms
-    if (!canTrim || clipLengthMs - length < MIN_CLIP_LEFT_MS) {
-      confirm(resetLook, () => handleDeleteFormat(segId))
-      return
-    }
-    confirm({
-      title: 'Delete this part of the video?',
-      body: `${range} is cut out: the clip gets ${lengthLabel(length)} shorter and what comes after moves up. Text, photos and sounds that are only in this part go with it.${frameNote} ${UNDO_NOTE}`,
-      extraLabel: cropPositions.length === 1 ? 'Keep the video, reset it to Vertical' : 'Keep the video, only remove this section\u2019s look',
-      onExtra: () => handleDeleteFormat(segId),
-    }, () => removePart(seg.start_ms, seg.end_ms))
+    if (!cutOk || clipLengthMs - length < MIN_CLIP_LEFT_MS) handleDeleteFormat(segId)
+    else removePart(seg.start_ms, seg.end_ms)
   }
 
   function askRemoveFrame(segId: string) {
     if (sectionBlocked(segId)) return
-    confirm({ title: 'Remove this frame?', body: `This part goes back to Vertical, and the photos, videos and text in the frame are removed. ${UNDO_NOTE}`, confirmLabel: 'Remove' },
-      () => removeFrame(segId))
+    // (straight away, no question: Ctrl+Z brings it back)
+    removeFrame(segId)
   }
 
 
@@ -2311,11 +2814,9 @@ export function EditorShell({
     if (sectionBlocked(segId)) return
     const seg = segments.find(x => x.id === segId)
     if (!seg || !isFrameLayout(seg.layout)) return
-    const label = frameLanes(seg.layout).find(l => l.lane === slot)?.label ?? ''
-    confirm({ title: `Take the main video out of the ${label.toLowerCase()} slot?`, body: `The slot will be empty until you add something. ${UNDO_NOTE}`, confirmLabel: 'Take it out' }, () => {
-      updateFrame(segId, { main_slots: (frameOf(seg).main_slots ?? [0]).filter(i => i !== slot) })
-      setActiveFrameItemId(cur => cur === `main:${slot}` ? null : cur)
-    })
+    // (straight away, no question: Ctrl+Z brings it back)
+    updateFrame(segId, { main_slots: (frameOf(seg).main_slots ?? [0]).filter(i => i !== slot) })
+    setActiveFrameItemId(cur => cur === `main:${slot}` ? null : cur)
   }
 
   /** Delete a text straight away, no question (Ctrl+Z brings it back) */
@@ -2563,11 +3064,17 @@ export function EditorShell({
 
   // ── Drag and drop: files from the computer (on the timeline or the sidebar), stock footage
   //    from the B-roll search (on the timeline) ──
-  const dropTargetRef = useRef<{ atMs: number; lane: 'broll' | 'video' } | null>(null)
+  const dropTargetRef = useRef<{ atMs: number; lane: 'broll' | 'video' | 'insert'; frame?: { segId: string; slot: number } } | null>(null)
   const dropUpload = useVideoUpload(videoId => {
     const t = dropTargetRef.current
     dropTargetRef.current = null
-    if (t) addUploadedVideo(videoId, t.atMs, t.lane).catch(e => notifyLocked(e instanceof Error ? e.message : 'Could not add the video'))
+    // Dropped on a frame's lane: into that slot once it's uploaded
+    if (t?.frame && segments.some(x => x.id === t.frame!.segId)) { loadVideoLibrary(); videoIntoSlot(t.frame, videoId, t.atMs) }
+    else if (t?.lane === 'insert') {
+      // Into the main strip, in between (inserts.ts)
+      loadVideoLibrary().then(() => videoLengthMs(videoId)).then(len => insertVideo(videoId, t.atMs, len))
+        .catch(e => notifyLocked(e instanceof Error ? e.message : 'Could not put the video in'))
+    } else if (t) addUploadedVideo(videoId, t.atMs, t.lane).catch(e => notifyLocked(e instanceof Error ? e.message : 'Could not add the video'))
     loadLibrary()
   }, { asset: true })
   const dropUploading = dropUpload.state.phase === 'uploading' || dropUpload.state.phase === 'finishing'
@@ -2672,7 +3179,8 @@ export function EditorShell({
       if (kind === 'video') {
         if (videoStarted || dropUploading) { notifyLocked('One video at a time: import the next one when this one is in'); continue }
         videoStarted = true
-        dropTargetRef.current = null
+        // (imported after "Insert video": it goes in there once it's up)
+        dropTargetRef.current = insertAtMs != null ? { atMs: insertAtMs, lane: 'insert' } : null
         dropUpload.start(f)
         continue
       }
@@ -2699,7 +3207,33 @@ export function EditorShell({
   /** A library item put in at `atMs` (+ on it, or dragged onto the timeline: `lane` where it was dropped) */
   function addLibraryItem(item: LibraryItem, atMs: number, lane: string | null) {
     pause()
+    // After "Picture in picture": the video goes in a small window over the clip
+    if (item.kind === 'video' && pipAtMs != null && lane === null) {
+      const at = pipAtMs
+      videoLengthMs(item.id).then(len => addPip(item.id, at, len)).catch(e => notifyLocked(e instanceof Error ? e.message : 'Could not add the video'))
+      return
+    }
+    // A video from Media goes into the main strip, in between (as in InShot / CapCut): where
+    // "Insert video" was picked, where it was dropped on the strip, or at the playhead — at the
+    // nearest cut when the playhead is close to one. (Video on top: the timeline's + menu, or
+    // dropped on a lane under the strip.)
+    if (item.kind === 'video' && (lane === null || lane === 'main')) {
+      const at = lane === 'main' ? atMs : insertAtMs ?? atMs
+      const snap = lane === null && insertAtMs == null ? 1500 : 60
+      videoLengthMs(item.id).then(len => insertVideo(item.id, at, len, snap)).catch(e => notifyLocked(e instanceof Error ? e.message : 'Could not put the video in'))
+      return
+    }
     preferTrack(lane)
+    // A frame showing there: into its slot (the one dropped on, or the first free one)
+    if (item.kind === 'image' || item.kind === 'video') {
+      const target = frameSlotFor(atMs, lane, item.kind === 'image' ? 'photo' : 'video')
+      if (target === 'refused') return
+      if (target) {
+        if (item.kind === 'image') photoIntoSlot(target, item.id, item.url, atMs)
+        else { if (!videoLibraryRef.current[item.id]) loadVideoLibrary(); videoIntoSlot(target, item.id, atMs) }
+        return
+      }
+    }
     if (item.kind === 'image') { addPhotoPathAt(item.id, item.url, atMs); return }
     if (item.kind === 'audio') { addStoredMusic(item.id, item.url, atMs); return }
     addUploadedVideo(item.id, atMs, lane === 'broll' ? 'broll' : 'video').catch(e => notifyLocked(e instanceof Error ? e.message : 'Could not add the video'))
@@ -2722,11 +3256,21 @@ export function EditorShell({
     pause()
     preferTrack(lane)
     if (kind === 'music') { addMusicTrack(f, Math.round(atMs)); openSettings('music'); return }
-    if (kind === 'photo') { addPhotoFileAt(f, atMs).catch(e => notifyLocked(e instanceof Error ? e.message : 'Could not add the photo')); return }
+    // Dropped on a frame's lane: into that slot
+    const target = (kind === 'photo' || kind === 'video') && lane?.startsWith('frame:') ? frameSlotFor(atMs, lane, kind) : null
+    if (target === 'refused') return
+    if (kind === 'photo') {
+      if (target) {
+        uploadPhotoFile(f).then(d => { photoIntoSlot(target, d.storage_path, d.preview_url, atMs); loadLibrary() })
+          .catch(e => notifyLocked(e instanceof Error ? e.message : 'Could not add the photo'))
+        return
+      }
+      addPhotoFileAt(f, atMs).catch(e => notifyLocked(e instanceof Error ? e.message : 'Could not add the photo')); return
+    }
     if (kind === 'video') {
       if (dropUploading) { notifyLocked('Wait for the upload in progress to finish'); return }
       const asBroll = lane === 'broll' || (lane === null && tool === 'media' && mediaSection === 'library')
-      dropTargetRef.current = { atMs, lane: asBroll ? 'broll' : 'video' }
+      dropTargetRef.current = { atMs, lane: lane === 'main' ? 'insert' : asBroll ? 'broll' : 'video', ...(target ? { frame: target } : {}) }
       openMedia(asBroll ? 'library' : 'media')
       dropUpload.start(f)
       return
@@ -2741,6 +3285,14 @@ export function EditorShell({
     const len = item.duration > 0 ? Math.round(item.duration * 1000) : 5000
     pause()
     preferTrack(lane ?? null)
+    // Dropped on a frame's lane: into that slot
+    const target = lane?.startsWith('frame:') ? frameSlotFor(atMs, lane, 'video') : null
+    if (target === 'refused') return
+    if (target) {
+      importStock(item).then(videoId => videoIntoSlot(target, videoId, atMs))
+        .catch(e => notifyLocked(e instanceof Error ? e.message : 'Could not add that video'))
+      return
+    }
     addStockBroll(item, len, atMs).catch(e => notifyLocked(e instanceof Error ? e.message : 'Could not add that video'))
   }
   /** A video on top picked (on its lane, in a list): Hide / Mute / Lock, Trim and Delete act on it (its ends trim it on the timeline). The section under it is not picked. */
@@ -2785,9 +3337,8 @@ export function EditorShell({
   }
 
   /** Save the stock video as the user's asset, then put it in at the playhead as a muted cutaway */
-  async function addStockBroll(item: StockResult, lengthMs: number, atMs?: number) {
-    const at = Math.max(0, Math.min(atMs ?? currentTimeMs, clipLengthMs - 500))
-    if (rangeBlocked(at, Math.min(clipLengthMs, at + lengthMs))) return
+  /** Stock footage copied into the user's videos (it becomes one of their videos): its id */
+  async function importStock(item: StockResult): Promise<string> {
     const res = await fetch('/api/stock/import', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ref: item.ref, url: item.url, title: item.title }),
@@ -2796,8 +3347,14 @@ export function EditorShell({
     if (!res.ok) throw new Error(data.error ?? 'Could not add that video')
     videoLibraryRef.current = { ...videoLibraryRef.current, [data.video_id]: { url: data.url, title: data.title, stock: true } }
     setVideoLibrary(videoLibraryRef.current)
+    return data.video_id as string
+  }
+  async function addStockBroll(item: StockResult, lengthMs: number, atMs?: number) {
+    const at = Math.max(0, Math.min(atMs ?? currentTimeMs, clipLengthMs - 500))
+    if (rangeBlocked(at, Math.min(clipLengthMs, at + lengthMs))) return
+    const videoId = await importStock(item)
     const end = Math.min(clipLengthMs, at + lengthMs)
-    const segId = placeBroll(data.video_id, at, end, undefined, freeTrack(at, end))
+    const segId = placeBroll(videoId, at, end, undefined, freeTrack(at, end))
     pickShot(segId)
     seekToMs(at)
   }
@@ -3000,6 +3557,7 @@ export function EditorShell({
   )
 
   function setRemoveFillers(on: boolean) {
+    if (on && hasInserts) { notifyLocked('Remove pauses can\u2019t be used with a video put in between (yet)'); return }
     setRemoveFillersState(on)
     removeFillersRef.current = on
     unsavedRef.current = true
@@ -3454,7 +4012,7 @@ export function EditorShell({
                     const isActiveSeg = seg.id === activeSegment?.id
                     const only = cropPositions.length === 1
                     // Deleting a section cuts that part of the video out (askDeleteFormat); only the whole clip is reset instead
-                    const deleteLabel = !canTrim ? (only ? 'Reset this format to Vertical' : `Delete format ${i + 1} (its time goes back to default framing)`)
+                    const deleteLabel = isInsert(seg, mainVideoId) ? 'Remove this inserted video (the rest moves back)' : !cutOk ? (only ? 'Reset this format to Vertical' : `Delete format ${i + 1} (its time goes back to default framing)`)
                       : clipLengthMs - (seg.end_ms - seg.start_ms) < MIN_CLIP_LEFT_MS ? 'Reset this format to Vertical' : `Delete this part of the video (${msToLabel(seg.start_ms)}–${msToLabel(seg.end_ms)})`
                     const name = LAYOUTS.find(l => l.id === shown)?.label ?? shown
                     const all = itemsBySection.get(seg.id) ?? []
@@ -3824,6 +4382,35 @@ export function EditorShell({
                     )
                   })}
                 </div>
+                {/* After "Insert video": what picking a video does now, and a way out */}
+                {pipAtMs != null && (
+                  <div className="ins-pick shrink-0 mx-3 mt-2" role="status">
+                    <span className="ins-pick-icon" aria-hidden="true">
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="2.5" y="4.5" width="19" height="15" rx="2.5" /><rect x="12" y="11" width="7" height="6" rx="1.2" /></svg>
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <b>Pick a video for picture in picture at {msToLabel(pipAtMs)}</b>
+                      <span>It plays in a small window over the clip — move and resize it on the preview.</span>
+                    </span>
+                    <button type="button" className="ins-pick-x" onClick={() => setPipAtMs(null)} aria-label="Cancel picture in picture" title="Cancel">
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
+                    </button>
+                  </div>
+                )}
+                {insertAtMs != null && (
+                  <div className="ins-pick shrink-0 mx-3 mt-2" role="status">
+                    <span className="ins-pick-icon" aria-hidden="true">
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="6" width="5" height="12" rx="1.5" /><rect x="17" y="6" width="5" height="12" rx="1.5" /><path d="M12 8v8M9 12h6" /></svg>
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <b>Pick a video to put in at {msToLabel(insertAtMs)}</b>
+                      <span>It plays there, then the clip carries on — everything after it moves later.</span>
+                    </span>
+                    <button type="button" className="ins-pick-x" onClick={() => setInsertAtMs(null)} aria-label="Cancel inserting a video" title="Cancel">
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
+                    </button>
+                  </div>
+                )}
                 <div className="flex-1 min-h-0">
                 <MediaLibrary
                   items={libraryItems} loading={libraryLoading} used={usedMedia}
@@ -3861,7 +4448,7 @@ export function EditorShell({
             {tool === 'transitions' && (
               <TransitionsPanel joins={transitionJoins} transitions={transitions} currentTimeMs={currentTimeMs}
                 canAddHere={canAddTransitionAt(activeSegment, currentTimeMs)} onAddHere={addTransitionHere}
-                onSet={setTransitionAt} onPreview={previewJoin} onSeek={ms => { pause(); seekToMs(ms) }} />
+                onSet={setTransitionAt} onPreview={previewJoin} onSeek={ms => { pause(); seekToMs(ms) }} savedAsDissolve={trAsDissolve} />
             )}
 
             {tool === 'text' && (
@@ -3942,9 +4529,12 @@ export function EditorShell({
                 onBoxChange={handleBoxChange}
                 marking={marking} onMark={markSubject} subjectsAt={subjectsAt}
               />
-              {playingAdded && !playingAdded.hidden && (
-                <div className="absolute top-3 left-3 flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold pointer-events-none"
-                  style={{ background: 'rgba(249,115,22,0.85)', color: '#fff' }}>B-roll</div>
+              {playingAdded && !playingAdded.hidden && (playingSegment && isInsert(playingSegment, mainVideoId)
+                // (a video put in between: lime, as on the film strip)
+                ? <div className="absolute top-3 left-3 flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-bold pointer-events-none"
+                    style={{ background: '#c8ff00', color: '#0a0a0a' }}>Inserted video</div>
+                : <div className="absolute top-3 left-3 flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold pointer-events-none"
+                    style={{ background: 'rgba(249,115,22,0.85)', color: '#fff' }}>B-roll</div>
               )}
             </div>
           </div>
@@ -4112,12 +4702,13 @@ export function EditorShell({
                   )}
                 </div>
               ) : (
-                <OutputCanvas live segmentAt={viewAt} transitionCuts={transitionCuts} timelineToVideo={trimmed ? trim.toSource : undefined}
+                <OutputCanvas live segmentAt={viewAt} transitionCuts={transitionCuts} timelineToVideo={timelineToVideo} clock={hasInserts ? liveTime.get : undefined}
                   videoRef={videoRef} currentTimeMs={currentTimeMs} clipStartMs={clip.start_ms} videoToTimeline={videoToTimeline}
                   activeSegment={viewSegment} getPositionAt={viewGetPositionAt} sourceFor={brollSource} slotSourceFor={borrowed.slotSourceFor}
                   skipTransitionRef={skipCanvasTransitionRef} words={displayWords}
                   captionStyle={captionStyle} captionTextCase={captionTextCase} showCaptions={showCaptions}
-                  overlays={overlays.filter(o => !o.hidden)} activeOverlayId={activeOverlayId}
+                  // (a picture-in-picture video plays from its library link)
+                  overlays={overlays.filter(o => !o.hidden).map(o => (o.type === 'video' && o.source_video_id ? { ...o, preview_url: videoUrls[o.source_video_id] ?? o.preview_url } : o))} activeOverlayId={activeOverlayId}
                   onOverlayChange={(id, u) => { if (!blocked({ kind: 'photo', id })) updateOverlay(id, u) }} onSelectOverlay={id => { const o = overlays.find(x => x.id === id); if (o?.type === 'image') pickPhoto(id); else { setActiveOverlayId(id); setLastPick('overlay') } }} onDeleteOverlay={askDeleteOverlay}
                   textOverlays={textOverlays.filter(o => !o.hidden)} activeTextOverlayId={activeTextOverlayId}
                   onTextOverlayChange={(id, u) => { if (!blocked({ kind: 'text', id })) updateTextOverlay(id, u) }} onSelectTextOverlay={id => { if (id) pickText(id, false); else setActiveTextOverlayId(null) }}
@@ -4301,10 +4892,19 @@ export function EditorShell({
         style={{ ...(timelineH != null ? { height: timelineH } : { maxHeight: TIMELINE_MAX_H }), background: 'var(--ed-track)', borderTop: '1px solid rgb(var(--ed-fg) / 0.06)', borderRadius: '0 0 11px 11px' }}>
         <SegmentTimeline
           selectedMusicId={pickedMusicId} onSelectMusic={id => pickMusicTrack(id, doubleTap(`m${id}`))}
-          photos={overlays.filter(o => o.type === 'image').map(o => ({ id: o.id, start_ms: o.start_ms, end_ms: o.end_ms, url: o.preview_url, hidden: o.hidden, locked: isLocked({ kind: 'photo', id: o.id }), track: o.track }))}
+          photos={overlays.filter(o => o.type === 'image' || (o.type === 'video' && o.source_video_id)).map(o => ({
+            id: o.id, start_ms: o.start_ms, end_ms: o.end_ms, url: o.preview_url, hidden: o.hidden, locked: isLocked({ kind: 'photo', id: o.id }), track: o.track,
+            ...(o.type === 'video' ? { video: { url: videoUrls[o.source_video_id!] ?? o.preview_url, offset: o.source_offset_ms ?? 0, muted: !!o.muted } } : {}),
+          }))}
           onTrackDrop={dropOnTrack}
           activePhotoId={activeOverlayId} onSelectPhoto={id => pickPhoto(id, doubleTap(`p${id}`))}
-          onPhotoTimeChange={(id, t) => { if (!blocked({ kind: 'photo', id })) updateOverlay(id, t) }}
+          onPhotoTimeChange={(id, t) => {
+            if (blocked({ kind: 'photo', id })) return
+            // A video's start trimmed (its end where it was): it plays on from further into it
+            const o = overlays.find(x => x.id === id)
+            const trimmedStart = o?.type === 'video' && t.start_ms != null && t.start_ms !== o.start_ms && (t.end_ms == null || t.end_ms === o.end_ms)
+            updateOverlay(id, trimmedStart ? { ...t, source_offset_ms: Math.max(0, (o!.source_offset_ms ?? 0) + (t.start_ms! - o!.start_ms)) } : t)
+          }}
           musicTracks={audioTracks.map(t => ({
             id: t.id, start_ms: t.start_ms,
             duration_ms: t.end_ms != null ? t.end_ms - t.start_ms
@@ -4328,14 +4928,16 @@ export function EditorShell({
           laneCtl={laneCtl} onLaneCtl={toggleLane} mainMuted={originalMuted}
           currentTimeMs={currentTimeMs} activeSegmentId={activeSegment?.id ?? null}
           videoUrl={videoUrl} safeDurationMs={clipDurationMs} onSeek={seekToMs}
-          sourceAt={trim.toSource} sourceKey={trimsKey}
-          clipEdgeLimits={canTrim ? clipEdgeLimits : undefined} onClipEdge={moveClipEdge}
-          clipMade={canTrim ? clipMade : undefined}
+          sourceAt={timelineToVideo ?? trim.toSource} sourceKey={`${trimsKey}|${insertsKey}`}
+          clipEdgeLimits={trimOk ? clipEdgeLimits : undefined} onClipEdge={moveClipEdge}
+          clipMade={trimOk ? clipMade : undefined}
           onSelectSegment={id => setActiveSegmentId(id)}
           onBrollChange={(id, s, e, done) => retimeBroll(id, s, e, done !== false)}
           videoUrls={videoUrls} mediaLengths={videoLengths}
           onUpdateSegment={(id, updates) => updateSegment(id, updates)}
           onSetEdge={(id, edge, t) => { if (!blocked({ kind: 'section', id })) setSegmentEdge(id, edge, t, clipLengthMs) }}
+          // (parts can be cut: an edge trims the video itself, as in InShot)
+          onEdgeTrim={cutOk ? trimByEdgeLive : undefined}
           onMoveJunction={(l, r, t) => { if (!blocked({ kind: 'section', id: l }) && !blocked({ kind: 'section', id: r })) moveJunction(l, r, t) }}
           onSwallowSection={swallowSection}
           onInsertBrollAfter={handleInsertBrollAfterSeg}
