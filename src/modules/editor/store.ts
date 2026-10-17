@@ -8,6 +8,7 @@ import { makeBox, defaultCropForSlot } from './utils'
 import { isFrameLayout, DEFAULT_BAND, defaultFrame, frameOf, placeNewItem } from './frames'
 import { setViewAt, recordMotionAt, removeViewChangeAt, moveViewChange, duplicateViewChange, type ViewKeyframe } from './views'
 import { isShot } from './shots'
+import { useMediaStore } from '@/modules/media/store'
 import type { Range } from '@/lib/cuts'
 
 export type KeyframeMap = Record<string, BoxKeyframe[]>  // boxId → sorted keyframes
@@ -461,6 +462,13 @@ export const useEditorStore = create<EditorState & EditorActions>()((set, get) =
         keyframes: withBoxes(s.keyframes, newBoxes),
       }
     })
+    // A transition is kept against the part before its cut (after_segment_id). The left half keeps
+    // this part's id, so the transition at this part's end now belongs to the new right half: it
+    // stays on the same cut instead of jumping to the new one
+    const media = useMediaStore.getState()
+    if (media.transitions.some(t => t.after_segment_id === segId)) {
+      media.setTransitions(media.transitions.map(t => (t.after_segment_id === segId ? { ...t, after_segment_id: newId } : t)))
+    }
     return newId
   },
 
