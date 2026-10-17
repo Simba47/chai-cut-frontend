@@ -501,6 +501,49 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
   // The time boxes show hours for a video an hour or longer (or one whose length isn't known yet)
   const withHours = maxMs === 0 || maxMs >= 3_600_000
 
+  // ── AI edit: the whole video's words (server services/transcribe.ts) ──
+  // Best moments, Ask AI and Make my clips read all of them. AI edit picked on the dashboard starts
+  // that reading as the clip board opens; how far it is shows on the AI card, and a Best moments or
+  // Ask AI asked for before it's done runs by itself once it is. Manual edit never reads the whole
+  // video: each clip's captions are made in the editor, for that clip alone.
+  type Reading = { status: 'none' | 'running' | 'ready' | 'failed'; progress: number | null; error: string | null }
+  const [reading, setReading] = useState<Reading | null>(null)
+  /** What was asked for while the video was being read (runs when it's done), and its name */
+  const afterReading = useRef<(() => void) | null>(null)
+  const [waitingFor, setWaitingFor] = useState<string | null>(null)
+  const readingUrl = `/api/videos/${video.id}/transcript`
+  const checkReading = useCallback(async (start = false) => {
+    try {
+      const res = await fetch(readingUrl, start ? { method: 'POST' } : undefined)
+      if (res.ok) setReading(await res.json())
+    } catch { /* checked again on the next round */ }
+  }, [readingUrl])
+  // (asked once per visit: the server also keeps it to one reading if two asks meet)
+  const readingAsked = useRef(false)
+  useEffect(() => {
+    if (!isReady || readingAsked.current) return
+    readingAsked.current = true
+    checkReading(startWith === 'ai')
+  }, [isReady]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (reading?.status !== 'running') return
+    const id = setInterval(() => checkReading(), 4000)
+    return () => clearInterval(id)
+  }, [reading?.status, checkReading])
+  useEffect(() => {
+    if (reading?.status !== 'ready') return
+    const run = afterReading.current
+    afterReading.current = null
+    setWaitingFor(null)
+    run?.()
+  }, [reading?.status])
+  /** An AI tool was asked for before the video was read (the server answered 409): it waits, then runs */
+  function waitForReading(name: string, run: () => void) {
+    afterReading.current = run
+    setWaitingFor(name)
+    setReading(r => (r?.status === 'running' ? r : { status: 'running', progress: null, error: null }))
+  }
+
   // Poll while processing
   useEffect(() => {
     if (!isProcessing) return
@@ -698,6 +741,8 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
       const res = await fetch(`/api/videos/${video.id}/best-moments?list=1`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ exclude }), signal: ctl.signal,
       })
+      // The video is still being read: Best moments runs by itself when it's done
+      if (res.status === 409) { waitForReading('Best moments', () => findMoments()); return }
       if (!res.ok) throw new Error((await res.json()).error ?? 'Could not load suggestions')
       const { moments, limitMessage } = await res.json() as { moments: Suggestion[]; limitMessage: string | null }
       const batch = Date.now()
@@ -773,6 +818,8 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
         body: JSON.stringify({ criteria: q }),
         signal: ctl.signal,
       })
+      // The video is still being read: this search runs by itself when it's done
+      if (res.status === 409) { waitForReading('Ask AI', () => findByCriteria(q, true)); return }
       if (!res.ok) throw new Error((await res.json()).error ?? 'Could not find clips')
       const { suggestions } = await res.json() as { suggestions?: Suggestion[] }
       const list = suggestions ?? []
@@ -1060,7 +1107,7 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
   )
 
   // ── AI tools: Ask AI + Best moments (left column on wide screens, under the video otherwise) ──
-  const aiTools = (
+  const aiToolsOpen = (
     <>
       {/* (styles: .mmc-* in globals.css) */}
       <section className="mmc shrink-0 p-3.5 flex flex-col gap-3 rounded-2xl" data-start-target="ai">
@@ -1084,6 +1131,34 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
             </button>
           )}
         </div>
+
+        {/* AI edit reads the whole video first: how far it is (manual clips never wait for it) */}
+        {reading && (reading.status === 'running' || reading.status === 'failed') && (
+          <div role="status" className="flex flex-col gap-1.5 rounded-xl px-3 py-2.5"
+            style={{ background: 'rgba(200,255,0,0.06)', boxShadow: 'inset 0 0 0 1px rgba(200,255,0,0.18)' }}>
+            {reading.status === 'running' ? (
+              <>
+                <span className="flex items-center gap-2 text-xs font-semibold text-white">
+                  <Spinner /> Reading your video for AI{reading.progress ? ` · ${reading.progress}%` : '…'}
+                </span>
+                {reading.progress !== null && (
+                  <span className="h-1 rounded-full overflow-hidden" style={{ background: 'rgba(255,255,255,0.1)' }} aria-hidden="true">
+                    <span className="block h-full rounded-full transition-[width] duration-700" style={{ width: `${Math.max(3, reading.progress)}%`, background: ACCENT }} />
+                  </span>
+                )}
+                <span className="text-[11px]" style={{ color: 'rgba(255,255,255,0.55)' }}>
+                  {waitingFor ? `${waitingFor} runs by itself when it's done. ` : ''}Best moments, Ask AI and Make my clips need all its words. You can make clips by hand meanwhile.
+                </span>
+              </>
+            ) : (
+              <span className="flex items-center justify-between gap-2">
+                <span className="text-xs" style={{ color: '#f87171' }}>{reading.error ?? 'Reading your video failed.'}</span>
+                <button type="button" onClick={() => checkReading(true)} className="shrink-0 px-2.5 py-1 rounded-md text-[11px] font-semibold"
+                  style={{ background: 'rgba(255,255,255,0.08)', color: '#fff' }}>Try again</button>
+              </span>
+            )}
+          </div>
+        )}
 
         {/* How many clips: type a number or step it with − / + */}
         <div className="mmc-block flex items-center justify-between gap-3 pl-3 pr-1.5 py-1.5">
@@ -1398,6 +1473,81 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
       </section>
     </>
   )
+
+  // The edit tools (Make my clips, Best moments, Ask AI) need the whole video's transcript, so each
+  // answers in seconds (user's choice, 2026-10-16/17). Until it's there they stay on screen, greyed
+  // and locked: Manual edit unlocks them with Unlock edit tools (the transcript is read then — never
+  // before, so a manual-only video costs nothing); AI edit starts the reading as the clip board opens.
+  // While it reads, the lock shows how far it is and about how long is left, and lifts by itself.
+  // Once read, the video stays unlocked. A Make my clips run already going keeps its card (it reads
+  // the video itself). Manual clips never wait for any of this: each clip's captions are its own.
+  const aiLocked = isReady && reading?.status !== 'ready' && !autoRunning && !autoAsking
+  /** About how long reading the whole video takes: measured on QA (2026-10-17), 8–17 s a minute of video */
+  const readTotalMs = 30_000 + READ_MS_PER_MIN * Math.max(1, (video.duration_ms ?? 60_000) / 60_000)
+  const readLeftMs = reading?.status === 'running' && reading.progress ? readTotalMs * (1 - reading.progress / 100) : readTotalMs
+  const aiToolsLocked = (
+    <div className={`relative ${wide ? 'flex flex-col gap-3' : 'md:col-span-2 h-full'}`} data-start-target="ai">
+      {/* The tools themselves, greyed and out of reach until the transcript is in */}
+      <div inert aria-hidden="true" className={`select-none pointer-events-none ${wide ? 'flex flex-col gap-3' : 'grid grid-cols-1 md:grid-cols-2 gap-4 h-full'}`}
+        style={{ opacity: 0.32, filter: 'grayscale(0.7)' }}>
+        {aiToolsOpen}
+      </div>
+      {/* The lock */}
+      <div className="absolute inset-0 flex items-start justify-center px-3 pt-16">
+        <div role="status" aria-live="polite" className="w-full max-w-[320px] flex flex-col gap-3 rounded-2xl p-4"
+          style={{ background: 'rgba(14,14,14,0.94)', boxShadow: '0 0 0 1px rgba(255,255,255,0.1), 0 18px 40px -12px rgba(0,0,0,0.8)', backdropFilter: 'blur(6px)' }}>
+          <div className="flex items-center gap-2.5">
+            <span aria-hidden="true" className="shrink-0 w-9 h-9 rounded-xl grid place-items-center"
+              style={{ background: 'rgba(200,255,0,0.1)', color: ACCENT, boxShadow: 'inset 0 0 0 1px rgba(200,255,0,0.25)' }}>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="4" y="11" width="16" height="10" rx="2" /><path d="M8 11V7a4 4 0 018 0v4" />
+              </svg>
+            </span>
+            <span className="flex flex-col">
+              <span className="text-[13.5px] font-semibold text-white">Edit tools are locked</span>
+              <span className="text-[11px]" style={{ color: 'rgba(255,255,255,0.5)' }}>Make my clips · Best moments · Ask AI</span>
+            </span>
+          </div>
+          {!reading ? (
+            <p className="flex items-center gap-2 text-xs" style={{ color: 'rgba(255,255,255,0.6)' }}><Spinner /> Checking your video…</p>
+          ) : reading.status === 'running' ? (
+            <div className="flex flex-col gap-2">
+              <span className="flex items-center gap-2 text-[12.5px] font-semibold text-white">
+                <Spinner /> Getting the transcript{reading.progress ? ` · ${reading.progress}%` : '…'}
+              </span>
+              <span className="h-1.5 rounded-full overflow-hidden" style={{ background: 'rgba(255,255,255,0.1)' }} aria-hidden="true">
+                <span className="block h-full rounded-full transition-[width] duration-700" style={{ width: `${Math.max(3, reading.progress ?? 3)}%`, background: ACCENT }} />
+              </span>
+              <span className="text-[11.5px] leading-relaxed" style={{ color: 'rgba(255,255,255,0.6)' }}>
+                {waitingFor ? `${waitingFor} runs by itself when it's done. ` : ''}{minutesLeft(readLeftMs)} — the tools unlock by themselves.
+                You can keep making clips by hand, or leave this page: it carries on.
+              </span>
+            </div>
+          ) : reading.status === 'failed' ? (
+            <div className="flex flex-col gap-2">
+              <span className="text-xs" style={{ color: '#f87171' }}>{reading.error ?? 'Getting the transcript failed.'}</span>
+              <button type="button" onClick={() => checkReading(true)} className="mmc-go h-10 rounded-xl text-[13px] font-semibold">Try again</button>
+            </div>
+          ) : (
+            // Never read (Manual edit, or an older video): unlocking reads it
+            <div className="flex flex-col gap-2.5">
+              <p className="text-[11.5px] leading-relaxed" style={{ color: 'rgba(255,255,255,0.6)' }}>
+                These tools need your video&apos;s transcript. Getting it takes {aboutMinutes(readTotalMs)} for this video, once — then each tool answers in seconds.
+                Clips you make by hand don&apos;t need it.
+              </p>
+              <button type="button" onClick={() => checkReading(true)} className="mmc-go h-10 rounded-xl text-[13px] font-semibold flex items-center justify-center gap-2">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <rect x="4" y="11" width="16" height="10" rx="2" /><path d="M8 11V7a4 4 0 017.5-2" />
+                </svg>
+                Unlock edit tools
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+  const aiTools = aiLocked ? aiToolsLocked : aiToolsOpen
 
   return (
     <div className="h-screen flex flex-col overflow-hidden" style={{ background: '#0d0d0d' }}>
@@ -1992,6 +2142,18 @@ function useSubEdit(clipId: string, onDone?: () => void) {
 }
 
 /** "about 45 s" / "about 1 min 20 s" */
+/** Reading a video's whole transcript: about this long per minute of video (QA, 2026-10-17: 8–17 s) */
+const READ_MS_PER_MIN = 15_000
+/** "about 9 min" (a minute or more), "under a minute" */
+function aboutMinutes(ms: number) {
+  return ms < 60_000 ? 'under a minute' : `about ${Math.round(ms / 60_000)} min`
+}
+/** "About 4 min left", "Under a minute left" */
+function minutesLeft(ms: number) {
+  const t = aboutMinutes(ms)
+  return `${t[0].toUpperCase()}${t.slice(1)} left`
+}
+
 function aboutLabel(ms: number) {
   const s = ms < 30_000 ? Math.max(1, Math.round(ms / 1000)) : Math.round(ms / 5000) * 5
   return s < 60 ? `${s} s` : `${Math.floor(s / 60)} min${s % 60 ? ` ${s % 60} s` : ''}`
