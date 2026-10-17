@@ -93,9 +93,11 @@ export default async function EditorPage({
   ])
 
   const words: TranscriptWord[] = wordsRaw as unknown as TranscriptWord[]
+  // Only this clip's own captions are waited for: a whole-video reading (AI edit) can take many
+  // minutes, and the clip's captions are made on their own, for just its stretch, when asked
   const [pendingJob] = await sql`
     SELECT 1 FROM jobs WHERE type = 'transcribe' AND payload->>'video_id' = ${clip.video_id}
-      AND status IN ('queued', 'processing') LIMIT 1`
+      AND payload->>'clip_id' = ${clipId} AND status IN ('queued', 'processing') LIMIT 1`
   const captionStyles = captionStylesRaw as unknown as CaptionStyle[]
   const textOverlays = textOverlaysRaw as unknown as TextOverlay[]
   const audioTracks = audioTracksRaw as unknown as AudioTrack[]

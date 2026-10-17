@@ -1823,7 +1823,11 @@ export function OutputCanvas({
         // Clip time of the frame on screen (removed parts closed up, when there are any)
         const toTimeline = toTimelineRef.current
         const clockMs = video.currentTime * 1000
-        const videoMs = shownMs != null && Math.abs(shownMs - clockMs) < 300 ? shownMs : clockMs
+        // Playing: the frame on screen's own time (a view change at a camera cut is a clean cut).
+        // Paused: the playhead's — the format or frame just put there shows at once, as the editing
+        // view shows it (the frame on screen can be one from just before the playhead, in the
+        // section before: the preview showed that section's format)
+        const videoMs = !video.paused && shownMs != null && Math.abs(shownMs - clockMs) < 300 ? shownMs : clockMs
         const clipMsNow = Math.max(0, clockRef.current ? clockRef.current() : toTimeline ? toTimeline(videoMs) : videoMs - clipStartMsRef.current)
         const seg    = segmentAtRef.current
           ? segmentAtRef.current(clipMsNow)

@@ -40,7 +40,8 @@ export interface ShotArrangement {
 }
 /** The formats a group subject can be marked in (frames keep their own lanes, so not those) */
 const SHOT_LAYOUTS: Record<string, number> = { vertical: 1, split: 2, trio: 3, spotlight: 1, centered: 1, horizontal: 1 }
-export const MAX_SHOTS = 6
+/** As many as the camera angles listed (the worker's MAX_ANGLES): every angle can be given its own group */
+export const MAX_SHOTS = 12
 
 /** A group subject's format from the editor, checked (a 400 when it isn't one) */
 function cleanShot(v: unknown): ShotArrangement {
@@ -59,8 +60,9 @@ function cleanShot(v: unknown): ShotArrangement {
   return { layout: o.layout, boxes: boxes.sort((a, b) => a.slot_index - b.slot_index) }
 }
 
-export const MAX_SUBJECTS = 6
-const COLORS = ['#f472b6', '#38bdf8', '#facc15', '#a78bfa', '#fb923c', '#34d399']
+export const MAX_SUBJECTS = 10
+// One colour each (up to 12): people and groups share them, so up to 12 on the video at once tell apart
+const COLORS = ['#f472b6', '#38bdf8', '#facc15', '#a78bfa', '#fb923c', '#34d399', '#f87171', '#22d3ee', '#e879f9', '#fbbf24', '#4ade80', '#93c5fd']
 
 /** The table comes with the worker that tracks subjects (its start-up adds it) */
 function notReady(err: unknown): never {

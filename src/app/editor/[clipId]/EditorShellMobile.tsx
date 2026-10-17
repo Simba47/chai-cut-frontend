@@ -265,7 +265,8 @@ export function EditorShellMobile({
     if (!transcribing || isFreePlan) return
     const videoId = (clip as unknown as { video_id: string }).video_id
     const interval = setInterval(async () => {
-      const res = await fetch(`/api/transcribe/words?video_id=${videoId}`)
+      // (only this clip's own caption job keeps it waiting)
+      const res = await fetch(`/api/transcribe/words?video_id=${videoId}&clip_id=${clip.id}`)
       if (!res.ok) return
       const { words: newWords, video_status: vs, pending } = await res.json()
       if (newWords && clipHasWords(newWords)) {
