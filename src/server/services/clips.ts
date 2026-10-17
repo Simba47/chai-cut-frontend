@@ -520,10 +520,17 @@ function cleanFrame(frame: FrameSettings): FrameSettings {
     // Resized rows (at most 4 in a template); the export checks they fit the frame's template
     row_h: Array.isArray(frame.row_h) && frame.row_h.length >= 2 && frame.row_h.length <= 4 && frame.row_h.every(h => typeof h === 'number' && h >= 0.03 && h <= 1)
       ? frame.row_h.map(h => Math.round(h * 1000) / 1000) : undefined,
+    // The bar's swap: the rows' order, a reordering of the template's rows (0..n-1, each once)
+    row_order: Array.isArray(frame.row_order) && frame.row_order.length >= 2 && frame.row_order.length <= 4
+      && frame.row_order.every(i => Number.isInteger(i) && i >= 0 && i < frame.row_order!.length) && new Set(frame.row_order).size === frame.row_order.length
+      ? [...frame.row_order] : undefined,
     main_volumes: slotMap(frame.main_volumes, v => num(v, 0, 1)),
     main_mutes: slotMap(frame.main_mutes, v => typeof v === 'boolean' ? v : undefined),
+    main_hidden: slotMap(frame.main_hidden, v => (v === true ? true : undefined)),
+    main_locked: slotMap(frame.main_locked, v => (v === true ? true : undefined)),
     main_corners: frame.main_corners && typeof frame.main_corners === 'object'
-      ? Object.fromEntries(Object.entries(frame.main_corners).filter(([k, v]) => /^[0-3]$/.test(k) && corner(v)).map(([k, v]) => [k, corner(v)!]))
+      // (0 is kept: square on purpose — dropped, the slot would take the next frame's default)
+      ? Object.fromEntries(Object.entries(frame.main_corners).filter(([k, v]) => /^[0-3]$/.test(k) && (v === 0 || corner(v))).map(([k, v]) => [k, v === 0 ? 0 : corner(v)!]))
       : undefined,
     items,
   }

@@ -32,9 +32,9 @@ import { FramesPanel } from '@/components/editor/FramesPanel'
 import { FrameTextPanel } from '@/components/editor/FrameTextPanel'
 import { useConfirm } from '@/components/editor/ConfirmDialog'
 import { EditorTour, hasSeenEditorTour } from '@/components/editor/EditorTour'
-import { FrameAddMenu, type AddChoice } from '@/components/editor/FrameAddMenu'
+import { FrameAddMenu, addChoices, type AddChoice } from '@/components/editor/FrameAddMenu'
 import { createFrameMediaPool } from '@/modules/editor/frameMedia'
-import { FRAME_TEMPLATES, isFrameLayout, frameOf, mainAudioVolume, frameLanes, frameSlotLabels, emptySlotStretches, slotOffers, newItemCorners, frameSlotCount, itemAt, isTextLane, textLaneLook, type TextLane } from '@/modules/editor/frames'
+import { FRAME_TEMPLATES, isFrameLayout, frameOf, mainAudioVolume, mainSlotSound, frameLanes, frameSlotLabels, emptySlotStretches, slotOffers, laneInRowKey, newItemCorners, frameSlotCount, itemAt, isTextLane, textLaneLook, type TextLane } from '@/modules/editor/frames'
 import { signOut } from 'next-auth/react'
 import { PlatformOverlay, PLATFORM_SAFE, type Platform } from '@/components/editor/PlatformOverlay'
 // ── Domain stores ──────────────────────────────────────────────────────────────
@@ -1424,6 +1424,12 @@ export function EditorShell({
     }
     const newId = splitAtMs(seg.id, t, getPositionAt)
     if (newId) {
+      // A layout or frame picked from the playhead starts fresh: the split gave the new part a copy
+      // of the frame's texts, photos and videos (a split within one frame keeps them on both sides),
+      // but a new frame has its own — nothing typed before the playhead shows up in it (user,
+      // 2026-10-17). What came before keeps everything. (Its look — band colour — still carries.)
+      const fresh = useEditorStore.getState().segments.find(x => x.id === newId)
+      if (fresh?.frame?.items?.length) updateSegment(newId, { frame: { ...fresh.frame, items: [] } })
       applyLayout(newId, layout, ar, neighbourFraming(layout, t, seg.end_ms, newId))
       joinSameLayoutNeighbours(newId, transitionAfter())
     }
@@ -1893,7 +1899,7 @@ export function EditorShell({
       // The views that show the main video (in a frame: its main slots, not one shown whole)
       const views = [...seg.crop_boxes].sort((a, b) => a.slot_index - b.slot_index).filter(b => !b.image_path
         && !(b.source_video_id && b.source_video_id !== mainVideoId)
-        && (!mainSlots || (mainSlots.includes(b.slot_index) && frameSlotSize(seg.layout as FrameLayout, true, b.slot_index, seg.frame?.row_h) !== null)))
+        && (!mainSlots || (mainSlots.includes(b.slot_index) && frameSlotSize(seg.layout as FrameLayout, true, b.slot_index, seg.frame) !== null)))
       views.forEach((box, i) => {
         const size = getBoxPositionAtLerp(seg.start_ms, kfs[box.id] ?? box.keyframes ?? [])
         const view = { w: size.w, h: size.h }
@@ -2135,7 +2141,9 @@ export function EditorShell({
     const m = lane ? /^frame:(.+)$/.exec(lane) : null
     const what = kind === 'photo' ? 'a photo' : 'a video'
     if (m) {
-      const slot = Number(m[1])
+      // The row's lane in this frame (a frame swapped with the bar's swap has its own order)
+      const inRow = laneInRowKey(seg, m[1])
+      const slot = inRow ? (typeof inRow.lane === 'number' ? inRow.lane : NaN) : Number(m[1])
       if (!Number.isInteger(slot)) { notifyLocked(`That’s a text area: drop ${what} on a picture lane`); return 'refused' }
       if (slot >= frameSlotCount(seg.layout) || !slotOffers(seg.layout, slot)[kind]) {
         notifyLocked(`This slot doesn’t take ${what}`); return 'refused'
@@ -2817,6 +2825,7 @@ export function EditorShell({
   }
 
   function askRemoveMain(segId: string, slot: number) {
+    if (frameItemBlocked(segId, `main:${slot}`)) return
     if (sectionBlocked(segId)) return
     const seg = segments.find(x => x.id === segId)
     if (!seg || !isFrameLayout(seg.layout)) return
@@ -2852,7 +2861,7 @@ export function EditorShell({
     if (!found.length) { handleExport(retranscribe); return }
     pause()
     const lines = found.slice(0, 6).map(f => {
-      const names = frameSlotLabels(f.seg.layout as FrameLayout)
+      const names = frameSlotLabels(f.seg.layout as FrameLayout, f.seg.frame)
       const slots = f.slots.map(i => names[i] ?? `Slot ${i + 1}`).join(' & ')
       return `• Frame ${frames.indexOf(f.seg) + 1} · ${FRAME_TEMPLATES[f.seg.layout as FrameLayout].name}: ${slots} slot empty ${msToLabel(f.start_ms)}–${msToLabel(f.end_ms)}`
     })
@@ -3610,7 +3619,11 @@ export function EditorShell({
       return seg && { hidden: seg.crop_boxes[0]?.hidden, locked: seg.locked, muted: seg.crop_boxes[0]?.muted !== false }
     }
     if (t.kind === 'frameItem') {
-      const it = frameOf(segments.find(x => x.id === t.segId) ?? ({} as SegmentLocal)).items?.find(x => x.id === t.id)
+      const f = frameOf(segments.find(x => x.id === t.segId) ?? ({} as SegmentLocal))
+      // The main video in a slot (main:<slot>): its own hide, sound and lock in the frame's settings
+      const slot = mainSlotOf(t.id)
+      if (slot !== null) return { hidden: !!f.main_hidden?.[String(slot)], muted: mainSlotSound(f, slot).muted, locked: !!f.main_locked?.[String(slot)] }
+      const it = f.items?.find(x => x.id === t.id)
       return it && { hidden: it.hidden, muted: it.muted, locked: it.locked }
     }
     if (t.kind === 'photo') return overlays.find(x => x.id === t.id)
@@ -3656,6 +3669,7 @@ export function EditorShell({
     if (t.kind === 'section') return isFrameLayout(segments.find(x => x.id === t.id)?.layout ?? 'vertical') ? ['muted', 'locked'] : ['hidden', 'muted', 'locked']
     if (t.kind === 'broll') return ['hidden', 'muted', 'locked']
     if (t.kind === 'frameItem') {
+      if (mainSlotOf(t.id) !== null) return ['hidden', 'muted', 'locked']
       const it = frameOf(segments.find(x => x.id === t.segId) ?? ({} as SegmentLocal)).items?.find(x => x.id === t.id)
       return it?.kind === 'video' ? ['hidden', 'muted', 'locked'] : ['hidden', 'locked']
     }
@@ -3677,15 +3691,65 @@ export function EditorShell({
       if (k === 'locked') updateSegment(seg.id, patch)
       else updateSegment(seg.id, { crop_boxes: seg.crop_boxes.map((b, i) => i === 0 ? { ...b, [k]: !!patch[k] } : b) })
     }
-    else if (t.kind === 'frameItem') { if (t.segId) updateFrameItem(t.segId, t.id, patch) }
+    else if (t.kind === 'frameItem') {
+      const slot = mainSlotOf(t.id), sg = segments.find(x => x.id === t.segId)
+      if (slot !== null && sg) {
+        const f = frameOf(sg), key = String(slot), on = !!patch[k]
+        if (k === 'muted') updateFrame(sg.id, { main_mutes: { ...f.main_mutes, [key]: on } })
+        else if (k === 'hidden') updateFrame(sg.id, { main_hidden: { ...f.main_hidden, [key]: on } })
+        else updateFrame(sg.id, { main_locked: { ...f.main_locked, [key]: on } })
+      } else if (t.segId) updateFrameItem(t.segId, t.id, patch)
+    }
     else if (t.kind === 'photo') updateOverlay(t.id, patch)
     else if (t.kind === 'text') updateTextOverlay(t.id, patch)
     else setAudioTracks(prev => prev.map(x => x.id === t.id ? { ...x, ...patch } : x))
   }
 
+  /** The slot of the main video's id in a frame (main:<slot>), or null for anything else */
+  function mainSlotOf(id: string): number | null {
+    const m = /^main:(\d+)$/.exec(id)
+    return m ? Number(m[1]) : null
+  }
+
   // ── Lock / view / sound for a whole timeline lane: on = on for everything in it ──
+  /**
+   * A frame lane's kind → its frame and lane. The timeline names the frame (frame:<lane>@<frame id>):
+   * its heads follow the live playhead — while playing or dragging the editor's own time waits — so
+   * they act on the frame actually under the playhead. Without one: the frame at the editor's playhead.
+   */
+  function frameLaneOf(kind: string): { lane: FrameLane; seg: SegmentLocal } | null {
+    const m = /^frame:([^@]+)(?:@(.+))?$/.exec(kind)
+    if (!m) return null
+    const seg = m[2] ? sections.find(s => s.id === m[2]) : frameSeg
+    if (!seg || !isFrameLayout(seg.layout)) return null
+    return { lane: /^\d+$/.test(m[1]) ? Number(m[1]) : (m[1] as FrameLane), seg }
+  }
+  /**
+   * What a frame lane's lock / eye / sound act on (the frame at the playhead): the main video in its
+   * slot, when it shows there, and everything put on the lane. Sound only where the lane plays some:
+   * a slot showing the main video, or for videos (not a photo slot, nor text) — user, 2026-10-17
+   */
+  function frameLaneCan(kind: string): LaneCtlKey[] | undefined {
+    const fl = frameLaneOf(kind)
+    if (!fl) return undefined
+    const { lane, seg } = fl
+    // (a lane of another kind of frame, not this one: no buttons)
+    if (!frameLanes(seg.layout as FrameLayout).some(r => r.lane === lane)) return undefined
+    if (isTextLane(lane)) return ['locked', 'hidden']
+    const f = frameOf(seg)
+    const sound = (f.main_slots ?? [0]).includes(lane as number)
+      || (f.items ?? []).some(it => it.lane === lane && it.kind === 'video')
+      || FRAME_TEMPLATES[seg.layout as FrameLayout].defaults[lane as number] === 'video'
+    return sound ? ['locked', 'hidden', 'muted'] : ['locked', 'hidden']
+  }
   /** What a lane holds, as Hide / Mute / Lock targets */
   function laneTargets(kind: string): CtlTarget[] {
+    const fl = frameLaneOf(kind)
+    if (fl) {
+      const f = frameOf(fl.seg), segId = fl.seg.id, lane = fl.lane
+      const main: CtlTarget[] = typeof lane === 'number' && (f.main_slots ?? [0]).includes(lane) ? [{ kind: 'frameItem', id: `main:${lane}`, segId }] : []
+      return [...main, ...(f.items ?? []).filter(it => it.lane === lane).map((it): CtlTarget => ({ kind: 'frameItem', id: it.id, segId }))]
+    }
     const vt = /^track-(\d+)$/.exec(kind)
     if (vt) return visualItems().filter(i => (i.track ?? 0) === Number(vt[1]))
       .map((i): CtlTarget => (i.ref.kind === 'shot' ? { kind: 'broll', id: i.id } : { kind: i.ref.kind as 'photo' | 'text', id: i.id }))
@@ -3756,7 +3820,7 @@ export function EditorShell({
   function laneCtl(kind: string): LaneCtl | null {
     if (kind === 'main') return mainCtl()
     // A track with a video on it has sound too
-    const can: LaneCtlKey[] | undefined = LANE_CAN[kind]
+    const can: LaneCtlKey[] | undefined = frameLaneCan(kind) ?? LANE_CAN[kind]
       ?? (kind.startsWith('track-') ? (laneTargets(kind).some(t => t.kind === 'broll') ? ['locked', 'hidden', 'muted'] : ['locked', 'hidden'])
         : kind.startsWith('audio-') ? ['locked', 'muted'] : undefined)
     if (!can) return null
@@ -4738,8 +4802,9 @@ export function EditorShell({
                   onFrameItemChange={(id, patch) => { if (frameSeg && !frameItemBlocked(frameSeg.id, id)) updateFrameItem(frameSeg.id, id, patch) }}
                   onDeleteFrameItem={id => { if (frameSeg) askRemoveFrameItem(frameSeg.id, id) }}
                   onFrameRowsChange={heights => { if (frameSeg && !sectionBlocked(frameSeg.id)) updateFrame(frameSeg.id, { row_h: heights }) }}
+                  onFrameRowsSwap={order => { if (frameSeg && !sectionBlocked(frameSeg.id)) updateFrame(frameSeg.id, { row_order: order }) }}
                   onFrameMainRectChange={(slot, rect) => {
-                    if (!frameSeg || sectionBlocked(frameSeg.id)) return
+                    if (!frameSeg || sectionBlocked(frameSeg.id) || frameItemBlocked(frameSeg.id, `main:${slot}`)) return
                     const rects = { ...frameOf(frameSeg).main_rects }
                     if (rect) rects[String(slot)] = rect; else delete rects[String(slot)]
                     updateFrame(frameSeg.id, { main_rects: rects })
@@ -4966,7 +5031,10 @@ export function EditorShell({
           activeFrameItemId={activeFrameItemId}
           laneHighlight={laneHighlight}
           videoTitles={videoTitles}
-          selectedId={selTarget?.id ?? (activeFrameItemId?.startsWith('main:') ? activeFrameItemId : null)}
+          // What was touched last is what's ringed — a frame lane's block too: the main video in a slot
+          // (Top · Main video) and captions on a band aren't targets of the toolbar (selTarget), so
+          // without this the ring stayed on whatever was picked before
+          selectedId={lastPick === 'frameItem' && activeFrameItemId ? activeFrameItemId : selTarget?.id ?? (activeFrameItemId?.startsWith('main:') ? activeFrameItemId : null)}
           onSelectFrameItem={id => selectFrameItem(id, undefined, !!id && doubleTap(`f${id}`))}
           onUpdateFrameItem={(id, patch) => { if (frameSeg && !frameItemBlocked(frameSeg.id, id)) updateFrameItem(frameSeg.id, id, patch) }}
           onJumpToFrameItem={(segId, itemId) => {
@@ -4978,6 +5046,13 @@ export function EditorShell({
             if (!frameSeg) return
             pause()
             if (isTextLane(lane)) { addBandText(frameSeg.id, currentTimeMs, lane); return }
+            // A slot that takes one thing only (Pic + Vid's Pic: a photo) goes straight to it
+            const only = isFrameLayout(frameSeg.layout) && typeof lane === 'number'
+              ? addChoices(slotOffers(frameSeg.layout, lane), !(frameOf(frameSeg).main_slots ?? [0]).includes(lane)) : []
+            if (only.length === 1 && (only[0].id === 'photo' || only[0].id === 'video')) {
+              if (!sectionBlocked(frameSeg.id)) setFramePicker({ segId: frameSeg.id, kind: only[0].id, lane, t: currentTimeMs })
+              return
+            }
             setAddMenu({ segId: frameSeg.id, lane, t: currentTimeMs, anchor })
           }}
           viewMarkers={viewMarkers}
