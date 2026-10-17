@@ -559,7 +559,7 @@
   background: color-mix(in srgb, var(--text) 5%, transparent);
   box-shadow: 0 14px 30px -18px rgba(0,0,0,0.7);
 }
-.emd-card[data-kind="ai"]:hover:not(:disabled), .emd-card[data-kind="ai"]:focus-visible { border-color: color-mix(in srgb, var(--accent) 60%, transparent); }
+.emd-card:hover:not(:disabled), .emd-card:focus-visible { border-color: color-mix(in srgb, var(--accent) 60%, transparent); }
 .emd-card[data-picked] { border-color: var(--accent); }
 .emd-card:disabled:not([data-picked]) { opacity: .4; cursor: default; }
 
@@ -579,10 +579,11 @@
 .emd-pick {
   top: -4px; bottom: -4px; border-radius: 7px; opacity: 0;
   background: rgba(200,255,0,0.16); box-shadow: inset 0 0 0 1.5px #c8ff00;
-  animation: emd-pick 4.2s ease-in-out infinite;
 }
+.emd-card:hover:not(:disabled) .emd-pick, .emd-card:focus-visible .emd-pick, .emd-card[data-picked] .emd-pick { animation: emd-pick 4.2s ease-in-out infinite; }
 @keyframes emd-pick { 0%, 8% { opacity: 0; transform: scaleY(.6); } 18%, 78% { opacity: 1; transform: none; } 90%, 100% { opacity: 0; transform: none; } }
-.emd-spark { position: absolute; left: calc(8% + 2px); top: -24px; color: #c8ff00; animation: emd-spark 4.2s ease-in-out infinite; }
+.emd-spark { position: absolute; left: calc(8% + 2px); top: -24px; color: #c8ff00; opacity: 0; }
+.emd-card:hover:not(:disabled) .emd-spark, .emd-card:focus-visible .emd-spark, .emd-card[data-picked] .emd-spark { animation: emd-spark 4.2s ease-in-out infinite; }
 @keyframes emd-spark { 0%, 8% { opacity: 0; transform: scale(.4) rotate(-30deg); } 18%, 78% { opacity: 1; transform: none; } 90%, 100% { opacity: 0; } }
 /* Manual: a stretch held between two handles, the playhead running through it; hovering the
    card pulls the handles wider, as if dragging them */
@@ -603,13 +604,13 @@
   padding: 2px 7px; border-radius: 999px; font-size: 10px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase;
   color: var(--text-muted); background: color-mix(in srgb, var(--text) 8%, transparent);
 }
-.emd-card[data-kind="ai"] .emd-tag { color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); }
-[data-theme="light"] .emd-card[data-kind="ai"] .emd-tag { color: #4d6400; }
+.emd-card:hover:not(:disabled) .emd-tag, .emd-card:focus-visible .emd-tag, .emd-card[data-picked] .emd-tag { color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); }
+[data-theme="light"] .emd-card:hover:not(:disabled) .emd-tag, [data-theme="light"] .emd-card:focus-visible .emd-tag, [data-theme="light"] .emd-card[data-picked] .emd-tag { color: #4d6400; }
 .emd-desc { font-size: 13px; line-height: 1.5; color: var(--text-muted); }
 .emd-points { display: flex; flex-direction: column; gap: 5px; margin-top: 4px; }
 .emd-points > span { display: flex; align-items: center; gap: 7px; font-size: 12.5px; font-weight: 500; color: color-mix(in srgb, var(--text) 82%, transparent); }
 .emd-points svg { flex-shrink: 0; color: var(--text-muted); }
-.emd-card[data-kind="ai"] .emd-points svg { color: var(--accent); }
+.emd-card:hover:not(:disabled) .emd-points svg, .emd-card:focus-visible .emd-points svg, .emd-card[data-picked] .emd-points svg { color: var(--accent); }
 
 .emd-cta {
   display: flex; align-items: center; justify-content: center; gap: 7px; height: 40px; border-radius: 11px;
@@ -619,8 +620,8 @@
 .emd-cta svg { transition: transform .18s; }
 .emd-card:hover:not(:disabled) .emd-cta { background: color-mix(in srgb, var(--text) 10%, transparent); }
 .emd-card:hover:not(:disabled) .emd-cta svg { transform: translateX(3px); }
-.emd-card[data-kind="ai"] .emd-cta, .emd-card[data-kind="ai"]:hover:not(:disabled) .emd-cta { color: #0a0a0a; background: var(--accent); box-shadow: none; }
-.emd-card[data-kind="ai"]:hover:not(:disabled) .emd-cta { filter: brightness(1.06); }
+.emd-card:hover:not(:disabled) .emd-cta, .emd-card:focus-visible .emd-cta, .emd-card[data-picked] .emd-cta { color: #0a0a0a; background: var(--accent); box-shadow: none; }
+.emd-card:hover:not(:disabled) .emd-cta { filter: brightness(1.06); }
 
 .dash-modal.emd .emd-foot { margin: 16px 2px 0; font-size: 12px; line-height: 1.5; text-align: center; color: var(--text-muted); }
 
@@ -634,7 +635,8 @@
 @media (prefers-reduced-motion: reduce) {
   .emd-card, .emd-cta svg, .emd-range, .emd-handle { transition: none; }
   .emd-card:hover:not(:disabled) { transform: none; }
-  .emd-pick, .emd-spark { animation: none; opacity: 1; }
+  .emd-card:hover:not(:disabled) .emd-pick, .emd-card:hover:not(:disabled) .emd-spark, .emd-card:focus-visible .emd-pick, .emd-card:focus-visible .emd-spark,
+  .emd-card[data-picked] .emd-pick, .emd-card[data-picked] .emd-spark { animation: none; opacity: 1; }
   .emd-playhead { animation: none; left: 50%; }
 }
 

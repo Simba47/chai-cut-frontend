@@ -810,15 +810,6 @@ body {
 .ins-pick-x { flex-shrink: 0; width: 26px; height: 26px; border-radius: 8px; display: grid; place-items: center; color: rgb(var(--ed-fg) / 0.65); transition: background-color .15s, color .15s; }
 .ins-pick-x:hover { color: var(--ed-text); background: rgb(var(--ed-fg) / 0.08); }
 
-/* The "+" on a join of the editor's film strip (SegmentTimeline): a small round button on the
-   strip's bottom edge, right on the seam — quiet until pointed at, then lime */
-.tl-seam-add {
-  width: 18px; height: 18px; translate: -50% -50%; border-radius: 50%; cursor: pointer;
-  color: #0a0a0a; background: #f4f4f5; box-shadow: 0 0 0 2px var(--ed-ruler, #111), 0 2px 6px rgba(0,0,0,0.6);
-  transition: background-color .15s, transform .15s;
-}
-.tl-seam-add:hover, .tl-seam-add[data-open] { background: #c8ff00; transform: scale(1.15); }
-.tl-seam-add:focus-visible { outline: 2px solid #c8ff00; outline-offset: 2px; }
 
 /* ── Editor timeline bar (EditorShell): quiet icon buttons, a thin divider, a zoom slider ── */
 .ed-tl-btn {

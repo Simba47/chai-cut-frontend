@@ -2102,33 +2102,6 @@ export function SegmentTimeline({
               )
             })}
 
-            {/* A "+" on every join of the strip — where two sections meet, and where a removed part
-                closed up — sitting on the strip's bottom edge (clear of the trim grips at the seam):
-                it opens the add menu for that very moment, so something can go in between */}
-            {onAddKind && !dragging && !clipDrag && (() => {
-              // (every edge of a part of the main strip: also where a part meets "Default framing")
-              const raw = [...junctions.map(j => j.left.end_ms), ...mains.flatMap(m => [m.start_ms, m.end_ms]), ...(cutJoins ?? [])]
-                .map(t => Math.round(t)).filter(t => t > 50 && t < duration - 50).sort((a, b) => a - b)
-              const seams = raw.filter((t, i) => i === 0 || t - raw[i - 1] > 30)
-              return seams.map(t => {
-                const open = !!addMenu && addAt === t
-                return (
-                  <button key={`seam-${t}`} type="button"
-                    onClick={e => { e.stopPropagation(); const r = e.currentTarget.getBoundingClientRect(); setAddAt(open ? null : t); setAddMenu(open ? null : r) }}
-                    onPointerDown={e => e.stopPropagation()}
-                    aria-haspopup="menu" aria-expanded={open}
-                    aria-label={`Add media between the parts at ${msToLabel(t)}`} title={`Add here · ${msToLabel(t)}`}
-                    className="tl-seam-add absolute grid place-items-center"
-                    data-open={open || undefined}
-                    style={{ left: `${at(t)}%`, top: STRIP_TOP + STRIP_H, zIndex: 38 }}>
-                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3.4" strokeLinecap="round" aria-hidden="true">
-                      <path d={open ? 'M6 6l12 12M18 6L6 18' : 'M12 5v14M5 12h14'} />
-                    </svg>
-                  </button>
-                )
-              })
-            })()}
-
             {/* A section about to go (its join dragged onto the next one): red, with what releasing does */}
             {doomed && (
               <>
