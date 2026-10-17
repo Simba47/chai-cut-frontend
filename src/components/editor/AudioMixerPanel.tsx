@@ -1,13 +1,17 @@
 'use client'
 
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { AudioTrack } from '@chai-cut/shared'
 import { EmptyState } from './EditorTour'
 import { TimeRange } from './ItemTimeRange'
+import { SoundLibrary } from './SoundLibrary'
+import { CC_BY_SUFFIX, type SoundItem, type SoundKind } from '@/modules/editor/soundCatalog'
 
 interface Props {
   tracks: AudioTrack[]
   onAddTrack: (file: File) => void
+  /** A sound picked in the sound library (stored, then put on the clip at the playhead) */
+  onAddSound?: (item: SoundItem, kind: SoundKind) => Promise<void>
   onUpdateTrack: (id: string, updates: Partial<AudioTrack>) => void
   onRemoveTrack: (id: string) => void
   /** The track picked on the timeline (or here): highlighted, with its timing */
@@ -31,7 +35,7 @@ interface Props {
 /** Any audio file, or a video (its sound is used) */
 const MUSIC_ACCEPT = 'audio/*,video/*'
 
-export function AudioMixerPanel({ tracks, onAddTrack, onUpdateTrack, onRemoveTrack, selectedId = null, onSelect, currentTimeMs = 0, clipLengthMs, durations = {}, nameOf, uploads = {}, missing, onReadd, notice }: Props) {
+export function AudioMixerPanel({ tracks, onAddTrack, onAddSound, onUpdateTrack, onRemoveTrack, selectedId = null, onSelect, currentTimeMs = 0, clipLengthMs, durations = {}, nameOf, uploads = {}, missing, onReadd, notice }: Props) {
   const fileInputRef = useRef<HTMLInputElement>(null)
   // "Re-add this song": which track the picked file is for
   const readdRef = useRef<HTMLInputElement>(null)
@@ -40,6 +44,14 @@ export function AudioMixerPanel({ tracks, onAddTrack, onUpdateTrack, onRemoveTra
   useEffect(() => {
     if (selectedId) listRef.current?.querySelector(`[data-track-id="${selectedId}"]`)?.scrollIntoView({ block: 'nearest' })
   }, [selectedId])
+
+  // CC BY sounds in the clip: the lines to credit when it is published ("Name by Author (CC BY, Freesound)")
+  const [copied, setCopied] = useState(false)
+  const credits = tracks.flatMap(t => {
+    const n = (nameOf ? nameOf(t) : t.storage_path.split('/').pop() ?? '').replace(/\.[a-z0-9]+$/i, '')
+    return n.endsWith(`-${CC_BY_SUFFIX}`) || n.endsWith(` ${CC_BY_SUFFIX}`) ? [`${n.slice(0, -CC_BY_SUFFIX.length - 1).replace(/-/g, ' ')} (CC BY, Freesound)`] : []
+  })
+  const creditText = [...new Set(credits)].join('\n')
 
   function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
     const f = e.target.files?.[0]
@@ -72,6 +84,16 @@ export function AudioMixerPanel({ tracks, onAddTrack, onUpdateTrack, onRemoveTra
       </button>
       <p className="-mt-2 text-[11px]" style={{ color: 'var(--text-muted)' }}>Any audio file, or a video for its sound · up to 20 MB</p>
       {notice && <p role="alert" className="-mt-1 text-xs" style={{ color: '#f87171' }}>{notice}</p>}
+
+      {onAddSound && <SoundLibrary onAdd={onAddSound} />}
+
+      {creditText && (
+        <button type="button" onClick={() => { navigator.clipboard?.writeText(creditText).then(() => { setCopied(true); setTimeout(() => setCopied(false), 2000) }).catch(() => {}) }}
+          className="py-2 rounded-lg text-xs font-medium text-white" style={{ background: 'var(--surface-2)' }}
+          title="Sounds that need their author named when you publish">
+          {copied ? 'Copied ✓' : `Copy credits (${new Set(credits).size})`}
+        </button>
+      )}
 
       {tracks.length === 0 ? (
         <EmptyState icon={<><path d="M9 18V5l12-2v13" /><circle cx="6" cy="18" r="3" /><circle cx="18" cy="16" r="3" /></>}
