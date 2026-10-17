@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { requireUser } from '@/server/auth'
-import { startVideoTranscript, videoTranscriptState } from '@/server/services/transcribe'
+import { startVideoTranscript, stopVideoTranscript, videoTranscriptState } from '@/server/services/transcribe'
 import { apiError } from '@/lib/api-error'
 
 export const runtime = 'nodejs'
@@ -13,6 +13,18 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ vid
   const { videoId } = await params
   try {
     return NextResponse.json(await videoTranscriptState(user.id, videoId))
+  } catch (err) {
+    return apiError(err)
+  }
+}
+
+// Stop the reading (the clip board's lock): the parts already read are kept for the next Unlock
+export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ videoId: string }> }) {
+  const user = await requireUser()
+  if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  const { videoId } = await params
+  try {
+    return NextResponse.json(await stopVideoTranscript(user.id, videoId))
   } catch (err) {
     return apiError(err)
   }

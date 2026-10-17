@@ -506,7 +506,7 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
   // that reading as the clip board opens; how far it is shows on the AI card, and a Best moments or
   // Ask AI asked for before it's done runs by itself once it is. Manual edit never reads the whole
   // video: each clip's captions are made in the editor, for that clip alone.
-  type Reading = { status: 'none' | 'running' | 'ready' | 'failed'; progress: number | null; error: string | null }
+  type Reading = { status: 'none' | 'running' | 'ready' | 'failed'; progress: number | null; error: string | null; stopped?: boolean }
   const [reading, setReading] = useState<Reading | null>(null)
   /** What was asked for while the video was being read (runs when it's done), and its name */
   const afterReading = useRef<(() => void) | null>(null)
@@ -537,6 +537,17 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
     setWaitingFor(null)
     run?.()
   }, [reading?.status])
+  /** Stop: the reading stops (the parts read are kept for the next Unlock); anything waiting for it is dropped */
+  const [stopping, setStopping] = useState(false)
+  async function stopReading() {
+    setStopping(true)
+    afterReading.current = null
+    setWaitingFor(null)
+    try {
+      const res = await fetch(readingUrl, { method: 'DELETE' })
+      if (res.ok) setReading(await res.json())
+    } catch { /* the lock checks again */ } finally { setStopping(false) }
+  }
   /** An AI tool was asked for before the video was read (the server answered 409): it waits, then runs */
   function waitForReading(name: string, run: () => void) {
     afterReading.current = run
@@ -1522,6 +1533,12 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
                 {waitingFor ? `${waitingFor} runs by itself when it's done. ` : ''}{minutesLeft(readLeftMs)} — the tools unlock by themselves.
                 You can keep making clips by hand, or leave this page: it carries on.
               </span>
+              <button type="button" onClick={stopReading} disabled={stopping}
+                className="self-start h-8 px-3 rounded-lg text-[12px] font-semibold flex items-center gap-1.5 transition-colors hover:bg-[rgba(239,68,68,0.18)] disabled:opacity-50"
+                style={{ background: 'rgba(239,68,68,0.1)', color: '#f87171', boxShadow: 'inset 0 0 0 1px rgba(239,68,68,0.3)' }}>
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="5" y="5" width="14" height="14" rx="2.5" /></svg>
+                {stopping ? 'Stopping…' : 'Stop'}
+              </button>
             </div>
           ) : reading.status === 'failed' ? (
             <div className="flex flex-col gap-2">
@@ -1532,8 +1549,10 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
             // Never read (Manual edit, or an older video): unlocking reads it
             <div className="flex flex-col gap-2.5">
               <p className="text-[11.5px] leading-relaxed" style={{ color: 'rgba(255,255,255,0.6)' }}>
-                These tools need your video&apos;s transcript. Getting it takes {aboutMinutes(readTotalMs)} for this video, once — then each tool answers in seconds.
-                Clips you make by hand don&apos;t need it.
+                {reading.stopped
+                  ? <>Stopped{reading.progress ? ` at ${reading.progress}%` : ''}. Unlocking carries on from there — {aboutMinutes(readTotalMs * (1 - (reading.progress ?? 0) / 100))} left.</>
+                  : <>These tools need your video&apos;s transcript. Getting it takes {aboutMinutes(readTotalMs)} for this video, once — then each tool answers in seconds.</>}
+                {' '}Clips you make by hand don&apos;t need it.
               </p>
               <button type="button" onClick={() => checkReading(true)} className="mmc-go h-10 rounded-xl text-[13px] font-semibold flex items-center justify-center gap-2">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
