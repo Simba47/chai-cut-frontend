@@ -1140,6 +1140,14 @@ body {
 .tr-demo[data-kind="fade"] .tr-b, .tr-demo[data-kind="zoomin"] .tr-b { opacity: .5; }
 .tr-demo[data-kind="zoomin"] .tr-a { transform: scale(1.3); }
 .tr-demo[data-kind="fadeblack"] .tr-a, .tr-demo[data-kind="fadewhite"] .tr-a { opacity: .45; }
+/* At rest (not hovered, not picked) a still that says what each does — the ones whose first frame
+   reads as an empty or plain grey box. Hovered or picked, the loops below play as before. */
+.tr-tile:not([data-on]):not(:hover) .tr-demo[data-kind="fadeblack"] { background: linear-gradient(90deg, #4a4a52 0%, #26262b 24%, #000 40%, #000 60%, #b8b8c0 76%, #f4f4f5 100%); }
+.tr-tile:not([data-on]):not(:hover) .tr-demo[data-kind="fadewhite"] { background: linear-gradient(90deg, #4a4a52 0%, #6a6a72 26%, #fff 42%, #fff 58%, #d4d4d8 74%, #b8b8c0 100%); }
+.tr-tile:not([data-on]):not(:hover) .tr-demo:is([data-kind="fadeblack"], [data-kind="fadewhite"]) i { opacity: 0; }
+.tr-tile:not([data-on]):not(:hover) .tr-demo[data-kind="zoomin"] .tr-b { opacity: 1; transform: scale(.45); border-radius: 4px; box-shadow: 0 0 0 3px rgba(0,0,0,.35); }
+.tr-tile:not([data-on]):not(:hover) .tr-demo[data-kind="hblur"] .tr-a { filter: blur(1px); }
+.tr-tile:not([data-on]):not(:hover) .tr-demo[data-kind="hblur"] .tr-b { opacity: 1; clip-path: inset(0 0 0 50%); filter: blur(5px); }
 /* the loop: on the picked tile and the one pointed at */
 :is(.tr-tile[data-on], .tr-tile:hover) .tr-demo i { animation-duration: 2.2s; animation-iteration-count: infinite; animation-timing-function: ease-in-out; }
 :is(.tr-tile[data-on], .tr-tile:hover) .tr-demo[data-kind="cut"] .tr-b { animation-name: tr-cut; animation-timing-function: steps(1, end); }
@@ -2172,6 +2180,10 @@ body {
 .tl2-trans { width: 20px; height: 20px; margin: -10px 0 0 -10px; display: grid; place-items: center; border-radius: 7px; background: #1b1b1f; color: rgb(var(--ed-fg) / 0.85); box-shadow: 0 0 0 1.5px rgba(0, 0, 0, 0.85), 0 0 0 2.5px rgba(255, 255, 255, 0.16); z-index: 6; transition: transform .12s, color .15s, background .15s; }
 .tl2-trans:hover { transform: scale(1.12); color: #c8ff00; }
 .tl2-trans[data-on] { background: #c8ff00; color: #0a0a0a; }
+/* (too short to play: dimmed; a narrow part: a small dot; a tile dragged over it: lit up) */
+.tl2-trans[data-off] { background: #5b6b1f; color: rgba(10,10,10,0.75); }
+.tl2-trans[data-small] { width: 7px; height: 7px; margin-top: -3.5px; border-radius: 50%; box-shadow: 0 0 0 1.5px rgba(0,0,0,0.85); }
+.tl2-trans[data-drop] { transform: scale(1.3); box-shadow: 0 0 0 2px #c8ff00, 0 0 12px rgba(200,255,0,0.6); }
 .tl2-trim-tip { top: 46px; transform: translateX(-50%); padding: 1px 7px; border-radius: 999px; font-size: 10.5px; font-weight: 800; color: #0a0a0a; background: #c8ff00; font-variant-numeric: tabular-nums; white-space: nowrap; pointer-events: none; z-index: 60; }
 
 /* things on the rows under the main video */

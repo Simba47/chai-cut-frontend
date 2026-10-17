@@ -60,7 +60,7 @@ import { getBoxPositionAtLerp } from '@/lib/interpolation'
 import { SubjectsPanel, type SubjectItem, type AnglesView } from '@/components/editor/SubjectsPanel'
 import { angleRows, angleAt, type Angle } from '@/modules/editor/angles'
 import type { SegmentLocal, CropBoxLocal, FrameLayout, FrameLane, FrameItem, TransitionType } from '@chai-cut/shared'
-import { TransitionsPanel, TRANSITION_DEFAULT_MS, type TransitionJoin } from '@/components/editor/TransitionsPanel'
+import { TransitionsPanel, TRANSITION_DEFAULT_MS, TRANSITION_KINDS, playedTransitionMs, type TransitionJoin } from '@/components/editor/TransitionsPanel'
 
 type Tool = 'format' | 'subjects' | 'frames' | 'captions' | 'transitions' | 'text' | 'media' | 'music' | 'cleanup' | 'post'
 /** Media: the user's imported media, or Library (stock footage) */
@@ -537,6 +537,8 @@ export function EditorShell({
     const own = (sg: SegmentLocal) => sg.crop_boxes.every(bx => !bx.source_video_id || bx.source_video_id === mainVideoId)
     const sameShot = (a: SegmentLocal, b: SegmentLocal, at: number) => {
       if (a.layout !== b.layout || isFrameLayout(a.layout) || !own(a) || !own(b) || a.crop_boxes.length !== b.crop_boxes.length) return false
+      // (one side hidden is black: a blend into it shows)
+      if (!!a.hidden !== !!b.hidden) return false
       if (Math.abs(toVideo(at) - toVideo(at - 1) - 1) > 80) return false
       return a.crop_boxes.every((bx, k) => {
         const p = getPositionAt(bx.id, at - 1), q = getPositionAt(b.crop_boxes[k].id, at)
@@ -546,14 +548,20 @@ export function EditorShell({
     const out: TransitionJoin[] = []
     for (let i = 0; i + 1 < byTime.length; i++) {
       const a = byTime[i], b = byTime[i + 1]
-      if (Math.abs(b.start_ms - a.end_ms) <= 1) out.push({ afterId: a.id, at: a.end_ms, from: name(a), to: name(b), sameShot: sameShot(a, b, a.end_ms) })
+      if (Math.abs(b.start_ms - a.end_ms) > 1) continue
+      // (a transition plays no longer than either part: the export's rule, render.py _transition_joins)
+      const lenA = Math.round(a.end_ms) - Math.round(a.start_ms), lenB = Math.round(b.end_ms) - Math.round(b.start_ms)
+      out.push({ afterId: a.id, at: a.end_ms, from: name(a), to: name(b), sameShot: sameShot(a, b, a.end_ms),
+        room: Math.min(lenA, lenB), shortSide: lenA <= lenB ? 'before' : 'after' })
     }
     return out
   }, [sections, keyframes, timelineToVideo, mainVideoId, clip.start_ms]) // eslint-disable-line react-hooks/exhaustive-deps
-  /** What the preview plays at each join that has a transition (timeline ms) */
+  /** What the preview plays at each join that has a transition (timeline ms): as long as the export
+   *  plays it there, and none where that's too short to show */
   const transitionCuts = useMemo(() => transitionJoins.flatMap(j => {
     const tr = transitions.find(t => t.after_segment_id === j.afterId)
-    return tr && tr.type !== 'cut' ? [{ at: j.at, ms: tr.duration_ms ?? 500, type: tr.type }] : []
+    const ms = tr && tr.type !== 'cut' ? playedTransitionMs(tr.duration_ms || TRANSITION_DEFAULT_MS, j.room) : 0
+    return tr && ms > 0 ? [{ at: j.at, ms, type: tr.type }] : []
   }), [transitionJoins, transitions])
   /** A join's transition picked (or its length changed): 'cut' takes it away */
   function setTransitionAt(afterId: string, type: TransitionType, durationMs: number) {
@@ -563,6 +571,27 @@ export function EditorShell({
       const had = prev.find(t => t.after_segment_id === afterId)
       return [...rest, { id: had?.id ?? crypto.randomUUID(), clip_id: clip.id, after_segment_id: afterId, type, duration_ms: Math.round(durationMs) }]
     })
+  }
+  /** A cut's kind on every cut (its marker's menu): each cut with a transition keeps its own length,
+   *  one without takes this cut's length */
+  function applyTransitionToAll(afterId: string) {
+    const src = transitions.find(t => t.after_segment_id === afterId)
+    if (!src || src.type === 'cut') return
+    for (const j of transitionJoins) {
+      const had = transitions.find(t => t.after_segment_id === j.afterId)
+      setTransitionAt(j.afterId, src.type, had && had.type !== 'cut' ? (had.duration_ms || TRANSITION_DEFAULT_MS) : (src.duration_ms || TRANSITION_DEFAULT_MS))
+    }
+  }
+  /** A tile from the Transitions panel dropped on a cut on the timeline: that cut gets it (keeping its
+   *  length if it had one; None takes it away), the panel shows that cut, and it plays */
+  function dropTransition(afterId: string, type: string) {
+    const j = transitionJoins.find(x => x.afterId === afterId)
+    if (!j || !TRANSITION_KINDS.some(k => k.type === type)) return
+    const had = transitions.find(t => t.after_segment_id === afterId)
+    const len = had && had.type !== 'cut' ? (had.duration_ms || TRANSITION_DEFAULT_MS) : TRANSITION_DEFAULT_MS
+    setTransitionAt(afterId, type as TransitionType, len)
+    setTransitionFocus({ id: afterId, n: Date.now() })
+    if (type !== 'cut') previewJoin(j.at, playedTransitionMs(len, j.room))
   }
   /**
    * A transition picked with no join at the playhead: the part of the clip there is split at the
@@ -577,8 +606,8 @@ export function EditorShell({
     skipCanvasTransitionRef.current = true
     if (!splitAtMs(seg.id, currentTimeMs, getPositionAt)) return
     setTransitionAt(seg.id, type, TRANSITION_DEFAULT_MS)
-    // (and it plays at once, so what was picked is seen)
-    previewJoin(currentTimeMs, TRANSITION_DEFAULT_MS)
+    // (and it plays at once, so what was picked is seen — as long as the two new halves let it)
+    previewJoin(currentTimeMs, playedTransitionMs(TRANSITION_DEFAULT_MS, Math.min(currentTimeMs - seg.start_ms, seg.end_ms - currentTimeMs)))
   }
   /**
    * "Preview" on a join: the preview opens and plays the clip from a moment before it. It waits a
@@ -1393,7 +1422,8 @@ export function EditorShell({
   // left behind (frames never join: each keeps its own lanes).
   // 'section': the layout changes the WHOLE section under the playhead.
   const LAYOUT_SNAP_MS = 300
-  const transitionAfter = () => new Set(transitions.map(tr => tr.after_segment_id))
+  // (read live: a split just before, in the same action, moves the transition at a part's end)
+  const transitionAfter = () => new Set(useMediaStore.getState().transitions.map(tr => tr.after_segment_id))
   function handleLayoutChange(layout: LayoutType, mode: 'section' | 'fromPlayhead' = 'section') {
     const t = currentTimeMs
     const ar = getVideoAR()
@@ -5199,6 +5229,9 @@ export function EditorShell({
           mainMuted={mainAllMuted} onToggleMainMute={() => setMainAllMuted(!mainAllMuted)}
           transitions={transitions}
           onOpenTransition={(afterId, at) => { pause(); seekToMs(Math.max(0, at - 1)); setTransitionFocus({ id: afterId, n: Date.now() }); openSettings('transitions') }}
+          onRemoveTransition={afterId => setTransitionAt(afterId, 'cut', 0)}
+          onApplyTransitionToAll={applyTransitionToAll}
+          onDropTransition={dropTransition}
           currentTimeMs={currentTimeMs} activeSegmentId={activeSegment?.id ?? null}
           videoUrl={videoUrl} safeDurationMs={clipDurationMs} onSeek={seekToMs}
           sourceAt={timelineToVideo ?? trim.toSource} sourceKey={`${trimsKey}|${insertsKey}`}

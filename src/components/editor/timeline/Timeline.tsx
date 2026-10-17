@@ -7,6 +7,7 @@ import { Waveform } from '../Waveform'
 import { liveTime, usePlayerStore } from '@/modules/player/store'
 import { isFrameLayout, FRAME_TEMPLATES, frameOf, laneItems, itemBounds, MIN_ITEM_MS, isTextLane } from '@/modules/editor/frames'
 import { isShot } from '@/modules/editor/shots'
+import { TransitionGlyph, TRANSITION_DRAG_TYPE, TRANSITION_DEFAULT_MS, playedTransitionMs, transitionName, transitionSecs } from '../TransitionsPanel'
 import {
   VideoThumbnails, LAYOUT_COLORS, FRAME_ITEM_COLORS, frameItemColor, visibleLanes, thumbsFor, nearestThumb,
   ACCENT, SELECTED_RING, msToLabel, LANE_META, type LaneMeta, InsertTag, MEDIA_COLORS,
@@ -80,8 +81,14 @@ export interface TimelineProps {
   mainMuted?: boolean
   /** "Mute clip audio" at the start of the main row */
   onToggleMainMute?: () => void
-  /** The clip's transitions (after which part, which kind): the button between two parts shows it */
-  transitions?: { after_segment_id: string; type: string }[]
+  /** The clip's transitions (after which part, which kind, how long): the marker on each cut shows it */
+  transitions?: { after_segment_id: string; type: string; duration_ms?: number | null }[]
+  /** A cut's transition taken away (its marker's menu, or Delete on it) */
+  onRemoveTransition?: (afterSegmentId: string) => void
+  /** This cut's kind on every cut (each keeps its own length) */
+  onApplyTransitionToAll?: (afterSegmentId: string) => void
+  /** A tile from the Transitions panel dropped on a cut */
+  onDropTransition?: (afterSegmentId: string, type: string) => void
   /** The transition button between two parts: open the Transition tool on that cut */
   onOpenTransition?: (afterSegmentId: string, atMs: number) => void
   onDropFiles?: (files: File[], atMs: number, lane: string | null) => void
@@ -152,7 +159,7 @@ export function Timeline({
   viewMarkers = [], selectedViewT = null, onSelectView, onMoveView, onRemoveView, onDuplicateView,
   onBrollChange, videoUrls = {}, mediaLengths = {}, zoom: zoomProp, onZoomChange,
   onAddKind, cutJoins = [], isStock, onDropFiles, onDropStock, onDropMedia,
-  mainMuted = false, onToggleMainMute, transitions = [], onOpenTransition,
+  mainMuted = false, onToggleMainMute, transitions = [], onOpenTransition, onRemoveTransition, onApplyTransitionToAll, onDropTransition,
   onTrackDrop, pickedSegmentId = null, selectedId, onPickSegment,
 }: TimelineProps) {
   const viewRef = useRef<HTMLDivElement>(null)        // what shows (the playhead sits in its middle)
@@ -174,6 +181,10 @@ export function Timeline({
   const [brollGhost, setBrollGhost] = useState<{ id: string; start: number; end: number } | null>(null)
   const [addMenu, setAddMenu] = useState<DOMRect | null>(null)
   const [dropAt, setDropAt] = useState<{ ms: number; lane: string | null; what: string } | null>(null)
+  // A transition tile dragged over the timeline: the cut it would land on
+  const [dropCut, setDropCut] = useState<string | null>(null)
+  // A cut's marker right-clicked: its menu (where, which cut)
+  const [cutMenu, setCutMenu] = useState<{ afterId: string; at: number; x: number; y: number } | null>(null)
   const [trackHover, setTrackHover] = useState<{ family: 'visual' | 'audio'; target: number | 'new' } | null>(null)
   const trackHoverRef = useRef<typeof trackHover>(null)
   const [pulseLane, setPulseLane] = useState<FrameLane | null>(null)
@@ -308,7 +319,7 @@ export function Timeline({
   ]
   const visualTracks = [...new Set(visual.map(v => v.track))].sort((a, b) => b - a)
   const songTracks = [...new Set(songs.map(m => m.track ?? 0))].sort((a, b) => a - b)
-  const transitionAfter = new Map(transitions.map(t => [t.after_segment_id, t.type]))
+  const transitionAfter = new Map(transitions.map(t => [t.after_segment_id, t]))
 
   // ── Moving the playhead: press or drag anywhere on the ruler or the rows; it clicks onto cuts ──
   /** Where the playhead clicks to: cuts, the clip's ends, and the edges of everything on the rows */
@@ -708,7 +719,24 @@ export function Timeline({
   // ── Drops from outside (files, stock footage, the Media library) ──
   const laneAt = (el: Element) => el.closest?.('[data-lane]')?.getAttribute('data-lane') ?? null
   const dropKind = (e: React.DragEvent) => e.dataTransfer.types.includes(STOCK_DRAG_TYPE) ? 'stock' : e.dataTransfer.types.includes(MEDIA_DRAG_TYPE) ? 'media' : e.dataTransfer.types.includes('Files') ? 'files' : null
+  /** The cut a transition dropped at this x lands on: the nearest one, if within reach (24 px) */
+  const cutNear = (clientX: number) => {
+    const ms = msFromClientX(clientX)
+    let best: { id: string; d: number } | null = null
+    for (const { left } of junctions) {
+      const d = Math.abs(left.end_ms - ms) * pxPerMs
+      if (d <= 24 && (!best || d < best.d)) best = { id: left.id, d }
+    }
+    return best?.id ?? null
+  }
   function onDragOver(e: React.DragEvent) {
+    if (e.dataTransfer.types.includes(TRANSITION_DRAG_TYPE)) {
+      // A transition tile: only over a cut can it be dropped (elsewhere: not allowed)
+      const id = onDropTransition ? cutNear(e.clientX) : null
+      setDropCut(prev => (prev === id ? prev : id))
+      if (id) { e.preventDefault(); e.dataTransfer.dropEffect = 'copy' }
+      return
+    }
     const kind = dropKind(e)
     if (!kind || (kind === 'files' && !onDropFiles) || (kind === 'stock' && !onDropStock) || (kind === 'media' && !onDropMedia)) return
     e.preventDefault()
@@ -720,6 +748,12 @@ export function Timeline({
     setDropAt(prev => (prev && prev.ms === ms && prev.lane === lane ? prev : { ms, lane, what }))
   }
   function onDrop(e: React.DragEvent) {
+    if (e.dataTransfer.types.includes(TRANSITION_DRAG_TYPE)) {
+      const id = cutNear(e.clientX), type = e.dataTransfer.getData(TRANSITION_DRAG_TYPE)
+      setDropCut(null)
+      if (id && type && onDropTransition) { e.preventDefault(); onDropTransition(id, type) }
+      return
+    }
     const kind = dropKind(e)
     setDropAt(null)
     if (!kind) return
@@ -1081,6 +1115,28 @@ export function Timeline({
             )}
           </>
         )}
+        {cutMenu && (() => {
+          const tr = transitionAfter.get(cutMenu.afterId)
+          const close = () => setCutMenu(null)
+          return (
+            <>
+              <div className="fixed inset-0" style={{ zIndex: 90 }} onClick={close} onContextMenu={e => { e.preventDefault(); close() }} aria-hidden="true" />
+              <div role="menu" aria-label={`Transition at ${msToLabel(cutMenu.at)}`} className="tl2-menu fixed flex flex-col py-1.5"
+                onKeyDown={e => { if (e.key === 'Escape') { e.stopPropagation(); close() } }}
+                ref={el => { if (el && !el.dataset.focused) { el.dataset.focused = '1'; el.querySelector<HTMLElement>('[role="menuitem"]')?.focus({ preventScroll: true }) } }}
+                style={{ zIndex: 91, left: Math.min(cutMenu.x, window.innerWidth - 230), top: Math.min(cutMenu.y + 4, window.innerHeight - 150), minWidth: 210 }}>
+                <span className="tl2-menu-hint px-3 pb-1">{tr ? `${transitionName(tr.type)} at ${msToLabel(cutMenu.at)}` : ''}</span>
+                <button type="button" role="menuitem" onClick={() => { close(); onOpenTransition?.(cutMenu.afterId, cutMenu.at) }}>Change…</button>
+                {onApplyTransitionToAll && junctions.length > 1 && (
+                  <button type="button" role="menuitem" onClick={() => { close(); onApplyTransitionToAll(cutMenu.afterId) }}>Apply to all cuts</button>
+                )}
+                {onRemoveTransition && (
+                  <button type="button" role="menuitem" onClick={() => { close(); onRemoveTransition(cutMenu.afterId) }}>Remove</button>
+                )}
+              </div>
+            </>
+          )
+        })()}
         {/* "Mute clip audio" (as in CapCut), level with the main row */}
         {onToggleMainMute && (
           <button type="button" className="tl2-mute" data-on={mainMuted || undefined} onClick={onToggleMainMute}
@@ -1107,7 +1163,7 @@ export function Timeline({
       {/* ── The timeline: the layer slides under the playhead in the middle ── */}
       <div className="tl2-frame relative flex-1 min-w-0">
       <div ref={viewRef} className="tl2-view" onScroll={measureLanes}
-        onDragOver={onDragOver} onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDropAt(null) }} onDrop={onDrop}>
+        onDragOver={onDragOver} onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) { setDropAt(null); setDropCut(null) } }} onDrop={onDrop}>
         <div ref={contentRef} className="relative" style={{ width: contentW, willChange: 'transform' }}>
           {dropAt && (
             <div className="absolute top-0 bottom-0 pointer-events-none" style={{ left: `${at(dropAt.ms)}%`, zIndex: 60 }}>
@@ -1134,29 +1190,57 @@ export function Timeline({
               ))}
               {mains.map((seg, i) => mainBlock(seg, i))}
               {!dragging && junctions.map(({ left, right }) => {
-                // (beside the selected part its grips are there instead)
+                // A marker on every cut, as in CapCut: lime with its kind's picture when it has a
+                // transition, a grey "+" when not. Beside the selected part it moves off the cut, onto
+                // the other part, so the selected part's grip stays free to drag
                 const selPart = selectedId !== undefined ? selectedId : (pickedSegmentId ?? activeSegmentId)
-                if (selPart && (left.id === selPart || right.id === selPart)) return null
-                // (a part too narrow on screen to hold it would be covered by it: zoom in to see it)
-                if (Math.min(left.end_ms - left.start_ms, right.end_ms - right.start_ms) * pxPerMs < 30) return null
-                const type = transitionAfter.get(left.id)
-                const on = !!type && type !== 'cut'
+                const room = Math.min(left.end_ms - left.start_ms, right.end_ms - right.start_ms)
+                const tr = transitionAfter.get(left.id)
+                const on = !!tr && tr.type !== 'cut'
+                // (a part too narrow on screen to hold it: a cut with a transition keeps a small dot, one
+                // without none. The dot sits just under the row, so the narrow part stays free to tap)
+                const small = room * pxPerMs < 30
+                if (small && !on) return null
+                const set = on ? (tr!.duration_ms || TRANSITION_DEFAULT_MS) : 0
+                const played = on ? playedTransitionMs(set, room) : 0
+                const name = on ? transitionName(tr!.type) : ''
+                const half = small ? 3.5 : 10
+                const shift = small || !selPart ? -half : left.id === selPart ? 1.5 : right.id === selPart ? -half * 2 - 1.5 : -half
+                const what = on ? (played ? `${name} · ${transitionSecs(played)}${played < set ? ' (a part beside it is short)' : ''}` : `${name} · a part beside it is too short: plays as a plain cut`) : ''
                 return (
-                  <button key={`tr-${left.id}`} type="button" className="tl2-trans absolute" data-on={on || undefined}
+                  <button key={`tr-${left.id}`} type="button" className="tl2-trans absolute" data-on={on || undefined} data-small={small || undefined}
+                    data-off={(on && !played) || undefined} data-drop={dropCut === left.id || undefined} data-kind={on ? tr!.type : undefined}
                     onPointerDown={e => e.stopPropagation()}
                     onClick={e => { e.stopPropagation(); onOpenTransition?.(left.id, left.end_ms) }}
-                    aria-label={on ? `Transition at ${msToLabel(left.end_ms)}: change it` : `Add a transition at ${msToLabel(left.end_ms)}`}
-                    title={on ? 'Transition — click to change it' : 'Add a transition between these parts'}
-                    style={{ left: `${at(left.end_ms)}%`, top: MAIN_PAD + BLOCK_H / 2 }}>
-                    {/* a square split corner to corner: one picture giving way to the next */}
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                      <rect x="3.5" y="3.5" width="17" height="17" rx="3.5" />
-                      <path d="M20.5 3.5L3.5 20.5" />
-                      {on && <path d="M3.5 7v-.1a3.4 3.4 0 013.4-3.4H20.5L3.5 20.5z" fill="currentColor" stroke="none" />}
-                    </svg>
+                    onContextMenu={e => {
+                      e.preventDefault(); e.stopPropagation()
+                      if (!on) { onOpenTransition?.(left.id, left.end_ms); return }
+                      setCutMenu({ afterId: left.id, at: left.end_ms, x: e.clientX, y: e.clientY })
+                    }}
+                    onKeyDown={e => {
+                      // (Delete on a marker takes its transition away, never the part that is selected)
+                      if (e.key !== 'Delete' && e.key !== 'Backspace') return
+                      e.preventDefault(); e.stopPropagation()
+                      if (on) onRemoveTransition?.(left.id)
+                    }}
+                    aria-label={on ? `Transition at ${msToLabel(left.end_ms)}: ${what}. Change it` : `Add a transition at ${msToLabel(left.end_ms)}`}
+                    title={on ? `${what} — click to change it, right-click for more` : 'Add a transition between these parts'}
+                    style={{ left: `${at(left.end_ms)}%`, top: small ? MAIN_PAD + BLOCK_H + 3 : MAIN_PAD + BLOCK_H / 2, marginLeft: shift }}>
+                    {!small && <TransitionGlyph type={on ? tr!.type : 'cut'} size={on ? 12 : 10} />}
                   </button>
                 )
               })}
+              {/* a transition tile dragged over the timeline: the cut it will land on */}
+              {dropCut && (() => {
+                const j = junctions.find(x => x.left.id === dropCut)
+                if (!j) return null
+                return (
+                  <div className="absolute pointer-events-none" style={{ left: `${at(j.left.end_ms)}%`, top: 0, bottom: 0, zIndex: 7 }}>
+                    <div className="absolute top-0 bottom-0" style={{ left: -1, width: 2, background: ACCENT }} />
+                    <span className="absolute whitespace-nowrap text-[10px] font-bold px-1.5 py-0.5 rounded" style={{ top: -2, left: 6, background: ACCENT, color: '#000' }}>Transition at {msToLabel(j.left.end_ms)}</span>
+                  </div>
+                )
+              })()}
               {/* while a grip is dragged: the part's new length, over the grip */}
               {edgeGhost && (() => {
                 const seg = mains.find(m => m.id === edgeGhost.id)
