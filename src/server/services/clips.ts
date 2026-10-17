@@ -157,6 +157,8 @@ export async function saveClip(userId: string, clipId: string, body: SaveClipInp
   // How far a text / photo is turned (its rotate handle on the preview), once the worker has added the field
   const hasTextRot = await hasColumn('text_overlays', 'rotation')
   const hasPhotoRot = await hasColumn('overlays', 'rotation')
+  // How see-through a photo is (a brand kit's logo), once the worker has added the field
+  const hasPhotoOpacity = await hasColumn('overlays', 'opacity')
   /** Degrees, clockwise, -180..180 (nothing when it isn't turned) */
   const turn = (r: unknown) => (typeof r === 'number' && isFinite(r) && Math.round(r * 10) % 3600 !== 0 ? (((r % 360) + 540) % 360) - 180 : null)
   // The clip's start and end, when dragged in the editor (bug #8)
@@ -306,11 +308,12 @@ export async function saveClip(userId: string, clipId: string, body: SaveClipInp
 
     q.push(tx`DELETE FROM overlays WHERE clip_id = ${clipId}`)
     if (overlays.length > 0) {
-      q.push(tx`INSERT INTO overlays ${tx(overlays.map(({ id, type, storage_path, source_video_id, source_offset_ms, x, y, w, h, start_ms, end_ms, z_index, hidden, muted, locked, rotation }) => ({
+      q.push(tx`INSERT INTO overlays ${tx(overlays.map(({ id, type, storage_path, source_video_id, source_offset_ms, x, y, w, h, start_ms, end_ms, z_index, hidden, muted, locked, rotation, opacity }) => ({
         id, clip_id: clipId, type, storage_path: storage_path ?? null,
         source_video_id: source_video_id ?? null, source_offset_ms: ms(source_offset_ms ?? 0),
         x, y, w, h, start_ms: ms(start_ms), end_ms: ms(end_ms), z_index,
         ...(hasPhotoRot ? { rotation: turn(rotation) } : {}),
+        ...(hasPhotoOpacity ? { opacity: typeof opacity === 'number' && isFinite(opacity) && opacity < 0.999 ? Math.max(0.05, opacity) : null } : {}),
         ...(hasControls ? { hidden: !!hidden, muted: !!muted, locked: !!locked } : {}),
       })))}`)
     }
@@ -530,10 +533,24 @@ function cleanFrame(frame: FrameSettings): FrameSettings {
     // Resized rows (at most 4 in a template); the export checks they fit the frame's template
     row_h: Array.isArray(frame.row_h) && frame.row_h.length >= 2 && frame.row_h.length <= 4 && frame.row_h.every(h => typeof h === 'number' && h >= 0.03 && h <= 1)
       ? frame.row_h.map(h => Math.round(h * 1000) / 1000) : undefined,
+    // The bar's swap: the rows' order, a reordering of the template's rows (0..n-1, each once)
+    row_order: Array.isArray(frame.row_order) && frame.row_order.length >= 2 && frame.row_order.length <= 4
+      && frame.row_order.every(i => Number.isInteger(i) && i >= 0 && i < frame.row_order!.length) && new Set(frame.row_order).size === frame.row_order.length
+      ? [...frame.row_order] : undefined,
+    // A free frame's bar and its moved area (the face cam's circle): shares of the frame
+    split: num(frame.split, 0, 1),
+    split2: num(frame.split2, 0, 1),
+    flip: frame.flip === true ? true : undefined,
+    flip2: frame.flip2 === true ? true : undefined,
+    face_box: frame.face_box && typeof frame.face_box === 'object' && [frame.face_box.x, frame.face_box.y, frame.face_box.w].every(v => typeof v === 'number' && isFinite(v))
+      ? { x: num(frame.face_box.x, 0, 1)!, y: num(frame.face_box.y, 0, 1)!, w: num(frame.face_box.w, 0.05, 1)! } : undefined,
     main_volumes: slotMap(frame.main_volumes, v => num(v, 0, 1)),
     main_mutes: slotMap(frame.main_mutes, v => typeof v === 'boolean' ? v : undefined),
+    main_hidden: slotMap(frame.main_hidden, v => (v === true ? true : undefined)),
+    main_locked: slotMap(frame.main_locked, v => (v === true ? true : undefined)),
     main_corners: frame.main_corners && typeof frame.main_corners === 'object'
-      ? Object.fromEntries(Object.entries(frame.main_corners).filter(([k, v]) => /^[0-3]$/.test(k) && corner(v)).map(([k, v]) => [k, corner(v)!]))
+      // (0 is kept: square on purpose — dropped, the slot would take the next frame's default)
+      ? Object.fromEntries(Object.entries(frame.main_corners).filter(([k, v]) => /^[0-3]$/.test(k) && (v === 0 || corner(v))).map(([k, v]) => [k, v === 0 ? 0 : corner(v)!]))
       : undefined,
     items,
   }

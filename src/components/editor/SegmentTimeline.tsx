@@ -1,11 +1,11 @@
 'use client'
 
-import { useRef, useState, useEffect, useLayoutEffect, useCallback, useMemo, Fragment } from 'react'
+import { useRef, useState, useEffect, useLayoutEffect, useCallback, useMemo, useSyncExternalStore, Fragment } from 'react'
 import type { SegmentLocal, LayoutType, TextOverlay, FrameItem, FrameLane, FrameLayout } from '@chai-cut/shared'
 import type { TrackRef } from '@/modules/editor/tracks'
 import { Waveform } from './Waveform'
 import { useLiveTimeMs, liveTime, usePlayerStore } from '@/modules/player/store'
-import { isFrameLayout, FRAME_TEMPLATES, frameLanesFor, frameOf, laneItems, itemBounds, MIN_ITEM_MS, isTextLane, frameSlotCount } from '@/modules/editor/frames'
+import { isFrameLayout, FRAME_TEMPLATES, frameLanesFor, frameOf, laneItems, itemBounds, MIN_ITEM_MS, isTextLane, frameSlotCount, mainSlotSound, slotOffers, timelineLanes, laneInRow, laneInRowKey } from '@/modules/editor/frames'
 import { isShot } from '@/modules/editor/shots'
 
 export const LAYOUT_COLORS: Record<LayoutType, string> = {
@@ -39,6 +39,7 @@ export const LAYOUT_COLORS: Record<LayoutType, string> = {
   frame_audiogram: '#2dd4bf',
   frame_grid: '#2dd4bf',
   frame_news: '#2dd4bf',
+  frame_trio_main: '#2dd4bf',
 }
 
 // Frame lane items: one colour per kind of media
@@ -52,15 +53,9 @@ const FRAME_LANE_H = 26
  * the main video — the film strip already shows that — so it only gets a lane once something is
  * put on it.
  */
+// (exported: the desktop timeline, timeline/Timeline.tsx, shows the same lanes)
 export function visibleLanes(seg: SegmentLocal) {
-  const frame = frameOf(seg)
-  const main = frame.main_slots ?? [0]
-  const slots = frameSlotCount(seg.layout as FrameLayout)
-  return frameLanesFor(seg).filter(r => {
-    const empty = laneItems(frame, r.lane, seg).length === 0
-    if (isTextLane(r.lane)) return !empty
-    return !(slots === 1 && main.includes(r.lane) && empty)
-  })
+  return timelineLanes(seg)
 }
 
 /** Frames are captured this tall (px) in the video's own shape: sharp when shown smaller, on any screen */
@@ -679,6 +674,18 @@ export function SegmentTimeline({
     else if (e.dataTransfer.files.length) onDropFiles?.([...e.dataTransfer.files], ms, lane)
   }
   const [laneSpans, setLaneSpans] = useState<{ kind: string; top: number; h: number }[]>([])
+  // The frame under the live playhead. While playing or dragging the playhead the editor's own time
+  // (currentTimeMs) waits — it catches up when that stops — so the frame lanes' heads follow the
+  // live time instead: they change as the playhead goes into another section. This redraws the
+  // timeline only then, not every frame.
+  const framesRef = useRef<SegmentLocal[]>([])
+  framesRef.current = segments.filter(s => isFrameLayout(s.layout) && !isShot(s, mainVideoId))
+  const liveFrameId = useSyncExternalStore(
+    liveTime.subscribe,
+    () => { const t = liveTime.get(); return framesRef.current.find(s => t >= s.start_ms && t < s.end_ms)?.id ?? null },
+    () => null,
+  )
+  const liveFrame = liveFrameId ? segments.find(s => s.id === liveFrameId) ?? null : null
   const measureLanes = () => {
     const box = scrollRef.current
     if (!box) return
@@ -1540,6 +1547,33 @@ export function SegmentTimeline({
   const songs = musicTracks.filter(m => !m.original)
   const songTracks = [...new Set(songs.map(m => m.track ?? 0))].sort((a, b) => a - b)
   /** The icon beside a track: what is on it (a track with a video shows the film) */
+  /**
+   * A frame lane's head (frame:<slot or text lane>, of the frame at the playhead): its kind's icon —
+   * a video slot, a photo slot, a text area — named after the lane, and its "+" (that lane's add
+   * menu at the playhead) only where the lane is free there: never over the main video (user, 2026-10-17)
+   */
+  const frameHead = (kind: string): { meta: LaneMeta; add?: (e: React.MouseEvent<HTMLButtonElement>) => void } | null => {
+    // The frame under the live playhead (none in a section that isn't a frame: no heads, no buttons)
+    const hs = liveFrame
+    if (!hs) return null
+    const key = kind.slice('frame:'.length)
+    // (the row's lane in this frame: a swapped frame has its own order — laneInRow)
+    const row = laneInRowKey(hs, key) ?? frameLanesFor(hs).find(r => String(r.lane) === key)
+    if (!row) return null
+    const frame = frameOf(hs)
+    const lane = row.lane
+    const isMain = typeof lane === 'number' && (frame.main_slots ?? [0]).includes(lane)
+    const photoSlot = typeof lane === 'number' && !isMain && FRAME_TEMPLATES[hs.layout as FrameLayout].defaults[lane] === 'photo'
+      && !laneItems(frame, lane, hs).some(it => it.kind === 'video')
+    const like = isTextLane(lane) ? LANE_META.text : photoSlot ? LANE_META.photo : LANE_META.video
+    // "+" adds at the playhead: only when it's in this frame
+    const inside = !!frameSeg && frameSeg.id === hs.id
+    const free = inside && !isMain && !laneItems(frame, lane, hs).some(it => it.start_ms <= currentTimeMs && currentTimeMs < it.end_ms)
+    return {
+      meta: { label: row.label, color: like.color, icon: like.icon },
+      add: free && onAddFrameItem ? (e => onAddFrameItem(lane, e.currentTarget.getBoundingClientRect())) : undefined,
+    }
+  }
   const metaOf = (kind: string): LaneMeta | undefined => {
     if (LANE_META[kind]) return LANE_META[kind]
     const vt = /^track-(\d+)$/.exec(kind)
@@ -1765,12 +1799,20 @@ export function SegmentTimeline({
           </>
         )}
         {laneSpans.map(sp => {
-          const meta = metaOf(sp.kind)
+          // In a frame each lane has its own head (frameHead): the frame's one icon for them all is left
+          // out. Elsewhere (the playhead's section isn't a frame) the lanes have that one icon, no buttons
+          if (sp.kind === 'frame' && liveFrame && laneSpans.some(x => x.kind.startsWith('frame:'))) return null
+          const fh = sp.kind.startsWith('frame:') ? frameHead(sp.kind) : null
+          const meta = fh?.meta ?? metaOf(sp.kind)
           if (!meta) return null
           // Room around each icon: it's a little smaller than its lane
           const size = Math.max(14, Math.min(26, sp.h - 2))
-          const add = meta.add && onAddKind ? () => onAddKind(meta.add!) : undefined
-          const ctl = laneCtl?.(sp.kind)
+          const add: ((e: React.MouseEvent<HTMLButtonElement>) => void) | undefined = fh
+            ? fh.add
+            : meta.add && onAddKind ? () => onAddKind(meta.add!) : undefined
+          // A frame lane's buttons name their frame (the one under the live playhead) for the editor
+          const ctlKind = fh && liveFrame ? `${sp.kind}@${liveFrame.id}` : sp.kind
+          const ctl = laneCtl?.(ctlKind)
           return (
             <Fragment key={sp.kind}>
             {/* Lock · view · sound for the whole lane (a lane without one keeps its place empty) */}
@@ -1784,7 +1826,7 @@ export function SegmentTimeline({
                     : k === 'hidden' ? (on ? `Show ${what} again` : `Hide ${what} (not shown or exported)`)
                       : on ? `Turn the sound of ${what} back on` : `Mute ${what}`
                   return (
-                    <button key={k} type="button" disabled={ctl.empty} onClick={() => onLaneCtl?.(sp.kind, k)}
+                    <button key={k} type="button" disabled={ctl.empty} onClick={() => onLaneCtl?.(ctlKind, k)}
                       aria-pressed={on} aria-label={label} title={ctl.empty ? `${meta.label}: nothing here yet` : label}
                       className="lane-ctl flex items-center justify-center rounded-md" data-on={on || undefined} data-key={k}
                       style={{ width: 20, height: 20 }}>
@@ -2366,10 +2408,12 @@ export function SegmentTimeline({
           {(() => {
             const active = frameSeg && isFrameLayout(frameSeg.layout) ? frameSeg : null
             const frames = byTime.filter(x => isFrameLayout(x.layout))
-            // Every lane any frame has, in the order the frames show them (the picked frame's first)
+            // Every lane any frame has, in the templates' own order (the picked frame's first). A frame
+            // swapped with the bar's swap shows its lanes in its own order within these rows (laneInRow),
+            // so swapping one frame never moves another frame's lanes
             const rows: ReturnType<typeof visibleLanes> = []
             for (const f of active ? [active, ...frames.filter(x => x.id !== active.id)] : frames) {
-              for (const r of visibleLanes(f)) if (!rows.some(x => x.lane === r.lane)) rows.push(r)
+              for (const r of timelineLanes(f, true)) if (!rows.some(x => x.lane === r.lane)) rows.push(r)
             }
             if (!rows.length) return null
             const seg = active
@@ -2379,7 +2423,7 @@ export function SegmentTimeline({
             const plusAt = seg ? (inSection ? currentTimeMs : seg.start_ms) : 0
             /** Another frame's stretch of a lane: its main video and items, full size; a click goes there */
             const otherFrame = (o: SegmentLocal, lane: (typeof rows)[number]['lane']) => {
-              const row = visibleLanes(o).find(r => r.lane === lane)
+              const row = laneInRow(o, lane)
               if (!row) return null
               const of = frameOf(o)
               const isMain = !isTextLane(row.lane) && (of.main_slots ?? [0]).includes(row.lane)
@@ -2438,10 +2482,11 @@ export function SegmentTimeline({
                 style={{ gap: 2, paddingTop: 4, borderTop: '1px solid rgb(var(--ed-fg) / 0.05)' }}>
                 {rows.map(lane => {
                   const laneKey = String(lane.lane)
-                  const row = seg ? visibleLanes(seg).find(r => r.lane === lane.lane) : undefined
+                  // This frame's lane in this row (its own order, if swapped)
+                  const row = seg ? laneInRow(seg, lane.lane) ?? undefined : undefined
                   const isMain = !!row && !isTextLane(row.lane) && main.includes(row.lane)
-                  const mainId = `main:${lane.lane}`
-                  const pulsing = pulseLane === lane.lane
+                  const mainId = `main:${row?.lane ?? lane.lane}`
+                  const pulsing = pulseLane === (row?.lane ?? lane.lane)
                   return (
                     <div key={laneKey} data-lane={`frame:${laneKey}`} className="group/lane relative" style={{ height: FRAME_LANE_H, cursor: 'pointer' }}
                       onPointerDown={e => { onSelectFrameItem?.(null); handleTrackDrag(e) }}>
@@ -2471,6 +2516,9 @@ export function SegmentTimeline({
                                 boxShadow: on ? SELECTED_RING : `inset 2px 0 0 ${FRAME_ITEM_COLORS.main}`, zIndex: on ? 3 : undefined,
                               }}>
                               <span className="px-2 truncate text-[10px] font-semibold pointer-events-none" style={{ color: 'rgb(var(--ed-fg) / 0.75)' }}>{row.label} · Main video</span>
+                              <span className="shrink-0 pr-2 pointer-events-none">
+                                <StateBadges st={{ hidden: !!frame.main_hidden?.[String(row.lane)], locked: !!frame.main_locked?.[String(row.lane)], muted: mainSlotSound(frame, row.lane as number).muted }} />
+                              </span>
                             </div>
                           )
                         })()}
@@ -2509,19 +2557,24 @@ export function SegmentTimeline({
                           )
                         })}
                         {/* "+" rides on the playhead: adds from here — only where the lane is empty at the
-                            playhead (over the main video in its slot: while the pointer is on the lane) */}
+                            playhead. A slot showing the video (Same video) is filled: no "+" (user,
+                            2026-10-17); to put something over it, drag it from the Media library onto the lane */}
                         {(() => {
                           const taken = laneItems(frame, row.lane, seg).some(it => it.start_ms <= plusAt && plusAt < it.end_ms)
-                          if (taken && !pulsing) return null
-                          const onHover = isMain && !pulsing
+                          if ((taken || isMain) && !pulsing) return null
                           return (
                         <button
-                          ref={el => { if (el) plusRefs.current.set(laneKey, el); else plusRefs.current.delete(laneKey) }}
+                          ref={el => { const k = String(row.lane); if (el) plusRefs.current.set(k, el); else plusRefs.current.delete(k) }}
                           onPointerDown={e => e.stopPropagation()}
                           onClick={e => { e.stopPropagation(); onAddFrameItem?.(row.lane, e.currentTarget.getBoundingClientRect()) }}
                           aria-label={`Add to the ${row.label.toLowerCase()} ${isTextLane(row.lane) ? 'area' : 'slot'} at ${msToLabel(plusAt)}`}
-                          title={isTextLane(row.lane) ? 'Add text here' : 'Add a photo, video or text here'}
-                          className={`absolute top-1/2 flex items-center justify-center rounded-full transition-[transform,opacity] hover:scale-110 focus-visible:outline-none${onHover ? ' opacity-0 group-hover/lane:opacity-100 focus-visible:opacity-100' : ''}`}
+                          // (says what this slot takes: Pic + Vid's Pic a photo only — slotOffers, as its menu)
+                          title={isTextLane(row.lane) || !isFrameLayout(seg.layout) ? 'Add text here' : (() => {
+                            const o = slotOffers(seg.layout, row.lane)
+                            const what = [o.photo && 'a photo', o.video && 'a video', o.text && 'text'].filter(Boolean) as string[]
+                            return `Add ${what.length > 1 ? `${what.slice(0, -1).join(', ')} or ${what[what.length - 1]}` : what[0] ?? 'something'} here`
+                          })()}
+                          className={`absolute top-1/2 flex items-center justify-center rounded-full transition-[transform,opacity] hover:scale-110 focus-visible:outline-none`}
                           style={{
                             left: `${at(plusAt)}%`, transform: 'translate(-50%, -50%)', width: 18, height: 18, zIndex: 41,
                             background: '#c8ff00', color: '#000', border: '1.5px solid rgba(0,0,0,0.7)',

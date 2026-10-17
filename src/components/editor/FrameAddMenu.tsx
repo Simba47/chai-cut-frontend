@@ -27,7 +27,20 @@ const ICONS: Record<AddChoice, React.ReactNode> = {
   bandtext: <path d="M4 7V4h16v3M9 20h6M12 4v16" />,
 }
 
-/** What "+" on a frame slot offers: the same (main) video or an uploaded video — or a photo in a photo slot — plus text for the band */
+/**
+ * What "+" on a frame slot offers, from what the slot takes (slotOffers): the same (main) video or
+ * an uploaded video, a photo, text for the band. One choice only (a Pic slot: a photo) needs no
+ * menu — the "+" goes straight to it.
+ */
+export function addChoices(offers: Props['offers'], canAddMain: boolean): { id: AddChoice; label: string; color: string }[] {
+  return [
+    ...(offers.video && canAddMain ? [{ id: 'main' as const, label: 'Same video', color: FRAME_ITEM_COLORS.main }] : []),
+    ...(offers.video ? [{ id: 'video' as const, label: 'Different video', color: FRAME_ITEM_COLORS.video }] : []),
+    ...(offers.photo ? [{ id: 'photo' as const, label: offers.video ? 'Photo' : 'Upload photo', color: FRAME_ITEM_COLORS.photo }] : []),
+    ...(offers.text ? [{ id: 'bandtext' as const, label: 'Text', color: FRAME_ITEM_COLORS.text }] : []),
+  ]
+}
+
 export function FrameAddMenu({ laneLabel, anchor, offers, canAddMain, onChoose, onClose }: Props) {
   const ref = useRef<HTMLDivElement>(null)
 
@@ -40,12 +53,7 @@ export function FrameAddMenu({ laneLabel, anchor, offers, canAddMain, onChoose, 
     return () => { window.removeEventListener('pointerdown', onDown, true); window.removeEventListener('keydown', onKey, true) }
   }, [onClose])
 
-  const choices: { id: AddChoice; label: string; color: string }[] = [
-    ...(offers.video && canAddMain ? [{ id: 'main' as const, label: 'Same video', color: FRAME_ITEM_COLORS.main }] : []),
-    ...(offers.video ? [{ id: 'video' as const, label: 'Different video', color: FRAME_ITEM_COLORS.video }] : []),
-    ...(offers.photo ? [{ id: 'photo' as const, label: offers.video ? 'Photo' : 'Upload photo', color: FRAME_ITEM_COLORS.photo }] : []),
-    ...(offers.text ? [{ id: 'bandtext' as const, label: 'Text', color: FRAME_ITEM_COLORS.text }] : []),
-  ]
+  const choices = addChoices(offers, canAddMain)
 
   // Opens above the "+" (the timeline sits at the bottom of the screen), kept on screen
   const vw = typeof window !== 'undefined' ? window.innerWidth : 1280

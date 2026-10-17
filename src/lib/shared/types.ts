@@ -9,7 +9,7 @@ export type FrameLayout = 'frame_single' | 'frame_video_photo' | 'frame_dual' | 
   | 'frame_title_caption' | 'frame_big_small' | 'frame_photo_story'
   | 'frame_blur_fill' | 'frame_gameplay' | 'frame_pip' | 'frame_screenshot' | 'frame_comment' | 'frame_letterbox_wide'
   | 'frame_two_crops' | 'frame_side_by_side' | 'frame_name_tags' | 'frame_brand_card' | 'frame_top_list'
-  | 'frame_screen_face' | 'frame_audiogram' | 'frame_grid' | 'frame_news'
+  | 'frame_screen_face' | 'frame_audiogram' | 'frame_grid' | 'frame_news' | 'frame_trio_main'
 export type LayoutType = 'vertical' | 'split' | 'trio' | 'spotlight' | 'centered' | 'horizontal' | FrameLayout
 /** How a photo slot moves over its format's duration */
 export type SlotMotion = 'none' | 'zoom_in' | 'zoom_out' | 'pan_left' | 'pan_right'
@@ -93,12 +93,28 @@ export interface FrameSettings {
   /** Sound of the main video in each slot that shows it, by slot index — each slot is set on its own */
   main_volumes?: Record<string, number>
   main_mutes?: Record<string, boolean>
+  /** The main video hidden in a slot (its lane's eye: what's under it shows; its sound still plays unless muted), by slot index */
+  main_hidden?: Record<string, boolean>
+  /** The main video locked in a slot (its lane's lock: its box can't be moved, nor it taken out), by slot index */
+  main_locked?: Record<string, boolean>
   /** Rounded corners of the main video, per slot index */
   main_corners?: Record<string, CornerStyle>
   /** The main video is heard under the frame though no slot shows it (Photo Story), at main_volume */
   main_under?: boolean
-  /** Heights of the frame's rows (top to bottom, shares of the frame) when resized; absent = the template's */
+  /** Heights of the frame's rows (one per template row, shares of the frame) when resized; absent = the template's */
   row_h?: number[] | null
+  /** The rows' order top to bottom (template row numbers) when swapped with the bar's swap; absent = the template's */
+  row_order?: number[] | null
+  /** A free frame's bar (Side by side, Screen + face cam): where it was dragged (share of the frame); absent = the template's */
+  split?: number | null
+  /** A free frame's second bar (Trio with main: between Left and Right): where it was dragged; absent = the template's */
+  split2?: number | null
+  /** A free frame's bar swapped (Trio with main: the Main below, the pair on top) — the frame mirrored across that way */
+  flip?: boolean | null
+  /** Its second bar swapped (Trio with main: Left and Right traded) */
+  flip2?: boolean | null
+  /** A free frame's movable area (the face cam's circle) once placed: its top-left and width (shares of the frame; it keeps its shape) */
+  face_box?: { x: number; y: number; w: number } | null
   /** The main video's box inside its slot when resized / moved, per slot index: shares of the slot (absent = the whole slot) */
   main_rects?: Record<string, { x: number; y: number; w: number; h: number }>
   items?: FrameItem[]
@@ -392,6 +408,8 @@ export interface Overlay {
   track?: number
   /** Degrees, clockwise, round the box's middle (its rotate handle on the preview) */
   rotation?: number | null
+  /** How see-through it is, 0–1 (a brand kit's logo; absent = solid) */
+  opacity?: number | null
 }
 
 // ─── Editor state (client-only, not persisted as a single blob) ────────────────
@@ -445,4 +463,5 @@ export const LAYOUT_SLOT_COUNT: Record<LayoutType, number> = {
   frame_audiogram: 1,
   frame_grid: 4,
   frame_news: 1,
+  frame_trio_main: 3,
 }

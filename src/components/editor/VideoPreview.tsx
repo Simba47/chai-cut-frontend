@@ -10,7 +10,7 @@ import type { BoxPosition } from '@/lib/interpolation'
 import type { TextCase } from './CaptionStyler'
 import { applyCase } from './CaptionStyler'
 import { normalizedSlotAspect, fitToAspect } from '@/modules/editor/utils'
-import { isFrameLayout, frameSlotLabels, frameLanesFor, frameBandShown, frameOf, itemAt, captionBandAt, cornerGeometry, MIN_ROW_H, mainRect, boxRect, MIN_BOX as MIN_MAIN_BOX, frameAreas, frameBase, areaRadius, frameSlotSize, isTextLane, frameRows, BLUR_SOURCE_SLOT } from '@/modules/editor/frames'
+import { isFrameLayout, frameSlotLabels, frameLanesFor, frameBandShown, frameOf, itemAt, captionBandAt, cornerGeometry, MIN_ROW_H, mainRect, boxRect, MIN_BOX as MIN_MAIN_BOX, frameAreas, frameBase, areaRadius, frameSlotSize, isTextLane, frameRows, validRowOrder, slotOffers, BLUR_SOURCE_SLOT, FRAME_TEMPLATES, barAt, barFlipped, MIN_MOVABLE_W } from '@/modules/editor/frames'
 import type { FrameMediaPool } from '@/modules/editor/frameMedia'
 import { useLiveTimeMs, liveTime, usePlayerStore } from '@/modules/player/store'
 import { addedVideoBox } from '@/modules/editor/visibility'
@@ -146,16 +146,16 @@ export function VideoPreview({
           const aspect = normalizedSlotAspect(layout, videoAR ?? undefined, frameBandShown(activeSegment))
           const frame = isFrameLayout(layout)
           const count = frame ? activeSegment.crop_boxes.length : layout === 'trio' ? 3 : layout === 'split' ? 2 : 1
-          const labels = frame ? frameSlotLabels(layout) : SLOT_LABELS[layout]
+          const labels = frame ? frameSlotLabels(layout, activeSegment.frame) : SLOT_LABELS[layout]
           const mainSlots = frame ? frameOf(activeSegment).main_slots ?? [0] : null
           const boxes = activeSegment.crop_boxes.slice(0, count)
             // In a frame only the slots showing the main video are framed on it (and not one that
             // shows it whole: nothing is cropped there)
             .filter(box => !mainSlots || (mainSlots.includes(box.slot_index)
-              && frameSlotSize(layout as FrameLayout, frameBandShown(activeSegment), box.slot_index, activeSegment.frame?.row_h) !== null))
+              && frameSlotSize(layout as FrameLayout, frameBandShown(activeSegment), box.slot_index, activeSegment.frame) !== null))
             .map(box => {
               // Slots can differ in shape (Big + Small): each box is locked to its own slot's
-              const slotA = frame ? normalizedSlotAspect(layout, videoAR ?? undefined, frameBandShown(activeSegment), box.slot_index, activeSegment.frame?.row_h) : aspect
+              const slotA = frame ? normalizedSlotAspect(layout, videoAR ?? undefined, frameBandShown(activeSegment), box.slot_index, activeSegment.frame) : aspect
               // A resized video box changes the shape that's cut from the source
               const mr = frame ? mainRect(frameOf(activeSegment), box.slot_index) : null
               const a = slotA && mr ? slotA * (mr.w / mr.h) : slotA
@@ -581,8 +581,11 @@ function inSlot(ctx: CanvasRenderingContext2D, corners: CornerStyle | undefined,
   draw: (dx: number, dy: number, dw: number, dh: number) => void,
   /** The media's box inside the slot (shares of the slot) when it was resized / moved; absent = the whole slot */
   rect?: { x: number; y: number; w: number; h: number } | null, fill = '#000',
-  /** Round the box's corners. Off for media shown whole (contain): the export keeps those square */
-  round = true) {
+  /**
+   * Round the box's corners. Media shown whole (contain) gives its own size instead: its rounded
+   * corners sit on the picture's own edges where it's fitted (render.py shown_whole does the same)
+   */
+  round: boolean | { w: number; h: number } = true) {
   const W = ctx.canvas.width
   const g = cornerGeometry(corners)
   ctx.save()
@@ -592,7 +595,11 @@ function inSlot(ctx: CanvasRenderingContext2D, corners: CornerStyle | undefined,
   const bx = a.x + (rect?.x ?? 0) * a.w, by = a.y + (rect?.y ?? 0) * a.h, bw = (rect?.w ?? 1) * a.w, bh = (rect?.h ?? 1) * a.h
   if (fill !== 'none') { ctx.fillStyle = fill; ctx.fillRect(a.x, a.y, a.w, a.h) }
   ctx.beginPath()
-  ctx.roundRect(bx + m, by + m, Math.max(1, bw - 2 * m), Math.max(1, bh - 2 * m), r)
+  const ix = bx + m, iy = by + m, iw = Math.max(1, bw - 2 * m), ih = Math.max(1, bh - 2 * m)
+  if (typeof round === 'object' && round.w > 0 && round.h > 0) {
+    const f = Math.min(iw / round.w, ih / round.h), fw = round.w * f, fh = round.h * f
+    ctx.roundRect(ix + (iw - fw) / 2, iy + (ih - fh) / 2, fw, fh, r)
+  } else ctx.roundRect(ix, iy, iw, ih, r)
   ctx.clip()
   draw(bx + m, by + m, Math.max(1, bw - 2 * m), Math.max(1, bh - 2 * m))
   ctx.restore()
@@ -647,7 +654,7 @@ function paintFrame(
       ctx.restore()
     }
   }
-  for (const area of frameAreas(layout, frameBandShown(seg), seg.frame?.row_h)) {
+  for (const area of frameAreas(layout, frameBandShown(seg), seg.frame)) {
     const a = px(area)
     if (area.kind === 'caption') {
       // A plain strip the captions are drawn on
@@ -672,14 +679,15 @@ function paintFrame(
     const fill = area.fill ?? (contain ? '#000' : '#111')
     // Underneath: the main video if this slot shows it, otherwise an empty (dark) slot
     if (fill !== 'none') { ctx.save(); clipArea(ctx, a); ctx.fillStyle = fill; ctx.fillRect(a.x, a.y, a.w, a.h); ctx.restore() }
-    if (main.has(area.slot) && vW && vH) {
+    // A photo or video put in a shown-whole slot replaces the main video while it shows (shown whole
+    // too, it wouldn't cover it: the main video would peek around it)
+    const coveredHere = contain && !!it && (it.kind === 'photo' || it.kind === 'video')
+    if (main.has(area.slot) && !frame.main_hidden?.[String(area.slot)] && vW && vH && !coveredHere) {
       const box = seg.crop_boxes.find(b => b.slot_index === area.slot)
-      if (contain) {
-        // Shown whole: the video isn't cropped here. A photo or video put in this slot replaces it
-        // while it shows (shown whole too, it wouldn't cover it: the main video would peek around)
-        if (!(it && (it.kind === 'photo' || it.kind === 'video'))) {
-          inSlot(ctx, frame.main_corners?.[String(area.slot)], a, (dx, dy, dw, dh) => containSource(ctx, video, vW, vH, dx, dy, dw, dh), mainRect(frame, area.slot), 'none', false)
-        }
+      // Shown whole: the video isn't cropped here — unless the slot crops the main video to its own
+      // view (mainCrop: Screen + face cam's Screen, with Same video)
+      if (contain && !(area.kind === 'slot' && area.mainCrop)) {
+        inSlot(ctx, frame.main_corners?.[String(area.slot)], a, (dx, dy, dw, dh) => containSource(ctx, video, vW, vH, dx, dy, dw, dh), mainRect(frame, area.slot), 'none', { w: vW, h: vH })
       } else if (box) {
         const p = getPositionAt(box.id, tMs)
         inSlot(ctx, frame.main_corners?.[String(area.slot)], a,
@@ -696,12 +704,12 @@ function paintFrame(
       if (img && img.complete && img.naturalWidth) {
         const from = Math.max(it.start_ms, seg.start_ms), to = Math.min(it.end_ms, seg.end_ms)
         const m = photoMotion(it.motion, (tMs - from) / Math.max(1, to - from))
-        inSlot(ctx, it.corners, a, put(img, img.naturalWidth, img.naturalHeight, m.zoom, m.panX), boxRect(it.rect), contain ? fill : '#000', !contain)
+        inSlot(ctx, it.corners, a, put(img, img.naturalWidth, img.naturalHeight, m.zoom, m.panX), boxRect(it.rect), contain ? fill : '#000', contain ? { w: img.naturalWidth, h: img.naturalHeight } : true)
       }
       continue
     }
     const v = pool?.video(it)
-    if (v && v.readyState >= 2) inSlot(ctx, it.corners, a, put(v, v.videoWidth, v.videoHeight), boxRect(it.rect), contain ? fill : '#000', !contain)
+    if (v && v.readyState >= 2) inSlot(ctx, it.corners, a, put(v, v.videoWidth, v.videoHeight), boxRect(it.rect), contain ? fill : '#000', contain ? { w: v.videoWidth, h: v.videoHeight } : true)
   }
 }
 
@@ -1671,6 +1679,15 @@ interface OutputCanvasProps {
   onDeleteFrameItem?: (id: string) => void
   /** The line between two rows of a resizable frame dragged: the frame's new row heights (null = back to the template's) */
   onFrameRowsChange?: (heights: number[] | null) => void
+  /** The bar's swap: the rows' new order top to bottom (template row numbers) */
+  onFrameRowsSwap?: (order: number[]) => void
+  /**
+   * A free frame's bar dragged (Side by side, Screen + face cam, Trio with main) or swapped: split /
+   * split2 where a bar is (null back to the template's), flip / flip2 its swap
+   */
+  onFrameBarChange?: (patch: FreeBarPatch) => void
+  /** The face cam's circle moved or resized: its top-left and width, or null back to where the template has it */
+  onFrameFaceChange?: (box: { x: number; y: number; w: number } | null) => void
   /** The main video's box in a slot resized or moved (shares of the slot; null = fill the slot again) */
   onFrameMainRectChange?: (slot: number, rect: { x: number; y: number; w: number; h: number } | null) => void
 }
@@ -1681,7 +1698,7 @@ export function OutputCanvas({
   className, style, skipTransitionRef,
   words, captionStyle, captionTextCase = 'title', showCaptions = false,
   textOverlays = [], activeTextOverlayId, onTextOverlayChange, onSelectTextOverlay, onDeleteTextOverlay, editTextOverlayId, onEditTextDone,
-  onCaptionPositionChange, onCaptionSizeChange, transitionCuts, watermark, timelineToVideo, clock, frameMedia, onFrameLaneClick, onFrameItemClick, activeFrameItemId, onFrameItemChange, onDeleteFrameItem, onFrameRowsChange, onFrameMainRectChange,
+  onCaptionPositionChange, onCaptionSizeChange, transitionCuts, watermark, timelineToVideo, clock, frameMedia, onFrameLaneClick, onFrameItemClick, activeFrameItemId, onFrameItemChange, onDeleteFrameItem, onFrameRowsChange, onFrameRowsSwap, onFrameBarChange, onFrameFaceChange, onFrameMainRectChange,
 }: OutputCanvasProps) {
   // Where the captions are drawn right now (from the canvas, each frame), for their box on the
   // preview: kept in state only when it moves noticeably, at most ~10 times a second
@@ -1903,11 +1920,14 @@ export function OutputCanvas({
         const toTimeline = toTimelineRef.current
         const clockMs = video.currentTime * 1000
         // Playing: the frame on screen's own time (a view change at a camera cut is a clean cut).
-        // Paused: the playhead's — the format or frame just put there shows at once, as the editing
-        // view shows it (the frame on screen can be one from just before the playhead, in the
-        // section before: the preview showed that section's format)
+        // Paused: the editor's playhead itself — what the editor shows on top (the slots' buttons,
+        // the bars, the boxes) is of that moment, and so is the format or frame just put there. The
+        // player's own time isn't: a seek lands on the video frame just before the playhead, which
+        // at a section's edge is in the section before (its picture showed under the next one's buttons)
         const videoMs = !video.paused && shownMs != null && Math.abs(shownMs - clockMs) < 300 ? shownMs : clockMs
-        const clipMsNow = Math.max(0, clockRef.current ? clockRef.current() : toTimeline ? toTimeline(videoMs) : videoMs - clipStartMsRef.current)
+        const clipMsNow = video.paused && currentTimeMsRef.current != null
+          ? Math.max(0, currentTimeMsRef.current)
+          : Math.max(0, clockRef.current ? clockRef.current() : toTimeline ? toTimeline(videoMs) : videoMs - clipStartMsRef.current)
         const seg    = segmentAtRef.current
           ? segmentAtRef.current(clipMsNow)
           : activeSegmentRef.current
@@ -2172,7 +2192,12 @@ export function OutputCanvas({
         <button key={String(r.lane)}
           onClick={e => { e.stopPropagation(); onFrameLaneClick?.(r.lane) }}
           aria-label={`Add to the ${r.label.toLowerCase()} ${isTextLane(r.lane) ? 'area' : 'slot'} on the timeline`}
-          title="Add a photo, video or text on the timeline"
+          // (what this slot takes, as its lane's "+" says — slotOffers)
+          title={isTextLane(r.lane) || !activeSegment || !isFrameLayout(activeSegment.layout) ? 'Add text on the timeline' : (() => {
+            const o = slotOffers(activeSegment.layout, r.lane)
+            const what = [o.photo && 'a photo', o.video && 'a video', o.text && 'text'].filter(Boolean) as string[]
+            return `Add ${what.length > 1 ? `${what.slice(0, -1).join(', ')} or ${what[what.length - 1]}` : what[0] ?? 'something'} on the timeline`
+          })()}
           className="group absolute flex items-center justify-center"
           style={{ left: `${r.x * 100}%`, width: `${r.w * 100}%`, top: `${r.y * 100}%`, height: `${r.h * 100}%` }}>
           <span className="flex items-center gap-1.5 rounded-full transition-transform group-hover:scale-105"
@@ -2187,8 +2212,9 @@ export function OutputCanvas({
         const frame = frameOf(activeSegment)
         const main = frame.main_slots ?? [0]
         return frameLanesFor(activeSegment)
-          .filter(r => typeof r.lane === 'number' && main.includes(r.lane) && !itemAt(frame, r.lane, currentTimeMs, activeSegment)
-            && frameSlotSize(activeSegment.layout as FrameLayout, true, r.lane, activeSegment.frame?.row_h) !== null)
+          // (not the movable circle: dragging it moves the circle itself — its view is set by its view box)
+          .filter(r => typeof r.lane === 'number' && main.includes(r.lane) && r.lane !== FRAME_TEMPLATES[activeSegment.layout as FrameLayout].movable && !frame.main_hidden?.[String(r.lane)] && !itemAt(frame, r.lane, currentTimeMs, activeSegment)
+            && frameSlotSize(activeSegment.layout as FrameLayout, true, r.lane, activeSegment.frame) !== null)
           .map(r => (
             <FrameMainBox key={`main-${r.lane}`} row={r} rect={mainRect(frame, r.lane as number)}
               onChange={rect => onFrameMainRectChange(r.lane as number, rect)} />
@@ -2202,7 +2228,16 @@ export function OutputCanvas({
           onChange={rect => onFrameItemChange(r.item.id, { rect })} />
       ))}
       {onFrameRowsChange && activeSegment && isFrameLayout(activeSegment.layout)
-        && <FrameRowHandles seg={activeSegment} onChange={onFrameRowsChange} />}
+        && <FrameRowHandles seg={activeSegment} onChange={onFrameRowsChange} onSwap={onFrameRowsSwap} />}
+      {/* A free frame's bars (Side by side: left | right; Screen + face cam: under the Screen; Trio with
+          main: under the Main and between Left and Right). The second first: where they meet, the first is on top */}
+      {onFrameBarChange && activeSegment && isFrameLayout(activeSegment.layout) && FRAME_TEMPLATES[activeSegment.layout].bar2
+        && <FreeBarHandle seg={activeSegment} which={2} onChange={onFrameBarChange} />}
+      {onFrameBarChange && activeSegment && isFrameLayout(activeSegment.layout) && FRAME_TEMPLATES[activeSegment.layout].bar
+        && <FreeBarHandle seg={activeSegment} which={1} onChange={onFrameBarChange} />}
+      {/* The face cam's circle: drag it anywhere (over the Screen too), its corner to resize */}
+      {onFrameFaceChange && activeSegment && isFrameLayout(activeSegment.layout) && FRAME_TEMPLATES[activeSegment.layout].movable !== undefined
+        && <MovableAreaBox seg={activeSegment} onChange={onFrameFaceChange} />}
       {/* Image overlay boxes */}
       {activeOverlays.map(ov => (
         <OverlayBox
@@ -2330,12 +2365,19 @@ function FrameMainBox({ row, rect, onChange, selected, onSelect }: {
 }
 
 /**
- * Handles on the lines between a frame's rows (e.g. the text band and the video): drag one up or
- * down to resize the two rows it sits between. Double-click puts the template's sizes back.
+ * The bars: handles on the lines between a frame's rows (e.g. the text band and the video). Drag one
+ * up or down to resize the two rows it sits between; double-click puts the template's sizes back.
+ * Swap (the small button beside it) trades the two rows' places — each keeps its own size, look and
+ * contents (Pic + Vid: the picture below, the video on top). The bar is kept small: it sits on the
+ * picture being edited.
  */
-function FrameRowHandles({ seg, onChange }: { seg: SegmentLocal; onChange: (heights: number[] | null) => void }) {
+function FrameRowHandles({ seg, onChange, onSwap }: { seg: SegmentLocal; onChange: (heights: number[] | null) => void; onSwap?: (order: number[]) => void }) {
   const layout = seg.layout as Parameters<typeof frameRows>[0]
-  const rows = frameRows(layout, true, seg.frame?.row_h)
+  const rows = frameRows(layout, true, seg.frame)
+  // The rows on screen, top to bottom, as template row numbers (row_h is kept per template row)
+  const order = validRowOrder(layout, seg.frame) ?? rows.map((_, i) => i)
+  /** Heights in screen order → per template row, as saved */
+  const toTemplate = (hs: number[]) => { const out: number[] = []; order.forEach((t, k) => { out[t] = hs[k] }); return out }
   const [dragging, setDragging] = useState<number | null>(null)
   function down(e: React.PointerEvent, i: number) {
     if (e.button !== 0) return
@@ -2350,12 +2392,18 @@ function FrameRowHandles({ seg, onChange }: { seg: SegmentLocal; onChange: (heig
       const next = [...hs]
       next[i] = Math.round(a * 1000) / 1000
       next[i + 1] = Math.round((pair - a) * 1000) / 1000
-      onChange(next)
+      onChange(toTemplate(next))
     }
     const up = () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); setDragging(null) }
     window.addEventListener('pointermove', move)
     window.addEventListener('pointerup', up)
   }
+  const swap = (i: number) => {
+    const next = [...order]
+    ;[next[i], next[i + 1]] = [next[i + 1], next[i]]
+    onSwap?.(next)
+  }
+  const name = (r: (typeof rows)[number]) => ('label' in r && r.label) || (r.kind === 'band' ? 'text' : r.kind === 'caption' ? 'captions' : 'picture')
   return (
     <>
       {rows.slice(0, -1).map((r, i) => {
@@ -2373,20 +2421,176 @@ function FrameRowHandles({ seg, onChange }: { seg: SegmentLocal; onChange: (heig
               const hs = rows.map(x => x.h), pair = hs[i] + hs[i + 1]
               const a = Math.max(MIN_ROW_H, Math.min(pair - MIN_ROW_H, hs[i] + (e.key === 'ArrowDown' ? 0.01 : -0.01)))
               hs[i] = a; hs[i + 1] = pair - a
-              onChange(hs)
+              onChange(toTemplate(hs))
             }}
             className="group absolute left-0 right-0 flex items-center justify-center focus-visible:outline-none"
-            style={{ top: `calc(${(r.y + r.h) * 100}% - 9px)`, height: 18, cursor: 'row-resize', touchAction: 'none', zIndex: 25 }}>
+            style={{ top: `calc(${(r.y + r.h) * 100}% - 6px)`, height: 12, cursor: 'row-resize', touchAction: 'none', zIndex: 25 }}>
             <span className="absolute left-0 right-0 transition-opacity opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100"
-              style={{ top: 8, height: 2, background: '#c8ff00', opacity: on ? 1 : undefined }} />
+              style={{ top: 5.5, height: 1, background: '#c8ff00', opacity: on ? 1 : undefined }} />
             <span className="relative flex items-center justify-center rounded-full transition-transform group-hover:scale-110"
-              style={{ width: 34, height: 12, background: on ? '#c8ff00' : 'rgba(20,20,20,0.85)', boxShadow: `0 0 0 1.5px ${on ? '#c8ff00' : 'rgba(255,255,255,0.55)'}, 0 2px 8px rgba(0,0,0,0.6)` }}>
-              <span style={{ width: 14, height: 2, borderRadius: 2, background: on ? '#000' : '#fff', boxShadow: `0 3px 0 ${on ? '#000' : '#fff'}`, transform: 'translateY(-1.5px)' }} />
+              style={{ width: 22, height: 7, background: on ? '#c8ff00' : 'rgba(20,20,20,0.85)', boxShadow: `0 0 0 1px ${on ? '#c8ff00' : 'rgba(255,255,255,0.55)'}, 0 1px 4px rgba(0,0,0,0.6)` }}>
+              <span style={{ width: 10, height: 1.5, borderRadius: 1, background: on ? '#000' : '#fff' }} />
             </span>
+            {/* Swap: the areas above and below trade places */}
+            {onSwap && (
+              <button type="button" data-handle="1"
+                aria-label={`Swap ${name(r)} and ${name(rows[i + 1])}`} title="Swap the areas above and below"
+                onPointerDown={e => e.stopPropagation()}
+                onDoubleClick={e => e.stopPropagation()}
+                onClick={e => { e.stopPropagation(); swap(i) }}
+                className="relative ml-1 flex items-center justify-center rounded-full transition-transform hover:scale-110 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[#c8ff00]"
+                style={{ width: 14, height: 14, cursor: 'pointer', background: 'rgba(20,20,20,0.85)', boxShadow: '0 0 0 1px rgba(255,255,255,0.55), 0 1px 4px rgba(0,0,0,0.6)', color: '#fff' }}>
+                <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M7 3v18M3 7l4-4 4 4M17 21V3M13 17l4 4 4-4" />
+                </svg>
+              </button>
+            )}
           </div>
         )
       })}
     </>
+  )
+}
+
+/** A free frame's bars changed: where they are (null: back to the template's) and their swaps */
+export type FreeBarPatch = { split?: number | null; split2?: number | null; flip?: boolean; flip2?: boolean }
+
+/**
+ * A free frame's bar: drag it to resize the areas on either side (Side by side: left | right; Screen +
+ * face cam: the Screen's height; Trio with main: the Main against the pair, Left against Right).
+ * Double-click puts it back where the template has it. A bar with a swap has a button on it: the
+ * areas on either side trade places.
+ */
+function FreeBarHandle({ seg, which, onChange }: { seg: SegmentLocal; which: 1 | 2; onChange: (patch: FreeBarPatch) => void }) {
+  const layout = seg.layout as FrameLayout
+  const tpl = FRAME_TEMPLATES[layout]
+  const bar = (which === 2 ? tpl.bar2 : tpl.bar)!
+  const key = which === 2 ? 'split2' : 'split', flipKey = which === 2 ? 'flip2' : 'flip'
+  const flipped = barFlipped(layout, seg.frame, which)
+  // Where the line is on the frame: swapped, the frame is mirrored that way
+  const at = barAt(layout, seg.frame, which) ?? bar.at
+  const s = flipped ? 1 - at : at
+  const vertical = bar.dir === 'v'
+  // The line runs along the areas that meet at it
+  const meet = frameAreas(layout, true, seg.frame).filter(a => a.kind === 'slot'
+    && (vertical ? Math.abs(a.x + a.w - s) < 1e-4 || Math.abs(a.x - s) < 1e-4 : Math.abs(a.y + a.h - s) < 1e-4 || Math.abs(a.y - s) < 1e-4))
+  const from = meet.length ? Math.min(...meet.map(a => (vertical ? a.y : a.x))) : 0
+  const to = meet.length ? Math.max(...meet.map(a => (vertical ? a.y + a.h : a.x + a.w))) : 1
+  const [dragging, setDragging] = useState(false)
+  // A place on the frame → the bar's value (swapped: measured from the other side), in its limits
+  const set = (v: number) => onChange({ [key]: Math.round(Math.max(bar.min, Math.min(bar.max, flipped ? 1 - v : v)) * 1000) / 1000 })
+  function down(e: React.PointerEvent) {
+    if (e.button !== 0 || (e.target as HTMLElement).closest('[data-swap]')) return
+    e.stopPropagation(); e.preventDefault()
+    const box = (e.currentTarget.parentElement as HTMLElement).getBoundingClientRect()
+    setDragging(true)
+    const move = (ev: PointerEvent) => set(vertical ? (ev.clientX - box.left) / box.width : (ev.clientY - box.top) / box.height)
+    const up = () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); setDragging(false) }
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', up)
+  }
+  return (
+    <div role="separator" aria-orientation={vertical ? 'vertical' : 'horizontal'} tabIndex={0}
+      aria-label="Drag to resize the areas on either side. Double-click to reset."
+      title="Drag to resize · double-click to reset"
+      onPointerDown={down}
+      onDoubleClick={e => { e.stopPropagation(); onChange({ [key]: null }) }}
+      onClick={e => e.stopPropagation()}
+      onKeyDown={e => {
+        const keys = vertical ? ['ArrowLeft', 'ArrowRight'] : ['ArrowUp', 'ArrowDown']
+        if (!keys.includes(e.key)) return
+        e.preventDefault(); e.stopPropagation()
+        set(s + (e.key === keys[1] ? 0.01 : -0.01))
+      }}
+      className={`group absolute flex items-center justify-center focus-visible:outline-none ${vertical ? 'flex-col' : ''}`}
+      style={vertical
+        ? { left: `calc(${s * 100}% - 9px)`, top: `${from * 100}%`, height: `${(to - from) * 100}%`, width: 18, cursor: 'col-resize', touchAction: 'none', zIndex: 25 }
+        : { top: `calc(${s * 100}% - 9px)`, left: `${from * 100}%`, width: `${(to - from) * 100}%`, height: 18, cursor: 'row-resize', touchAction: 'none', zIndex: 25 }}>
+      <span className="absolute transition-opacity opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100"
+        style={vertical
+          ? { left: 8, width: 2, top: 0, bottom: 0, background: '#c8ff00', opacity: dragging ? 1 : undefined }
+          : { top: 8, height: 2, left: 0, right: 0, background: '#c8ff00', opacity: dragging ? 1 : undefined }} />
+      <span className="relative flex items-center justify-center rounded-full transition-transform group-hover:scale-110"
+        style={{ width: vertical ? 12 : 34, height: vertical ? 34 : 12, background: dragging ? '#c8ff00' : 'rgba(20,20,20,0.85)', boxShadow: `0 0 0 1.5px ${dragging ? '#c8ff00' : 'rgba(255,255,255,0.55)'}, 0 2px 8px rgba(0,0,0,0.6)` }}>
+        <span style={vertical
+          ? { width: 2, height: 14, borderRadius: 2, background: dragging ? '#000' : '#fff', boxShadow: `3px 0 0 ${dragging ? '#000' : '#fff'}`, transform: 'translateX(-1.5px)' }
+          : { width: 14, height: 2, borderRadius: 2, background: dragging ? '#000' : '#fff', boxShadow: `0 3px 0 ${dragging ? '#000' : '#fff'}`, transform: 'translateY(-1.5px)' }} />
+      </span>
+      {/* Swap: the areas on either side trade places */}
+      {bar.swap && (
+        <button type="button" data-swap="1"
+          aria-label="Swap the areas on either side" title="Swap the areas on either side"
+          onPointerDown={e => e.stopPropagation()}
+          onDoubleClick={e => e.stopPropagation()}
+          onClick={e => { e.stopPropagation(); onChange({ [flipKey]: !flipped }) }}
+          className={`relative flex items-center justify-center rounded-full transition-transform hover:scale-110 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[#c8ff00] ${vertical ? 'mt-1.5' : 'ml-1.5'}`}
+          style={{ width: 18, height: 18, cursor: 'pointer', background: 'rgba(20,20,20,0.85)', boxShadow: '0 0 0 1px rgba(255,255,255,0.55), 0 1px 4px rgba(0,0,0,0.6)', color: '#fff' }}>
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"
+            style={vertical ? { transform: 'rotate(90deg)' } : undefined}>
+            <path d="M7 3v18M3 7l4-4 4 4M17 21V3M13 17l4 4 4-4" />
+          </svg>
+        </button>
+      )}
+    </div>
+  )
+}
+
+/**
+ * The face cam's circle (a free frame's movable slot): drag it anywhere in the frame — over the
+ * Screen too — and its corner to resize it, keeping its shape. Double-click puts it back. It always
+ * stays inside the frame (adjustFreeAreas keeps it there).
+ */
+function MovableAreaBox({ seg, onChange }: { seg: SegmentLocal; onChange: (box: { x: number; y: number; w: number } | null) => void }) {
+  const layout = seg.layout as FrameLayout
+  const slot = FRAME_TEMPLATES[layout].movable!
+  const a = frameAreas(layout, true, seg.frame).find(x => x.kind === 'slot' && x.slot === slot)
+  const [active, setActive] = useState(false)
+  if (!a) return null
+  const round = (v: number) => Math.round(v * 1000) / 1000
+  const ratio = a.h / a.w
+  function drag(e: React.PointerEvent, resize: boolean) {
+    if (e.button !== 0 || !a) return
+    e.stopPropagation(); e.preventDefault()
+    const el = (resize ? e.currentTarget.parentElement!.parentElement : e.currentTarget.parentElement) as HTMLElement
+    const box = el.getBoundingClientRect()
+    const x0 = e.clientX, y0 = e.clientY, start = { x: a.x, y: a.y, w: a.w }
+    setActive(true)
+    const move = (ev: PointerEvent) => {
+      const dx = (ev.clientX - x0) / box.width, dy = (ev.clientY - y0) / box.height
+      if (resize) {
+        let w = Math.max(MIN_MOVABLE_W, Math.min(1 - start.x, start.w + dx))
+        if (start.y + w * ratio > 1) w = (1 - start.y) / ratio
+        onChange({ x: round(start.x), y: round(start.y), w: round(w) })
+      } else {
+        onChange({ x: round(Math.max(0, Math.min(1 - start.w, start.x + dx))), y: round(Math.max(0, Math.min(1 - start.w * ratio, start.y + dy))), w: round(start.w) })
+      }
+    }
+    const up = () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); setActive(false) }
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', up)
+  }
+  const circle = a.kind === 'slot' && a.radius === 'circle'
+  return (
+    <div role="button" tabIndex={0} aria-label="Face cam: drag to move it, drag its corner to resize. Double-click to put it back."
+      title="Drag to move · corner to resize · double-click to reset"
+      onPointerDown={e => drag(e, false)}
+      onDoubleClick={e => { e.stopPropagation(); onChange(null) }}
+      onClick={e => e.stopPropagation()}
+      className="group absolute"
+      style={{
+        left: `${a.x * 100}%`, top: `${a.y * 100}%`, width: `${a.w * 100}%`, height: `${a.h * 100}%`,
+        borderRadius: circle ? '50%' : 8, cursor: active ? 'grabbing' : 'move', touchAction: 'none', zIndex: 26,
+        boxShadow: active ? 'inset 0 0 0 2px #c8ff00' : undefined,
+      }}>
+      <span className="absolute inset-0 pointer-events-none transition-opacity opacity-0 group-hover:opacity-100"
+        style={{ borderRadius: circle ? '50%' : 8, boxShadow: 'inset 0 0 0 1.5px rgba(200,255,0,0.8)' }} />
+      {/* The corner: resize, keeping its shape */}
+      <span className="absolute" style={{ right: circle ? '9%' : -6, bottom: circle ? '9%' : -6 }}>
+        <span onPointerDown={e => drag(e, true)} aria-label="Resize the face cam" role="presentation"
+          className="block rounded-sm transition-opacity opacity-0 group-hover:opacity-100"
+          style={{ width: 12, height: 12, background: '#c8ff00', border: '1.5px solid rgba(0,0,0,0.7)', cursor: 'nwse-resize', opacity: active ? 1 : undefined }} />
+      </span>
+    </div>
   )
 }
 
@@ -2560,7 +2764,7 @@ function OverlayBox({ overlay, isActive, onChange, onSelect, onDelete }: Overlay
         ? <PipVideo overlay={overlay} />
         : imageUrl
         // eslint-disable-next-line @next/next/no-img-element
-        ? <img src={imageUrl} alt="" draggable={false} style={{ width: '100%', height: '100%', objectFit: 'fill', pointerEvents: 'none', display: 'block' }} />
+        ? <img src={imageUrl} alt="" draggable={false} style={{ width: '100%', height: '100%', objectFit: 'fill', pointerEvents: 'none', display: 'block', opacity: overlay.opacity ?? 1 }} />
         : <div style={{ width: '100%', height: '100%', background: `${color}22`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             <span style={{ fontSize: 10, fontWeight: 700, color }}>IMG</span>
           </div>
