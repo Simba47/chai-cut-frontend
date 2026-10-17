@@ -10,7 +10,12 @@ export type TextLane = 'band' | 'band2'
 export const isTextLane = (lane: FrameLane): lane is TextLane => typeof lane === 'string'
 
 /** How a slot shows its media: cover (fills it, cropping) or contain (whole, on its fill colour) */
-type SlotLook = { label?: string; fit?: 'contain'; fill?: string; radius?: number | 'circle' }
+/**
+ * How a slot shows its media: cover (fills it, cropping) or contain (whole, on its fill colour).
+ * mainCrop: a contain slot that crops the main video when it's put there (Same video) — it gets its
+ * own view there, like any slot; other media still shows whole (render.py frames.py main_crop)
+ */
+type SlotLook = { label?: string; fit?: 'contain'; fill?: string; radius?: number | 'circle'; mainCrop?: boolean }
 /** A text area's own look: its colour when empty ('none': see-through), and new text's colour and size */
 type TextLook = { label?: string; bg?: string; color?: string; size?: number; radius?: number; ticker?: boolean }
 
@@ -31,9 +36,28 @@ export type FrameAreaDef =
 /** An area of a frame, wherever it came from (a row or a free area) */
 export type FrameArea = FrameAreaDef
 
+/** A free frame's bar (FrameTemplate.bar) */
+export interface FreeBar { dir: 'h' | 'v'; at: number; min: number; max: number; swap?: boolean }
+
 export interface FrameTemplate {
   name: string
   description: string
+  /**
+   * A free template's bar: the line between two of its areas, dragged to resize them (frame.split).
+   * dir 'v': a vertical line (left | right); 'h': a horizontal one (top / bottom). at: where the
+   * template has it; min / max: how far it goes. swap: the bar has a swap button — the areas on
+   * either side trade places (frame.flip: the frame mirrored across that way). Mirrored in render.py
+   * frames.py FREE_BARS.
+   */
+  bar?: FreeBar
+  /** A free template's second bar (frame.split2; its swap: frame.flip2) — render.py frames.py FREE_BARS2 */
+  bar2?: FreeBar
+  /**
+   * A free template's slot whose area can be moved and resized anywhere in the frame, keeping its
+   * shape — over the others too, it's drawn on top (the face cam: frame.face_box). Until placed it
+   * follows the bar. render.py frames.py FREE_MOVABLE.
+   */
+  movable?: number
   /** Stacked templates: full-width rows, top to bottom (their lines can be dragged) */
   rows?: FrameRow[]
   /** Free templates: areas anywhere, drawn in this order (later ones on top) */
@@ -76,9 +100,25 @@ export const FRAME_TEMPLATES: Record<FrameLayout, FrameTemplate> = {
     defaults: ['video', 'video'],
   },
   frame_triple: {
-    name: 'Triple', description: 'Three videos or a mix of videos and photos.',
+    // In the gallery as Trio (user, 2026-10-17): three videos stacked — three slots for video (a photo goes in any of them too)
+    name: 'Trio', description: 'Three videos stacked — three speakers, or a mix of videos and photos.',
     rows: [{ kind: 'slot', slot: 0, h: 1 / 3 }, { kind: 'slot', slot: 1, h: 1 / 3 }, { kind: 'slot', slot: 2, h: 1 / 3 }],
-    defaults: ['video', 'video', 'photo'],
+    defaults: ['video', 'video', 'video'],
+  },
+  frame_trio_main: {
+    // Trio with main (user, 2026-10-17): the main video over half the frame, two parts side by side
+    // in the other half. A bar between the Main and the pair (its swap: the Main below, the pair on
+    // top) and one between Left and Right (its swap: they trade places)
+    name: 'Trio with main', description: 'The main video on half the frame, two videos or photos side by side in the other half.',
+    areas: [
+      { kind: 'slot', slot: 0, x: 0, y: 0, w: 1, h: 0.5, label: 'Main' },
+      { kind: 'slot', slot: 1, x: 0, y: 0.5, w: 0.5, h: 0.5, label: 'Left' },
+      { kind: 'slot', slot: 2, x: 0.5, y: 0.5, w: 0.5, h: 0.5, label: 'Right' },
+    ],
+    defaults: ['video', 'video', 'video'], mainSlots: [0],
+    offers: [{ video: true, photo: true }, { video: true, photo: true }, { video: true, photo: true }],
+    bar: { dir: 'h', at: 0.5, min: 0.2, max: 0.8, swap: true },
+    bar2: { dir: 'v', at: 0.5, min: 0.2, max: 0.8, swap: true },
   },
   frame_title_caption: {
     name: 'Title + Caption', description: 'A title on top, the video, and a strip below for captions.',
@@ -161,6 +201,8 @@ export const FRAME_TEMPLATES: Record<FrameLayout, FrameTemplate> = {
     ],
     defaults: ['video', 'video'], mainSlots: [0],
     offers: [{ video: true, photo: true }, { video: true, photo: true }],
+    // The bar between Left and Right (user, 2026-10-17)
+    bar: { dir: 'v', at: 0.5, min: 0.2, max: 0.8 },
   },
   frame_name_tags: {
     name: 'Speaker names', description: 'Two speakers stacked, each with a name tag.',
@@ -194,12 +236,18 @@ export const FRAME_TEMPLATES: Record<FrameLayout, FrameTemplate> = {
   frame_screen_face: {
     name: 'Screen + face cam', description: 'A screen recording on top (shown whole), the speaker in a circle below.',
     areas: [
-      { kind: 'slot', slot: 0, x: 0, y: 0, w: 1, h: 0.62, fit: 'contain', fill: '#000000', label: 'Screen' },
+      // Same video put in Screen gets its own view (user, 2026-10-17); a screen recording shows whole
+      { kind: 'slot', slot: 0, x: 0, y: 0, w: 1, h: 0.62, fit: 'contain', fill: '#000000', mainCrop: true, label: 'Screen' },
+      // The caption strip is see-through: the Screen can reach the bottom (the bar down to 100%) and
+      // shows under it; below a shorter Screen the frame is black anyway. The face cam comes last: on top
+      { kind: 'caption', x: 0, y: 0.89, w: 1, h: 0.11, bg: 'none' },
       { kind: 'slot', slot: 1, x: 0.3, y: 0.66, w: 0.4, h: 0.225, radius: 'circle', label: 'Face' },
-      { kind: 'caption', x: 0, y: 0.89, w: 1, h: 0.11 },
     ],
     defaults: ['video', 'video'], mainSlots: [1],
     offers: [{ video: true, photo: true }, { video: true, photo: true }],
+    // The bar under the Screen; the face circle moves anywhere, over the Screen too (user, 2026-10-17)
+    // (the bar goes all the way down: the Screen can fill the whole frame, the face circle on top)
+    bar: { dir: 'h', at: 0.62, min: 0.3, max: 1 }, movable: 1,
   },
   frame_audiogram: {
     name: 'Audiogram', description: 'A cover picture, a moving sound wave and captions — for audio-only clips.',
@@ -236,15 +284,16 @@ export const FRAME_TEMPLATES: Record<FrameLayout, FrameTemplate> = {
 
 /**
  * The frames the gallery offers, the most used first (user 2026-10-12; cut down to these eight
- * 2026-10-13). The others (Gameplay split, Close-up + wide, Picture in picture, Comment reply,
- * Big + Small, Top list, Letterbox wide, Dual + Letterbox, Video + Photo, News, Audiogram, Photo
- * Story, 2×2 grid, Triple) stay defined above so clips that already use them still show, edit and
- * export as before; they just aren't offered for new frames. Branded card is kept for the brand kit
- * planned later (a saved colour, title and @handle for every clip), not offered as a frame.
+ * 2026-10-13; Speaker names swapped for Trio 2026-10-17). The others (Speaker names, Gameplay
+ * split, Close-up + wide, Picture in picture, Comment reply, Big + Small, Top list, Letterbox wide,
+ * Dual + Letterbox, Video + Photo, News, Audiogram, Photo Story, 2×2 grid) stay defined above so
+ * clips that already use them still show, edit and export as before; they just aren't offered for
+ * new frames. Branded card is kept for the brand kit planned later (a saved colour, title and
+ * @handle for every clip), not offered as a frame.
  */
 export const FRAME_LAYOUTS: FrameLayout[] = [
-  'frame_single', 'frame_title_caption', 'frame_blur_fill', 'frame_dual', 'frame_screenshot', 'frame_name_tags',
-  'frame_side_by_side', 'frame_screen_face',
+  'frame_single', 'frame_title_caption', 'frame_blur_fill', 'frame_dual', 'frame_screenshot', 'frame_triple',
+  'frame_trio_main', 'frame_side_by_side', 'frame_screen_face',
 ]
 
 export function isFrameLayout(layout: LayoutType | string | null | undefined): layout is FrameLayout {
@@ -260,7 +309,73 @@ export function isFrameLayout(layout: LayoutType | string | null | undefined): l
  * one per template row) and their order top to bottom (the bar's swap: template row numbers).
  * A plain list is just the heights.
  */
-export type RowLayout = number[] | Pick<FrameSettings, 'row_h' | 'row_order'> | null | undefined
+export type RowLayout = number[] | Pick<FrameSettings, 'row_h' | 'row_order' | 'split' | 'split2' | 'flip' | 'flip2' | 'face_box'> | null | undefined
+
+/** The smallest the movable area (the face cam) can be made, as a share of the frame's width */
+export const MIN_MOVABLE_W = 0.12
+
+/**
+ * Where a free frame's bar is (share of the frame): dragged (frame.split — the second bar's
+ * frame.split2 — kept in its limits) or the template's. Before its swap: swapped, the line is at 1 − this.
+ */
+export function barAt(layout: FrameLayout, custom?: RowLayout, which: 1 | 2 = 1): number | null {
+  const tpl = FRAME_TEMPLATES[layout], bar = which === 2 ? tpl.bar2 : tpl.bar
+  if (!bar) return null
+  const s = Array.isArray(custom) ? null : which === 2 ? custom?.split2 : custom?.split
+  return typeof s === 'number' && isFinite(s) ? Math.min(bar.max, Math.max(bar.min, s)) : bar.at
+}
+
+/** A free frame's bar swapped (frame.flip, the second bar's frame.flip2): the areas on either side traded places */
+export function barFlipped(layout: FrameLayout, custom?: RowLayout, which: 1 | 2 = 1): boolean {
+  const tpl = FRAME_TEMPLATES[layout], bar = which === 2 ? tpl.bar2 : tpl.bar
+  if (!bar?.swap || !custom || Array.isArray(custom)) return false
+  return (which === 2 ? custom.flip2 : custom.flip) === true
+}
+
+/**
+ * A free frame's areas as its bars and moved area set them (render.py frames.py adjust_free_areas):
+ * the areas meeting at a bar grow and shrink with it; a swapped bar mirrors the frame across that
+ * way (the areas on either side trade places); the movable area follows the first bar (keeping its
+ * gap) until placed (frame.face_box), then sits there — its shape kept, always inside the frame.
+ */
+export function adjustFreeAreas(layout: FrameLayout, areas: readonly FrameAreaDef[], custom?: RowLayout): FrameAreaDef[] {
+  const tpl = FRAME_TEMPLATES[layout]
+  const set = Array.isArray(custom) ? null : custom
+  const out = areas.map(a => ({ ...a }))
+  const mv = tpl.movable
+  const shift = (bar: FreeBar, s: number, moving?: number) => {
+    const at = bar.at, d = s - at
+    const [pos, size] = bar.dir === 'v' ? (['x', 'w'] as const) : (['y', 'h'] as const)
+    for (const a of out) {
+      const end = a[pos] + a[size]
+      if (a.kind === 'slot' && a.slot === moving) a[pos] = Math.min(1 - a[size], Math.max(0, a[pos] + d))
+      else if (Math.abs(end - at) < 1e-6) a[size] = s - a[pos]
+      else if (Math.abs(a[pos] - at) < 1e-6) { a[pos] = s; a[size] = end - s }
+    }
+  }
+  const s = tpl.bar && typeof set?.split === 'number' && isFinite(set.split) ? barAt(layout, set) : null
+  if (tpl.bar && s !== null) shift(tpl.bar, s, mv)
+  const s2 = tpl.bar2 && typeof set?.split2 === 'number' && isFinite(set.split2) ? barAt(layout, set, 2) : null
+  if (tpl.bar2 && s2 !== null) shift(tpl.bar2, s2)
+  // Swapped: the frame mirrored across the bar's way (before the moved area: placed, it stays put)
+  for (const [bar, which] of [[tpl.bar, 1], [tpl.bar2, 2]] as const) {
+    if (!bar || !barFlipped(layout, set, which)) continue
+    for (const a of out) { if (bar.dir === 'v') a.x = 1 - a.x - a.w; else a.y = 1 - a.y - a.h }
+  }
+  const box = set?.face_box
+  if (mv !== undefined && box && typeof box === 'object') {
+    for (const a of out) {
+      if (a.kind !== 'slot' || a.slot !== mv) continue
+      const ratio = a.h / a.w   // its shape: a circle stays a circle
+      let w = Math.min(1, Math.max(MIN_MOVABLE_W, isFinite(box.w) ? box.w : a.w)), h = w * ratio
+      if (h > 1) { h = 1; w = 1 / ratio }
+      a.x = Math.min(1 - w, Math.max(0, isFinite(box.x) ? box.x : a.x))
+      a.y = Math.min(1 - h, Math.max(0, isFinite(box.y) ? box.y : a.y))
+      a.w = w; a.h = h
+    }
+  }
+  return out
+}
 const rowHeightsOf = (custom: RowLayout) => (Array.isArray(custom) ? custom : custom?.row_h ?? null)
 
 /** The rows' order top to bottom (template row numbers), when swapped and it fits the template; else null */
@@ -290,7 +405,7 @@ export function frameRows(layout: FrameLayout, showBand = true, custom?: RowLayo
  */
 export function frameAreas(layout: FrameLayout, showBand = true, custom?: RowLayout): FrameArea[] {
   const tpl = FRAME_TEMPLATES[layout]
-  if (tpl.areas) return tpl.areas.filter(a => showBand || a.kind !== 'band')
+  if (tpl.areas) return adjustFreeAreas(layout, tpl.areas, custom).filter(a => showBand || a.kind !== 'band')
   return frameRows(layout, showBand, custom).map((r): FrameArea => r.kind === 'band'
     ? { ...r, lane: 'band', x: 0, w: 1 }
     : { ...r, x: 0, w: 1 })
@@ -354,7 +469,8 @@ export function frameSlotSize(layout: FrameLayout, showBand = true, slot = 0, cu
   const areas = frameAreas(layout, showBand, custom)
   const a = areas.find(x => x.kind === 'slot' && x.slot === slot) ?? areas.find(x => x.kind === 'slot')
   if (!a) return { w: 1, h: 1 }
-  if (a.kind === 'slot' && a.fit === 'contain') return null
+  // Shown whole: no view there — except where the main video is cropped to its own view (mainCrop)
+  if (a.kind === 'slot' && a.fit === 'contain' && !a.mainCrop) return null
   return { w: a.w, h: a.h }
 }
 

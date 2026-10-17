@@ -39,6 +39,7 @@ export const LAYOUT_COLORS: Record<LayoutType, string> = {
   frame_audiogram: '#2dd4bf',
   frame_grid: '#2dd4bf',
   frame_news: '#2dd4bf',
+  frame_trio_main: '#2dd4bf',
 }
 
 // Frame lane items: one colour per kind of media
