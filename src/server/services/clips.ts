@@ -149,6 +149,8 @@ export async function saveClip(userId: string, clipId: string, body: SaveClipInp
   // How far a text / photo is turned (its rotate handle on the preview), once the worker has added the field
   const hasTextRot = await hasColumn('text_overlays', 'rotation')
   const hasPhotoRot = await hasColumn('overlays', 'rotation')
+  // How see-through a photo is (a brand kit's logo), once the worker has added the field
+  const hasPhotoOpacity = await hasColumn('overlays', 'opacity')
   /** Degrees, clockwise, -180..180 (nothing when it isn't turned) */
   const turn = (r: unknown) => (typeof r === 'number' && isFinite(r) && Math.round(r * 10) % 3600 !== 0 ? (((r % 360) + 540) % 360) - 180 : null)
   // The clip's start and end, when dragged in the editor (bug #8)
@@ -296,11 +298,12 @@ export async function saveClip(userId: string, clipId: string, body: SaveClipInp
 
     q.push(tx`DELETE FROM overlays WHERE clip_id = ${clipId}`)
     if (overlays.length > 0) {
-      q.push(tx`INSERT INTO overlays ${tx(overlays.map(({ id, type, storage_path, source_video_id, source_offset_ms, x, y, w, h, start_ms, end_ms, z_index, hidden, muted, locked, rotation }) => ({
+      q.push(tx`INSERT INTO overlays ${tx(overlays.map(({ id, type, storage_path, source_video_id, source_offset_ms, x, y, w, h, start_ms, end_ms, z_index, hidden, muted, locked, rotation, opacity }) => ({
         id, clip_id: clipId, type, storage_path: storage_path ?? null,
         source_video_id: source_video_id ?? null, source_offset_ms: ms(source_offset_ms ?? 0),
         x, y, w, h, start_ms: ms(start_ms), end_ms: ms(end_ms), z_index,
         ...(hasPhotoRot ? { rotation: turn(rotation) } : {}),
+        ...(hasPhotoOpacity ? { opacity: typeof opacity === 'number' && isFinite(opacity) && opacity < 0.999 ? Math.max(0.05, opacity) : null } : {}),
         ...(hasControls ? { hidden: !!hidden, muted: !!muted, locked: !!locked } : {}),
       })))}`)
     }
