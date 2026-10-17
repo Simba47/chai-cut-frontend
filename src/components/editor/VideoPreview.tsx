@@ -15,6 +15,7 @@ import type { FrameMediaPool } from '@/modules/editor/frameMedia'
 import { useLiveTimeMs, liveTime, usePlayerStore } from '@/modules/player/store'
 import { addedVideoBox } from '@/modules/editor/visibility'
 import { trackPresentedFrame } from '@/modules/player/presentedFrame'
+import { drawWatermark } from './watermark'
 
 const BOX_COLORS = ['#22c55e', '#3b82f6', '#f59e0b']
 // What each slot becomes in the 9:16 output, top to bottom
@@ -1642,6 +1643,8 @@ interface OutputCanvasProps {
    * section with none is a hard cut, as in the export — not the soft blend shown otherwise.
    */
   transitionCuts?: TransitionCut[]
+  /** The Free plan's watermark: drawn last, over everything, where the export puts it (watermark.ts) */
+  watermark?: boolean
   /** Clip time → the main video's own time (ms), when parts of the clip were removed or videos put in (else clipStartMs + t) */
   timelineToVideo?: (t: number) => number
   /**
@@ -1672,7 +1675,7 @@ export function OutputCanvas({
   className, style, skipTransitionRef,
   words, captionStyle, captionTextCase = 'title', showCaptions = false,
   textOverlays = [], activeTextOverlayId, onTextOverlayChange, onSelectTextOverlay, onDeleteTextOverlay, editTextOverlayId, onEditTextDone,
-  onCaptionPositionChange, onCaptionSizeChange, transitionCuts, timelineToVideo, clock, frameMedia, onFrameLaneClick, onFrameItemClick, activeFrameItemId, onFrameItemChange, onDeleteFrameItem, onFrameRowsChange, onFrameMainRectChange,
+  onCaptionPositionChange, onCaptionSizeChange, transitionCuts, watermark, timelineToVideo, clock, frameMedia, onFrameLaneClick, onFrameItemClick, activeFrameItemId, onFrameItemChange, onDeleteFrameItem, onFrameRowsChange, onFrameMainRectChange,
 }: OutputCanvasProps) {
   // Where the captions are drawn right now (from the canvas, each frame), for their box on the
   // preview: kept in state only when it moves noticeably, at most ~10 times a second
@@ -1714,6 +1717,8 @@ export function OutputCanvas({
   const snapshotRef     = useRef<HTMLCanvasElement | null>(null)
   const transitionStart = useRef<number | null>(null)
   const transitionCutsRef = useRef(transitionCuts)
+  const watermarkRef = useRef(!!watermark)
+  watermarkRef.current = !!watermark
   const timelineToVideoRef = useRef(timelineToVideo)
   timelineToVideoRef.current = timelineToVideo
   const clockRef = useRef(clock)
@@ -1945,6 +1950,9 @@ export function OutputCanvas({
           if (textOverlaysRef.current.length > 0) {
             drawTextOverlays(ctx, editingTextRef.current ? textOverlaysRef.current.filter(t => t.id !== editingTextRef.current) : textOverlaysRef.current, clipRelativeMs, video.paused)
           }
+
+          // The Free plan's watermark, over everything (as the export does)
+          if (watermarkRef.current) drawWatermark(ctx, canvas.width, canvas.height, clipRelativeMs)
         }
       }
 

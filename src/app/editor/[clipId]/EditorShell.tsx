@@ -18,6 +18,7 @@ import { useBrollSources, useBorrowedSlots } from '@/modules/editor/brollSources
 import { SOUND_DEFAULTS, type SoundItem, type SoundKind } from '@/modules/editor/soundCatalog'
 import { Timeline } from '@/components/editor/timeline/Timeline'
 import { SpeedPanel } from '@/components/editor/SpeedPanel'
+import { useFreeWatermark } from '@/components/editor/watermark'
 import { LAYOUT_COLORS, MAX_ZOOM, zoomStep, zoomLabel, STOCK_DRAG_TYPE, type LaneCtl, type LaneCtlKey } from '@/components/editor/SegmentTimeline'
 import { useVideoUpload } from '@/modules/upload/useVideoUpload'
 import { TranscriptPanel } from '@/components/editor/TranscriptPanel'
@@ -375,6 +376,8 @@ export function EditorShell({
     !clipHasWords(initialWords) && (captionsPending || (videoStatus !== 'ready' && videoStatus !== 'failed'))
   )
   const [isFreePlan, setIsFreePlan] = useState(false)
+  /** The Free plan's watermark shows on the preview, where the export will put it */
+  const showWatermark = useFreeWatermark()
   const [tool, setTool] = useState<Tool>('format')
   // The editor always opens the same way — a new clip, a refresh, or coming from any board: the
   // tool rail with the options panel closed (a tool opens it), the video, the Preview column on the
@@ -4926,7 +4929,7 @@ export function EditorShell({
                   )}
                 </div>
               ) : (
-                <OutputCanvas live segmentAt={viewAt} transitionCuts={transitionCuts} timelineToVideo={timelineToVideo} clock={hasInserts ? liveTime.get : undefined}
+                <OutputCanvas live segmentAt={viewAt} transitionCuts={transitionCuts} watermark={showWatermark} timelineToVideo={timelineToVideo} clock={hasInserts ? liveTime.get : undefined}
                   videoRef={videoRef} currentTimeMs={currentTimeMs} clipStartMs={clip.start_ms} videoToTimeline={videoToTimeline}
                   activeSegment={viewSegment} getPositionAt={viewGetPositionAt} sourceFor={brollSource} slotSourceFor={borrowed.slotSourceFor}
                   skipTransitionRef={skipCanvasTransitionRef} words={displayWords}
