@@ -115,7 +115,11 @@ export default async function EditorPage({
     .filter(s => s.video_offset_ms != null && !String(s.layout).startsWith('frame_')
       && s.crop_boxes?.[0]?.source_video_id && s.crop_boxes[0].source_video_id !== clip.video_id)
     .reduce((t, s) => t + Math.max(0, Number(s.end_ms) - Number(s.start_ms)), 0)
-  const clipDuration = clip.end_ms - clip.start_ms + insertedMs
+  // Parts played slower last longer on the timeline than their video (faster: shorter)
+  const speedMs = segments
+    .filter(s => !(s.crop_boxes?.[0]?.source_video_id && s.crop_boxes[0].source_video_id !== clip.video_id) && Number(s.speed) > 0 && Number(s.speed) !== 1)
+    .reduce((t, s) => t + (Number(s.end_ms) - Number(s.start_ms)) * (1 - Number(s.speed)), 0)
+  const clipDuration = clip.end_ms - clip.start_ms + insertedMs + Math.max(0, speedMs)
   const healPromises: Promise<unknown>[] = []
   for (const seg of segments) {
     if (seg.start_ms >= clipDuration || seg.end_ms > clipDuration) {

@@ -85,6 +85,13 @@ export async function saveClip(userId: string, clipId: string, body: SaveClipInp
   // A video put in between: where the main video waits meanwhile (modules/editor/inserts.ts).
   // Written for every row, so a part that is no longer one (or an older clip's leftover) is cleared.
   const hasInsertField = await hasColumn('segments', 'video_offset_ms')
+  // A part played faster or slower (speed, smooth slow-mo, pitch), once the backend has added them
+  const hasSpeedField = await hasColumn('segments', 'speed')
+  const speedOfRow = (seg: (typeof segments)[number]) => {
+    const v = Number((seg as { speed?: unknown }).speed)
+    return isFinite(v) && v >= 0.25 && v <= 4 ? Math.round(v * 100) / 100 : 1
+  }
+  const speedNotSaved = hasSpeedField ? 0 : segments.filter(s => speedOfRow(s) !== 1).length
   const holdOf = (seg: (typeof sortedSegments)[number]) => {
     const v = (seg as { video_offset_ms?: unknown }).video_offset_ms
     return typeof v === 'number' && isFinite(v) && v >= 0 && seg.crop_boxes[0]?.source_video_id ? ms(v) : null
@@ -94,6 +101,7 @@ export async function saveClip(userId: string, clipId: string, body: SaveClipInp
     frame: seg.frame ? sql.json(cleanFrame(seg.frame) as never) : null,
     ...(hasControls ? { hidden: !!seg.hidden, muted: !!seg.muted, locked: !!seg.locked } : {}),
     ...(hasInsertField ? { video_offset_ms: holdOf(seg) } : {}),
+    ...(hasSpeedField ? { speed: speedOfRow(seg), smooth: !!seg.smooth && speedOfRow(seg) < 1, pitch: !!seg.pitch && speedOfRow(seg) !== 1 } : {}),
   }))
   const boxRows = sortedSegments.flatMap(seg => seg.crop_boxes.map(box => ({
     id: box.id, segment_id: seg.id, slot_index: box.slot_index,
@@ -186,12 +194,14 @@ export async function saveClip(userId: string, clipId: string, body: SaveClipInp
           layout = EXCLUDED.layout, sort_order = EXCLUDED.sort_order, frame = EXCLUDED.frame,
           hidden = EXCLUDED.hidden, muted = EXCLUDED.muted, locked = EXCLUDED.locked
           ${hasInsertField ? tx`, video_offset_ms = EXCLUDED.video_offset_ms` : tx``}
+          ${hasSpeedField ? tx`, speed = EXCLUDED.speed, smooth = EXCLUDED.smooth, pitch = EXCLUDED.pitch` : tx``}
         WHERE segments.clip_id = ${clipId}
       ` : tx`
         INSERT INTO segments ${tx(segRows)}
         ON CONFLICT (id) DO UPDATE SET start_ms = EXCLUDED.start_ms, end_ms = EXCLUDED.end_ms,
           layout = EXCLUDED.layout, sort_order = EXCLUDED.sort_order, frame = EXCLUDED.frame
           ${hasInsertField ? tx`, video_offset_ms = EXCLUDED.video_offset_ms` : tx``}
+          ${hasSpeedField ? tx`, speed = EXCLUDED.speed, smooth = EXCLUDED.smooth, pitch = EXCLUDED.pitch` : tx``}
         WHERE segments.clip_id = ${clipId}
       `)
       // Formats removed in the editor (cascades to their crop boxes and keyframes)
@@ -310,7 +320,7 @@ export async function saveClip(userId: string, clipId: string, body: SaveClipInp
 
     return q
   })
-  return { transitionsAsDissolve: asDissolve }
+  return { transitionsAsDissolve: asDissolve, speedNotSaved }
 }
 
 /**

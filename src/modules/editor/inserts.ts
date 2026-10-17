@@ -98,7 +98,7 @@ export function rippleInsert(state: TimedState, at: number, d: number, newId: ()
             ...(it.kind === 'video' && it.start_ms < at ? { source_offset_ms: (it.source_offset_ms ?? 0) + (at - it.start_ms) } : {}),
           })) }
         : seg.frame,
-      crop_boxes: seg.crop_boxes.map(box => ({ ...box, id: newId(), source_offset_ms: (box.source_offset_ms ?? 0) + into })),
+      crop_boxes: seg.crop_boxes.map(box => ({ ...box, id: newId(), source_offset_ms: (box.source_offset_ms ?? 0) + into * (box.source_video_id || box.image_path ? 1 : speedOf(seg)) })),
     }
     segments.push(left, right)
     seg.crop_boxes.forEach((box, bi) => {
@@ -159,8 +159,16 @@ function shiftSeg(seg: SegmentLocal, d: number): SegmentLocal {
 // So a part can also skip video — cut from its edge — and a part cut back can show it again: the
 // clip plays its parts one after another, holding the main video during an inserted one.
 
-/** A stretch of the timeline [at, at + ms): the main video from `from` on, or held at `hold` while an inserted video plays */
-export interface Piece { id: string; at: number; ms: number; from?: number; hold?: number }
+/**
+ * A stretch of the timeline [at, at + ms): the main video from `from` on — at `speed` (1 when
+ * not given: `ms` of timeline is `ms · speed` of video) — or held at `hold` while an inserted video plays
+ */
+export interface Piece { id: string; at: number; ms: number; from?: number; hold?: number; speed?: number; /** its sound's pitch follows the speed */ pitch?: boolean }
+
+/** A part's speed (1 as filmed); never 0 or less */
+export const speedOf = (s: { speed?: number | null } | null | undefined) => (s?.speed && s.speed > 0 ? s.speed : 1)
+/** How much of the main video a piece plays (ms) */
+export const pieceVideoMs = (p: Piece) => p.ms * (p.speed ?? 1)
 
 /** Where in the main video a part of the main row starts (clip-relative ms), null when it shows none */
 export function mainFrom(seg: SegmentLocal): number | null {
@@ -186,9 +194,10 @@ export function piecesOf(segments: SegmentLocal[], mainVideoId: string | null | 
     if (ms <= 0) continue
     if (isInsert(s, mainVideoId)) out.push({ id: s.id, at, ms, hold: s.video_offset_ms as number })
     else {
-      const from = (mainFrom(s) ?? videoNow) + (at - s.start_ms)
-      out.push({ id: s.id, at, ms, from })
-      videoNow = from + ms
+      const speed = speedOf(s)
+      const from = (mainFrom(s) ?? videoNow) + (at - s.start_ms) * speed
+      out.push({ id: s.id, at, ms, from, ...(speed !== 1 ? { speed } : {}), ...(s.pitch ? { pitch: true } : {}) })
+      videoNow = from + ms * speed
     }
     cursor = at + ms
   }
@@ -208,12 +217,12 @@ export function pieceAt(pieces: Piece[], t: number): Piece | null {
 export function videoAtPieces(pieces: Piece[], t: number): number {
   const p = pieceAt(pieces, t)
   if (!p) return Math.max(0, t)
-  return p.hold != null ? p.hold : (p.from ?? 0) + Math.min(p.ms, Math.max(0, t - p.at))
+  return p.hold != null ? p.hold : (p.from ?? 0) + Math.min(p.ms, Math.max(0, t - p.at)) * (p.speed ?? 1)
 }
 
 /** Where on the timeline the main video shows its moment `v` (clip ms): a moment cut out lands where the clip goes on after it */
 export function timelineAtPieces(pieces: Piece[], v: number): number {
-  for (const p of pieces) if (p.from != null && v >= p.from && v < p.from + p.ms) return p.at + (v - p.from)
+  for (const p of pieces) if (p.from != null && v >= p.from && v < p.from + pieceVideoMs(p)) return p.at + (v - p.from) / (p.speed ?? 1)
   const next = pieces.find(p => p.from != null && p.from > v)
   return next ? next.at : piecesLength(pieces)
 }
@@ -235,7 +244,8 @@ export function rippleCut(state: TimedState, a: number, b: number, rippleDelete:
       const into = t - s.start_ms
       const right: SegmentLocal = {
         ...s, id: newId(), start_ms: t, sort_order: s.sort_order + 0.5,
-        crop_boxes: s.crop_boxes.map(box => ({ ...box, id: newId(), source_offset_ms: (box.source_offset_ms ?? 0) + into })),
+        // (a box of the main video moves on by as much video as the part plays before the cut)
+        crop_boxes: s.crop_boxes.map(box => ({ ...box, id: newId(), source_offset_ms: (box.source_offset_ms ?? 0) + into * (box.source_video_id || box.image_path ? 1 : speedOf(s)) })),
         frame: s.frame?.items ? { ...s.frame, items: s.frame.items.filter(it => it.end_ms > t).map(it => ({ ...it, id: newId(), start_ms: Math.max(it.start_ms, t) })) } : s.frame,
       }
       renamed[s.id] = right.id

@@ -15,6 +15,7 @@ import type { FrameMediaPool } from '@/modules/editor/frameMedia'
 import { useLiveTimeMs, liveTime, usePlayerStore } from '@/modules/player/store'
 import { addedVideoBox } from '@/modules/editor/visibility'
 import { trackPresentedFrame } from '@/modules/player/presentedFrame'
+import { drawWatermark } from './watermark'
 
 const BOX_COLORS = ['#22c55e', '#3b82f6', '#f59e0b']
 // What each slot becomes in the 9:16 output, top to bottom
@@ -766,10 +767,15 @@ export type TransitionCut = { at: number; ms: number; type: string }
  * `p` from 0 to 1 — drawn the way the export's ffmpeg xfade draws that kind (render.py), so the
  * preview shows what will be made.
  */
+/** Slides, Whip and Wipe move eased, as the export moves them (render.py _eased_join): a cubic ease in-out */
+const easeInOutCubic = (x: number) => (x < 0.5 ? 4 * x * x * x : 1 - Math.pow(2 - 2 * x, 3) / 2)
+
 function drawTransition(ctx: CanvasRenderingContext2D, a: HTMLCanvasElement, b: HTMLCanvasElement, p: number, type: string) {
   const W = ctx.canvas.width, H = ctx.canvas.height
-  // (linear, as ffmpeg's xfade runs: the preview keeps the export's timing)
-  const e = Math.max(0, Math.min(1, p))
+  // (the dissolves and dips run straight through, as ffmpeg's xfade does; the moves are eased below)
+  const lin = Math.max(0, Math.min(1, p))
+  const moves = type === 'slideleft' || type === 'slideright' || type === 'slideup' || type === 'slidedown' || type === 'smoothleft' || type === 'wipe' || type === 'wipeleft'
+  const e = moves ? easeInOutCubic(lin) : lin
   ctx.save()
   switch (type) {
     case 'fadeblack': case 'fadewhite': {
@@ -799,7 +805,8 @@ function drawTransition(ctx: CanvasRenderingContext2D, a: HTMLCanvasElement, b: 
     case 'smoothleft': {
       // Whip: a push to the left, smeared sideways over its middle (the export: slideleft, then
       // avgblur=sizeX=28 over the middle 60% of a 1080-wide picture, render.py)
-      const smear = e > 0.2 && e < 0.8
+      // (the smear runs over the middle 60% of its time, as the export's blur)
+      const smear = lin > 0.2 && lin < 0.8
       const m = smear ? mixCanvas(W, H) : null
       const t = m ? m.getContext('2d')! : ctx
       t.drawImage(a, -e * W, 0, W, H)
@@ -1650,6 +1657,8 @@ interface OutputCanvasProps {
    * section with none is a hard cut, as in the export — not the soft blend shown otherwise.
    */
   transitionCuts?: TransitionCut[]
+  /** The Free plan's watermark: drawn last, over everything, where the export puts it (watermark.ts) */
+  watermark?: boolean
   /** Clip time → the main video's own time (ms), when parts of the clip were removed or videos put in (else clipStartMs + t) */
   timelineToVideo?: (t: number) => number
   /**
@@ -1689,7 +1698,7 @@ export function OutputCanvas({
   className, style, skipTransitionRef,
   words, captionStyle, captionTextCase = 'title', showCaptions = false,
   textOverlays = [], activeTextOverlayId, onTextOverlayChange, onSelectTextOverlay, onDeleteTextOverlay, editTextOverlayId, onEditTextDone,
-  onCaptionPositionChange, onCaptionSizeChange, transitionCuts, timelineToVideo, clock, frameMedia, onFrameLaneClick, onFrameItemClick, activeFrameItemId, onFrameItemChange, onDeleteFrameItem, onFrameRowsChange, onFrameRowsSwap, onFrameBarChange, onFrameFaceChange, onFrameMainRectChange,
+  onCaptionPositionChange, onCaptionSizeChange, transitionCuts, watermark, timelineToVideo, clock, frameMedia, onFrameLaneClick, onFrameItemClick, activeFrameItemId, onFrameItemChange, onDeleteFrameItem, onFrameRowsChange, onFrameRowsSwap, onFrameBarChange, onFrameFaceChange, onFrameMainRectChange,
 }: OutputCanvasProps) {
   // Where the captions are drawn right now (from the canvas, each frame), for their box on the
   // preview: kept in state only when it moves noticeably, at most ~10 times a second
@@ -1731,6 +1740,8 @@ export function OutputCanvas({
   const snapshotRef     = useRef<HTMLCanvasElement | null>(null)
   const transitionStart = useRef<number | null>(null)
   const transitionCutsRef = useRef(transitionCuts)
+  const watermarkRef = useRef(!!watermark)
+  watermarkRef.current = !!watermark
   const timelineToVideoRef = useRef(timelineToVideo)
   timelineToVideoRef.current = timelineToVideo
   const clockRef = useRef(clock)
@@ -1811,6 +1822,79 @@ export function OutputCanvas({
       if (!peek) return
       for (const v of [peek.a, peek.b]) { v.removeAttribute('src'); v.load() }
       peek = null
+    }
+
+    // ── Transitions: both pictures keep moving (as the export does, render.py ext_head / ext_tail) ──
+    // Across a transition the side the main player isn't showing plays on a hidden player of its
+    // own: before the cut the incoming part from before its start ('b'), after the cut the outgoing
+    // part past its end ('a'), each at its own speed and kept in step with the clip's clock. Where
+    // the sound jumps (the main video from another moment, or at another speed) its sound fades in
+    // as the main player's fades out, on the export's curve (audio.py: equal power). The held stills
+    // above stay the fallback while a player isn't on its frame yet.
+    type Side = { el: HTMLVideoElement; src: string }
+    const sides: Record<'a' | 'b', Side | null> = { a: null, b: null }
+    let sideCanvas: HTMLCanvasElement | null = null
+    // The main player's own volume while its sound is being faded (restored after)
+    let fadeBase: number | null = null
+    function sideEl(role: 'a' | 'b', src: string, like: HTMLVideoElement) {
+      let s = sides[role]
+      if (!s || s.src !== src) {
+        if (s) { s.el.pause(); s.el.removeAttribute('src'); s.el.load() }
+        const v = document.createElement('video')
+        v.crossOrigin = like.crossOrigin
+        v.muted = true; v.playsInline = true; v.preload = 'auto'
+        v.src = src
+        s = sides[role] = { el: v, src }
+      }
+      return s.el
+    }
+    function quietSides() {
+      for (const r of ['a', 'b'] as const) { const s = sides[r]; if (s) { if (!s.el.paused) s.el.pause(); s.el.muted = true } }
+      if (fadeBase !== null) { const v = videoRef.current; if (v) v.volume = fadeBase; fadeBase = null }
+    }
+    function disposeSides() {
+      quietSides()
+      for (const r of ['a', 'b'] as const) { const s = sides[r]; if (s) { s.el.removeAttribute('src'); s.el.load(); sides[r] = null } }
+    }
+    /**
+     * Where a part's own video is at clip time `t`, past its edges too (`side` 'b': the incoming part,
+     * before its start; 'a': the outgoing part, after its end; `at`: the cut): its file, the moment in
+     * it (ms) and how fast it plays. Null when it can't play there (a frame layout, a photo, slots
+     * from more than one video): the held still is shown instead.
+     */
+    function sideSource(sg: SegmentLocal, t: number, side: 'a' | 'b', at: number, main: HTMLVideoElement): { src: string; ms: number; rate: number; own: boolean } | null {
+      if (isFrameLayout(sg.layout)) return null
+      const box = sg.crop_boxes[0]
+      if (!box || box.image_path) return null
+      if (sg.crop_boxes.some(b => (b.source_video_id ?? null) !== (box.source_video_id ?? null) || b.image_path)) return null
+      const own = sourceForRef.current?.(sg)
+      if (own) {
+        // Another video (put in between, or a B-roll part): from its own moment, at its own pace
+        const src = own.currentSrc || own.src
+        if (!src) return null
+        const len = isFinite(own.duration) ? own.duration * 1000 : Infinity
+        const ms = (box.source_offset_ms ?? 0) + (t - sg.start_ms)
+        return { src, ms: Math.max(0, Math.min(len - 1, ms)), rate: 1, own: true }
+      }
+      const src = main.currentSrc || main.src
+      if (!src) return null
+      const rate = sg.speed && sg.speed > 0 ? sg.speed : 1
+      const ms = side === 'b' ? toVideoMs(at) + (t - at) * rate : toVideoMs(at - 1) + (t - at + 1) * rate
+      // (not before the clip's own start, as the export; not past the video's end)
+      const len = isFinite(main.duration) ? main.duration * 1000 : Infinity
+      return { src, ms: Math.max(clipStartMsRef.current, Math.min(len - 1, ms)), rate, own: false }
+    }
+    /** A side player kept on its moment: playing with the clip (corrected when it drifts), or parked on the frame */
+    function syncSide(el: HTMLVideoElement, ms: number, rate: number, playing: boolean) {
+      const cur = el.currentTime * 1000
+      if (playing) {
+        if (Math.abs(el.playbackRate - rate) > 1e-3) el.playbackRate = rate
+        if (Math.abs(cur - ms) > 150 && !el.seeking) el.currentTime = ms / 1000
+        if (el.paused) el.play().catch(() => {})
+      } else {
+        if (!el.paused) el.pause()
+        if (Math.abs(cur - ms) > 30 && !el.seeking) el.currentTime = ms / 1000
+      }
     }
     // The stills of the transition coming up: started again for another join, when either part
     // changes (an edit) or when the preview changes size
@@ -1910,8 +1994,20 @@ export function OutputCanvas({
             }
             if (!st.bOk) st.bOk = still(st.b, st.segB, soon.at, 'b')
             if (!st.aOk && clipMsNow < soon.at) st.aOk = still(st.a, st.segA, soon.at - 1, 'a')
+            // (and the side players parked where they start: the incoming part's at the transition's
+            // start, the outgoing part's at the cut)
+            if (clipMsNow < soon.at - soon.ms / 2) {
+              const pb = sideSource(st.segB, soon.at - soon.ms / 2, 'b', soon.at, video)
+              if (pb) syncSide(sideEl('b', pb.src, video), pb.ms, pb.rate, false)
+            }
+            if (clipMsNow < soon.at) {
+              const pa = sideSource(st.segA, soon.at, 'a', soon.at, video)
+              if (pa) syncSide(sideEl('a', pa.src, video), pa.ms, pa.rate, false)
+            }
           }
           const tc = cuts?.find(c => c.ms > 0 && clipMsNow >= c.at - c.ms / 2 && clipMsNow < c.at + c.ms / 2)
+          // (outside a transition the side players are still and quiet, the main sound at its own level)
+          if (!(tc && st && st.at === tc.at && st.segA && st.segB && st.segA.id !== st.segB.id)) quietSides()
           if (tc && st && st.at === tc.at && st.segA && st.segB && st.segA.id !== st.segB.id) {
             if (!trCanvases.current) trCanvases.current = [document.createElement('canvas'), document.createElement('canvas')]
             const [ca, cb] = trCanvases.current
@@ -1926,7 +2022,44 @@ export function OutputCanvas({
             if (before) st.liveA = true
             // (played into the join with no still of the outgoing part: its last frame played is it)
             else if (!st.aOk && st.liveA) { st.a.getContext('2d')!.drawImage(ca, 0, 0); st.aOk = true }
-            const heldSide = before ? (st.bOk ? st.b : null) : (st.aOk ? st.a : null)
+            // The other side: moving on its own player once that is on its frame, else the held still
+            const otherSeg = before ? st.segB : st.segA
+            const role: 'a' | 'b' = before ? 'b' : 'a'
+            let moving: HTMLCanvasElement | null = null
+            const want = otherSeg.hidden ? null : sideSource(otherSeg, clipMsNow, role, tc.at, video)
+            const playing = !video.paused
+            if (want) {
+              const el = sideEl(role, want.src, video)
+              syncSide(el, want.ms, want.rate, playing)
+              // (the other side player is quiet; only this one plays, and only during the transition)
+              const off = sides[before ? 'a' : 'b']
+              if (off && !off.el.paused) { off.el.pause(); off.el.muted = true }
+              if (el.readyState >= 2 && !el.seeking && Math.abs(el.currentTime * 1000 - want.ms) < (playing ? 200 : 60)) {
+                if (!sideCanvas) sideCanvas = document.createElement('canvas')
+                if (sideCanvas.width !== canvas.width || sideCanvas.height !== canvas.height) { sideCanvas.width = canvas.width; sideCanvas.height = canvas.height }
+                // (framed as at its edge: the export holds a part's first / last view past its edges)
+                paintSegment(sideCanvas.getContext('2d')!, el, otherSeg, before ? otherSeg.start_ms : otherSeg.end_ms - 1, getPositionAtRef.current, frameMediaRef.current, slots)
+                moving = sideCanvas
+              }
+              // Sound: where it jumps (both sides the main video, another moment or speed), the
+              // outgoing sound fades out as the incoming fades in across the transition (equal power)
+              const liveSeg = before ? st.segA : st.segB
+              const liveOwn = !!sourceForRef.current?.(liveSeg)
+              const rateOf = (sg: SegmentLocal) => (sg.speed && sg.speed > 0 ? sg.speed : 1)
+              const jumps = !want.own && !liveOwn && (Math.abs(toVideoMs(tc.at - 1) + rateOf(st.segA) - toVideoMs(tc.at)) > 30 || Math.abs(rateOf(st.segA) - rateOf(st.segB)) > 1e-3)
+              if (jumps && playing) {
+                if (fadeBase === null) fadeBase = video.volume
+                const x = Math.max(0, Math.min(1, (clipMsNow - (tc.at - tc.ms / 2)) / tc.ms))
+                const gOut = Math.cos(Math.PI / 2 * x), gIn = Math.sin(Math.PI / 2 * x)
+                video.volume = Math.max(0, Math.min(1, fadeBase * (before ? gOut : gIn)))
+                el.muted = video.muted || !!otherSeg.muted
+                el.volume = Math.max(0, Math.min(1, fadeBase * (before ? gIn : gOut)))
+              } else {
+                el.muted = true
+                if (fadeBase !== null) { video.volume = fadeBase; fadeBase = null }
+              }
+            }
+            const heldSide = moving ?? (before ? (st.bOk ? st.b : null) : (st.aOk ? st.a : null))
             // A held frame not ready yet: a plain cut for now, never a picture blended with itself
             if (heldSide) drawTransition(ctx, before ? ca : heldSide, before ? heldSide : cb, (clipMsNow - (tc.at - tc.ms / 2)) / tc.ms, tc.type)
             else ctx.drawImage(live, 0, 0)
@@ -1969,6 +2102,9 @@ export function OutputCanvas({
           if (textOverlaysRef.current.length > 0) {
             drawTextOverlays(ctx, editingTextRef.current ? textOverlaysRef.current.filter(t => t.id !== editingTextRef.current) : textOverlaysRef.current, clipRelativeMs, video.paused)
           }
+
+          // The Free plan's watermark, over everything (as the export does)
+          if (watermarkRef.current) drawWatermark(ctx, canvas.width, canvas.height, clipRelativeMs)
         }
       }
 
@@ -1976,7 +2112,7 @@ export function OutputCanvas({
     }
 
     rafId = requestAnimationFrame(loop)
-    return () => { cancelAnimationFrame(rafId); stopShown(); disposePeek() }
+    return () => { cancelAnimationFrame(rafId); stopShown(); disposePeek(); disposeSides() }
   }, [videoRef])
 
   // Active overlays at current time

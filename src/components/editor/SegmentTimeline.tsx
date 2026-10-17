@@ -53,7 +53,8 @@ const FRAME_LANE_H = 26
  * the main video — the film strip already shows that — so it only gets a lane once something is
  * put on it.
  */
-function visibleLanes(seg: SegmentLocal) {
+// (exported: the desktop timeline, timeline/Timeline.tsx, shows the same lanes)
+export function visibleLanes(seg: SegmentLocal) {
   return timelineLanes(seg)
 }
 
@@ -69,7 +70,7 @@ const THUMB_COUNT = 24
 // keyed by that nothing was ever found again.
 const thumbCache = new Map<string, Map<number, string>>()
 const thumbKey = (url: string) => url.split(/[?#]/)[0]
-function thumbsFor(url: string): Map<number, string> {
+export function thumbsFor(url: string): Map<number, string> {
   const key = thumbKey(url)
   let cache = thumbCache.get(key)
   if (!cache) { cache = new Map(); thumbCache.set(key, cache) }
@@ -142,7 +143,7 @@ function saveThumbsSoon(url: string) {
     } catch { /* (storage full or blocked: the strip is simply captured again next time) */ }
   }, 1500))
 }
-function nearestThumb(cache: Map<number, string>, ms: number, tol: number): string | undefined {
+export function nearestThumb(cache: Map<number, string>, ms: number, tol: number): string | undefined {
   let best: string | undefined, bestD = tol
   for (const [t, url] of cache) { const d = Math.abs(t - ms); if (d <= bestD) { bestD = d; best = url } }
   return best
@@ -369,25 +370,25 @@ export function VideoThumbnails({ videoUrl, startMs, durationMs, count = THUMB_C
 }
 
 // Friendly name of a format, shown on its block and in its handles' labels
-function formatName(seg: SegmentLocal): string {
+export function formatName(seg: SegmentLocal): string {
   if (isFrameLayout(seg.layout)) return `Frame · ${FRAME_TEMPLATES[seg.layout].name}`
   if (seg.layout === 'split') return 'Split screen'
   return seg.layout.charAt(0).toUpperCase() + seg.layout.slice(1)
 }
 
 /** Seconds as "12.4s" under a minute, else "1:05" */
-function durLabel(ms: number): string {
+export function durLabel(ms: number): string {
   return ms < 60000 ? `${(ms / 1000).toFixed(ms < 10000 ? 1 : 0)}s` : msToLabel(ms)
 }
 
-const ACCENT = '#c8ff00'
+export const ACCENT = '#c8ff00'
 /** What's selected on the timeline: a lime outline with a soft glow, the same on every bar and section */
-const SELECTED_RING = `inset 0 0 0 2px ${ACCENT}, 0 0 0 1px rgba(0,0,0,0.55), 0 0 12px rgba(200,255,0,0.45)`
+export const SELECTED_RING = `inset 0 0 0 2px ${ACCENT}, 0 0 0 1px rgba(0,0,0,0.55), 0 0 12px rgba(200,255,0,0.45)`
 /** The playhead's line down through the frame lanes and the media tracks (as over the main video) */
 const PLAYHEAD_LINE: React.CSSProperties = { width: 2, marginLeft: -1, borderRadius: 2, background: '#fff', boxShadow: '0 0 0 1px rgba(0,0,0,0.35), 0 0 10px rgba(255,255,255,0.3)', zIndex: 30 }
 const iconProps = { width: 14, height: 14, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 2, strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const, 'aria-hidden': true }
 
-function msToLabel(ms: number): string {
+export function msToLabel(ms: number): string {
   const s = Math.floor(ms / 1000)
   const m = Math.floor(s / 60)
   return `${m}:${String(s % 60).padStart(2, '0')}`
@@ -426,10 +427,10 @@ export function TimelineZoom({ zoom, onZoom }: { zoom: number; onZoom: (z: numbe
   )
 }
 // Major tick spacing candidates and how many minor ticks sit between two majors
-const TICK_STEPS: [number, number][] = [
+export const TICK_STEPS: [number, number][] = [
   [1000, 5], [2000, 4], [5000, 5], [10000, 5], [15000, 3], [30000, 6], [60000, 6], [120000, 4], [300000, 5], [600000, 5],
 ]
-const MIN_LABEL_GAP_PX = 64
+export const MIN_LABEL_GAP_PX = 64
 
 interface Props {
   segments: SegmentLocal[]
@@ -2618,7 +2619,7 @@ export function SegmentTimeline({
 }
 
 /** What the + at the top of the lanes adds (its track appears once something is on it) */
-const ADD_KINDS: Array<{ kind: 'broll' | 'video' | 'photo' | 'music' | 'text'; label: string }> = [
+export const ADD_KINDS: Array<{ kind: 'broll' | 'video' | 'photo' | 'music' | 'text'; label: string }> = [
   { kind: 'broll', label: 'B-roll' }, { kind: 'video', label: 'Video' }, { kind: 'photo', label: 'Photo' },
   { kind: 'music', label: 'Music' }, { kind: 'text', label: 'Text' },
 ]
@@ -2639,8 +2640,8 @@ export const MEDIA_DRAG_TYPE = 'application/x-shortcut-media'
 export const STOCK_DRAG_TYPE = 'application/x-shortcut-stock'
 
 // The icon column next to the timeline: one per kind of lane
-type LaneMeta = { label: string; color: string; icon: React.ReactNode; add?: 'video' | 'broll' | 'photo' | 'music' | 'text' }
-const LANE_META: Record<string, LaneMeta> = {
+export type LaneMeta = { label: string; color: string; icon: React.ReactNode; add?: 'video' | 'broll' | 'photo' | 'music' | 'text' }
+export const LANE_META: Record<string, LaneMeta> = {
   original: { label: 'Original sound', color: '#c084fc', icon: <><path d="M11 5L6 9H2v6h4l5 4V5z" /><path d="M15.5 8.5a5 5 0 010 7" /></> },
   main: { label: 'Main video', color: 'rgb(var(--ed-fg) / 0.75)', icon: <><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M7 4v16M17 4v16M3 9h4M3 15h4M17 9h4M17 15h4" /></> },
   frame: { label: 'Frame slots', color: '#2dd4bf', icon: <><rect x="6" y="2.5" width="12" height="19" rx="2" /><path d="M6 9.5h12M6 14.5h12" /></> },
@@ -2654,6 +2655,8 @@ const LANE_META: Record<string, LaneMeta> = {
 // Media rows under the strip: one colour per kind (video is the orange bar over the strip)
 /** When the timeline opened: inserted videos that come with the clip (loaded just after) show no name tag */
 let timelineOpenedAt = 0
+/** A timeline has just opened (the new one, timeline/Timeline.tsx, shares the name tags) */
+export function markTimelineOpened() { timelineOpenedAt = performance.now() }
 /**
  * The name of a video just put in between, on its stretch of the strip: shown for 3 s after it
  * goes in, then it fades away (the name stays in the stretch's tooltip). Not shown for videos
@@ -2661,7 +2664,7 @@ let timelineOpenedAt = 0
  */
 /** Inserted videos (video@where it goes in) whose name tag has had its turn */
 const insertTagsSeen = new Set<string>()
-function InsertTag({ id, name }: { id: string; name: string }) {
+export function InsertTag({ id, name }: { id: string; name: string }) {
   const [shown, setShown] = useState(() => {
     const fresh = typeof performance !== 'undefined' && performance.now() - timelineOpenedAt > 1500 && !insertTagsSeen.has(id)
     insertTagsSeen.add(id)
@@ -2681,7 +2684,7 @@ function InsertTag({ id, name }: { id: string; name: string }) {
   )
 }
 
-const MEDIA_COLORS = { video: '#f97316', broll: '#eab308', photo: '#60a5fa', text: '#f472b6', music: '#c084fc' } as const
+export const MEDIA_COLORS = { video: '#f97316', broll: '#eab308', photo: '#60a5fa', text: '#f472b6', music: '#c084fc' } as const
 /** The main video's strip on the timeline */
 const STRIP_H = 42
 /** A track's row: as tall as the main video's strip */
@@ -2689,7 +2692,7 @@ const MEDIA_ROW_H = STRIP_H
 /** The name and the length on a bar's header (CapCut's tags) */
 const BAR_TAG: React.CSSProperties = { background: 'rgba(255,255,255,0.13)', color: '#fff', padding: '0 5px', borderRadius: 4, lineHeight: '15px' }
 /** A length as CapCut shows it: hours:minutes:seconds:frames (30 a second) */
-function timecode(ms: number): string {
+export function timecode(ms: number): string {
   const f = Math.floor(Math.max(0, ms) / (1000 / 30))
   const p = (x: number) => String(x).padStart(2, '0')
   return `${p(Math.floor(f / 108000))}:${p(Math.floor(f / 1800) % 60)}:${p(Math.floor(f / 30) % 60)}:${p(f % 30)}`
@@ -2697,7 +2700,7 @@ function timecode(ms: number): string {
 const MEDIA_GAP = 8
 
 /** Little marks on a bar (or a section's corner on the strip): hidden, muted, locked */
-function StateBadges({ st, corner }: { st?: { hidden?: boolean; muted?: boolean; locked?: boolean }; corner?: boolean }) {
+export function StateBadges({ st, corner }: { st?: { hidden?: boolean; muted?: boolean; locked?: boolean }; corner?: boolean }) {
   if (!st || !(st.hidden || st.muted || st.locked)) return null
   const mark = (key: string, title: string, d: React.ReactNode) => (
     <span key={key} title={title} className="flex items-center justify-center rounded-full" style={{ width: 14, height: 14, background: 'rgba(0,0,0,0.7)', color: '#fff' }}>
@@ -2714,7 +2717,7 @@ function StateBadges({ st, corner }: { st?: { hidden?: boolean; muted?: boolean;
 }
 
 /** Small icon in its kind's colour at the start of a media bar */
-function MediaIcon({ kind }: { kind: 'video' | 'broll' | 'photo' | 'text' | 'music' }) {
+export function MediaIcon({ kind }: { kind: 'video' | 'broll' | 'photo' | 'text' | 'music' }) {
   return (
     <svg className="relative shrink-0 pointer-events-none" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke={MEDIA_COLORS[kind]} strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"
       style={{ marginLeft: 8 }}>
@@ -2741,7 +2744,7 @@ function AtPlayhead({ pctOf, className, style, children }: {
 }
 
 /** Trim handle at one end of a media bar: a thin strip, with a small grip line */
-function MediaGrip({ side, label, onPointerDown }: { side: 'left' | 'right'; label: string; onPointerDown: (e: React.PointerEvent) => void }) {
+export function MediaGrip({ side, label, onPointerDown }: { side: 'left' | 'right'; label: string; onPointerDown: (e: React.PointerEvent) => void }) {
   return (
     <span onPointerDown={onPointerDown} aria-label={label}
       className={`group/grip absolute inset-y-0 ${side === 'left' ? 'left-0' : 'right-0'} w-1.5 flex items-center justify-center cursor-col-resize z-10`}>

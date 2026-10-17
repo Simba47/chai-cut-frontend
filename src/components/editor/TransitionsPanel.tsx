@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { Transition, TransitionType } from '@chai-cut/shared'
 
 /** A place where one section of the main strip ends and the next begins (timeline ms) */
@@ -13,6 +13,10 @@ export interface TransitionJoin {
   to: string
   /** Both sides are one continuous shot framed the same (an edge-only change won't show) */
   sameShot?: boolean
+  /** The longest a transition can play here: the shorter of the two parts' lengths (ms) */
+  room: number
+  /** Which of the two parts is that shorter one */
+  shortSide: 'before' | 'after'
 }
 
 /**
@@ -38,14 +42,65 @@ export const TRANSITION_KINDS: { type: TransitionType; name: string }[] = [
   { type: 'radial', name: 'Clock' },
   { type: 'pixelize', name: 'Pixelate' },
 ]
+/** What a tile dragged from the panel carries (its kind): dropped on a cut on the timeline (Timeline.tsx) */
+export const TRANSITION_DRAG_TYPE = 'application/x-shortcut-transition'
+/** A kind's name ('cut' = None) */
+export const transitionName = (t: string) => TRANSITION_KINDS.find(k => k.type === t)?.name ?? 'Transition'
+/** A length in seconds: 0.5 s, 0.45 s, 1.0 s */
+export const transitionSecs = (ms: number) => `${(ms / 1000).toFixed(ms % 100 === 0 ? 1 : 2)} s`
+
+/** A small picture of each kind (24 x 24, drawn in currentColor), for the cuts on the timeline */
+export function TransitionGlyph({ type, size = 12 }: { type: string; size?: number }) {
+  const p = { fill: 'none', stroke: 'currentColor', strokeWidth: 2.4, strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const }
+  const f = { fill: 'currentColor', stroke: 'none' }
+  const shape = (() => {
+    switch (type) {
+      case 'fade': return <><rect x="3" y="4" width="12" height="12" rx="2.5" {...p} /><rect x="9" y="8" width="12" height="12" rx="2.5" {...f} opacity=".55" /></>
+      case 'fadeblack': return <><rect x="3.5" y="3.5" width="17" height="17" rx="3.5" {...p} /><path d="M12 3.5H7a3.5 3.5 0 0 0-3.5 3.5v10A3.5 3.5 0 0 0 7 20.5h5z" {...f} /></>
+      case 'fadewhite': return <path d="M12 2.5v4M12 17.5v4M2.5 12h4M17.5 12h4M5.3 5.3l2.8 2.8M15.9 15.9l2.8 2.8M18.7 5.3l-2.8 2.8M8.1 15.9l-2.8 2.8" {...p} />
+      case 'zoomin': return <><path d="M3.5 9V3.5H9M20.5 9V3.5H15M3.5 15v5.5H9M20.5 15v5.5H15" {...p} /><rect x="9" y="9" width="6" height="6" rx="1.2" {...f} /></>
+      case 'smoothleft': return <path d="M2.5 8h9M4.5 12h10M2.5 16h9M15 7l5 5-5 5" {...p} />
+      case 'hblur': return <path d="M3 9c2.5-2.5 6 2.5 9 0s6.5-2.5 9 0M3 15c2.5-2.5 6 2.5 9 0s6.5-2.5 9 0" {...p} />
+      case 'slideleft': return <path d="M20 12H4M10 6l-6 6 6 6" {...p} />
+      case 'slideright': return <path d="M4 12h16M14 6l6 6-6 6" {...p} />
+      case 'slideup': return <path d="M12 20V4M6 10l6-6 6 6" {...p} />
+      case 'slidedown': return <path d="M12 4v16M6 14l6 6 6-6" {...p} />
+      case 'wipe': case 'wipeleft': return <><rect x="3.5" y="3.5" width="17" height="17" rx="3.5" {...p} /><path d="M12 3.5h5a3.5 3.5 0 0 1 3.5 3.5v10a3.5 3.5 0 0 1-3.5 3.5h-5z" {...f} /></>
+      case 'circleopen': return <><circle cx="12" cy="12" r="8.5" {...p} /><circle cx="12" cy="12" r="3.6" {...f} /></>
+      case 'radial': return <><circle cx="12" cy="12" r="8.5" {...p} /><path d="M12 12V3.5A8.5 8.5 0 0 1 20.5 12z" {...f} /></>
+      case 'pixelize': return <><rect x="3.5" y="3.5" width="17" height="17" rx="2.5" {...p} /><path d="M3.5 3.5h8.5v8.5H3.5zM12 12h8.5v8.5H12z" {...f} /></>
+      case 'cut': return <path d="M12 5v14M5 12h14" {...p} strokeWidth={2.8} />
+      // (a kind with no picture of its own: the split square)
+      default: return <><rect x="3.5" y="3.5" width="17" height="17" rx="3.5" {...p} /><path d="M3.5 7v-.1a3.4 3.4 0 013.4-3.4H20.5L3.5 20.5z" {...f} /></>
+    }
+  })()
+  return <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true">{shape}</svg>
+}
+
 /** How long a new transition lasts, and the range it can be set to (ms) */
 export const TRANSITION_DEFAULT_MS = 500
 const MIN_MS = 200, MAX_MS = 1500
+/** The slider moves in these steps (ms) */
+const STEP_MS = 50
+/** Shorter than this a transition can't show: the export plays the join as a plain cut (render.py _MIN_TRANSITION_MS) */
+export const TRANSITION_MIN_SHOWN_MS = 80
 
-function fmt(ms: number) {
-  const s = Math.max(0, Math.round(ms / 100) / 10)
-  return `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`
+/**
+ * How long a transition really plays at a join: never longer than either part beside it, and none
+ * at all (a plain cut) when that leaves under 80 ms. The export's rule (render.py
+ * _transition_joins), so the preview plays exactly what the export makes.
+ */
+export function playedTransitionMs(durationMs: number, room: number) {
+  const d = Math.min(Math.round(durationMs), Math.round(room))
+  return d >= TRANSITION_MIN_SHOWN_MS ? d : 0
 }
+
+/** A time on the clip as m:ss.t (0:10.8): cuts a fraction of a second apart read differently */
+function fmt(ms: number) {
+  const t = Math.max(0, Math.round(ms / 100))
+  return `${Math.floor(t / 600)}:${String(Math.floor(t / 10) % 60).padStart(2, '0')}.${t % 10}`
+}
+const secs = transitionSecs
 const nameOf = (t: TransitionType) => TRANSITION_KINDS.find(k => k.type === t)?.name ?? 'None'
 /**
  * Kinds that only blend or uncover the new picture in place: between two (almost) identical
@@ -68,7 +123,7 @@ const SAME_SHOT_TIP = 'Dissolve, Wipe, Circle and Clock look like a plain cut th
  * With no joins yet the tiles still show: picking one splits the clip at the playhead and puts
  * that transition on the new join (onAddHere).
  */
-export function TransitionsPanel({ joins, transitions, currentTimeMs, canAddHere, onAddHere, onSet, onPreview, onSeek, savedAsDissolve }: {
+export function TransitionsPanel({ joins, transitions, currentTimeMs, canAddHere, onAddHere, onSet, onPreview, onSeek, savedAsDissolve, focusJoin }: {
   joins: TransitionJoin[]
   transitions: Transition[]
   currentTimeMs: number
@@ -83,9 +138,26 @@ export function TransitionsPanel({ joins, transitions, currentTimeMs, canAddHere
   onSeek?: (ms: number) => void
   /** The last save kept newer kinds as Dissolve: the database doesn't take them until the backend restarts */
   savedAsDissolve?: boolean
+  /** Opened from the transition button between two parts on the timeline: that cut (`n` changes each time) */
+  focusJoin?: { id: string; n: number } | null
 }) {
   // What the controls apply to: every cut, or one (its section id)
-  const [scope, setScope] = useState<'all' | string>('all')
+  const [scope, setScope] = useState<'all' | string>(() => (focusJoin && joins.some(j => j.afterId === focusJoin.id) ? focusJoin.id : 'all'))
+  useEffect(() => { if (focusJoin && joins.some(j => j.afterId === focusJoin.id)) setScope(focusJoin.id) }, [focusJoin?.n]) // eslint-disable-line react-hooks/exhaustive-deps
+  // The cut picked stays the same cut: when the part before it is split, its id goes with the left
+  // half (now before the new cut), so the pick follows the cut to the part now before it
+  // (only when the same pick's cut moved or went: a different cut picked is just recorded)
+  const pickedAt = useRef<{ id: string; at: number } | null>(null)
+  useEffect(() => {
+    if (scope === 'all') { pickedAt.current = null; return }
+    const j = joins.find(x => x.afterId === scope)
+    const was = pickedAt.current
+    if (was && was.id === scope && (!j || Math.abs(j.at - was.at) > 1)) {
+      const same = joins.find(x => Math.abs(x.at - was.at) <= 1)
+      if (same) { pickedAt.current = { id: same.afterId, at: same.at }; setScope(same.afterId); return }
+    }
+    pickedAt.current = j ? { id: scope, at: j.at } : null
+  }, [scope, joins])
 
   if (joins.length === 0) {
     return (
@@ -114,23 +186,54 @@ export function TransitionsPanel({ joins, transitions, currentTimeMs, canAddHere
 
   const trOf = (j: TransitionJoin) => transitions.find(t => t.after_segment_id === j.afterId)
   const typeOf = (j: TransitionJoin): TransitionType => trOf(j)?.type ?? 'cut'
+  /** What really plays at a join, as the export makes it (ms; 0 = a plain cut) */
+  const playedOf = (j: TransitionJoin) => (typeOf(j) === 'cut' ? 0 : playedTransitionMs(trOf(j)?.duration_ms || TRANSITION_DEFAULT_MS, j.room))
+  const sideName = (j: TransitionJoin) => (j.shortSide === 'before' ? 'part before' : 'part after')
+  // (a cut picked that is gone — deleted or joined: the controls are for all cuts again, and say so)
   const one = scope === 'all' ? null : joins.find(j => j.afterId === scope) ?? null
+  const allOn = !one
   const targets = one ? [one] : joins
   // What the tiles show: the cut's own, or for All cuts the one they share (none lit when mixed)
   const types = new Set(targets.map(typeOf))
   const picked: TransitionType | null = types.size === 1 ? [...types][0] : null
-  const firstOn = targets.find(j => typeOf(j) !== 'cut')
-  const ms = (firstOn && trOf(firstOn)?.duration_ms) || TRANSITION_DEFAULT_MS
+  const withTr = targets.filter(j => typeOf(j) !== 'cut')
+  const firstOn = withTr[0]
+  /** A cut's own length as set (what is saved) */
+  const lenOf = (j: TransitionJoin) => trOf(j)?.duration_ms || TRANSITION_DEFAULT_MS
+  // For All cuts the lengths can differ: then the slider shows "Mixed" (and moving it sets them all)
+  const mixedLen = new Set(withTr.map(lenOf)).size > 1
+  const ms = firstOn ? lenOf(firstOn) : TRANSITION_DEFAULT_MS
   const anyOn = !!firstOn
   const onJoin = joins.some(j => Math.abs(j.at - currentTimeMs) < 150)
   const preview = one ?? firstOn ?? joins[0]
+  // The length slider: for one cut it goes no longer than that cut has room for
+  const cap = one ? Math.min(MAX_MS, one.room) : MAX_MS
+  const sliderMax = Math.max(STEP_MS, Math.floor(cap / STEP_MS) * STEP_MS)
+  const sliderMin = Math.min(MIN_MS, sliderMax)
+  // For All cuts: the ones that play shorter than the length set (a part beside them is short)
+  const shortened = one ? [] : withTr.filter(j => playedOf(j) < lenOf(j))
+  // Same shot on both sides with a kind that only blends in place: it would look like a plain cut
+  const unseen = withTr.filter(j => j.sameShot && NEEDS_CHANGE.includes(typeOf(j)))
+  // "Add cut" splits one shot in two, framed the same: the shared kind, unless it wouldn't show there
+  const addType: TransitionType = picked && picked !== 'cut' && !NEEDS_CHANGE.includes(picked) ? picked : 'zoomin'
 
-  function apply(type: TransitionType, len = ms) {
-    for (const j of targets) onSet(j.afterId, type, len)
+  /** Play through the cut nearest the playhead among these (or the one picked), as long as it plays there */
+  function previewNear(js: TransitionJoin[], lenFor: (j: TransitionJoin) => number) {
+    const near = one ?? [...js].sort((a, b) => Math.abs(a.at - currentTimeMs) - Math.abs(b.at - currentTimeMs))[0]
+    if (near) onPreview(near.at, playedTransitionMs(lenFor(near), near.room))
+  }
+  /** A kind picked: on every target. Each cut that had a transition keeps its own length; one that
+   *  had none takes the shared length (the default when they differ) */
+  function apply(type: TransitionType) {
+    const lenFor = (j: TransitionJoin) => (typeOf(j) !== 'cut' ? lenOf(j) : mixedLen ? TRANSITION_DEFAULT_MS : ms)
+    for (const j of targets) onSet(j.afterId, type, lenFor(j))
     // (and it plays through the cut — the one picked, or the nearest — so what was picked is seen)
-    if (type === 'cut') return
-    const near = one ?? [...targets].sort((a, b) => Math.abs(a.at - currentTimeMs) - Math.abs(b.at - currentTimeMs))[0]
-    if (near) onPreview(near.at, len)
+    if (type !== 'cut') previewNear(targets, lenFor)
+  }
+  /** The same-shot fix: these cuts get a kind that shows there (each keeps its length) */
+  function swap(js: TransitionJoin[], type: TransitionType) {
+    for (const j of js) onSet(j.afterId, type, lenOf(j))
+    previewNear(js, lenOf)
   }
 
   return (
@@ -139,28 +242,41 @@ export function TransitionsPanel({ joins, transitions, currentTimeMs, canAddHere
       <div className="flex flex-col gap-1.5">
         <span className="tr-label">Apply to</span>
         <div className="tr-scope" role="radiogroup" aria-label="Which cuts">
-          <button type="button" role="radio" aria-checked={scope === 'all'} data-on={scope === 'all' || undefined}
+          <button type="button" role="radio" aria-checked={allOn} data-on={allOn || undefined}
             onClick={() => setScope('all')}>
             All cuts <span className="tr-scope-n">{joins.length}</span>
           </button>
           {joins.map(j => (
             <button key={j.afterId} type="button" role="radio" aria-checked={scope === j.afterId} data-on={scope === j.afterId || undefined}
-              title={`Cut at ${fmt(j.at)}: ${nameOf(typeOf(j))}`}
+              title={`Cut at ${fmt(j.at)}: ${nameOf(typeOf(j))}${typeOf(j) !== 'cut' && playedOf(j) === 0 ? ' (a part beside it is too short: it plays as a plain cut)' : ''}`}
               onClick={() => { setScope(j.afterId); onSeek?.(j.at) }}>
               <span className="tabular-nums">{fmt(j.at)}</span>
-              {typeOf(j) !== 'cut' && <i className="tr-scope-dot" aria-label="has a transition" />}
+              {typeOf(j) !== 'cut' && <i className="tr-scope-dot" aria-label={playedOf(j) ? 'has a transition' : 'has a transition, too short to show'} style={playedOf(j) ? undefined : { opacity: 0.35 }} />}
             </button>
           ))}
         </div>
-        {scope === 'all' && picked === null && (
+        {allOn && picked === null && (
           <span className="tr-hint">The cuts have different transitions — picking one sets it on all of them.</span>
         )}
       </div>
 
       <KindTiles picked={picked} label={one ? `Transition at ${fmt(one.at)}` : 'Transition on every cut'} onPick={t => apply(t)}
         weak={targets.every(j => j.sameShot)} />
-      {targets.some(j => j.sameShot) && (
-        <span className="tr-hint" data-tone="warn">
+      {unseen.length > 0 ? (
+        // A kind that won't show picked on a same-shot cut: say so, and offer one that does in a tap
+        <div className="tr-hint flex flex-col gap-2" data-tone="warn" role="alert">
+          <span>
+            {one
+              ? <>{nameOf(typeOf(one))} won&apos;t show here: both sides of this cut are the same shot, framed the same, so it looks like a plain cut.</>
+              : <>At {unseen.map(j => fmt(j.at)).join(', ')}, {[...new Set(unseen.map(j => nameOf(typeOf(j))))].join(' / ')} won&apos;t show: both sides are the same shot, framed the same, so it looks like a plain cut.</>}
+          </span>
+          <span className="flex gap-2">
+            <button type="button" className="tr-play flex-1 justify-center" onClick={() => swap(unseen, 'zoomin')}>Use Zoom</button>
+            <button type="button" className="tr-play flex-1 justify-center" onClick={() => swap(unseen, 'smoothleft')}>Use Whip</button>
+          </span>
+        </div>
+      ) : targets.some(j => j.sameShot && typeOf(j) === 'cut') && (
+        <span className="tr-hint">
           {targets.every(j => j.sameShot) ? 'Both sides of this cut are the same shot, framed the same: ' : 'Some cuts have the same shot on both sides, framed the same: '}{SAME_SHOT_TIP}
         </span>
       )}
@@ -170,28 +286,46 @@ export function TransitionsPanel({ joins, transitions, currentTimeMs, canAddHere
         </span>
       )}
 
-      {anyOn && (
+      {anyOn && (one && one.room < TRANSITION_MIN_SHOWN_MS ? (
+        <span className="tr-hint" data-tone="warn">
+          The {sideName(one)} this cut is only {secs(Math.max(0, Math.round(one.room)))} long: too short for a transition, so it plays as a plain cut. Make that part longer to see it.
+        </span>
+      ) : (
         <div className="flex flex-col gap-1">
           <label className="flex items-center justify-between text-[11.5px]" style={{ color: 'rgb(var(--ed-fg) / 0.6)' }}>
             <span>Length</span>
-            <span className="tabular-nums font-semibold" style={{ color: 'var(--ed-text)' }}>{(ms / 1000).toFixed(1)} s</span>
+            {/* (one cut: what really plays there) */}
+            <span className="tabular-nums font-semibold" style={{ color: 'var(--ed-text)' }}>{mixedLen ? 'Mixed' : secs(one ? playedOf(one) : ms)}</span>
           </label>
-          <input type="range" min={MIN_MS} max={MAX_MS} step={100} value={ms} aria-label="Transition length"
-            onChange={e => {
-              const len = Number(e.target.value)
-              for (const j of targets) if (typeOf(j) !== 'cut') onSet(j.afterId, typeOf(j), len)
-            }} className="tr-range" />
+          {sliderMin < sliderMax && (
+            <input type="range" min={sliderMin} max={sliderMax} step={STEP_MS} value={Math.max(sliderMin, Math.min(ms, sliderMax))} aria-label="Transition length"
+              onChange={e => {
+                const len = Number(e.target.value)
+                for (const j of targets) if (typeOf(j) !== 'cut') onSet(j.afterId, typeOf(j), len)
+              }} className="tr-range" />
+          )}
+          {mixedLen && (
+            <span className="tr-hint">The cuts have different lengths: moving the slider gives them all the same one.</span>
+          )}
+          {one && cap < MAX_MS && (
+            <span className="tr-hint">At most {secs(Math.round(cap))} here: the {sideName(one)} this cut is {secs(Math.round(one.room))} long.</span>
+          )}
+          {shortened.length > 0 && (
+            <span className="tr-hint">
+              Shorter where a part beside the cut is short: {shortened.map(j => `${fmt(j.at)} ${playedOf(j) ? `plays ${secs(playedOf(j))}` : 'plays as a plain cut'}`).join(', ')}.
+            </span>
+          )}
         </div>
-      )}
+      ))}
 
       <div className="flex items-center gap-2">
-        <button type="button" className="tr-play flex-1 justify-center" onClick={() => onPreview(preview.at, typeOf(preview) !== 'cut' ? (trOf(preview)?.duration_ms ?? TRANSITION_DEFAULT_MS) : 0)}
+        <button type="button" className="tr-play flex-1 justify-center" onClick={() => onPreview(preview.at, playedOf(preview))}
           title={`Play the clip through the cut at ${fmt(preview.at)}`}>
           <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M7 5v14l12-7z" /></svg>
           Preview {fmt(preview.at)}
         </button>
-        <button type="button" className="tr-play flex-1 justify-center" disabled={!canAddHere || onJoin} onClick={() => { onAddHere(picked && picked !== 'cut' ? picked : 'fade'); setScope('all') }}
-          title={canAddHere && !onJoin ? `Cut the clip at ${fmt(currentTimeMs)} and add a transition there` : 'Move the playhead inside a part of the clip'}>
+        <button type="button" className="tr-play flex-1 justify-center" disabled={!canAddHere || onJoin} onClick={() => { onAddHere(addType); setScope('all') }}
+          title={canAddHere && !onJoin ? `Cut the clip at ${fmt(currentTimeMs)} and add ${nameOf(addType)} there` : 'Move the playhead inside a part of the clip'}>
           <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.8" strokeLinecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
           Add cut at {fmt(currentTimeMs)}
         </button>
@@ -213,6 +347,8 @@ function KindTiles({ picked, label, disabled, weak, onPick }: {
     <div className="grid grid-cols-3 gap-1.5" role="radiogroup" aria-label={label}>
       {TRANSITION_KINDS.map(k => (
         <button key={k.type} type="button" role="radio" aria-checked={picked === k.type} disabled={disabled}
+          // (drag it onto a cut on the timeline: that cut gets it)
+          draggable={!disabled} onDragStart={e => { e.dataTransfer.setData(TRANSITION_DRAG_TYPE, k.type); e.dataTransfer.effectAllowed = 'copy' }}
           className="tr-tile" data-on={picked === k.type || undefined} data-weak={(weak && NEEDS_CHANGE.includes(k.type)) || undefined}
           title={weak && NEEDS_CHANGE.includes(k.type) ? `${k.name} barely shows between two parts of the same shot` : undefined}
           onClick={() => onPick(k.type)}>

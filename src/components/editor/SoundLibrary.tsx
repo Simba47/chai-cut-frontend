@@ -62,7 +62,9 @@ export function SoundLibrary({ onAdd }: Props) {
         const d = await r.json().catch(() => ({}))
         if (!r.ok) throw new Error(d.error ?? 'The sound library is not available right now.')
         setOff(d.on === false)
-        setItems(prev => (page > 1 ? [...prev, ...d.items.filter((n: SoundItem) => !prev.some(p => p.id === n.id))] : d.items))
+        // (only a proper list of sounds: an odd answer must never break the editor)
+        const got: SoundItem[] = Array.isArray(d.items) ? d.items.filter((n: SoundItem) => n && typeof n.id === 'number' && typeof n.preview === 'string') : []
+        setItems(prev => (page > 1 ? [...prev, ...got.filter(n => !prev.some(p => p.id === n.id))] : got))
         setMore(!!d.more)
       })
       .catch((e: unknown) => { if ((e as { name?: string }).name !== 'AbortError') { setProblem(e instanceof Error ? e.message : 'The sound library is not available right now.'); if (page === 1) setItems([]) } })

@@ -17,6 +17,7 @@ import { useConfirm } from '@/components/editor/ConfirmDialog'
 import { useEditorStore, type KeyframeMap } from '@/modules/editor/store'
 import { editableSnapshot, sameEditable, type EditableSnapshot } from '@/modules/editor/history'
 import { usePlayerStore, liveTime } from '@/modules/player/store'
+import { useFreeWatermark } from '@/components/editor/watermark'
 import { useVideoSync } from '@/modules/player/useSync'
 import { useCaptionStore } from '@/modules/captions/store'
 import { useMediaStore } from '@/modules/media/store'
@@ -100,12 +101,14 @@ export function EditorShellMobile({
 
   // ── Video player ─────────────────────────────────────────────────────────────
   // Videos put in between (inserts.ts): the main video waits while one plays, the clip is longer
+  // The Free plan's watermark shows on the preview, where the export will put it
+  const showWatermark = useFreeWatermark()
   const mobileSegments = useEditorStore(s => s.segments)
   const mobileInserts = useMemo(() => {
     const vid = (clip as unknown as { video_id: string }).video_id
     const all = piecesOf(mobileSegments, vid, s => isShot(s, vid))
     // (pieces only once the parts don't simply follow the video: a video put in between, or a part cut)
-    return insertsOf(mobileSegments, vid).length || all.some(p => p.from != null && Math.abs(p.from - p.at) > 1) ? all : []
+    return insertsOf(mobileSegments, vid).length || all.some(p => (p.from != null && Math.abs(p.from - p.at) > 1) || (p.speed ?? 1) !== 1) ? all : []
   }, [mobileSegments, clip])
   const { videoRef, seekToMs, togglePlay, pause } = useVideoSync(clip.start_ms, clip.end_ms, mobileInserts)
   const { currentTimeMs, durationMs, playing } = usePlayerStore()
@@ -657,7 +660,7 @@ export function EditorShellMobile({
                 {renderElapsed > 0 && <p style={{ fontSize: 10, color: 'rgba(200,255,0,0.7)', fontVariantNumeric: 'tabular-nums' }}>{Math.floor(renderElapsed / 60)}m {renderElapsed % 60}s</p>}
               </div>
             ) : (
-              <OutputCanvas
+              <OutputCanvas watermark={showWatermark}
                 videoRef={videoRef} currentTimeMs={currentTimeMs} clipStartMs={clip.start_ms} clock={mobileInserts.length ? liveTime.get : undefined}
                 activeSegment={playingSegment} getPositionAt={getPositionAt}
                 skipTransitionRef={skipCanvasTransitionRef}
@@ -1013,7 +1016,7 @@ export function EditorShellMobile({
                       {clipStatus === 'rendering' && renderElapsed > 180 && <button onClick={handleReEdit} style={{ fontSize: 12, padding: '8px 16px', borderRadius: 8, background: 'rgba(239,68,68,0.12)', color: '#f87171', border: '1px solid rgba(239,68,68,0.25)', cursor: 'pointer' }}>Stuck? Reset</button>}
                     </div>
                   ) : (
-                    <OutputCanvas
+                    <OutputCanvas watermark={showWatermark}
                       videoRef={videoRef} currentTimeMs={currentTimeMs} clipStartMs={clip.start_ms} clock={mobileInserts.length ? liveTime.get : undefined}
                       activeSegment={playingSegment} getPositionAt={getPositionAt}
                       skipTransitionRef={skipCanvasTransitionRef}

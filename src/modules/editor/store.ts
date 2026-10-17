@@ -8,6 +8,7 @@ import { makeBox, defaultCropForSlot } from './utils'
 import { isFrameLayout, DEFAULT_BAND, defaultFrame, frameOf, placeNewItem } from './frames'
 import { setViewAt, recordMotionAt, removeViewChangeAt, moveViewChange, duplicateViewChange, type ViewKeyframe } from './views'
 import { isShot } from './shots'
+import { useMediaStore } from '@/modules/media/store'
 import type { Range } from '@/lib/cuts'
 
 export type KeyframeMap = Record<string, BoxKeyframe[]>  // boxId → sorted keyframes
@@ -127,15 +128,19 @@ interface EditorActions {
 // Shortest a format can be dragged to
 export const MIN_FORMAT_MS = 300
 
+/** A part's speed (inserts.ts speedOf; here too, without importing it back) */
+const speedOfSeg = (s: { speed?: number | null }) => (s.speed && s.speed > 0 ? s.speed : 1)
+
 // For main-video boxes source_offset_ms is where in the video the position starts, so it must
-// move with start_ms — render.py trims from it. B-roll boxes keep their own offset.
+// move with start_ms — render.py trims from it (by as much video as that time plays: at its
+// speed). B-roll boxes keep their own offset.
 function withStart(seg: SegmentLocal, start_ms: number): SegmentLocal {
   const delta = start_ms - seg.start_ms
   if (!delta) return seg
   return {
     ...seg,
     start_ms,
-    crop_boxes: seg.crop_boxes.map(b => b.source_video_id ? b : { ...b, source_offset_ms: Math.max(0, b.source_offset_ms + delta) }),
+    crop_boxes: seg.crop_boxes.map(b => b.source_video_id ? b : { ...b, source_offset_ms: Math.max(0, b.source_offset_ms + delta * speedOfSeg(seg)) }),
   }
 }
 
@@ -338,11 +343,13 @@ export const useEditorStore = create<EditorState & EditorActions>()((set, get) =
         && Math.abs(b.start_ms - a.end_ms) <= 1
         && !transitionAfter?.has(a.id)
         && a.crop_boxes.length === b.crop_boxes.length
+        // (the same speed, smoothing and pitch: a part slowed down stays its own part)
+        && speedOfSeg(a) === speedOfSeg(b) && !!a.smooth === !!b.smooth && !!a.pitch === !!b.pitch
         // Main video only, playing on without a jump
         && a.crop_boxes.every(box => {
           const other = b.crop_boxes.find(x => x.slot_index === box.slot_index)
           return !!other && !box.source_video_id && !other.source_video_id
-            && Math.abs((box.source_offset_ms + (b.start_ms - a.start_ms)) - other.source_offset_ms) <= 2
+            && Math.abs((box.source_offset_ms + (b.start_ms - a.start_ms) * speedOfSeg(a)) - other.source_offset_ms) <= 2
         })
       // Glue b onto a: a's boxes carry both parts' views. a's view is held right up to where b
       // began (a cut there), so each part keeps the view it had instead of panning across.
@@ -418,7 +425,9 @@ export const useEditorStore = create<EditorState & EditorActions>()((set, get) =
     }
   }),
 
-  splitAtMs: (segId, tMs, getPos) => {
+  splitAtMs: (segId, tAt, getPos) => {
+    // (whole milliseconds: a playhead between two ms would leave cuts that never line up again)
+    const tMs = Math.round(tAt)
     const seg = get().segments.find(s => s.id === segId)
     if (!seg || tMs <= seg.start_ms + 100 || tMs >= seg.end_ms - 100) return null
     const newId = crypto.randomUUID()
@@ -428,7 +437,8 @@ export const useEditorStore = create<EditorState & EditorActions>()((set, get) =
       const newBoxes: CropBoxLocal[] = seg.crop_boxes.map(box => ({
         ...makeBox(box.slot_index, seg.layout, tMs, [{ t_ms: tMs, ...getPos(box.id, tMs) }]),
         source_video_id: box.source_video_id,
-        source_offset_ms: box.source_offset_ms + (tMs - seg.start_ms),
+        // (the main video moves on by as much video as the part plays before the cut: at its speed)
+        source_offset_ms: box.source_offset_ms + (tMs - seg.start_ms) * (box.source_video_id || box.image_path ? 1 : speedOfSeg(seg)),
         // A video on top (or an inserted one) cut in two: both halves keep its sound and hide switches
         ...(onTop(s, seg) || inserted(seg) ? { volume: box.volume, muted: box.muted !== false, ...(box.hidden ? { hidden: true } : {}) } : {}),
       }))
@@ -439,6 +449,10 @@ export const useEditorStore = create<EditorState & EditorActions>()((set, get) =
             id: newId, start_ms: tMs, end_ms: seg.end_ms, layout: seg.layout, sort_order: seg.sort_order + 0.5, crop_boxes: newBoxes,
             ...(seg.lane ? { lane: seg.lane } : {}),
             ...(seg.track ? { track: seg.track } : {}),
+            // (both halves play at the part's speed)
+            ...(speedOfSeg(seg) !== 1 ? { speed: seg.speed } : {}),
+            ...(seg.smooth ? { smooth: true } : {}),
+            ...(seg.pitch ? { pitch: true } : {}),
             // (both halves of an inserted video hold the main video at the same moment)
             ...(inserted(seg) ? { video_offset_ms: seg.video_offset_ms } : {}),
             // Each half keeps its own copy of the frame; items are cut to each half's range when shown
@@ -448,6 +462,13 @@ export const useEditorStore = create<EditorState & EditorActions>()((set, get) =
         keyframes: withBoxes(s.keyframes, newBoxes),
       }
     })
+    // A transition is kept against the part before its cut (after_segment_id). The left half keeps
+    // this part's id, so the transition at this part's end now belongs to the new right half: it
+    // stays on the same cut instead of jumping to the new one
+    const media = useMediaStore.getState()
+    if (media.transitions.some(t => t.after_segment_id === segId)) {
+      media.setTransitions(media.transitions.map(t => (t.after_segment_id === segId ? { ...t, after_segment_id: newId } : t)))
+    }
     return newId
   },
 
