@@ -47,16 +47,7 @@ export async function queueRetranscribe(userId: string, clipId: string, language
  */
 export async function ensureVideoTranscript(videoId: string): Promise<'ready' | 'running'> {
   const [video] = await sql`SELECT storage_path, duration_ms FROM videos WHERE id = ${videoId}`
-  // (to_jsonb: a database whose worker hasn't added the field yet has no whole_video)
-  const [whole] = await sql`
-    SELECT 1 FROM transcripts t WHERE t.video_id = ${videoId} AND (to_jsonb(t)->>'whole_video')::boolean LIMIT 1`
-  if (whole) return 'ready'
-  const [{ minutes }] = await sql`
-    SELECT COUNT(DISTINCT (tw.start_ms / 60000))::int AS minutes FROM transcript_words tw
-    WHERE tw.transcript_id = (SELECT t.id FROM transcripts t WHERE t.video_id = ${videoId}
-      AND EXISTS (SELECT 1 FROM transcript_words WHERE transcript_id = t.id) ORDER BY t.created_at DESC LIMIT 1)`
-  const total = Math.max(1, Math.ceil((video?.duration_ms ?? 60000) / 60000))
-  if (minutes / total >= 0.6) return 'ready'
+  if (await hasWholeTranscript(videoId, video?.duration_ms ?? null)) return 'ready'
   const [last] = await sql`
     SELECT id, status, error, payload->>'reported' AS reported FROM jobs
     WHERE type = 'transcribe' AND payload->>'video_id' = ${videoId} AND payload->>'transcribe_full' = 'true'
@@ -73,9 +64,83 @@ export async function ensureVideoTranscript(videoId: string): Promise<'ready' | 
   }
   if (video?.storage_path) {
     const payload = { video_id: videoId, storage_path: video.storage_path, transcribe_full: true }
-    await sql`INSERT INTO jobs (type, payload, status) VALUES ('transcribe', ${sql.json(payload)}, 'queued')`
+    // One reading per video, even when two asks come at once (two tabs, a double click, AI edit
+    // picked while Best moments asks): the check and the insert hold the video's lock, so the
+    // second ask finds the first one's job instead of paying for the video twice
+    await sql.begin(async tx => {
+      await tx`SELECT pg_advisory_xact_lock(hashtext(${`transcript:${videoId}`}))`
+      const [busy] = await tx`
+        SELECT 1 FROM jobs WHERE type = 'transcribe' AND payload->>'video_id' = ${videoId}
+          AND payload->>'transcribe_full' = 'true' AND status IN ('queued', 'processing') LIMIT 1`
+      if (!busy) await tx`INSERT INTO jobs (type, payload, status) VALUES ('transcribe', ${tx.json(payload)}, 'queued')`
+    })
   }
   return 'running'
+}
+
+/**
+ * Whether the whole video has been read: a transcript saved as the whole video, or (from before
+ * that was recorded) words in most of its minutes. Captions made for one clip (manual edit) only
+ * cover that clip, so they never count.
+ */
+async function hasWholeTranscript(videoId: string, durationMs: number | null): Promise<boolean> {
+  // (to_jsonb: a database whose worker hasn't added the field yet has no whole_video)
+  const [whole] = await sql`
+    SELECT 1 FROM transcripts t WHERE t.video_id = ${videoId} AND (to_jsonb(t)->>'whole_video')::boolean LIMIT 1`
+  if (whole) return true
+  const [{ minutes }] = await sql`
+    SELECT COUNT(DISTINCT (tw.start_ms / 60000))::int AS minutes FROM transcript_words tw
+    WHERE tw.transcript_id = (SELECT t.id FROM transcripts t WHERE t.video_id = ${videoId}
+      AND EXISTS (SELECT 1 FROM transcript_words WHERE transcript_id = t.id) ORDER BY t.created_at DESC LIMIT 1)`
+  const total = Math.max(1, Math.ceil((durationMs ?? 60000) / 60000))
+  return minutes / total >= 0.6
+}
+
+// ── AI edit and manual edit ───────────────────────────────────────────────────
+// The dashboard asks how to make clips. AI edit (Best moments, Ask AI, Make my clips) reads the
+// whole video's words, so picking it starts that reading straight away and the clip board shows
+// how far it is. Manual edit never reads the whole video: a clip's captions are made for that
+// clip alone, in the editor, and never wait for a whole-video reading.
+
+export interface VideoTranscriptState {
+  /** none: never asked for; running: being read now; ready: the whole video is read */
+  status: 'none' | 'running' | 'ready' | 'failed'
+  /** While running: how much has been read (0–100), when the worker says */
+  progress: number | null
+  error: string | null
+}
+
+async function ownVideo(userId: string, videoId: string) {
+  const [video] = await sql<{ user_id: string; duration_ms: number | null }[]>`SELECT user_id, duration_ms FROM videos WHERE id = ${videoId}`
+  if (!video || video.user_id !== userId) throw Object.assign(new Error('Video not found'), { status: 404 })
+  return video
+}
+
+/** How far the whole video's reading is (nothing is started) */
+export async function videoTranscriptState(userId: string, videoId: string): Promise<VideoTranscriptState> {
+  const video = await ownVideo(userId, videoId)
+  if (await hasWholeTranscript(videoId, video.duration_ms)) return { status: 'ready', progress: 100, error: null }
+  const [last] = await sql<{ status: string; error: string | null; read_pct: string | null }[]>`
+    SELECT status, error, payload->>'read_pct' AS read_pct FROM jobs
+    WHERE type = 'transcribe' AND payload->>'video_id' = ${videoId} AND payload->>'transcribe_full' = 'true'
+    ORDER BY created_at DESC LIMIT 1`
+  if (last?.status === 'queued') return { status: 'running', progress: 0, error: null }
+  if (last?.status === 'processing') return { status: 'running', progress: last.read_pct === null ? null : Math.min(99, Number(last.read_pct)), error: null }
+  if (last?.status === 'failed') return { status: 'failed', progress: null, error: readingFailure(last.error) }
+  return { status: 'none', progress: null, error: null }
+}
+
+/** AI edit: start reading the whole video now (once — a reading already made or under way is kept) */
+export async function startVideoTranscript(userId: string, videoId: string): Promise<VideoTranscriptState> {
+  await ownVideo(userId, videoId)
+  // A failed reading is started again here (the worker keeps the parts it had read): the user
+  // picked AI edit again, so they want it
+  const [last] = await sql`
+    SELECT id FROM jobs WHERE type = 'transcribe' AND payload->>'video_id' = ${videoId} AND payload->>'transcribe_full' = 'true'
+      AND status = 'failed' AND NOT (payload ? 'reported') ORDER BY created_at DESC LIMIT 1`
+  if (last) await sql`UPDATE jobs SET payload = payload || '{"reported": true}'::jsonb WHERE id = ${last.id}`
+  await ensureVideoTranscript(videoId).catch(() => { /* its reason is in the state below */ })
+  return videoTranscriptState(userId, videoId)
 }
 
 /** Why a reading failed, in a sentence: the worker's own message, without a failed command's pages of output */

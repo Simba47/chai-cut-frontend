@@ -28,10 +28,16 @@ export async function GET(req: NextRequest) {
           AND EXISTS (SELECT 1 FROM transcript_words WHERE transcript_id = t.id)
         ORDER BY t.created_at DESC LIMIT 1`
 
-  // True while any caption job for this video is waiting or running — the editor keeps polling
-  const [job] = await sql`
-    SELECT 1 FROM jobs WHERE type = 'transcribe' AND payload->>'video_id' = ${videoId}
-      AND status IN ('queued', 'processing') LIMIT 1`
+  // True while a caption job is waiting or running — the editor keeps polling. With ?clip_id=, only
+  // that clip's own (a whole-video reading for AI edit never keeps a clip's editor waiting)
+  const clipId = searchParams.get('clip_id')
+  const [job] = clipId && /^[0-9a-f-]{36}$/i.test(clipId)
+    ? await sql`
+        SELECT 1 FROM jobs WHERE type = 'transcribe' AND payload->>'video_id' = ${videoId}
+          AND payload->>'clip_id' = ${clipId} AND status IN ('queued', 'processing') LIMIT 1`
+    : await sql`
+        SELECT 1 FROM jobs WHERE type = 'transcribe' AND payload->>'video_id' = ${videoId}
+          AND status IN ('queued', 'processing') LIMIT 1`
   const pending = !!job
 
   // The caption job the editor is waiting for (?job=), if it failed: its reason, so the editor can
