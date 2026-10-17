@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { Transition, TransitionType } from '@chai-cut/shared'
 
 /** A place where one section of the main strip ends and the next begins (timeline ms) */
@@ -68,7 +68,7 @@ const SAME_SHOT_TIP = 'Dissolve, Wipe, Circle and Clock look like a plain cut th
  * With no joins yet the tiles still show: picking one splits the clip at the playhead and puts
  * that transition on the new join (onAddHere).
  */
-export function TransitionsPanel({ joins, transitions, currentTimeMs, canAddHere, onAddHere, onSet, onPreview, onSeek, savedAsDissolve }: {
+export function TransitionsPanel({ joins, transitions, currentTimeMs, canAddHere, onAddHere, onSet, onPreview, onSeek, savedAsDissolve, focusJoin }: {
   joins: TransitionJoin[]
   transitions: Transition[]
   currentTimeMs: number
@@ -83,9 +83,12 @@ export function TransitionsPanel({ joins, transitions, currentTimeMs, canAddHere
   onSeek?: (ms: number) => void
   /** The last save kept newer kinds as Dissolve: the database doesn't take them until the backend restarts */
   savedAsDissolve?: boolean
+  /** Opened from the transition button between two parts on the timeline: that cut (`n` changes each time) */
+  focusJoin?: { id: string; n: number } | null
 }) {
   // What the controls apply to: every cut, or one (its section id)
-  const [scope, setScope] = useState<'all' | string>('all')
+  const [scope, setScope] = useState<'all' | string>(() => (focusJoin && joins.some(j => j.afterId === focusJoin.id) ? focusJoin.id : 'all'))
+  useEffect(() => { if (focusJoin && joins.some(j => j.afterId === focusJoin.id)) setScope(focusJoin.id) }, [focusJoin?.n]) // eslint-disable-line react-hooks/exhaustive-deps
 
   if (joins.length === 0) {
     return (
