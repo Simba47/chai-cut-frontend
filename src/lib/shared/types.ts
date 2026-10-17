@@ -399,6 +399,8 @@ export interface Overlay {
   track?: number
   /** Degrees, clockwise, round the box's middle (its rotate handle on the preview) */
   rotation?: number | null
+  /** How see-through it is, 0–1 (a brand kit's logo; absent = solid) */
+  opacity?: number | null
 }
 
 // ─── Editor state (client-only, not persisted as a single blob) ────────────────

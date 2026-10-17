@@ -31,10 +31,12 @@ import { SpinningBorderButton } from '@/components/ui/spinning-border-button'
 import { FramesPanel } from '@/components/editor/FramesPanel'
 import { FrameTextPanel } from '@/components/editor/FrameTextPanel'
 import { useConfirm } from '@/components/editor/ConfirmDialog'
+import { BrandKitPanel, BrandKitStudio, useBrandKits } from '@/components/editor/BrandKit'
+import { isBrandLogo, logoBox, showHandle, type BrandKit } from '@/lib/shared/brandKit'
 import { EditorTour, hasSeenEditorTour } from '@/components/editor/EditorTour'
 import { FrameAddMenu, addChoices, type AddChoice } from '@/components/editor/FrameAddMenu'
 import { createFrameMediaPool } from '@/modules/editor/frameMedia'
-import { FRAME_TEMPLATES, isFrameLayout, frameOf, mainAudioVolume, mainSlotSound, frameLanes, frameSlotLabels, emptySlotStretches, slotOffers, laneInRowKey, newItemCorners, frameSlotCount, itemAt, isTextLane, textLaneLook, type TextLane } from '@/modules/editor/frames'
+import { FRAME_TEMPLATES, isFrameLayout, frameOf, mainAudioVolume, mainSlotSound, frameLanes, frameSlotLabels, emptySlotStretches, slotOffers, laneInRowKey, newItemCorners, frameSlotCount, itemAt, isTextLane, textLaneLook, DEFAULT_BAND, type TextLane } from '@/modules/editor/frames'
 import { signOut } from 'next-auth/react'
 import { PlatformOverlay, PLATFORM_SAFE, type Platform } from '@/components/editor/PlatformOverlay'
 // ── Domain stores ──────────────────────────────────────────────────────────────
@@ -59,7 +61,7 @@ import { angleRows, angleAt, type Angle } from '@/modules/editor/angles'
 import type { SegmentLocal, CropBoxLocal, FrameLayout, FrameLane, FrameItem, TransitionType } from '@chai-cut/shared'
 import { TransitionsPanel, TRANSITION_DEFAULT_MS, type TransitionJoin } from '@/components/editor/TransitionsPanel'
 
-type Tool = 'format' | 'subjects' | 'frames' | 'captions' | 'transitions' | 'text' | 'media' | 'music' | 'cleanup' | 'post'
+type Tool = 'format' | 'subjects' | 'frames' | 'captions' | 'transitions' | 'text' | 'media' | 'music' | 'cleanup' | 'post' | 'brand'
 /** Media: the user's imported media, or Library (stock footage) */
 type MediaFilter = 'all' | 'video' | 'audio' | 'image'
 type SaveState = 'idle' | 'saving' | 'saved' | 'error' | 'retrying'
@@ -159,6 +161,12 @@ const TOOLS: { id: Tool; label: string; title: string; hint: string; icon: React
     id: 'post', label: 'Post', title: 'Post text',
     hint: 'A title, caption and hashtags to post the clip with. Copy them, or have AI write them again.',
     icon: <path d="M9 4L7 20M17 4l-2 16M4.5 9h16M3.5 15h16" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" fill="none" />,
+  },
+  {
+    // (user, 2026-10-17) Its workshop takes the video's place in the middle, for more room
+    id: 'brand', label: 'Brand kit', title: 'Brand kit',
+    hint: 'Your colours, logo, @handle and title style, saved for every clip. Set a kit up, then Apply it to this clip.',
+    icon: <><path d="M12 21a9 9 0 110-18 8.5 8.5 0 018.5 8.2c0 2.6-1.8 3.8-3.8 3.8h-1.9a1.9 1.9 0 00-1 3.5A1.9 1.9 0 0112 21z" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" fill="none" /><circle cx="7.6" cy="11" r="1.3" fill="currentColor" /><circle cx="10.4" cy="7" r="1.3" fill="currentColor" /><circle cx="15.2" cy="7.6" r="1.3" fill="currentColor" /></>,
   },
 ]
 
@@ -2021,7 +2029,10 @@ export function EditorShell({
 
   // Frames work like the Format layouts: picking one mid-section starts a new frame at the playhead
   // (e.g. Single 0:00–0:15, then Dual Video from 0:15), each with its own ◆ keys and lanes
+  // A Branded card picked: it's filled from the brand kit once it's there (see below)
+  const brandFillRef = useRef<{ t: number; until: number } | null>(null)
   function handleApplyFrame(layout: FrameLayout) {
+    brandFillRef.current = layout === 'frame_brand_card' ? { t: currentTimeMs, until: Date.now() + 4000 } : null
     handleLayoutChange(layout, 'fromPlayhead')
   }
   // What a layout or frame picked now will cover (see handleLayoutChange)
@@ -2298,6 +2309,84 @@ export function EditorShell({
   // ── Every delete asks first ─────────────────────────────────────────────────
   const { confirm, dialog: confirmDialog } = useConfirm()
   const UNDO_NOTE = 'You can undo this.'
+
+  // ── Brand kit (user, 2026-10-17) ──────────────────────────────────────────────
+  // The account's kits (components/editor/BrandKit.tsx); Apply puts one on this clip as ordinary
+  // edits — a photo, text styles, frame colours — so it shows in the Preview and the export, and
+  // one Undo takes it all back.
+  const brand = useBrandKits()
+
+  /** A Branded card's text from a kit: its title on top and its @handle below, over the whole card */
+  function brandCardItems(seg: SegmentLocal, kit: BrandKit): FrameItem[] {
+    const d = kit.data, span = { start_ms: seg.start_ms, end_ms: seg.end_ms }
+    const title = d.card_title.trim() || kit.name, handle = showHandle(d.handle)
+    const out: FrameItem[] = []
+    if (title) out.push({ id: crypto.randomUUID(), lane: 'band', kind: 'text', ...span, text: title, bg: textLaneLook(seg, 'band').bg, color: d.title.color, size: d.title.size })
+    if (handle) out.push({ id: crypto.randomUUID(), lane: 'band2', kind: 'text', ...span, text: handle, bg: textLaneLook(seg, 'band2').bg, color: d.colors.accent, size: textLaneLook(seg, 'band2').size })
+    return out
+  }
+  /** A Branded card on the kit's colour, with its title and @handle when it has no text yet */
+  function fillBrandCard(seg: SegmentLocal, kit: BrandKit): SegmentLocal {
+    const f = frameOf(seg)
+    const hasText = (f.items ?? []).some(it => it.kind === 'text')
+    return { ...seg, frame: { ...f, band: { ...DEFAULT_BAND, ...f.band, bg: kit.data.colors.main }, items: hasText ? f.items : [...(f.items ?? []), ...brandCardItems(seg, kit)] } }
+  }
+  // The Branded card just picked in Frames, once it's on the timeline (a pick can ask first)
+  useEffect(() => {
+    const pick = brandFillRef.current, kit = brand.current
+    if (!pick) return
+    if (!kit || Date.now() > pick.until) { brandFillRef.current = null; return }
+    const seg = segments.find(x => x.layout === 'frame_brand_card' && pick.t >= x.start_ms - LAYOUT_SNAP_MS && pick.t < x.end_ms)
+    if (!seg) return
+    brandFillRef.current = null
+    if ((frameOf(seg).items ?? []).some(it => it.kind === 'text')) return
+    useEditorStore.setState(st => ({ segments: st.segments.map(x => (x.id === seg.id ? fillBrandCard(x, kit) : x)) }))
+  }, [segments]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  /**
+   * A kit put on this clip, all as one undo step: its logo over the whole clip (in place of a kit's
+   * logo put on before), its title font and colour on the clip's text, its title colour on frame
+   * text (frame text is always drawn in the frame's own font: render.py _frame_text_font), its main
+   * colour on frame bands, and Branded cards filled. Anything locked is left as it is.
+   */
+  function applyBrandKit(kit: BrandKit) {
+    const d = kit.data
+    setOverlays(prev => {
+      const rest = prev.filter(o => !(o.type === 'image' && isBrandLogo(o.storage_path) && !o.locked))
+      if (!d.logo.path) return rest
+      return [...rest, {
+        id: crypto.randomUUID(), clip_id: clip.id, type: 'image' as const,
+        storage_path: d.logo.path, preview_url: kit.logo_url ?? undefined,
+        source_video_id: null, source_offset_ms: 0, ...logoBox(d.logo),
+        start_ms: 0, end_ms: clipLengthMs, z_index: Math.max(0, ...rest.map(o => o.z_index)) + 1,
+        created_at: new Date().toISOString(), opacity: d.logo.opacity < 0.999 ? d.logo.opacity : null,
+      }]
+    })
+    setTextOverlays(prev => prev.map(t => (t.locked ? t : { ...t, font: d.title.font ?? 'sans-serif', color: d.title.color })))
+    useEditorStore.setState(st => ({
+      segments: st.segments.map(seg => {
+        if (!isFrameLayout(seg.layout) || seg.locked) return seg
+        const f = frameOf(seg), band = { ...DEFAULT_BAND, ...f.band }
+        const card = seg.layout === 'frame_brand_card'
+        const items = (f.items ?? []).map(it => (it.kind !== 'text' || it.locked || it.captions ? it : {
+          ...it,
+          color: card && it.lane === 'band2' ? d.colors.accent : d.title.color,
+          // (a band's text carries the band's colour: it follows it; a see-through or own colour stays)
+          ...(isTextLane(it.lane) && it.bg === band.bg ? { bg: d.colors.main } : {}),
+        }))
+        const next: SegmentLocal = { ...seg, frame: { ...f, band: { ...band, bg: d.colors.main, color: d.title.color }, items } }
+        return card ? fillBrandCard(next, kit) : next
+      }),
+    }))
+  }
+
+  function askDeleteBrandKit(kit: BrandKit) {
+    confirm({
+      title: `Delete “${kit.name}”?`,
+      body: 'The kit goes from your account. Clips it was put on keep their look.',
+      confirmLabel: 'Delete kit',
+    }, () => { brand.remove(kit.id).catch(() => brand.reload()) })
+  }
 
   /**
    * Cut timeline [a, b) out of the clip and close the gap (trimState.ts rippleDelete): that part
@@ -4387,6 +4476,10 @@ export function EditorShell({
               </div>
             )}
 
+            {tool === 'brand' && (
+              <BrandKitPanel brand={brand} onApply={applyBrandKit} onDelete={askDeleteBrandKit} />
+            )}
+
             {tool === 'post' && (
               <div className="p-4">
                 <PostText clipId={clip.id} value={postText} onChange={v => setPostText({ title: v.title, post_caption: v.post_caption, hashtags: v.hashtags })} />
@@ -4564,6 +4657,12 @@ export function EditorShell({
 
         {/* The player: format bar, the video, play controls */}
         <main data-layout-panel="Video view" className="ed-card relative flex flex-col flex-1 min-w-0 min-h-0">
+          {/* Brand kit: its workshop in the video's place (the video stays underneath: the Preview plays from it) */}
+          {tool === 'brand' && optionsOpen && (
+            <div className="absolute inset-0 overflow-hidden" style={{ zIndex: 30, borderRadius: 'inherit', background: 'var(--ed-panel)' }}>
+              <BrandKitStudio brand={brand} onApply={applyBrandKit} onClose={() => toggleOptions(false)} />
+            </div>
+          )}
           {/* Canvas toolbar: two docks, centred — Layout (a segmented switch with a sliding lime
               highlight) and Tools (Split · Motion · Delete). Styles: .ed-dock* in globals.css */}
           <div className="ed-canvas-bar shrink-0 flex items-center justify-center gap-3 px-4" style={{ minHeight: 60, borderBottom: '1px solid rgb(var(--ed-fg) / 0.06)' }}>

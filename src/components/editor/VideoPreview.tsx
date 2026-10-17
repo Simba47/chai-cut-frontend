@@ -2628,7 +2628,7 @@ function OverlayBox({ overlay, isActive, onChange, onSelect, onDelete }: Overlay
         ? <PipVideo overlay={overlay} />
         : imageUrl
         // eslint-disable-next-line @next/next/no-img-element
-        ? <img src={imageUrl} alt="" draggable={false} style={{ width: '100%', height: '100%', objectFit: 'fill', pointerEvents: 'none', display: 'block' }} />
+        ? <img src={imageUrl} alt="" draggable={false} style={{ width: '100%', height: '100%', objectFit: 'fill', pointerEvents: 'none', display: 'block', opacity: overlay.opacity ?? 1 }} />
         : <div style={{ width: '100%', height: '100%', background: `${color}22`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             <span style={{ fontSize: 10, fontWeight: 700, color }}>IMG</span>
           </div>

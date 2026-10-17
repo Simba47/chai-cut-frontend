@@ -288,12 +288,12 @@ export const FRAME_TEMPLATES: Record<FrameLayout, FrameTemplate> = {
  * split, Close-up + wide, Picture in picture, Comment reply, Big + Small, Top list, Letterbox wide,
  * Dual + Letterbox, Video + Photo, News, Audiogram, Photo Story, 2×2 grid) stay defined above so
  * clips that already use them still show, edit and export as before; they just aren't offered for
- * new frames. Branded card is kept for the brand kit planned later (a saved colour, title and
- * @handle for every clip), not offered as a frame.
+ * new frames. Branded card is back with the brand kit (user, 2026-10-17): picked, it starts with the
+ * kit's colour, title and @handle (EditorShell fillBrandCard).
  */
 export const FRAME_LAYOUTS: FrameLayout[] = [
   'frame_single', 'frame_title_caption', 'frame_blur_fill', 'frame_dual', 'frame_screenshot', 'frame_triple',
-  'frame_trio_main', 'frame_side_by_side', 'frame_screen_face',
+  'frame_trio_main', 'frame_side_by_side', 'frame_screen_face', 'frame_brand_card',
 ]
 
 export function isFrameLayout(layout: LayoutType | string | null | undefined): layout is FrameLayout {
