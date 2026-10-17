@@ -38,6 +38,8 @@ interface Props {
   onRemoveFrame: (segId: string) => void
   /** Take the main video out of a slot */
   onRemoveMain: (segId: string, slot: number) => void
+  /** The brand kit's frames: shown first, marked as the brand's */
+  brandFrames?: FrameLayout[]
 }
 
 const MOTIONS: { id: SlotMotion; label: string }[] = [
@@ -52,7 +54,7 @@ function msToLabel(ms: number) {
 
 /** Mini diagram of a frame: each area where it sits — slots as tinted tiles (round where they are),
  *  text areas with text lines, the caption strip as a highlighted line, the sound wave as bars */
-function FrameThumb({ layout }: { layout: FrameLayout }) {
+export function FrameThumb({ layout }: { layout: FrameLayout }) {
   const tints = ['#60a5fa', '#34d399', '#f472b6', '#fbbf24']
   const base = frameBase(layout)
   return (
@@ -124,7 +126,7 @@ function Chevron({ open }: { open: boolean }) {
 
 export function FramesPanel({
   frames, segment, targetLabel, currentTimeMs, videoTitles, selected, onToggleLock,
-  onApply, onOpenFrame, onSelectItem, onUpdateItem, onRemoveItem, onUpdateFrame, onReplaceMedia, onRemoveFrame, onRemoveMain,
+  onApply, onOpenFrame, onSelectItem, onUpdateItem, onRemoveItem, onUpdateFrame, onReplaceMedia, onRemoveFrame, onRemoveMain, brandFrames = [],
 }: Props) {
   const current = segment && isFrameLayout(segment.layout) ? segment.layout : null
   // Which frames are opened up; the one under the playhead opens by itself
@@ -143,15 +145,17 @@ export function FramesPanel({
         )}
         {/* 4 across, the most used first. A clip already using a frame no longer offered still shows it here */}
         <div className="grid grid-cols-4 gap-1.5">
-          {[...FRAME_LAYOUTS, ...frames.map(f => f.layout as FrameLayout).filter((l, i, all) => isFrameLayout(l) && !FRAME_LAYOUTS.includes(l) && all.indexOf(l) === i)].map(id => {
+          {[...brandFrames, ...FRAME_LAYOUTS.filter(l => !brandFrames.includes(l)), ...frames.map(f => f.layout as FrameLayout).filter((l, i, all) => isFrameLayout(l) && !FRAME_LAYOUTS.includes(l) && all.indexOf(l) === i)].map(id => {
             const t = FRAME_TEMPLATES[id]
             const on = current === id
+            const ours = brandFrames.includes(id)
             return (
               <button key={id} onClick={() => onApply(id)} disabled={!targetLabel} aria-pressed={on} title={t.description}
                 className="min-w-0 flex flex-col items-center gap-1 px-0.5 py-1.5 rounded-lg text-center transition-colors disabled:opacity-40 hover:bg-[rgb(var(--ed-fg)/0.05)]"
                 style={{ background: on ? 'rgb(var(--ed-fg) / 0.08)' : 'rgb(var(--ed-fg) / 0.02)', boxShadow: `inset 0 0 0 ${on ? 1.5 : 1}px ${on ? ACCENT : 'rgb(var(--ed-fg) / 0.08)'}` }}>
                 <FrameThumb layout={id} />
                 <span className="w-full text-[9.5px] font-semibold leading-[1.15]" style={{ color: on ? 'var(--ed-text)' : 'rgb(var(--ed-fg) / 0.75)' }}>{t.name}</span>
+                {ours && <span className="text-[8.5px] font-bold uppercase tracking-wide" style={{ color: 'var(--ed-accent-text)' }} title="One of your brand kit's frames">Brand</span>}
               </button>
             )
           })}

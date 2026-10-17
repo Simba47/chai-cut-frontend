@@ -285,6 +285,9 @@ export async function addBestMoments(userId: string, videoId: string): Promise<{
         })))}
         RETURNING id, start_ms, end_ms`
     : []
+  // The account's default brand kit on them (services/brandKits.ts)
+  const { brandNewClips } = await import('./brandKits')
+  await brandNewClips(userId, rows.map(r => ({ id: r.id, lengthMs: r.end_ms - r.start_ms })))
   // Pair each new clip with its moment by time (RETURNING order isn't guaranteed)
   const clipIdOf = new Map<ClipSuggestion, string>()
   for (const s of toSave) {
@@ -424,11 +427,23 @@ export const AUTO_CLIP_COUNTS = [3, 5, 10] as const
 
 /** The Make my clips checkboxes (each on unless false), and what the captions and the title are written in */
 export interface AutoClipOptions {
+  /** The brand kit put on the clips: 'default' (the account's default kit, if any), 'none', or a kit's id */
+  brandKit?: string
   captions?: boolean; title?: boolean; motion?: boolean; layouts?: boolean
   /** 'native' = the speaker's own script (Telugu, Hindi letters); 'roman' = English letters (Tenglish, Hinglish…) */
   captionLanguage?: 'native' | 'roman'
   /** 'roman' = English letters in the speaker's language; 'english'; 'native' = the speaker's own script */
   titleLanguage?: 'roman' | 'english' | 'native'
+}
+
+/** The brand kit Make my clips puts on its clips: 'none', one of the user's own kits, else 'default' (the worker's lib/brandKit.ts) */
+async function brandKitChoice(userId: string, want: string | undefined): Promise<string> {
+  if (want === 'none') return 'none'
+  if (want && /^[0-9a-f-]{36}$/i.test(want)) {
+    const [own] = await sql`SELECT 1 FROM brand_kits WHERE id = ${want} AND user_id = ${userId}`.catch(() => [])
+    if (own) return want
+  }
+  return 'default'
 }
 
 export async function createAutoClips(userId: string, videoId: string, clipCount = 5, addBroll = false, options: AutoClipOptions = {}) {
@@ -474,6 +489,7 @@ export async function createAutoClips(userId: string, videoId: string, clipCount
     motion: options.motion !== false, layouts: options.layouts !== false,
     caption_language: options.captionLanguage === 'roman' ? 'roman' : 'native',
     title_language: options.titleLanguage === 'english' || options.titleLanguage === 'native' ? options.titleLanguage : 'roman',
+    brand_kit: await brandKitChoice(userId, options.brandKit),
   }
   await sql`INSERT INTO jobs (type, payload, status) VALUES ('ai_edit', ${sql.json(payload)}, 'queued')`
   return { ai_edit_job_id: aiJob.id as string }

@@ -1,5 +1,6 @@
 'use client'
 
+import { useBrandPalette, useBrandLock, withBrand } from './brandPalette'
 import { InfoTip } from '@/components/ui/info-tip'
 import { useEffect, useRef, useState } from 'react'
 import type { TextOverlay } from '@chai-cut/shared'
@@ -321,21 +322,28 @@ function Slider({ label, value, min, max, step, suffix = '', onChange }: {
 }
 
 function Swatches({ label, value, onChange }: { label: string; value: string; onChange: (c: string) => void }) {
-  const isPreset = COLORS.some(c => c.toLowerCase() === value.toLowerCase())
+  // The brand kit's colours first (components/editor/brandPalette.ts)
+  const brand = useBrandPalette()
+  // (brand lock: the team kit's colours only, and no free picker)
+  const lock = useBrandLock()
+  const colors = lock ? lock.colors : withBrand(brand, COLORS)
+  const isPreset = colors.some(c => c.toLowerCase() === value.toLowerCase())
   return (
     <div className="flex flex-col gap-2">
       <span className="cap-label">{label}</span>
       <div className="flex flex-wrap items-center gap-2">
-        {COLORS.map(c => (
-          <button key={c} onClick={() => onChange(c)} aria-label={`${label} ${c}`} aria-pressed={c.toLowerCase() === value.toLowerCase()}
+        {colors.map(c => (
+          <button key={c} onClick={() => onChange(c)} aria-label={`${label} ${c}${brand.includes(c.toLowerCase()) ? ' (brand colour)' : ''}`} aria-pressed={c.toLowerCase() === value.toLowerCase()}
+            title={brand.includes(c.toLowerCase()) ? 'Brand colour' : undefined}
             className="cap-swatch" data-on={c.toLowerCase() === value.toLowerCase() || undefined} style={{ background: c }} />
         ))}
-        <label title="Pick any colour" className="cap-swatch" data-on={!isPreset || undefined}
+        {!lock && <label title="Pick any colour" className="cap-swatch" data-on={!isPreset || undefined}
           style={{ position: 'relative', cursor: 'pointer', background: 'conic-gradient(red 0deg, yellow 60deg, lime 120deg, cyan 180deg, blue 240deg, magenta 300deg, red 360deg)' }}>
           <input type="color" value={/^#[0-9a-f]{6}$/i.test(value) ? value : '#ffffff'} onChange={e => onChange(e.target.value)} aria-label={`Pick any ${label.toLowerCase()}`}
             style={{ position: 'absolute', inset: 0, opacity: 0, cursor: 'pointer', width: '100%', height: '100%' }} />
-        </label>
+        </label>}
       </div>
+      {lock && <span className="text-[10.5px]" style={{ color: 'rgb(var(--ed-fg) / 0.45)' }}>Brand lock: {lock.by}&rsquo;s colours</span>}
     </div>
   )
 }

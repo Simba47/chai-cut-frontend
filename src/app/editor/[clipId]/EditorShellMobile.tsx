@@ -669,7 +669,7 @@ export function EditorShellMobile({
                 onOverlayChange={updateOverlay} onSelectOverlay={setActiveOverlayId} onDeleteOverlay={askDeleteOverlay}
                 textOverlays={textOverlays} activeTextOverlayId={activeTextOverlayId}
                 onTextOverlayChange={updateTextOverlay} onSelectTextOverlay={setActiveTextOverlayId} onDeleteTextOverlay={askDeleteTextOverlay}
-                onCaptionPositionChange={y => updateCaptionStyle({ position_y: y })}
+                onCaptionPositionChange={(y, x) => updateCaptionStyle({ position_y: y, position_x: x })}
                 style={{ width: '100%', height: '100%', display: 'block' }}
               />
             )}
@@ -1025,7 +1025,7 @@ export function EditorShellMobile({
                       onOverlayChange={updateOverlay} onSelectOverlay={setActiveOverlayId} onDeleteOverlay={askDeleteOverlay}
                       textOverlays={textOverlays} activeTextOverlayId={activeTextOverlayId}
                       onTextOverlayChange={updateTextOverlay} onSelectTextOverlay={setActiveTextOverlayId} onDeleteTextOverlay={askDeleteTextOverlay}
-                      onCaptionPositionChange={y => updateCaptionStyle({ position_y: y })}
+                      onCaptionPositionChange={(y, x) => updateCaptionStyle({ position_y: y, position_x: x })}
                       style={{ width: '100%', height: 'auto', display: 'block' }}
                     />
                   )}

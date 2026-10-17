@@ -1,5 +1,6 @@
 import sql from '@/lib/db'
 import { cleanTrims, trimMap, MAX_CLIP_MS, MIN_CLIP_MS } from '@/lib/trims'
+import { cleanProgressBar } from '@/lib/shared/brandKit'
 import type { SegmentLocal, BoxKeyframeLocal, CaptionStyle, TextOverlay, AudioTrack, Transition, Overlay, FrameSettings, FrameItem, CornerStyle } from '@chai-cut/shared'
 
 interface CreateClipInput {
@@ -27,7 +28,9 @@ export async function createClip(userId: string, input: CreateClipInput) {
   if (!clip) throw Object.assign(new Error('Failed to create clip'), { status: 500 })
 
   // No captions yet: they cost money, so the clip opens with captions off and they're made when
-  // switched on in the editor (for this clip only)
+  // switched on in the editor (for this clip only). The account's default brand kit goes on it
+  const { brandNewClips } = await import('./brandKits')
+  await brandNewClips(userId, [{ id: clip.id as string, lengthMs: endMs - startMs }])
 
   return { clip_id: clip.id, layout }
 }
@@ -44,6 +47,8 @@ interface SaveClipInput {
   removeFillers?: boolean
   /** The clip's own sound (top of the Music panel) */
   originalSound?: { volume: number; muted: boolean }
+  /** The clip's progress bar (Brand kit panel), null = none; left out by an editor that doesn't know it: what's saved stays */
+  progressBar?: unknown
   /**
    * Parts of the video removed from the clip: [[start, end], …] in ms of the source video
    * (lib/trims.ts). Left out by an editor that doesn't know about them: what's saved stays.
@@ -148,6 +153,8 @@ export async function saveClip(userId: string, clipId: string, body: SaveClipInp
   const hasPresetFields = await captionPresetFields()
   // The caption style (template): saved once the backend has added its field
   const hasTemplateField = await hasColumn('caption_styles', 'template')
+  // Captions moved left or right, once the worker has added the field
+  const hasCaptionX = await hasColumn('caption_styles', 'position_x')
   // The newer kinds of transition: saved as they are once the backend allows them (else the nearest older kind)
   const allTransitionKinds = await transitionKindsAllowed()
   const hasRemoveFillers = typeof body.removeFillers === 'boolean' && await clipsHasRemoveFillers()
@@ -175,6 +182,9 @@ export async function saveClip(userId: string, clipId: string, body: SaveClipInp
     && await hasColumn('clips', 'layers')
   const original = body.originalSound
   const hasOriginal = !!original && typeof original.volume === 'number' && await hasColumn('clips', 'original_volume')
+  // The progress bar, once the worker has added the field
+  const bar = body.progressBar === undefined ? undefined : cleanProgressBar(body.progressBar)
+  const savesBar = bar !== undefined && await hasColumn('clips', 'progress_bar')
 
   // Transitions the database can't take yet (before the backend widens its check): saved as a
   // Dissolve, and the editor is told how many, so it can say so
@@ -239,7 +249,8 @@ export async function saveClip(userId: string, clipId: string, body: SaveClipInp
       const styleFields = ['font', 'size', 'color', 'position', 'position_y', 'animation', 'language', 'translated_from_language', 'timing_offset_ms',
         // Animated presets. Not emphasis: the export fills that in, and the editor's copy may be stale.
         ...(hasPresetFields ? PRESET_STYLE_FIELDS : []),
-        ...(hasTemplateField ? ['template'] : [])]
+        ...(hasTemplateField ? ['template'] : []),
+        ...(hasCaptionX ? ['position_x'] : [])]
       const onOff = hasEnabledField ? { enabled: captionEnabled } : {}
       const entries = Object.entries(captionStyle).filter(([k, v]) => styleFields.includes(k) && v !== undefined)
       const fields: Record<string, unknown> = Object.fromEntries(entries)
@@ -266,6 +277,7 @@ export async function saveClip(userId: string, clipId: string, body: SaveClipInp
     }
     if (trims) q.push(tx`UPDATE clips SET trim_ranges = ${trims.length ? sql.json(trims as never) : null} WHERE id = ${clipId}`)
     if (savesLayers) q.push(tx`UPDATE clips SET layers = ${body.layers ? sql.json(body.layers as never) : null} WHERE id = ${clipId}`)
+    if (savesBar) q.push(tx`UPDATE clips SET progress_bar = ${bar ? sql.json(bar as never) : null} WHERE id = ${clipId}`)
     if (hasOriginal) {
       q.push(tx`UPDATE clips SET original_volume = ${Math.max(0, Math.min(1, original!.volume))}, original_muted = ${!!original!.muted} WHERE id = ${clipId}`)
     }
@@ -360,6 +372,11 @@ export async function deleteClips(userId: string, clipIds: unknown) {
   // Songs uploaded for these clips (stored per upload; another clip can't share one)
   const stillUsed = new Set((await sql<{ storage_path: string }[]>`
     SELECT storage_path FROM audio_tracks WHERE storage_path = ANY(${songs.map(s => s.storage_path)})`).map(r => r.storage_path))
+  // (a brand kit's music or sound logo stays: the kit still uses it)
+  if (songs.length) {
+    const kits = await sql<{ d: string }[]>`SELECT data::text AS d FROM brand_kits WHERE user_id = ${userId}`.catch(() => [])
+    for (const s of songs) if (kits.some(k => k.d.includes(s.storage_path))) stillUsed.add(s.storage_path)
+  }
   await deleteR2Keys(songs.map(s => s.storage_path).filter(p => !stillUsed.has(p)))
   return { deleted: ids.length }
 }
@@ -580,9 +597,12 @@ export async function regenerateClipText(userId: string, clipId: string) {
   if (!words.length) throw Object.assign(new Error('This clip has no captions yet, so there is nothing to write from'), { status: 400 })
 
   const { generateClipText } = await import('@/lib/clipText')
+  // In the account's default brand kit's voice, when it has one (services/brandKits.ts)
+  const { defaultBrandKit } = await import('./brandKits')
+  const voice = (await defaultBrandKit(userId))?.voice ?? null
   let text
   try {
-    text = await generateClipText(words, clip.video_title ?? null, prompt => askGemini(prompt))
+    text = await generateClipText(words, clip.video_title ?? null, prompt => askGemini(prompt), 'roman', voice)
   } catch (e) {
     console.error('[ai-text] Gemini error:', e)
     throw Object.assign(new Error('AI could not write the text right now. Try again in a moment.'), { status: 502 })

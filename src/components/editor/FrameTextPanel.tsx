@@ -1,5 +1,6 @@
 'use client'
 
+import { useBrandPalette, useBrandLock, withBrand } from './brandPalette'
 import { InfoTip } from '@/components/ui/info-tip'
 import { EmojiButton, insertAtCursor } from './EmojiPicker'
 import type { SegmentLocal, FrameItem, FrameLane, FrameBand } from '@chai-cut/shared'
@@ -151,7 +152,12 @@ function pickStyle(it: FrameItem) {
   return out
 }
 
-function Swatches({ title, colors, value, onChange }: { title: string; colors: string[]; value: string; onChange: (c: string) => void }) {
+function Swatches({ title, colors: own, value, onChange }: { title: string; colors: string[]; value: string; onChange: (c: string) => void }) {
+  // The brand kit's colours first (components/editor/brandPalette.ts); "none" stays where it was
+  // (brand lock: the team kit's colours only, and no free picker)
+  const lock = useBrandLock()
+  const palette = withBrand(useBrandPalette(), own)
+  const colors = lock ? [...lock.colors, ...own.filter(c => c === 'none')] : palette
   const isPreset = colors.some(c => c.toLowerCase() === value.toLowerCase())
   return (
     <div className="flex flex-col gap-1.5">
@@ -169,12 +175,13 @@ function Swatches({ title, colors, value, onChange }: { title: string; colors: s
               }} />
           )
         })}
-        <label style={{ width: 22, height: 22, borderRadius: '50%', position: 'relative', cursor: 'pointer', flexShrink: 0 }} title="Custom colour">
+        {!lock && <label style={{ width: 22, height: 22, borderRadius: '50%', position: 'relative', cursor: 'pointer', flexShrink: 0 }} title="Custom colour">
           <span style={{ position: 'absolute', inset: 0, borderRadius: '50%', background: 'conic-gradient(red, yellow, lime, cyan, blue, magenta, red)', border: `2px solid ${!isPreset ? ACCENT : 'rgb(var(--ed-fg) / 0.2)'}` }} />
           <input type="color" value={value.startsWith('#') ? value : '#000000'} onChange={e => onChange(e.target.value)} aria-label={`Custom ${title.toLowerCase()}`}
             style={{ position: 'absolute', inset: 0, opacity: 0, width: '100%', height: '100%', cursor: 'pointer' }} />
-        </label>
+        </label>}
       </div>
+      {lock && <span className="text-[10.5px]" style={{ color: 'rgb(var(--ed-fg) / 0.45)' }}>Brand lock: {lock.by}&rsquo;s colours</span>}
     </div>
   )
 }

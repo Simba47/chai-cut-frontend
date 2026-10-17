@@ -898,7 +898,7 @@ export function Timeline({
     onEdge: ((e: React.PointerEvent, edge: 'start' | 'end') => void) | null, title: string, inside?: React.ReactNode) => {
     const color = MEDIA_COLORS[kind]
     return (
-      <div key={key} className="tl2-bar absolute" data-sel={sel || undefined} data-kind={kind} onPointerDown={onBody} title={title}
+      <div key={key} className="tl2-bar absolute" data-sel={sel || undefined} data-kind={kind} data-item-id={key} onPointerDown={onBody} title={title}
         style={{
           left: `${at(start)}%`, width: `max(10px, ${pct(end - start)}%)`,
           '--bar-c': color, cursor: st.locked ? 'pointer' : on ? 'grabbing' : 'grab', zIndex: sel ? 3 : 1,

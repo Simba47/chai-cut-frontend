@@ -20,6 +20,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ vid
     return NextResponse.json(await createAutoClips(user.id, videoId, clipCount, body?.add_broll === true, {
       captions: on('captions'), title: on('title'), motion: on('motion'), layouts: on('layouts'),
       captionLanguage: body?.caption_language, titleLanguage: body?.title_language,
+      // 'default' (the account's default kit), 'none', or a kit's id
+      brandKit: typeof body?.brand_kit === 'string' ? body.brand_kit : undefined,
     }))
   } catch (err: unknown) {
     const e = err as { message?: string; status?: number }

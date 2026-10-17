@@ -240,6 +240,8 @@ export interface CaptionStyle {
   color: string | null
   position: string | null
   position_y: number | null
+  /** Where the captions are centred left to right, 0–1 of the width (dragged on the preview); null = the middle */
+  position_x?: number | null
   animation: AnimationType
   /** Letters the captions are shown in: 'roman' = English letters (e.g. Tenglish); 'auto'/null = the spoken language's own script */
   language: string | null

@@ -287,6 +287,15 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
   const [countText, setCountText] = useState('5')
   const [autoOpts, setAutoOpts] = useState<Record<AutoOption, boolean>>({ captions: true, title: true, motion: true, layouts: true })
   // What the captions and the title are written in (remembered per browser, like the checkboxes)
+  // Make my clips: the brand kit its clips get ('default': the account's default kit; 'none'; or a kit's id)
+  const [brandKits, setBrandKits] = useState<Array<{ id: string; name: string; isDefault: boolean }>>([])
+  const [brandPick, setBrandPick] = useState<string>('default')
+  useEffect(() => {
+    fetch('/api/brand-kits').then(r => (r.ok ? r.json() : null))
+      .then((d: { kits?: Array<{ id: string; name: string; data?: { is_default?: boolean } }> } | null) => {
+        if (d?.kits) setBrandKits(d.kits.map(k => ({ id: k.id, name: k.name, isDefault: !!k.data?.is_default })))
+      }).catch(() => { /* no kits shown */ })
+  }, [])
   const [captionLang, setCaptionLang] = useState<CaptionLanguage>('native')
   const [titleLang, setTitleLang] = useState<TitleLanguage>('roman')
   function pickLanguage(next: { caption?: CaptionLanguage; title?: TitleLanguage }) {
@@ -686,7 +695,7 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
       const res = await fetch(`/api/videos/${video.id}/auto-clips`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ clip_count: count, add_broll: autoBroll, ...autoOpts, caption_language: captionLang, title_language: titleLang }),
+        body: JSON.stringify({ clip_count: count, add_broll: autoBroll, ...autoOpts, caption_language: captionLang, title_language: titleLang, brand_kit: brandPick }),
       })
       if (!res.ok) throw new Error((await res.json()).error ?? 'Could not start making clips')
       await loadAutoClips()
@@ -1244,6 +1253,22 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
               </label>
             )
           })}
+          {/* The brand kit the clips get (shown once the account has a kit) */}
+          {brandKits.length > 0 && (() => {
+            const def = brandKits.find(k => k.isDefault)
+            return (
+              <label className="mmc-row flex items-center gap-2 text-[11px]" data-off={autoRunning || undefined} style={{ color: 'rgba(255,255,255,0.6)' }}>
+                <span className="shrink-0 w-[52px]">Brand</span>
+                <select value={brandPick} disabled={autoRunning} onChange={e => setBrandPick(e.target.value)}
+                  aria-label="The brand kit the clips get"
+                  className="mmc-select flex-1 min-w-0 px-2 py-1.5 rounded-md text-[11px] text-white outline-none">
+                  <option value="default">{def ? `Default · ${def.name}` : 'Default (none set)'}</option>
+                  {brandKits.filter(k => !k.isDefault).map(k => <option key={k.id} value={k.id}>{k.name}</option>)}
+                  <option value="none">No brand kit</option>
+                </select>
+              </label>
+            )
+          })()}
         </div>
 
         {autoError && <p className="text-xs" style={{ color: '#f87171' }}>{autoError}</p>}

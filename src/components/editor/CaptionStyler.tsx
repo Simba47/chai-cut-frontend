@@ -1,5 +1,7 @@
 'use client'
 
+import { useBrandPalette, useBrandLock } from './brandPalette'
+import { useBrandFonts, ensureBrandFont } from './brandFonts'
 import { CAPTION_TEMPLATE_LIST, TEMPLATE_FONTS, TEMPLATE_GROUPS, applyTemplate, templateFontFamily, templateOf, type CaptionTemplate } from '@/modules/captions/templates'
 import { useEffect, useRef, useState } from 'react'
 import type { AnimationType, CaptionStyle } from '@chai-cut/shared'
@@ -56,7 +58,14 @@ interface FontPickerProps {
 export function FontPicker({ value, onChange }: FontPickerProps) {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
-  const current = VIDEO_FONTS.find(f => f.family === (value ?? 'sans-serif')) ?? VIDEO_FONTS[0]
+  // A brand kit's own fonts first (components/editor/brandFonts.ts)
+  const brandFonts = useBrandFonts()
+  // (brand lock with fonts named: only those)
+  const lock = useBrandLock()
+  const allFonts = [...brandFonts, ...VIDEO_FONTS]
+  const all = lock?.fonts.length ? allFonts.filter(f => lock.fonts.includes(f.family)) : allFonts
+  const current = all.find(f => f.family === (value ?? 'sans-serif')) ?? (value && value.startsWith('BrandFont-') ? { family: value, name: 'Brand font' } : VIDEO_FONTS[0])
+  useEffect(() => { ensureBrandFont(value) }, [value])
 
   useEffect(() => { loadVideoFonts() }, [])
 
@@ -106,11 +115,15 @@ export function FontPicker({ value, onChange }: FontPickerProps) {
               scrollbarWidth: 'thin',
             }}
           >
-            {VIDEO_FONTS.map(f => {
+            {brandFonts.length > 0 && (
+              <div className="px-4 pt-2 pb-1 text-[10px] font-bold uppercase tracking-wider" style={{ color: 'rgb(var(--ed-fg) / 0.4)' }}>Brand fonts</div>
+            )}
+            {all.map((f, i) => {
               const active = current.family === f.family
               return (
                 <button
                   key={f.family}
+                  data-brand-font={i < brandFonts.length || undefined}
                   onClick={() => { onChange(f.family); setOpen(false) }}
                   className="w-full text-left px-4 py-2.5"
                   style={{
@@ -368,6 +381,13 @@ function ColourField({ label, value, onChange, open, onToggle }: {
 }) {
   const [hexDraft, setHexDraft] = useState<string | null>(null)
   const hue = hexToHue(value)
+  // The brand kit's colours first (components/editor/brandPalette.ts)
+  const brand = useBrandPalette()
+  // (brand lock: the team kit's colours only, no hue slider or code)
+  const lock = useBrandLock()
+  const cells = lock
+    ? lock.colors.map(hex => ({ hex, name: 'Brand colour' }))
+    : [...brand.map(hex => ({ hex, name: 'Brand colour' })), ...PALETTE.filter(c => !brand.includes(c.hex.toLowerCase()))]
   return (
     <div className="cp-field" data-open={open || undefined}>
       <button type="button" className="cp-field-head" onClick={onToggle} aria-expanded={open}>
@@ -381,12 +401,14 @@ function ColourField({ label, value, onChange, open, onToggle }: {
       {open && (
         <div className="cp-panel">
           <div className="grid grid-cols-8 gap-1.5">
-            {PALETTE.map(c => (
+            {cells.map(c => (
               <button key={c.hex} type="button" onClick={() => onChange(c.hex)} title={c.name}
                 aria-label={`${label} colour ${c.name}`} aria-pressed={sameHex(c.hex, value)}
                 className="cp-cell" data-on={sameHex(c.hex, value) || undefined} style={{ background: c.hex }} />
             ))}
           </div>
+          {lock && <span className="cp-mini">Brand lock: {lock.by}&rsquo;s colours</span>}
+          {!lock && <>
           <div className="flex flex-col gap-1.5">
             <span className="cp-mini">Any colour</span>
             <input type="range" min={0} max={359} step={1} value={hue} aria-label={`${label} colour hue`}
@@ -403,6 +425,7 @@ function ColourField({ label, value, onChange, open, onToggle }: {
               }}
               onBlur={() => setHexDraft(null)} />
           </label>
+          </>}
         </div>
       )}
     </div>

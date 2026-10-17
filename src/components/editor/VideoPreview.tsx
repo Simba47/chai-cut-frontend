@@ -16,6 +16,7 @@ import { useLiveTimeMs, liveTime, usePlayerStore } from '@/modules/player/store'
 import { addedVideoBox } from '@/modules/editor/visibility'
 import { trackPresentedFrame } from '@/modules/player/presentedFrame'
 import { drawWatermark } from './watermark'
+import type { ProgressBar } from '@/lib/shared/brandKit'
 
 const BOX_COLORS = ['#22c55e', '#3b82f6', '#f59e0b']
 // What each slot becomes in the 9:16 output, top to bottom
@@ -1296,6 +1297,26 @@ function drawCaptions(
   /** Filled in with where the captions were drawn */
   out?: CaptionRectOut,
 ) {
+  // Moved left or right (position_x): drawn centred there, as the export does (render.py
+  // _caption_x); in a frame's text band they stay in its middle
+  const dx = band ? 0 : (Math.min(1, Math.max(0, style.position_x ?? 0.5)) - 0.5) * ctx.canvas.width
+  if (!dx) { drawCaptionsCentred(ctx, chunks, tMs, style, textCase, band, out); return }
+  ctx.save()
+  ctx.translate(dx, 0)
+  try { drawCaptionsCentred(ctx, chunks, tMs, style, textCase, band, out) } finally { ctx.restore() }
+  if (out?.rect) out.rect = { ...out.rect, x: out.rect.x + dx / ctx.canvas.width }
+}
+
+/** The captions drawn centred left to right (drawCaptions moves them where they were dragged) */
+function drawCaptionsCentred(
+  ctx: CanvasRenderingContext2D,
+  chunks: FlatWord[][],
+  tMs: number,
+  style: Partial<CaptionStyle>,
+  textCase: TextCase,
+  band?: { y: number; h: number } | null,
+  out?: CaptionRectOut,
+) {
   const W = ctx.canvas.width, H = ctx.canvas.height
   const chunk = findCaptionChunk(chunks, tMs)
   if (!chunk) return
@@ -1649,7 +1670,8 @@ interface OutputCanvasProps {
   onTextOverlayChange?: (id: string, updates: Partial<TextOverlayType>) => void
   onSelectTextOverlay?: (id: string | null) => void
   onDeleteTextOverlay?: (id: string) => void
-  onCaptionPositionChange?: (y: number) => void
+  /** The captions dragged on the preview: where they're centred now (shares of the frame) */
+  onCaptionPositionChange?: (y: number, x: number) => void
   /** The captions' corner handles dragged on the preview: their new size (as the Size slider) */
   onCaptionSizeChange?: (size: number) => void
   /**
@@ -1659,6 +1681,8 @@ interface OutputCanvasProps {
   transitionCuts?: TransitionCut[]
   /** The Free plan's watermark: drawn last, over everything, where the export puts it (watermark.ts) */
   watermark?: boolean
+  /** The clip's progress bar (a brand kit's) and the clip's length it fills over; null = none */
+  progressBar?: (ProgressBar & { lengthMs: number }) | null
   /** Clip time → the main video's own time (ms), when parts of the clip were removed or videos put in (else clipStartMs + t) */
   timelineToVideo?: (t: number) => number
   /**
@@ -1698,7 +1722,7 @@ export function OutputCanvas({
   className, style, skipTransitionRef,
   words, captionStyle, captionTextCase = 'title', showCaptions = false,
   textOverlays = [], activeTextOverlayId, onTextOverlayChange, onSelectTextOverlay, onDeleteTextOverlay, editTextOverlayId, onEditTextDone,
-  onCaptionPositionChange, onCaptionSizeChange, transitionCuts, watermark, timelineToVideo, clock, frameMedia, onFrameLaneClick, onFrameItemClick, activeFrameItemId, onFrameItemChange, onDeleteFrameItem, onFrameRowsChange, onFrameRowsSwap, onFrameBarChange, onFrameFaceChange, onFrameMainRectChange,
+  onCaptionPositionChange, onCaptionSizeChange, transitionCuts, watermark, progressBar, timelineToVideo, clock, frameMedia, onFrameLaneClick, onFrameItemClick, activeFrameItemId, onFrameItemChange, onDeleteFrameItem, onFrameRowsChange, onFrameRowsSwap, onFrameBarChange, onFrameFaceChange, onFrameMainRectChange,
 }: OutputCanvasProps) {
   // Where the captions are drawn right now (from the canvas, each frame), for their box on the
   // preview: kept in state only when it moves noticeably, at most ~10 times a second
@@ -1742,6 +1766,8 @@ export function OutputCanvas({
   const transitionCutsRef = useRef(transitionCuts)
   const watermarkRef = useRef(!!watermark)
   watermarkRef.current = !!watermark
+  const progressBarRef = useRef(progressBar)
+  progressBarRef.current = progressBar
   const timelineToVideoRef = useRef(timelineToVideo)
   timelineToVideoRef.current = timelineToVideo
   const clockRef = useRef(clock)
@@ -2103,6 +2129,17 @@ export function OutputCanvas({
             drawTextOverlays(ctx, editingTextRef.current ? textOverlaysRef.current.filter(t => t.id !== editingTextRef.current) : textOverlaysRef.current, clipRelativeMs, video.paused)
           }
 
+          // The progress bar, filling from the left as the clip plays (as the export: render.py)
+          const pb = progressBarRef.current
+          if (pb && pb.lengthMs > 0) {
+            const h = Math.max(2, Math.round((pb.height * canvas.height) / 1920))
+            ctx.save()
+            ctx.globalAlpha = 1
+            ctx.fillStyle = pb.color
+            ctx.fillRect(0, pb.position === 'top' ? 0 : canvas.height - h, canvas.width * Math.min(1, Math.max(0, clipRelativeMs / pb.lengthMs)), h)
+            ctx.restore()
+          }
+
           // The Free plan's watermark, over everything (as the export does)
           if (watermarkRef.current) drawWatermark(ctx, canvas.width, canvas.height, clipRelativeMs)
         }
@@ -2263,11 +2300,12 @@ export function OutputCanvas({
           onEndEdit={() => { setEditingTextId(null); onEditTextDone?.() }}
         />
       ))}
-      {/* The captions' box: drag to move them up or down, the corners to make them bigger or smaller */}
+      {/* The captions' box: drag to move them anywhere, the corners to make them bigger or smaller */}
       {showCaptions && onCaptionPositionChange && (
         <CaptionBox
           rect={capRect}
           position_y={captionStyle?.position_y ?? 0.84}
+          position_x={captionStyle?.position_x ?? 0.5}
           size={captionStyle?.size ?? 52}
           onMove={onCaptionPositionChange}
           onSize={onCaptionSizeChange}
@@ -2686,6 +2724,7 @@ interface OverlayBoxProps {
 function OverlayBox({ overlay, isActive, onChange, onSelect, onDelete }: OverlayBoxProps) {
   const ref = useRef<HTMLDivElement>(null)
   const setGuides = useContext(GuideContext)
+  const [hover, setHover] = useState(false)
 
   function cRect() {
     const r = ref.current?.parentElement?.getBoundingClientRect()
@@ -2749,13 +2788,17 @@ function OverlayBox({ overlay, isActive, onChange, onSelect, onDelete }: Overlay
         position: 'absolute',
         left: `${overlay.x * 100}%`, top: `${overlay.y * 100}%`,
         width: `${overlay.w * 100}%`, height: `${overlay.h * 100}%`,
-        border: `2px solid ${isActive ? color : `${color}66`}`,
+        // Not picked: just the picture (a faint outline when pointed at); picked: its frame, ✕ and handles
+        border: `2px solid ${isActive ? color : hover ? `${color}66` : 'transparent'}`,
         boxSizing: 'border-box', cursor: 'move', userSelect: 'none',
         boxShadow: isActive ? `0 0 0 1px ${color}55` : 'none',
         // Turned round its middle (the export turns it the same way)
         ...(overlay.rotation ? { transform: `rotate(${overlay.rotation}deg)` } : {}),
       }}
       onMouseDown={startDrag}
+      data-photo-id={overlay.id}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
     >
       {/* Image content: the whole picture stretched to fill its box, whatever its width and height
           (the export stretches it the same way: render.py image overlays) */}
@@ -2774,8 +2817,8 @@ function OverlayBox({ overlay, isActive, onChange, onSelect, onDelete }: Overlay
         <RotateHandle boxRef={ref} rotation={overlay.rotation ?? 0} onRotate={deg => onChange({ rotation: deg || null })} />
       )}
 
-      {/* Delete button — top-right corner, always visible */}
-      <button
+      {/* Delete button — top-right corner, when picked */}
+      {isActive && <button
         data-handle="1"
         onMouseDown={e => { e.stopPropagation(); onDelete() }}
         style={{
@@ -2787,10 +2830,10 @@ function OverlayBox({ overlay, isActive, onChange, onSelect, onDelete }: Overlay
         }}
       >
         <svg width="7" height="7" viewBox="0 0 8 8" fill="none"><path d="M1 1l6 6M7 1L1 7" stroke="white" strokeWidth="1.4" strokeLinecap="round"/></svg>
-      </button>
+      </button>}
 
-      {/* Resize handles */}
-      {HANDLES.map(({ cursor, pos: hPos, dir }) => (
+      {/* Resize handles, when picked */}
+      {isActive && HANDLES.map(({ cursor, pos: hPos, dir }) => (
         <div
           key={dir}
           data-handle="1"
@@ -2816,14 +2859,15 @@ const CAPTION_SIZE_MIN = 20, CAPTION_SIZE_MAX = 100
 /**
  * A box round the captions where they are drawn (`rect`, from the canvas). Pointed at: a faint
  * outline; clicked: picked, with a lime outline and a handle at each corner. Dragging the box
- * moves the captions up or down (they always stay centred left to right, as the export draws
- * them), snapping to the middle; dragging a corner makes them bigger or smaller (the Size slider).
+ * moves the captions anywhere (saved as where they're centred, position_x / position_y; the export
+ * puts them there), snapping to the middle; dragging a corner makes them bigger or smaller (the Size slider).
  */
-function CaptionBox({ rect, position_y, size, onMove, onSize }: {
+function CaptionBox({ rect, position_y, position_x, size, onMove, onSize }: {
   rect: CaptionRect | null
   position_y: number
+  position_x: number
   size: number
-  onMove: (y: number) => void
+  onMove: (y: number, x: number) => void
   onSize?: (size: number) => void
 }) {
   const ref = useRef<HTMLDivElement>(null)
@@ -2846,15 +2890,18 @@ function CaptionBox({ rect, position_y, size, onMove, onSize }: {
     e.preventDefault()
     setPicked(true)
     setMoving(true)
-    const sy = e.clientY, oy = position_y
+    const sy = e.clientY, oy = position_y, sx = e.clientX, ox = position_x
     function move(ev: MouseEvent) {
       const r = area()
       if (!r) return
       let y = Math.max(0.05, Math.min(0.95, oy + (ev.clientY - sy) / r.height))
+      let x = Math.max(0.05, Math.min(0.95, ox + (ev.clientX - sx) / r.width))
       const [cy, onH] = snapTo(y, 0.5)
       if (onH) y = cy
-      setGuides(onH ? { h: 0.5 } : null)
-      onMove(y)
+      const [cx, onV] = snapTo(x, 0.5)
+      if (onV) x = cx
+      setGuides(onV || onH ? { ...(onV ? { v: 0.5 } : {}), ...(onH ? { h: 0.5 } : {}) } : null)
+      onMove(y, x)
     }
     function up() {
       window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up)
@@ -2871,7 +2918,7 @@ function CaptionBox({ rect, position_y, size, onMove, onSize }: {
     if (!onSize) return
     const r = area()
     if (!r) return
-    const cx = r.left + r.width / 2
+    const cx = r.left + r.width * position_x
     const d0 = Math.max(8, Math.abs(e.clientX - cx))
     const s0 = size
     function move(ev: MouseEvent) {
@@ -2884,9 +2931,10 @@ function CaptionBox({ rect, position_y, size, onMove, onSize }: {
   }
 
   // Where the captions are; before any have been drawn, about where they will be
-  const r = rect ?? { x: 0.1, w: 0.8, h: (size / 1080) * (9 / 16) * 1.4, y: position_y - (size / 1080) * (9 / 16) * 0.7 }
+  const r = rect ?? { x: position_x - 0.4, w: 0.8, h: (size / 1080) * (9 / 16) * 1.4, y: position_y - (size / 1080) * (9 / 16) * 0.7 }
   // (while dragged, it follows the pointer at once; the canvas catches up a frame later)
   const midY = moving || !rect ? position_y : r.y + r.h / 2
+  const left = moving || !rect ? position_x - r.w / 2 : r.x
   const PAD = 1.2   // % of the preview round the words
   const accent = '#c8ff00'
   const corner = (pos: React.CSSProperties, cursor: string): React.CSSProperties => ({
@@ -2903,7 +2951,7 @@ function CaptionBox({ rect, position_y, size, onMove, onSize }: {
       data-picked={picked || undefined}
       style={{
         position: 'absolute',
-        left: `${(r.x * 100) - PAD}%`, width: `${r.w * 100 + PAD * 2}%`,
+        left: `${(left * 100) - PAD}%`, width: `${r.w * 100 + PAD * 2}%`,
         top: `${(midY - r.h / 2) * 100 - PAD / 2}%`, height: `${r.h * 100 + PAD}%`,
         minHeight: 18,
         cursor: 'move', userSelect: 'none',

@@ -35,7 +35,9 @@ import { FramesPanel } from '@/components/editor/FramesPanel'
 import { FrameTextPanel } from '@/components/editor/FrameTextPanel'
 import { useConfirm } from '@/components/editor/ConfirmDialog'
 import { BrandKitPanel, BrandKitStudio, useBrandKits } from '@/components/editor/BrandKit'
-import { isBrandLogo, logoBox, showHandle, type BrandKit } from '@/lib/shared/brandKit'
+import { isBrandLogo, logoBox, logoSpan, showHandle, brandPalette, brandCaptionStyle, cleanProgressBar, brandLockOf, type BrandKit, type ProgressBar } from '@/lib/shared/brandKit'
+import { setBrandPalette, setBrandLock } from '@/components/editor/brandPalette'
+import { setBrandFonts, ensureBrandFont } from '@/components/editor/brandFonts'
 import { EditorTour, hasSeenEditorTour } from '@/components/editor/EditorTour'
 import { FrameAddMenu, addChoices, type AddChoice } from '@/components/editor/FrameAddMenu'
 import { createFrameMediaPool } from '@/modules/editor/frameMedia'
@@ -85,6 +87,8 @@ interface Props {
   initialMusicUrls?: Record<string, string>
   /** The clip's own sound as saved (top of the Music panel) */
   initialOriginalSound?: { volume: number; muted: boolean }
+  /** The clip's progress bar as saved (null = none) */
+  initialProgressBar?: ProgressBar | null
   initialTransitions: Transition[]
   initialOverlays: Overlay[]
 }
@@ -176,7 +180,7 @@ const TOOLS: { id: Tool; label: string; title: string; hint: string; icon: React
 export function EditorShell({
   clip: savedClip, videoUrl, words: initialWords, initialSegments,
   initialCaptionStyles, initialTextOverlays, initialAudioTracks, initialTransitions, initialOverlays,
-  initialMusicUrls, initialOriginalSound,
+  initialMusicUrls, initialOriginalSound, initialProgressBar,
 }: Props) {
   // ── Removed parts of the video (lib/trims.ts, modules/editor/trimState.ts) ───
   // The editor works on the clip as it plays. `rawClip` is the clip's stretch of the source video
@@ -523,6 +527,8 @@ export function EditorShell({
   }
   useEffect(() => { loadVideoLibrary() }, [])
   const videoTitles = useMemo(() => Object.fromEntries(Object.entries(videoLibrary).map(([id, v]) => [id, v.title])), [videoLibrary])
+  /** The user's own videos (not stock footage): what a brand kit's intro and outro can be */
+  const kitVideos = useMemo(() => Object.entries(videoLibrary).filter(([, v]) => !v.stock).map(([id, v]) => ({ id, title: v.title, duration_ms: v.duration_ms ?? null })), [videoLibrary])
   const videoUrls = useMemo(() => Object.fromEntries(Object.entries(videoLibrary).map(([id, v]) => [id, v.url])), [videoLibrary])
   /** Each video's full length, where known: a video on top can't be trimmed past its own ends */
   const videoLengths = useMemo(() => Object.fromEntries(Object.entries(videoLibrary).flatMap(([id, v]) => (v.duration_ms ? [[id, v.duration_ms]] : []))), [videoLibrary])
@@ -685,6 +691,19 @@ export function EditorShell({
     editVersionRef.current++
     autoSaveTimerRef.current = setTimeout(() => latestHandleSaveRef.current(), 2500)
   }, [originalVolume, originalMuted]) // eslint-disable-line react-hooks/exhaustive-deps
+  // The clip's progress bar (Brand kit panel; a kit's Apply puts its own on): drawn on the preview,
+  // saved with the clip, drawn by the export (render.py)
+  const [progressBar, setProgressBar] = useState<ProgressBar | null>(initialProgressBar ?? null)
+  const progressBarRef = useRef(progressBar)
+  const progressLoadedRef = useRef(true)
+  useEffect(() => {
+    progressBarRef.current = progressBar
+    if (progressLoadedRef.current) { progressLoadedRef.current = false; return }
+    if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current)
+    unsavedRef.current = true
+    editVersionRef.current++
+    autoSaveTimerRef.current = setTimeout(() => latestHandleSaveRef.current(), 2500)
+  }, [progressBar]) // eslint-disable-line react-hooks/exhaustive-deps
   // A muted section (its own sound off): the video is silent while the playhead is in it
   const [sectionMuted, setSectionMuted] = useState(false)
   // The frame sound sync sets the main video's volume every frame, so the level goes through it
@@ -849,6 +868,21 @@ export function EditorShell({
   // picked last (they used to act on an earlier pick that was still held: bug #5)
   /** A photo picked (timeline, preview): selected — moved, resized and turned on the preview, trimmed on the timeline (no settings page) */
   function pickPhoto(id: string, _open = true) { setActiveOverlayId(id); setActiveTextOverlayId(null); setPickedSegIdState(null); setPickedMusicId(null); setLastPick('overlay') }
+  // A picked photo or video on top lets go when anything else is clicked — not the photo itself on
+  // the preview, its bar on the timeline, the timeline's buttons that act on it (Split, Delete,
+  // Hide, Mute, Lock…) or a dialog (Delete asks first)
+  useEffect(() => {
+    if (!activeOverlayId) return
+    const id = activeOverlayId
+    const away = (e: PointerEvent) => {
+      const t = e.target as Element | null
+      if (!t || !t.isConnected || !t.closest) return
+      if (t.closest(`[data-photo-id="${id}"], [data-item-id="${id}"], .ed-tl-btn, [role="dialog"], [role="alertdialog"]`)) return
+      setActiveOverlayId(null)
+    }
+    window.addEventListener('pointerdown', away, true)
+    return () => window.removeEventListener('pointerdown', away, true)
+  }, [activeOverlayId]) // eslint-disable-line react-hooks/exhaustive-deps
   function pickText(id: string, open = true) { setActiveTextOverlayId(id); setActiveOverlayId(null); setPickedSegIdState(null); setPickedMusicId(null); setLastPick('text'); if (open) openSettings('text') }
   function pickMusicTrack(id: string, open = true) { pickMusic(id); if (open) openSettings('music') }
   // Timeline clicks select; the same thing clicked again quickly (a double tap) opens its settings
@@ -1247,6 +1281,7 @@ export function EditorShell({
           ...(canTrim ? { range } : {}),
           removeFillers: removeFillersRef.current,
           originalSound: originalSoundRef.current,
+          progressBar: progressBarRef.current,
         }),
       })
       if (!res.ok) {
@@ -2087,8 +2122,12 @@ export function EditorShell({
   // (e.g. Single 0:00–0:15, then Dual Video from 0:15), each with its own ◆ keys and lanes
   // A Branded card picked: it's filled from the brand kit once it's there (see below)
   const brandFillRef = useRef<{ t: number; until: number } | null>(null)
+  // A frame picked starts with the brand kit's corners, when it has them (see below)
+  const cornerFillRef = useRef<{ t: number; layout: FrameLayout; corners: number; until: number } | null>(null)
   function handleApplyFrame(layout: FrameLayout) {
     brandFillRef.current = layout === 'frame_brand_card' ? { t: currentTimeMs, until: Date.now() + 4000 } : null
+    const corners = paletteKit?.data.frames.corners ?? null
+    cornerFillRef.current = corners !== null ? { t: currentTimeMs, layout, corners, until: Date.now() + 4000 } : null
     handleLayoutChange(layout, 'fromPlayhead')
   }
   // What a layout or frame picked now will cover (see handleLayoutChange)
@@ -2305,7 +2344,7 @@ export function EditorShell({
     })
     // Explicit defaults (not blanks): the save only writes caption fields that have a value
     useCaptionStore.setState(st => ({
-      captionStyle: { ...st.captionStyle, font: null, size: null, color: '#FFE700', position: null, position_y: null, animation: 'karaoke', template: null },
+      captionStyle: { ...st.captionStyle, font: null, size: null, color: '#FFE700', position: null, position_y: null, position_x: null, animation: 'karaoke', template: null },
     }))
     // The video's own sound: full volume, not muted; and nothing stays selected
     setOriginalVolume(1)
@@ -2371,6 +2410,60 @@ export function EditorShell({
   // edits — a photo, text styles, frame colours — so it shows in the Preview and the export, and
   // one Undo takes it all back.
   const brand = useBrandKits()
+  // The brand colours shown first in the colour choices: the default kit's, else the one picked
+  const paletteKit = brand.kits.find(k => k.data.is_default) ?? brand.current
+  const paletteKey = paletteKit ? brandPalette(paletteKit.data).join(',') : ''
+  useEffect(() => { setBrandPalette(paletteKey ? paletteKey.split(',') : []) }, [paletteKey])
+  useEffect(() => () => setBrandPalette([]), [])
+  // Brand lock: kits shared with this user whose owner locked them — the colour and font choices
+  // offer only theirs (all such kits together)
+  const lockKey = JSON.stringify(brand.kits.filter(k => k.shared_by && k.data.lock).map(k => ({ by: k.shared_by!, ...brandLockOf(k.data) })))
+  useEffect(() => {
+    const locks = JSON.parse(lockKey) as Array<{ by: string; colors: string[]; fonts: string[] }>
+    setBrandLock(locks.length ? {
+      by: [...new Set(locks.map(l => l.by))].join(', '),
+      colors: [...new Set(locks.flatMap(l => l.colors))], fonts: [...new Set(locks.flatMap(l => l.fonts))],
+    } : null)
+  }, [lockKey])
+  useEffect(() => () => setBrandLock(null), [])
+  // The kit's frames, first in the Frames tool
+  const brandFrames = (paletteKit?.data.frames.preferred ?? []).filter(isFrameLayout)
+  // A frame just picked in Frames, once it's on the timeline: the kit's corners on it
+  useEffect(() => {
+    const pick = cornerFillRef.current
+    if (!pick) return
+    if (Date.now() > pick.until) { cornerFillRef.current = null; return }
+    const seg = segments.find(x => x.layout === pick.layout && pick.t >= x.start_ms - LAYOUT_SNAP_MS && pick.t < x.end_ms)
+    if (!seg) return
+    cornerFillRef.current = null
+    useEditorStore.setState(st => ({ segments: st.segments.map(x => (x.id === seg.id ? withKitCorners(x, pick.corners) : x)) }))
+  }, [segments]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  /** A frame with the kit's corners on its main video and its photos and videos (not on areas drawn square or with their own shape) */
+  function withKitCorners(seg: SegmentLocal, corners: number): SegmentLocal {
+    if (!isFrameLayout(seg.layout) || seg.locked) return seg
+    const layout = seg.layout, f = frameOf(seg), slots = frameSlotCount(layout)
+    const rounded = (slot: number) => slot < slots && newItemCorners(layout, slot) > 0
+    return {
+      ...seg,
+      frame: {
+        ...f,
+        // (slots this frame doesn't use take them too: a frame picked later that has them carries them over)
+        main_corners: Object.fromEntries(Object.entries(f.main_corners ?? {}).map(([k, v]) => [k, Number(k) >= slots || rounded(Number(k)) ? corners : v])),
+        items: (f.items ?? []).map(it => (it.kind !== 'text' && typeof it.lane === 'number' && rounded(it.lane) && !it.locked ? { ...it, corners } : it)),
+      },
+    }
+  }
+  // Every kit's own fonts in the font pickers (and loaded, so text in them draws)
+  const fontsKey = brand.kits.flatMap(k => k.data.fonts.map(f => `${f.family}=${f.name}`)).join('|')
+  useEffect(() => {
+    setBrandFonts(fontsKey ? fontsKey.split('|').map(x => { const [family, ...n] = x.split('='); return { family, name: n.join('=') } })
+      .filter((f, i, all) => all.findIndex(y => y.family === f.family) === i) : [])
+  }, [fontsKey])
+  useEffect(() => () => setBrandFonts([]), [])
+  // Brand fonts this clip's captions and text are in (a kit since deleted, too): loaded to draw them
+  const usedFonts = [captionStyle.font, ...textOverlays.map(t => t.font)].filter(Boolean).join('|')
+  useEffect(() => { usedFonts.split('|').forEach(f => { ensureBrandFont(f) }) }, [usedFonts])
 
   /** A Branded card's text from a kit: its title on top and its @handle below, over the whole card */
   function brandCardItems(seg: SegmentLocal, kit: BrandKit): FrameItem[] {
@@ -2400,25 +2493,35 @@ export function EditorShell({
   }, [segments]) // eslint-disable-line react-hooks/exhaustive-deps
 
   /**
-   * A kit put on this clip, all as one undo step: its logo over the whole clip (in place of a kit's
-   * logo put on before), its title font and colour on the clip's text, its title colour on frame
+   * A kit put on this clip, all as one undo step: its logo where and when the kit says (in place of a
+   * kit's logo put on before), its captions' style when they're on in the kit (the captions themselves
+   * aren't switched on or made), its title font and colour on the clip's text, its title colour on frame
    * text (frame text is always drawn in the frame's own font: render.py _frame_text_font), its main
-   * colour on frame bands, and Branded cards filled. Anything locked is left as it is.
+   * colour on frame bands, Branded cards filled, and its progress bar when it's on in the kit (the bar
+   * isn't part of the undo step: it's changed back in the Brand kit panel). Anything locked is left as it is.
    */
   function applyBrandKit(kit: BrandKit) {
     const d = kit.data
+    if (d.progress.on) setProgressBar(cleanProgressBar(d.progress))
+    // (the end card first: the kit's colour and text below go on it as on any Branded card)
+    if (d.end_card.on) brandEndCard(d.end_card.seconds, d.outro)
     setOverlays(prev => {
       const rest = prev.filter(o => !(o.type === 'image' && isBrandLogo(o.storage_path) && !o.locked))
       if (!d.logo.path) return rest
+      const [start, end] = logoSpan(d.logo, clipLengthMs)
       return [...rest, {
         id: crypto.randomUUID(), clip_id: clip.id, type: 'image' as const,
         storage_path: d.logo.path, preview_url: kit.logo_url ?? undefined,
         source_video_id: null, source_offset_ms: 0, ...logoBox(d.logo),
-        start_ms: 0, end_ms: clipLengthMs, z_index: Math.max(0, ...rest.map(o => o.z_index)) + 1,
+        start_ms: start, end_ms: end, z_index: Math.max(0, ...rest.map(o => o.z_index)) + 1,
         created_at: new Date().toISOString(), opacity: d.logo.opacity < 0.999 ? d.logo.opacity : null,
       }]
     })
     setTextOverlays(prev => prev.map(t => (t.locked ? t : { ...t, font: d.title.font ?? 'sans-serif', color: d.title.color })))
+    if (d.captions.on) {
+      updateCaptionStyle(brandCaptionStyle(d.captions))
+      setCaptionTextCase(d.captions.uppercase ? 'upper' : 'title')
+    }
     useEditorStore.setState(st => ({
       segments: st.segments.map(seg => {
         if (!isFrameLayout(seg.layout) || seg.locked) return seg
@@ -2431,9 +2534,130 @@ export function EditorShell({
           ...(isTextLane(it.lane) && it.bg === band.bg ? { bg: d.colors.main } : {}),
         }))
         const next: SegmentLocal = { ...seg, frame: { ...f, band: { ...band, bg: d.colors.main, color: d.title.color }, items } }
-        return card ? fillBrandCard(next, kit) : next
+        const filled = card ? fillBrandCard(next, kit) : next
+        return d.frames.corners !== null ? withKitCorners(filled, d.frames.corners) : filled
       }),
     }))
+    void brandEnds(kit)
+  }
+
+  /** Is this part of the clip video `id` put in between (a kit's intro or outro)? */
+  const playsVideo = (s: SegmentLocal, id: string) => s.crop_boxes.length === 1 && s.crop_boxes[0].source_video_id === id
+  /**
+   * A kit's intro and outro put in at the clip's start and end (insertVideo), unless the clip already
+   * starts or ends with them. The outro first: the intro moves it later. Their lengths are known from
+   * the library, so they go in with the rest of Apply — one undo step (history.ts: one burst of changes).
+   */
+  async function brandEnds(kit: BrandKit) {
+    const { intro, outro } = kit.data
+    const segs = useEditorStore.getState().segments
+    const want = [
+      outro && !segs.some(s => s.end_ms >= clipLengthMs - 1 && playsVideo(s, outro)) ? { id: outro, at: clipLengthMs } : null,
+      intro && !segs.some(s => s.start_ms <= 1 && playsVideo(s, intro)) ? { id: intro, at: 0 } : null,
+    ].filter((w): w is { id: string; at: number } => !!w)
+    if (want.length) {
+      try {
+        const lens = await Promise.all(want.map(w => videoLengthMs(w.id)))
+        const missing = want.findIndex((w, i) => !lens[i] && !videoLibraryRef.current[w.id])
+        if (missing >= 0) notifyLocked(`The kit's ${want[missing].at === 0 ? 'intro' : 'outro'} video isn't in your library any more`)
+        else want.forEach((w, i) => insertVideo(w.id, w.at, lens[i], 0))
+      } catch (e) {
+        notifyLocked(e instanceof Error ? e.message : 'Could not put the intro or outro in')
+      }
+    }
+    // The clip as it is now: its length, and where its own part runs (between the intro and outro)
+    const after = useEditorStore.getState().segments
+    const introSeg = intro ? after.find(s => s.start_ms <= 1 && playsVideo(s, intro)) : undefined
+    const outroSeg = outro ? after.filter(s => playsVideo(s, outro)).sort((a, b) => b.end_ms - a.end_ms)[0] : undefined
+    const added = want.reduce((sum, w) => {
+      const s = w.at === 0 ? introSeg : outroSeg
+      return sum + (s ? s.end_ms - s.start_ms : 0)
+    }, 0)
+    const total = clipLengthMs + added
+    const mainFrom = introSeg ? introSeg.end_ms : 0
+    const mainTo = outroSeg && outroSeg.end_ms >= total - 1 ? outroSeg.start_ms : total
+    await brandSound(kit, total, mainFrom, mainTo)
+  }
+
+  /**
+   * A kit's sound on the clip, in place of the kit's sound put on before: its music under the clip's own
+   * part (`mainFrom`–`mainTo`), at its volume and quieter while someone talks, faded in and out; its sound
+   * logo at the very start, or ending at the very end. Locked tracks stay as they are.
+   */
+  async function brandSound(kit: BrandKit, total: number, mainFrom: number, mainTo: number) {
+    const s = kit.data.sound
+    if (!s.music && !s.sting) return
+    const ours = (t: AudioTrack) => t.storage_path === s.music?.path || t.storage_path === s.sting?.path
+    const lockedOurs = audioTracks.filter(t => t.locked && ours(t))
+    const add: AudioTrack[] = []
+    const urls: Record<string, string> = {}
+    if (s.music && mainTo - mainFrom >= 500 && !lockedOurs.some(t => t.storage_path === s.music!.path)) {
+      const id = crypto.randomUUID()
+      add.push({ id, clip_id: clip.id, storage_path: s.music.path, start_ms: Math.round(mainFrom), end_ms: Math.round(mainTo), volume: s.music.volume, duck_under_speech: true, fade_in: true, fade_out: true })
+      if (kit.music_url) urls[id] = kit.music_url
+    }
+    if (s.sting && !lockedOurs.some(t => t.storage_path === s.sting!.path)) {
+      const len = s.sting_at === 'end' && kit.sting_url ? await audioLengthMs(kit.sting_url) : null
+      const id = crypto.randomUUID()
+      const start = s.sting_at === 'end' ? Math.max(0, total - (len ?? 3000)) : 0
+      add.push({ id, clip_id: clip.id, storage_path: s.sting.path, start_ms: Math.round(start), volume: 1, duck_under_speech: false, fade_in: false, fade_out: false })
+      if (kit.sting_url) urls[id] = kit.sting_url
+    }
+    setAudioTracks(prev => [...prev.filter(t => t.locked || !ours(t)), ...add])
+    if (Object.keys(urls).length) setMusicUrls(m => ({ ...m, ...urls }))
+  }
+  /** A sound file's length (ms) from its link, or null */
+  function audioLengthMs(url: string): Promise<number | null> {
+    return new Promise(resolve => {
+      const a = new Audio()
+      a.preload = 'metadata'
+      const done = (v: number | null) => { a.removeAttribute('src'); resolve(v) }
+      a.onloadedmetadata = () => done(isFinite(a.duration) && a.duration > 0 ? Math.round(a.duration * 1000) : null)
+      a.onerror = () => done(null)
+      setTimeout(() => done(null), 6000)
+      a.src = url
+    })
+  }
+
+  /**
+   * A kit's end card: the clip's last `seconds` — before its outro, when it ends with the kit's one —
+   * become one Branded card (as picking it in Frames there would; applyBrandKit then fills it with the
+   * kit's title and @handle). Nothing when the clip already ends on one, is too short, or that part is locked.
+   */
+  function brandEndCard(seconds: number, outro: string | null) {
+    const card: LayoutType = 'frame_brand_card'
+    const mains = () => useEditorStore.getState().segments.filter(s => !isShot(s, mainVideoId)).sort((a, b) => a.start_ms - b.start_ms)
+    const ending = outro ? mains().find(s => s.end_ms >= clipLengthMs - 1 && playsVideo(s, outro)) : undefined
+    const end = ending ? ending.start_ms : clipLengthMs
+    const t = Math.round(end - seconds * 1000)
+    if (t < 1000) return
+    if (mains().some(s => s.layout === card && s.start_ms < end && s.end_ms >= end - 1)) return
+    const locked = lockedSectionOver(t, end)
+    if (locked) { notifyLocked(`The end card needs ${msToLabel(locked.start_ms)}–${msToLabel(locked.end_ms)}, which is locked — unlock it first`); return }
+    const ar = getVideoAR()
+    // Stretches with no format (default framing) get one, so the card can take them in
+    for (const g of uncoveredRanges(mains(), clipLengthMs)) {
+      const a = Math.max(t, g.start_ms), b = Math.min(end, g.end_ms)
+      if (b - a >= 1) addFormat(a, b, 'vertical', ar, neighbourFraming('vertical', a, b))
+    }
+    const at = mains().find(s => t >= s.start_ms && t < s.end_ms)
+    if (!at) return
+    let first = at.id
+    if (t - at.start_ms > 1) {
+      const id = splitAtMs(at.id, t, getPositionAt)
+      if (!id) return
+      first = id
+      // (a new frame starts empty, as a frame picked from the playhead does)
+      const fresh = useEditorStore.getState().segments.find(x => x.id === id)
+      if (fresh?.frame?.items?.length) updateSegment(id, { frame: { ...fresh.frame, items: [] } })
+    }
+    // The parts after it, up to the end, become part of it
+    for (const s of mains().filter(x => x.id !== first && x.start_ms >= t && x.start_ms < end - 1)) {
+      if (s.end_ms > end + 1) splitAtMs(s.id, end, getPositionAt)
+      absorbSection(s.id, first)
+    }
+    const seg = useEditorStore.getState().segments.find(x => x.id === first)
+    if (seg && seg.layout !== card) applyLayout(first, card, ar, neighbourFraming(card, seg.start_ms, seg.end_ms, first))
   }
 
   function askDeleteBrandKit(kit: BrandKit) {
@@ -2610,9 +2834,10 @@ export function EditorShell({
     if (trimmed) {
       // Parts cut out the older way (removed parts of the source): first the clip becomes pieces —
       // each part keeps its own moment of the video, so nothing it plays changes — then the video
-      // goes in (once the editor has redrawn with the pieces)
-      pendingInsertRef.current = { videoId, atMs, ownMs, snapMs }
-      trimsToPieces()
+      // goes in (once the editor has redrawn with the pieces). (A kit's intro and outro wait together.)
+      const first = !pendingInsertRef.current.length
+      pendingInsertRef.current.push({ videoId, atMs, ownMs, snapMs })
+      if (first) trimsToPieces()
       return
     }
     pause()
@@ -2646,13 +2871,13 @@ export function EditorShell({
     useMediaStore.setState({ overlays: next.overlays, textOverlays: next.textOverlays, audioTracks: next.audioTracks, transitions: next.transitions })
     setActiveSegmentId(id)
   }
-  /** A video waiting to go in until a clip with removed parts has become pieces (insertVideo) */
-  const pendingInsertRef = useRef<{ videoId: string; atMs: number; ownMs: number | null; snapMs: number } | null>(null)
+  /** Videos waiting to go in until a clip with removed parts has become pieces (insertVideo), in order */
+  const pendingInsertRef = useRef<Array<{ videoId: string; atMs: number; ownMs: number | null; snapMs: number }>>([])
   useEffect(() => {
-    const p = pendingInsertRef.current
-    if (!p || trimmed) return
-    pendingInsertRef.current = null
-    insertVideo(p.videoId, p.atMs, p.ownMs, p.snapMs)
+    const list = pendingInsertRef.current
+    if (!list.length || trimmed) return
+    pendingInsertRef.current = []
+    list.forEach(p => insertVideo(p.videoId, p.atMs, p.ownMs, p.snapMs))
   }, [trimmed]) // eslint-disable-line react-hooks/exhaustive-deps
   /**
    * The removed parts (trims) made into pieces: each part of the main row is cut where a removed
@@ -4561,6 +4786,7 @@ export function EditorShell({
                 onReplaceMedia={(segId, id, kind) => { if (sectionBlocked(segId)) return; pause(); setFramePicker({ segId, kind, replaceId: id }) }}
                 onRemoveFrame={askRemoveFrame}
                 onRemoveMain={askRemoveMain}
+                brandFrames={brandFrames}
               />
             )}
 
@@ -4696,7 +4922,7 @@ export function EditorShell({
             )}
 
             {tool === 'brand' && (
-              <BrandKitPanel brand={brand} onApply={applyBrandKit} onDelete={askDeleteBrandKit} />
+              <BrandKitPanel brand={brand} onApply={applyBrandKit} onDelete={askDeleteBrandKit} progressBar={progressBar} onProgressBarChange={setProgressBar} />
             )}
 
             {tool === 'post' && (
@@ -4894,7 +5120,7 @@ export function EditorShell({
           {/* Brand kit: its workshop in the video's place (the video stays underneath: the Preview plays from it) */}
           {tool === 'brand' && optionsOpen && (
             <div className="absolute inset-0 overflow-hidden" style={{ zIndex: 30, borderRadius: 'inherit', background: 'var(--ed-panel)' }}>
-              <BrandKitStudio brand={brand} onApply={applyBrandKit} onClose={() => toggleOptions(false)} />
+              <BrandKitStudio brand={brand} onApply={applyBrandKit} onClose={() => toggleOptions(false)} videos={kitVideos} />
             </div>
           )}
           {/* Canvas toolbar: two docks, centred — Layout (a segmented switch with a sliding lime
@@ -5115,7 +5341,7 @@ export function EditorShell({
                   )}
                 </div>
               ) : (
-                <OutputCanvas live segmentAt={viewAt} transitionCuts={transitionCuts} watermark={showWatermark} timelineToVideo={timelineToVideo} clock={hasInserts ? liveTime.get : undefined}
+                <OutputCanvas live segmentAt={viewAt} transitionCuts={transitionCuts} watermark={showWatermark} progressBar={progressBar && { ...progressBar, lengthMs: clipLengthMs }} timelineToVideo={timelineToVideo} clock={hasInserts ? liveTime.get : undefined}
                   videoRef={videoRef} currentTimeMs={currentTimeMs} clipStartMs={clip.start_ms} videoToTimeline={videoToTimeline}
                   activeSegment={viewSegment} getPositionAt={viewGetPositionAt} sourceFor={brollSource} slotSourceFor={borrowed.slotSourceFor}
                   skipTransitionRef={skipCanvasTransitionRef} words={displayWords}
@@ -5126,7 +5352,7 @@ export function EditorShell({
                   textOverlays={textOverlays.filter(o => !o.hidden)} activeTextOverlayId={activeTextOverlayId}
                   onTextOverlayChange={(id, u) => { if (!blocked({ kind: 'text', id })) updateTextOverlay(id, u) }} onSelectTextOverlay={id => { if (id) pickText(id, false); else setActiveTextOverlayId(null) }}
                   editTextOverlayId={previewOpen ? editTextId : null} onEditTextDone={() => setEditTextId(null)} onDeleteTextOverlay={askDeleteTextOverlay}
-                  onCaptionPositionChange={y => updateCaptionStyle({ position_y: y })}
+                  onCaptionPositionChange={(y, x) => updateCaptionStyle({ position_y: y, position_x: x })}
                   onCaptionSizeChange={size => updateCaptionStyle({ size })}
                   frameMedia={framePool}
                   onFrameLaneClick={focusLane}
