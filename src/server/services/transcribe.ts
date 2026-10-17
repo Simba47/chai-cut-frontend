@@ -105,10 +105,15 @@ async function hasWholeTranscript(videoId: string, durationMs: number | null): P
 export interface VideoTranscriptState {
   /** none: never asked for; running: being read now; ready: the whole video is read */
   status: 'none' | 'running' | 'ready' | 'failed'
-  /** While running: how much has been read (0–100), when the worker says */
+  /** While running: how much has been read (0–100), when the worker says; stopped: how far it got */
   progress: number | null
   error: string | null
+  /** The last reading was stopped by the user (status none): Unlock carries on from where it stopped */
+  stopped?: boolean
 }
+
+/** What Stop writes on the reading's job (the worker's READING_STOPPED: it stops when it sees it) */
+const READING_STOPPED = 'Stopped by the user'
 
 async function ownVideo(userId: string, videoId: string) {
   const [video] = await sql<{ user_id: string; duration_ms: number | null }[]>`SELECT user_id, duration_ms FROM videos WHERE id = ${videoId}`
@@ -126,6 +131,9 @@ export async function videoTranscriptState(userId: string, videoId: string): Pro
     ORDER BY created_at DESC LIMIT 1`
   if (last?.status === 'queued') return { status: 'running', progress: 0, error: null }
   if (last?.status === 'processing') return { status: 'running', progress: last.read_pct === null ? null : Math.min(99, Number(last.read_pct)), error: null }
+  if (last?.status === 'failed' && last.error === READING_STOPPED) {
+    return { status: 'none', progress: last.read_pct === null ? null : Math.min(99, Number(last.read_pct)), error: null, stopped: true }
+  }
   if (last?.status === 'failed') return { status: 'failed', progress: null, error: readingFailure(last.error) }
   return { status: 'none', progress: null, error: null }
 }
@@ -140,6 +148,22 @@ export async function startVideoTranscript(userId: string, videoId: string): Pro
       AND status = 'failed' AND NOT (payload ? 'reported') ORDER BY created_at DESC LIMIT 1`
   if (last) await sql`UPDATE jobs SET payload = payload || '{"reported": true}'::jsonb WHERE id = ${last.id}`
   await ensureVideoTranscript(videoId).catch(() => { /* its reason is in the state below */ })
+  return videoTranscriptState(userId, videoId)
+}
+
+/**
+ * Stop the whole video's reading (the clip board's lock): one waiting never starts, one running
+ * stops within a couple of seconds (the worker checks its job). The parts already read are kept, so
+ * Unlock later carries on from there; marked as reported, so that Unlock starts it again at once
+ * instead of reporting it as a failure.
+ */
+export async function stopVideoTranscript(userId: string, videoId: string): Promise<VideoTranscriptState> {
+  await ownVideo(userId, videoId)
+  await sql`
+    UPDATE jobs SET status = 'failed', error = ${READING_STOPPED}, payload = payload || '{"reported": true}'::jsonb
+    WHERE type = 'transcribe' AND payload->>'video_id' = ${videoId} AND payload->>'transcribe_full' = 'true'
+      AND status IN ('queued', 'processing')
+  `
   return videoTranscriptState(userId, videoId)
 }
 
