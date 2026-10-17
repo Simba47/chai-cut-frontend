@@ -93,12 +93,18 @@ export interface FrameSettings {
   /** Sound of the main video in each slot that shows it, by slot index — each slot is set on its own */
   main_volumes?: Record<string, number>
   main_mutes?: Record<string, boolean>
+  /** The main video hidden in a slot (its lane's eye: what's under it shows; its sound still plays unless muted), by slot index */
+  main_hidden?: Record<string, boolean>
+  /** The main video locked in a slot (its lane's lock: its box can't be moved, nor it taken out), by slot index */
+  main_locked?: Record<string, boolean>
   /** Rounded corners of the main video, per slot index */
   main_corners?: Record<string, CornerStyle>
   /** The main video is heard under the frame though no slot shows it (Photo Story), at main_volume */
   main_under?: boolean
-  /** Heights of the frame's rows (top to bottom, shares of the frame) when resized; absent = the template's */
+  /** Heights of the frame's rows (one per template row, shares of the frame) when resized; absent = the template's */
   row_h?: number[] | null
+  /** The rows' order top to bottom (template row numbers) when swapped with the bar's swap; absent = the template's */
+  row_order?: number[] | null
   /** The main video's box inside its slot when resized / moved, per slot index: shares of the slot (absent = the whole slot) */
   main_rects?: Record<string, { x: number; y: number; w: number; h: number }>
   items?: FrameItem[]
