@@ -1064,8 +1064,21 @@ export function SegmentTimeline({
       const rect0 = trackRef.current?.getBoundingClientRect()
       const msPerPx = rect0 && rect0.width > 0 ? duration / rect0.width : 0
       setDragging(`${edge}-${seg.id}`)
-      let raf = 0
-      const apply = () => { raf = 0; onEdgeTrim(seg.id, edge, Math.round(from), Math.round(to), false) }
+      let raf = 0, seekRaf = 0
+      // The preview shows where the cut lands (as in VN / CapCut): the new first frame of a start
+      // dragged in, the new last frame of an end dragged in. Once a frame at most; for an end, after
+      // the clip has been redrawn with the cut (its own seek after a cut would come later otherwise).
+      const follow = () => {
+        if (seekRaf) return
+        seekRaf = requestAnimationFrame(() => {
+          seekRaf = requestAnimationFrame(() => {
+            seekRaf = 0
+            if (edge === 'start' && to > from) onSeek(Math.round(to))
+            if (edge === 'end' && to < from) onSeek(Math.max(seg.start_ms, Math.round(to) - 1))
+          })
+        })
+      }
+      const apply = () => { raf = 0; onEdgeTrim(seg.id, edge, Math.round(from), Math.round(to), false); follow() }
       const move = (ev: PointerEvent) => {
         if (!moved && Math.abs(ev.clientX - sx) < 3) return
         if (!moved) setFrozenDur(duration)
@@ -1079,11 +1092,13 @@ export function SegmentTimeline({
         // frame at most). A start: as the clip's own start — the edge follows the pointer, what it
         // passes over goes (or comes back), and the timeline closes up on release.
         if (edge === 'end' && !raf) raf = requestAnimationFrame(apply)
+        if (edge === 'start') follow()
       }
       const up = () => {
         window.removeEventListener('pointermove', move)
         window.removeEventListener('pointerup', up)
         if (raf) cancelAnimationFrame(raf)
+        if (seekRaf) { cancelAnimationFrame(seekRaf); seekRaf = 0 }
         setDragging(null)
         setSnapLine(null)
         setEdgeGhost(null)
@@ -2233,10 +2248,24 @@ export function SegmentTimeline({
                     onPointerDown={e => handleEdgeDown(e, seg, edge)}
                     onKeyDown={e => {
                       if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSeek(edge === 'start' ? seg.start_ms : Math.max(seg.start_ms, seg.end_ms - 100)); return }
-                      // Arrow keys nudge the edge by 0.1 s (1 s with Shift)
+                      // Arrow keys nudge the edge by 0.1 s (1 s with Shift) — the same as dragging it:
+                      // with edges that trim the video, a nudge trims (or brings back) that much
                       if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return
                       e.preventDefault(); e.stopPropagation()
                       const step = (e.shiftKey ? 1000 : 100) * (e.key === 'ArrowLeft' ? -1 : 1)
+                      if (onEdgeTrim) {
+                        if (seg.locked) return
+                        const to = edge === 'start' ? Math.min(seg.end_ms - MIN_FORMAT_MS, t + step) : Math.max(seg.start_ms + MIN_FORMAT_MS, t + step)
+                        if (Math.abs(to - t) < 50) return
+                        // (the part may be redrawn under a new handle: focus goes to its edge again)
+                        const label = `${edge === 'start' ? 'Start' : 'End'} of format ${i + 1} (`
+                        onEdgeTrim(seg.id, edge, Math.round(t), Math.round(to), true)
+                        requestAnimationFrame(() => requestAnimationFrame(() => {
+                          const again = [...document.querySelectorAll<HTMLElement>('button[aria-label]')].find(b => b.getAttribute('aria-label')!.startsWith(label))
+                          if (again && document.activeElement !== again) again.focus()
+                        }))
+                        return
+                      }
                       setEdge(seg, edge, clampEdge(seg, edge, t + step))
                     }}
                     aria-label={`${edge === 'start' ? 'Start' : 'End'} of format ${i + 1} (${label}) at ${msToLabel(t)}. Drag or use arrow keys to trim`}
