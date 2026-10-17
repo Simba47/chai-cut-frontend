@@ -4803,6 +4803,17 @@ export function EditorShell({
                   onDeleteFrameItem={id => { if (frameSeg) askRemoveFrameItem(frameSeg.id, id) }}
                   onFrameRowsChange={heights => { if (frameSeg && !sectionBlocked(frameSeg.id)) updateFrame(frameSeg.id, { row_h: heights }) }}
                   onFrameRowsSwap={order => { if (frameSeg && !sectionBlocked(frameSeg.id)) updateFrame(frameSeg.id, { row_order: order }) }}
+                  onFrameBarChange={p => {
+                    if (!frameSeg || sectionBlocked(frameSeg.id)) return
+                    // (null: the bar back where the template has it)
+                    updateFrame(frameSeg.id, {
+                      ...('split' in p ? { split: p.split ?? undefined } : {}),
+                      ...('split2' in p ? { split2: p.split2 ?? undefined } : {}),
+                      ...('flip' in p ? { flip: p.flip || undefined } : {}),
+                      ...('flip2' in p ? { flip2: p.flip2 || undefined } : {}),
+                    })
+                  }}
+                  onFrameFaceChange={box => { if (frameSeg && !sectionBlocked(frameSeg.id)) updateFrame(frameSeg.id, { face_box: box ?? undefined }) }}
                   onFrameMainRectChange={(slot, rect) => {
                     if (!frameSeg || sectionBlocked(frameSeg.id) || frameItemBlocked(frameSeg.id, `main:${slot}`)) return
                     const rects = { ...frameOf(frameSeg).main_rects }
