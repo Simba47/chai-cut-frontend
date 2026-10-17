@@ -524,6 +524,13 @@ function cleanFrame(frame: FrameSettings): FrameSettings {
     row_order: Array.isArray(frame.row_order) && frame.row_order.length >= 2 && frame.row_order.length <= 4
       && frame.row_order.every(i => Number.isInteger(i) && i >= 0 && i < frame.row_order!.length) && new Set(frame.row_order).size === frame.row_order.length
       ? [...frame.row_order] : undefined,
+    // A free frame's bar and its moved area (the face cam's circle): shares of the frame
+    split: num(frame.split, 0, 1),
+    split2: num(frame.split2, 0, 1),
+    flip: frame.flip === true ? true : undefined,
+    flip2: frame.flip2 === true ? true : undefined,
+    face_box: frame.face_box && typeof frame.face_box === 'object' && [frame.face_box.x, frame.face_box.y, frame.face_box.w].every(v => typeof v === 'number' && isFinite(v))
+      ? { x: num(frame.face_box.x, 0, 1)!, y: num(frame.face_box.y, 0, 1)!, w: num(frame.face_box.w, 0.05, 1)! } : undefined,
     main_volumes: slotMap(frame.main_volumes, v => num(v, 0, 1)),
     main_mutes: slotMap(frame.main_mutes, v => typeof v === 'boolean' ? v : undefined),
     main_hidden: slotMap(frame.main_hidden, v => (v === true ? true : undefined)),
