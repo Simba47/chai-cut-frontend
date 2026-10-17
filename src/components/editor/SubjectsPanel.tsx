@@ -11,10 +11,11 @@ import { useFaceAt, useFrameAt } from '@/modules/clips/thumbs'
 // together, and then lays the clip out once: the groups' formats, and everywhere else the view on
 // whoever is talking. Undo takes it back.
 //
-// The camera angles: the panel opens with every angle of the clip listed (a shot, and everywhere it
-// comes back), so each can be gone through in turn — its people marked by a click on their face, or
-// the angle marked as a group — and none is missed. The one at the playhead is open. An angle left
-// as it is isn't lost: the view there follows whoever is talking, as everywhere.
+// The camera angles: Detect angles lists every angle of the clip once (a shot, and everywhere it
+// comes back), split into solo (one person), group (two or more) and the other shots, so each can be
+// gone through in turn — its people marked by a click on their face, or the angle marked as a group —
+// and none is missed. The one at the playhead is open. An angle left as it is isn't lost: the view
+// there follows whoever is talking, as everywhere.
 
 export interface SubjectItem {
   id: string
@@ -50,14 +51,23 @@ export interface AngleItem {
 }
 
 export interface AnglesView {
-  /** scanning: the worker is looking for them; unavailable: this worker can't yet (the buttons alone are shown) */
-  status: 'loading' | 'scanning' | 'done' | 'failed' | 'unavailable'
+  /** none: not looked for yet (Detect angles); scanning: the worker is looking for them; unavailable: this worker can't yet (the buttons alone are shown) */
+  status: 'loading' | 'none' | 'scanning' | 'done' | 'failed' | 'unavailable'
   progress: number
   error: string | null
   items: AngleItem[]
   /** The angle at the playhead (its place in items) */
   now: number | null
+  /** The clip's start or end moved past what was read: the list misses that part */
+  stale: boolean
 }
+
+/** How the angles are listed: one person, two or more, and the shots with no faces */
+const ANGLE_KINDS: Array<{ title: string; note: string; name: string; pick: (a: AngleItem) => boolean }> = [
+  { title: 'Solo', note: 'one person', name: 'Solo angle', pick: a => a.people === 1 },
+  { title: 'Group', note: 'two or more people', name: 'Group angle', pick: a => a.people >= 2 },
+  { title: 'Other shots', note: 'no faces, or too short', name: 'Other shots', pick: a => a.people === 0 },
+]
 
 interface Props {
   angles: AnglesView
@@ -67,7 +77,7 @@ interface Props {
   onMarkFace: (index: number, face: number) => void
   /** Mark someone by a click on the video (a face the list doesn't show) */
   onClickMark: () => void
-  /** Look for the angles again */
+  /** Detect angles: look for them through the clip (again) */
   onScanAngles: () => void
   subjects: SubjectItem[]
   loading: boolean
@@ -105,8 +115,30 @@ export function SubjectsPanel(p: Props) {
   const listed = p.angles.status === 'done' && withPeople.length > 0
   const set = withPeople.filter(a => a.set).length
 
+  const solo = withPeople.filter(a => a.people === 1).length
+
   return (
     <div className="flex flex-col gap-3 p-4">
+      {/* Detect angles: the clip's camera angles are looked for only when asked */}
+      {(p.angles.status === 'none' || p.angles.status === 'done' || p.angles.status === 'failed') && (
+        <div className="flex flex-col gap-1">
+          <button type="button" onClick={p.onScanAngles}
+            className="h-10 flex items-center justify-center gap-2 rounded-lg text-[13px] font-bold transition-colors"
+            style={p.angles.status === 'none' || p.angles.stale
+              ? { background: '#c8ff00', color: '#000' }
+              : { background: 'rgb(var(--ed-fg) / 0.06)', color: 'var(--ed-text)', boxShadow: 'inset 0 0 0 1px rgb(var(--ed-fg) / 0.1)' }}>
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M3 7V5a2 2 0 012-2h2M17 3h2a2 2 0 012 2v2M21 17v2a2 2 0 01-2 2h-2M7 21H5a2 2 0 01-2-2v-2" /><rect x="7" y="8" width="10" height="8" rx="1.5" />
+            </svg>
+            {p.angles.status === 'none' ? 'Detect angles' : 'Detect angles again'}
+          </button>
+          <p className="text-[11px]" style={{ color: p.angles.stale ? 'var(--ed-accent-text)' : 'rgb(var(--ed-fg) / 0.4)' }}>
+            {p.angles.stale ? 'The clip’s start or end changed since the angles were found — detect them again to include it.'
+              : p.angles.status === 'none' ? 'Finds every camera angle in this clip, each listed once, split into solo and group shots.'
+              : p.angles.status === 'done' && listed ? `${solo} solo · ${withPeople.length - solo} group` : null}
+          </p>
+        </div>
+      )}
       {listed ? (
         <>
           <div className="flex flex-col gap-1.5">
@@ -123,13 +155,24 @@ export function SubjectsPanel(p: Props) {
           </div>
           {/* Above the list: what a click in an angle couldn't do is seen without scrolling */}
           {p.error && <p role="alert" className="text-xs" style={{ color: '#f87171' }}>{p.error}</p>}
-          <div className="flex flex-col gap-1.5">
-            {p.angles.items.map((a, i) => (
-              <AngleCard key={i} angle={a} name={a.people > 0 ? `Angle ${withPeople.indexOf(a) + 1}` : 'Other shots'} open={p.angles.now === i}
-                videoUrl={p.videoUrl} marking={p.marking}
-                onOpen={() => p.onOpenAngle(i)} onMarkFace={k => p.onMarkFace(i, k)} onMarkShot={p.onMarkShot} onClickMark={p.onClickMark} />
-            ))}
-          </div>
+          {/* Solo, then group, then the other shots — each angle once */}
+          {ANGLE_KINDS.map(kind => {
+            const list = p.angles.items.map((a, i) => ({ a, i })).filter(({ a }) => kind.pick(a))
+            if (!list.length) return null
+            return (
+              <div key={kind.title} className="flex flex-col gap-1.5">
+                <div className="flex items-baseline gap-2 pt-1">
+                  <span className="text-[12px] font-bold text-[var(--ed-text)]">{kind.title}</span>
+                  <span className="text-[11px] tabular-nums" style={{ color: muted }}>{kind.note} · {list.length}</span>
+                </div>
+                {list.map(({ a, i }, n) => (
+                  <AngleCard key={i} angle={a} name={a.people > 0 ? `${kind.name} ${n + 1}` : kind.name} open={p.angles.now === i}
+                    videoUrl={p.videoUrl} marking={p.marking}
+                    onOpen={() => p.onOpenAngle(i)} onMarkFace={k => p.onMarkFace(i, k)} onMarkShot={p.onMarkShot} onClickMark={p.onClickMark} />
+                ))}
+              </div>
+            )
+          })}
         </>
       ) : (
         <>

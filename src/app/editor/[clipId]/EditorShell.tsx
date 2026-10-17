@@ -1942,7 +1942,8 @@ export function EditorShell({
 
   // ── Camera angles (modules/editor/angles.ts) ──
   // Every angle of the clip, listed in the Subjects tool so each gets its subject or its group. The
-  // worker looks for them the first time the tool opens (and again when the clip grew past what it read).
+  // worker looks for them only when Detect angles is pressed; a list found before shows when the tool
+  // opens (stale: the clip grew past what it read, so Detect angles again).
   type AnglesData = { status: 'none' | 'queued' | 'running' | 'done' | 'failed' | 'unavailable'; progress: number; error: string | null; angles: Angle[]; scan_start_ms: number | null; scan_end_ms: number | null }
   const [anglesData, setAnglesData] = useState<AnglesData | null>(null)
   const loadAngles = useCallback(async (scan = false) => {
@@ -1958,18 +1959,9 @@ export function EditorShell({
     }
   }, [subjectsUrl, rawClip.start_ms, rawClip.end_ms])
   useEffect(() => { if (tool === 'subjects' && !anglesData) loadAngles() }, [tool, anglesData, loadAngles])
-  // Never looked for, or the clip grew past what was read: look (once for each start and end of the clip)
-  const anglesAskedRef = useRef('')
-  useEffect(() => {
-    if (tool !== 'subjects' || !anglesData) return
-    const grown = anglesData.status === 'done' && anglesData.scan_start_ms !== null && anglesData.scan_end_ms !== null
-      && (rawClip.start_ms < anglesData.scan_start_ms - 500 || rawClip.end_ms > anglesData.scan_end_ms + 500)
-    if (anglesData.status !== 'none' && !grown) return
-    const range = `${rawClip.start_ms}-${rawClip.end_ms}`
-    if (anglesAskedRef.current === range) return
-    anglesAskedRef.current = range
-    loadAngles(true)
-  }, [tool, anglesData, rawClip.start_ms, rawClip.end_ms, loadAngles])
+  // The clip grew past what was read: the list misses the new part (Detect angles again)
+  const anglesStale = anglesData?.status === 'done' && anglesData.scan_start_ms !== null && anglesData.scan_end_ms !== null
+    && (rawClip.start_ms < anglesData.scan_start_ms - 500 || rawClip.end_ms > anglesData.scan_end_ms + 500)
   const anglesBusy = anglesData?.status === 'queued' || anglesData?.status === 'running'
   useEffect(() => {
     if (!anglesBusy || tool !== 'subjects') return
@@ -1982,9 +1974,9 @@ export function EditorShell({
   )
   const angleNow = useMemo(() => (tool === 'subjects' && angleItems.length ? angleAt(angleItems, currentTimeMs) : null), [tool, angleItems, currentTimeMs])
   const anglesView = useMemo<AnglesView>(() => ({
-    status: !anglesData ? 'loading' : anglesData.status === 'none' || anglesData.status === 'queued' || anglesData.status === 'running' ? 'scanning' : anglesData.status,
-    progress: anglesData?.progress ?? 0, error: anglesData?.error ?? null, items: angleItems, now: angleNow,
-  }), [anglesData, angleItems, angleNow])
+    status: !anglesData ? 'loading' : anglesData.status === 'queued' || anglesData.status === 'running' ? 'scanning' : anglesData.status,
+    progress: anglesData?.progress ?? 0, error: anglesData?.error ?? null, items: angleItems, now: angleNow, stale: !!anglesStale,
+  }), [anglesData, angleItems, angleNow, anglesStale])
   function openAngle(i: number) {
     const a = angleItems[i]
     if (!a) return
@@ -4166,7 +4158,7 @@ export function EditorShell({
             {tool === 'subjects' && (
               <SubjectsPanel
                 angles={anglesView} onOpenAngle={openAngle} onMarkFace={markAngleFace} onClickMark={markByClick}
-                onScanAngles={() => { anglesAskedRef.current = ''; loadAngles(true) }}
+                onScanAngles={() => loadAngles(true)}
                 subjects={subjectItems} loading={subjectsLoading} error={subjectsError}
                 marking={marking} onToggleMarking={markFromView} onMarkShot={markShot} onMarkInClip={markInWholeClip}
                 onRemove={removeSubject} onRename={renameSubject}
