@@ -6,7 +6,15 @@ import { OutputCanvas } from '@/components/editor/VideoPreview'
 import { getBoxPositionAtLerp } from '@/lib/interpolation'
 import { BorrowedPool, isBorrowedSlot } from '@/modules/editor/brollSources'
 import { createFrameMediaPool } from '@/modules/editor/frameMedia'
-import { insertsOf, piecesOf, piecesLength, pieceAt, videoAtPieces, timelineAtPieces, type Piece } from '@/modules/editor/inserts'
+import { insertsOf, piecesOf, piecesLength, pieceAt, videoAtPieces, timelineAtPieces, pieceVideoMs, type Piece } from '@/modules/editor/inserts'
+
+/** The video plays a piece at its speed (a part played faster or slower): its voice natural unless its pitch follows */
+function rateFor(v: HTMLVideoElement, p: Piece | null | undefined) {
+  const rate = p && p.hold == null ? (p.speed ?? 1) : 1
+  if (v.playbackRate !== rate) v.playbackRate = rate
+  const el = v as HTMLVideoElement & { preservesPitch?: boolean }
+  if (el.preservesPitch !== !p?.pitch) el.preservesPitch = !p?.pitch
+}
 import { isShot } from '@/modules/editor/shots'
 
 /**
@@ -37,7 +45,7 @@ export function ClipPlayer({ videoUrl, mainVideoId, stockUrls = {}, startMs, end
   // video), and during a video put in between the clip's own clock runs while the source waits
   const pieces = useMemo(() => {
     const all = piecesOf(segments, mainVideoId, s => isShot(s, mainVideoId))
-    return insertsOf(segments, mainVideoId).length || all.some(p => p.from != null && Math.abs(p.from - p.at) > 1) ? all : []
+    return insertsOf(segments, mainVideoId).length || all.some(p => (p.from != null && Math.abs(p.from - p.at) > 1) || (p.speed ?? 1) !== 1) ? all : []
   }, [segments, mainVideoId])
   const lengthMs = pieces.length ? piecesLength(pieces) : endMs - startMs
   const tRef = useRef(0)
@@ -133,9 +141,10 @@ export function ClipPlayer({ videoUrl, mainVideoId, stockUrls = {}, startMs, end
         const rel = w.start_ms - startMs
         if (rel < 0) return [w]
         const mid = (w.start_ms + w.end_ms) / 2 - startMs
-        if (!pieces.some(p => p.from != null && mid >= p.from && mid < p.from + p.ms)) return []   // (in video cut out)
-        const d = timelineAtPieces(pieces, rel) - rel
-        return d ? [{ ...w, start_ms: w.start_ms + d, end_ms: w.end_ms + d }] : [w]
+        if (!pieces.some(p => p.from != null && mid >= p.from && mid < p.from + pieceVideoMs(p))) return []   // (in video cut out)
+        // (both ends: in a part played faster or slower the word is shorter or longer too)
+        const a = timelineAtPieces(pieces, rel), b = Math.max(a + 1, timelineAtPieces(pieces, w.end_ms - startMs))
+        return a === rel && b === w.end_ms - startMs ? [w] : [{ ...w, start_ms: startMs + a, end_ms: startMs + b }]
       })
       : words
     return captionStyle?.language === 'roman' ? placed.map(w => ({ ...w, word: w.word_roman ?? w.word, source_word: w.word })) : placed
@@ -162,6 +171,7 @@ export function ClipPlayer({ videoUrl, mainVideoId, stockUrls = {}, startMs, end
           } else {
             holdRef.current = null
             if (Math.abs(v.currentTime * 1000 - (startMs + (n.from ?? 0))) > 80) v.currentTime = (startMs + (n.from ?? 0)) / 1000
+            rateFor(v, n)
             if (v.paused) v.play().catch(() => {})
           }
           return n.at
@@ -175,9 +185,11 @@ export function ClipPlayer({ videoUrl, mainVideoId, stockUrls = {}, startMs, end
           const p = pieceAt(pieces, tRef.current) ?? pieces[0]
           if (p.hold != null) rel = enter(pieces.indexOf(p))
           else {
-            const vm = v.currentTime * 1000 - startMs
-            // The end of this piece: on to the next (a jump over video cut out, or a held one)
-            rel = vm >= (p.from ?? 0) + p.ms - 34 ? enter(pieces.indexOf(p) + 1) : p.at + Math.max(0, vm - (p.from ?? 0))
+            const vm = v.currentTime * 1000 - startMs, sp = p.speed ?? 1
+            rateFor(v, p)
+            // The end of this piece: on to the next (a jump over video cut out, or a held one); a
+            // piece at another speed plays ms · speed of video, its time the video's ÷ speed
+            rel = vm >= (p.from ?? 0) + pieceVideoMs(p) - 34 * sp ? enter(pieces.indexOf(p) + 1) : p.at + Math.max(0, vm - (p.from ?? 0)) / sp
           }
         }
         if (rel >= lengthMs) { v.pause(); holdRef.current = null; v.currentTime = startMs / 1000; tRef.current = 0; setPlaying(false); setTMs(0); syncStock(0, false); syncBorrowed(0, false); return }
@@ -208,6 +220,7 @@ export function ClipPlayer({ videoUrl, mainVideoId, stockUrls = {}, startMs, end
       return
     }
     holdRef.current = null
+    rateFor(v, at)
     v.play().then(() => setPlaying(true)).catch(() => setPlaying(false))
   }
 

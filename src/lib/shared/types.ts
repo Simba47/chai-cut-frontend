@@ -175,6 +175,15 @@ export interface Segment {
    * plays (clip-relative ms of the main video). Null for every other section.
    */
   video_offset_ms?: number | null
+  /**
+   * How fast this part plays its stretch of the main video (1 = as filmed, 0.5 = slow motion,
+   * 2 = twice as fast). It lasts its video's length ÷ speed on the timeline (inserts.ts).
+   */
+  speed?: number | null
+  /** Slow motion made smooth in the export (new in-between frames) */
+  smooth?: boolean | null
+  /** The sound's pitch changes with the speed (higher when faster); off: the voice stays natural */
+  pitch?: boolean | null
 }
 
 export interface CropBox {

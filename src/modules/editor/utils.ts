@@ -130,6 +130,10 @@ function toLocal(s: SegmentRow): SegmentLocal {
     // An inserted video (inserts.ts): where the main video waits meanwhile. Only on a part showing
     // another video (older clips can have it on parts of the main video: it means nothing there now)
     ...(s.video_offset_ms != null && !isFrameLayout(s.layout) && s.crop_boxes[0]?.source_video_id ? { video_offset_ms: Number(s.video_offset_ms) } : {}),
+    // How fast the part plays (inserts.ts): only when not as filmed
+    ...(s.speed != null && Number(s.speed) > 0 && Math.abs(Number(s.speed) - 1) > 0.001 ? { speed: Number(s.speed) } : {}),
+    ...(s.smooth ? { smooth: true } : {}),
+    ...(s.pitch ? { pitch: true } : {}),
     crop_boxes: s.crop_boxes.map(b => ({
       id: b.id,
       slot_index: b.slot_index,

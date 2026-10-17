@@ -7,7 +7,14 @@ import { usePlayerStore, liveTime } from './store'
  * A stretch of the timeline [at, at + ms) (modules/editor/inserts.ts Piece): the main video from
  * `from` on (clip-relative ms), or held at `hold` while a video put in between plays
  */
-type Piece = { id?: string; at: number; ms: number; from?: number; hold?: number }
+type Piece = { id?: string; at: number; ms: number; from?: number; hold?: number; /** 1 when not given: `ms` of timeline plays `ms · speed` of video */ speed?: number; pitch?: boolean }
+/** The video plays a piece at its speed: its voice natural unless the piece's pitch follows the speed */
+function setRate(el: HTMLVideoElement, p: Piece | null | undefined) {
+  const rate = p && p.hold == null ? (p.speed ?? 1) : 1
+  if (el.playbackRate !== rate) el.playbackRate = rate
+  const keep = !p?.pitch
+  if ((el as HTMLVideoElement & { preservesPitch?: boolean }).preservesPitch !== keep) (el as HTMLVideoElement & { preservesPitch?: boolean }).preservesPitch = keep
+}
 /** A part of the source video that stays in the clip: [start, end) in ms of the video */
 type KeptRange = [number, number]
 
@@ -117,7 +124,7 @@ export function useVideoSync(clipStartMs = 0, clipEndMs?: number, pieces?: Piece
   function videoOfTime(t: number): number {
     const i = pieceIndexAt(t), p = piecesRef.current[i]
     if (!p) return Math.max(0, t)
-    return p.hold != null ? p.hold : (p.from ?? 0) + Math.min(p.ms - 1, Math.max(0, t - p.at))
+    return p.hold != null ? p.hold : (p.from ?? 0) + Math.min(p.ms - 1, Math.max(0, t - p.at)) * (p.speed ?? 1)
   }
 
   /** Stop at the clip's end (on its last frame) */
@@ -139,6 +146,7 @@ export function useVideoSync(clipStartMs = 0, clipEndMs?: number, pieces?: Piece
     holdRef.current = null
     const want = clipStartMs + (p.from ?? 0)
     if (Math.abs(el.currentTime * 1000 - want) > CONTIGUOUS_MS) el.currentTime = want / 1000
+    setRate(el, p)
     setCurrentTimeMs(p.at)
     if (run) {
       if (el.paused) safePlay(el)
@@ -180,6 +188,7 @@ export function useVideoSync(clipStartMs = 0, clipEndMs?: number, pieces?: Piece
     const want = clipStartMs + (piece.hold ?? 0)
     if (Math.abs(el.currentTime * 1000 - want) > CONTIGUOUS_MS) seekVideo(el, want / 1000)
     if (!el.paused) el.pause()   // (onPause sees holdRef: the player stays "playing")
+    setRate(el, null)
     setCurrentTimeMs(ms)
     if (run) {
       cancelAnimationFrame(rafRef.current)
@@ -240,10 +249,12 @@ export function useVideoSync(clipStartMs = 0, clipEndMs?: number, pieces?: Piece
       const p = pieces[i]
       if (p.hold != null) { enterHold(el, p, Math.max(p.at, liveTime.get()), usePlayerStore.getState().playing); return }
       const v = el.currentTime * 1000 - clipStartMs
-      const from = p.from ?? 0
-      if (v >= from + p.ms - JOIN_LOOKAHEAD_MS) { enterPiece(el, i + 1, usePlayerStore.getState().playing); return }
+      const from = p.from ?? 0, speed = p.speed ?? 1
+      // (a piece at speed s plays ms · s of video; its timeline time is the video's ÷ s)
+      if (v >= from + p.ms * speed - JOIN_LOOKAHEAD_MS * speed) { enterPiece(el, i + 1, usePlayerStore.getState().playing); return }
       if (v < from - SEEK_SLACK_MS) el.currentTime = (clipStartMs + from) / 1000
-      setCurrentTimeMs(p.at + Math.max(0, v - from))
+      setRate(el, p)
+      setCurrentTimeMs(p.at + Math.max(0, v - from) / speed)
       scheduleTick(el)
       return
     }
@@ -376,7 +387,7 @@ export function useVideoSync(clipStartMs = 0, clipEndMs?: number, pieces?: Piece
   // The clip's length follows the kept parts and the pieces when they change (a part removed, a
   // video put in, an undo)
   const keptKey = kept && kept.length ? kept.map(r => r.join('-')).join(',') : ''
-  const piecesKey = piecesRef.current.map(p => `${p.at}+${p.ms}:${p.from ?? ''}@${p.hold ?? ''}`).join(',')
+  const piecesKey = piecesRef.current.map(p => `${p.at}+${p.ms}:${p.from ?? ''}@${p.hold ?? ''}x${p.speed ?? 1}${p.pitch ? 'p' : ''}`).join(',')
   useEffect(() => {
     const k = keptRef.current
     if (k) setDurationMs(keptLength(k))
@@ -399,13 +410,15 @@ export function useVideoSync(clipStartMs = 0, clipEndMs?: number, pieces?: Piece
       const i = Math.max(0, pieceIndexAt(now)), p = pieces[i]
       if (p.hold != null) { setPlaying(true); enterHold(el, p, Math.max(p.at, now), true); return }
       holdRef.current = null
-      const want = clipStartMs + (p.from ?? 0) + Math.max(0, now - p.at)
+      const want = clipStartMs + (p.from ?? 0) + Math.max(0, now - p.at) * (p.speed ?? 1)
       if (Math.abs(el.currentTime * 1000 - want) > CONTIGUOUS_MS) el.currentTime = want / 1000
+      setRate(el, p)
       setCurrentTimeMs(now)
       safePlay(el)
       return
     }
     holdRef.current = null
+    setRate(el, null)
     safePlay(el)
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [setPlaying, clipStartMs])
@@ -451,6 +464,7 @@ export function useVideoSync(clipStartMs = 0, clipEndMs?: number, pieces?: Piece
       if (p.hold != null) { enterHold(el, p, at, playing); return }
       holdRef.current = null
       seekVideo(el, (clipStartMs + videoOfTime(at)) / 1000)
+      setRate(el, p)
       setCurrentTimeMs(at)
       if (playing) {
         if (el.paused) safePlay(el)
