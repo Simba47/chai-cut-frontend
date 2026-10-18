@@ -66,6 +66,24 @@ export function useVideoSync(clipStartMs = 0, clipEndMs?: number, pieces?: Piece
   // One seek at a time: a seek asked for while another is still running waits, and only the
   // latest waits (each new seek would cancel the one before, and while dragging none would finish)
   const pendingSeekRef = useRef<number | null>(null)
+  // Slow motion: the video shows a new frame only every so often (a 30 fps video at 0.25x: every
+  // 133 ms), and the tick runs per frame — so the clock (playhead, captions, text) would step. In
+  // between, a glide moves the clock on at real time, never further than the next frame is due
+  // (the tick sets it exactly on each frame)
+  const glideRef = useRef<{ t: number; wall: number; ahead: number } | null>(null)
+  const glideRafRef = useRef(0)
+  function glide() {
+    const g = glideRef.current
+    if (!g || !usePlayerStore.getState().playing || holdRef.current) { glideRafRef.current = 0; return }
+    const next = g.t + Math.min(performance.now() - g.wall, g.ahead)
+    if (next > liveTime.get() + 0.5) setCurrentTimeMs(next)
+    glideRafRef.current = requestAnimationFrame(glide)
+  }
+  function stopGlide() {
+    glideRef.current = null
+    if (glideRafRef.current) cancelAnimationFrame(glideRafRef.current)
+    glideRafRef.current = 0
+  }
   function seekVideo(el: HTMLVideoElement, sec: number) {
     if (el.seeking) { pendingSeekRef.current = sec; return }
     pendingSeekRef.current = null
@@ -254,7 +272,20 @@ export function useVideoSync(clipStartMs = 0, clipEndMs?: number, pieces?: Piece
       if (v >= from + p.ms * speed - JOIN_LOOKAHEAD_MS * speed) { enterPiece(el, i + 1, usePlayerStore.getState().playing); return }
       if (v < from - SEEK_SLACK_MS) el.currentTime = (clipStartMs + from) / 1000
       setRate(el, p)
-      setCurrentTimeMs(p.at + Math.max(0, v - from) / speed)
+      const t = p.at + Math.max(0, v - from) / speed
+      if (speed < 1) {
+        // (slowed: the glide carries the clock between frames; a frame never puts it back by the
+        // little the glide went ahead — at most one frame's worth)
+        const ahead = 1000 / 24 / speed
+        const now = liveTime.get()
+        setCurrentTimeMs(now > t && now - t < ahead ? now : t)
+        // (the glide always starts from the frame's true time: it never runs further ahead than one frame)
+        glideRef.current = { t, wall: performance.now(), ahead }
+        if (!glideRafRef.current) glideRafRef.current = requestAnimationFrame(glide)
+      } else {
+        glideRef.current = null
+        setCurrentTimeMs(t)
+      }
       scheduleTick(el)
       return
     }
@@ -293,6 +324,7 @@ export function useVideoSync(clipStartMs = 0, clipEndMs?: number, pieces?: Piece
       if (holdRef.current && usePlayerStore.getState().playing) return  // held for an insert: still playing
       setPlaying(false)
       cancelTick(el)
+      stopGlide()
     }
     const onLoaded = () => {
       const k = keptRef.current

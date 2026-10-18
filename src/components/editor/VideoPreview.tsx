@@ -1928,6 +1928,34 @@ export function OutputCanvas({
       return s
     }
 
+    // ── Slow motion, smooth: a slowed part shows each of its video's frames for longer (a 30 fps
+    // video at 0.25x: a new one every 133 ms), so it would step. As each new frame comes, the one
+    // before fades out over the time until the next is due: motion flows on from frame to frame.
+    let blendPrev: HTMLCanvasElement | null = null, blendCur: HTMLCanvasElement | null = null
+    let blendVT = -1, blendWall = 0, blendGap = 100, blendOk = false
+    function blendSlow(ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement, video: HTMLVideoElement, seg: SegmentLocal | null) {
+      const sp = seg?.speed && seg.speed > 0 ? seg.speed : 1
+      if (video.paused || sp >= 0.99 || !seg || seg.hidden || isFrameLayout(seg.layout)) { blendVT = -1; blendOk = false; return }
+      // (the frame on screen's own time: currentTime runs on between frames)
+      if (shownMs == null) { blendOk = false; return }
+      const now = performance.now(), vt = shownMs / 1000
+      if (vt !== blendVT) {
+        // A new frame: the last one becomes the one fading out
+        const step = vt - blendVT
+        if (!blendPrev) blendPrev = document.createElement('canvas')
+        if (!blendCur) blendCur = document.createElement('canvas')
+        for (const c of [blendPrev, blendCur]) if (c.width !== canvas.width || c.height !== canvas.height) { c.width = canvas.width; c.height = canvas.height; blendOk = false }
+        blendOk = blendVT >= 0 && step > 0 && step < 0.25
+        if (blendOk) { blendGap = step * 1000 / sp; const t = blendPrev; blendPrev = blendCur; blendCur = t }
+        blendCur.getContext('2d')!.drawImage(canvas, 0, 0)
+        blendVT = vt; blendWall = now
+      }
+      if (!blendOk || !blendPrev) return
+      const fade = 1 - Math.min(1, (now - blendWall) / blendGap)
+      if (fade <= 0.01) return
+      ctx.save(); ctx.globalAlpha = fade; ctx.drawImage(blendPrev, 0, 0); ctx.restore()
+    }
+
     const loop = () => {
       const canvas = canvasRef.current
       const video  = videoRef.current
@@ -2094,6 +2122,7 @@ export function OutputCanvas({
           } else if (!other || other.readyState >= 2) {
             paintSegment(ctx, other ?? video, seg, clipRelativeMs, getPositionAtRef.current, frameMediaRef.current,
               slotSourceForRef.current ? (sg, box) => slotSourceForRef.current!(sg, box) : null)
+            if (!other) blendSlow(ctx, canvas, video, seg)
           }
 
           // Composite the outgoing snapshot on top with decreasing alpha
