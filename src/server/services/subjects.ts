@@ -241,19 +241,31 @@ export interface AnglesState {
 const NO_ANGLES: AnglesState = { status: 'none', progress: 0, error: null, angles: [], scan_start_ms: null, scan_end_ms: null }
 /** A scan not heard from for this long has stopped (the worker restarted): it can be started again */
 const ANGLES_STUCK = '5 minutes'
+const OUT_OF_DATE_WORKER = 'The worker that took this scan is out of date, so it could not run it. Update or restart that worker, then try again.'
 
 export async function getAngles(userId: string, clipId: string): Promise<AnglesState> {
   await ownClip(userId, clipId)
   try {
-    const [row] = await sql<(Omit<AnglesState, 'angles'> & { angles: Angle[] | null; stuck: boolean })[]>`
+    const [row] = await sql<(Omit<AnglesState, 'angles'> & { angles: Angle[] | null; stuck: boolean; job_failed: string | null })[]>`
       SELECT status, progress, error, angles, scan_start_ms, scan_end_ms,
-        status IN ('queued', 'running') AND updated_at < now() - ${ANGLES_STUCK}::interval AS stuck
+        status IN ('queued', 'running') AND updated_at < now() - ${ANGLES_STUCK}::interval AS stuck,
+        -- The scan's job failed without the worker's handler marking the row (say a worker from before
+        -- this kind of job took it): the row would wait at 5% until it counts as stuck
+        (SELECT CASE WHEN j.status = 'failed' THEN coalesce(j.error, 'failed') END FROM jobs j
+          WHERE j.type = 'track_subjects' AND j.payload->>'clip_id' = ${clipId} AND j.payload->>'angles' = 'true'
+          ORDER BY j.created_at DESC LIMIT 1) AS job_failed
       FROM clip_angles WHERE clip_id = ${clipId}
     `
     if (!row) return NO_ANGLES
-    const { stuck, ...state } = row
+    const { stuck, job_failed, ...state } = row
+    if (job_failed && (state.status === 'queued' || state.status === 'running')) {
+      const why = /No handler/i.test(job_failed) ? OUT_OF_DATE_WORKER : 'Looking for the angles failed. Try again.'
+      // Saved, so Try again can start a new scan (one is only started once the last one is over)
+      await sql`UPDATE clip_angles SET status = 'failed', progress = 100, error = ${why}, updated_at = now() WHERE clip_id = ${clipId} AND status IN ('queued', 'running')`
+      return { ...state, angles: [], status: 'failed', progress: 100, error: why }
+    }
     if (stuck) return { ...state, angles: [], status: 'failed', error: 'Looking for the angles stopped. Try again.' }
-    return { ...state, angles: state.status === 'done' ? state.angles ?? [] : [], error: state.status === 'failed' ? 'The angles could not be found this time. Try again.' : null }
+    return { ...state, angles: state.status === 'done' ? state.angles ?? [] : [], error: state.status === 'failed' ? (state.error === OUT_OF_DATE_WORKER ? OUT_OF_DATE_WORKER : 'The angles could not be found this time. Try again.') : null }
   } catch (e) {
     if ((e as { code?: string })?.code === '42P01') return { ...NO_ANGLES, status: 'unavailable' }
     throw e

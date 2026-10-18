@@ -21,26 +21,39 @@ export interface TransitionJoin {
 
 /**
  * The kinds of transition, most used in short-form editing first. Each tile plays a little loop
- * of what it does: the outgoing picture (dark) gives way to the incoming one (light). Styles:
- * .tr-* in globals.css. The export draws them with ffmpeg's xfade (render.py); the preview the
- * same way (VideoPreview drawTransition).
+ * of what it does: the Shortcut panda buried in film gives way to the panda cutting it into reels.
+ * Styles: .tr-* in globals.css. The export draws them with ffmpeg's xfade (render.py); the preview
+ * the same way (VideoPreview drawTransition).
+ *
+ * `hidden`: no longer offered (rare in short video, or doubling another one: the four slides are
+ * one "Slide"). A clip that already has one keeps it: it still plays and exports, and its tile shows
+ * while it is the picked one.
  */
-export const TRANSITION_KINDS: { type: TransitionType; name: string }[] = [
+export const TRANSITION_KINDS: { type: TransitionType; name: string; hidden?: boolean; trending?: boolean; fresh?: boolean }[] = [
   { type: 'cut', name: 'None' },
-  { type: 'fade', name: 'Dissolve' },
+  { type: 'fade', name: 'Dissolve', trending: true },
   { type: 'fadeblack', name: 'Fade black' },
   { type: 'fadewhite', name: 'Flash' },
-  { type: 'zoomin', name: 'Zoom' },
-  { type: 'smoothleft', name: 'Whip' },
-  { type: 'hblur', name: 'Blur' },
-  { type: 'slideleft', name: 'Slide left' },
-  { type: 'slideright', name: 'Slide right' },
-  { type: 'slideup', name: 'Slide up' },
-  { type: 'slidedown', name: 'Slide down' },
-  { type: 'wipe', name: 'Wipe' },
-  { type: 'circleopen', name: 'Circle' },
-  { type: 'radial', name: 'Clock' },
-  { type: 'pixelize', name: 'Pixelate' },
+  { type: 'zoomin', name: 'Zoom', trending: true },
+  { type: 'smoothleft', name: 'Whip', trending: true },
+  { type: 'hblur', name: 'Blur', trending: true },
+  { type: 'slideleft', name: 'Slide' },
+  // Trending on Reels, Shorts and TikTok (render.py _CUSTOM_TRANSITIONS; swipeup a smeared slideup)
+  { type: 'velocity', name: 'Speed ramp', fresh: true },
+  { type: 'zoomout', name: 'Zoom out', fresh: true },
+  { type: 'swipeup', name: 'Swipe up', fresh: true },
+  { type: 'shake', name: 'Shake', fresh: true },
+  { type: 'glitch', name: 'Glitch', fresh: true },
+  { type: 'flare', name: 'Light leak', fresh: true },
+  { type: 'spin', name: 'Spin', fresh: true },
+  { type: 'warp', name: 'Warp', fresh: true },
+  { type: 'slideright', name: 'Slide right', hidden: true },
+  { type: 'slideup', name: 'Slide up', hidden: true },
+  { type: 'slidedown', name: 'Slide down', hidden: true },
+  { type: 'wipe', name: 'Wipe', hidden: true },
+  { type: 'circleopen', name: 'Circle', hidden: true },
+  { type: 'radial', name: 'Clock', hidden: true },
+  { type: 'pixelize', name: 'Pixelate', hidden: true },
 ]
 /** What a tile dragged from the panel carries (its kind): dropped on a cut on the timeline (Timeline.tsx) */
 export const TRANSITION_DRAG_TYPE = 'application/x-shortcut-transition'
@@ -109,7 +122,7 @@ const nameOf = (t: TransitionType) => TRANSITION_KINDS.find(k => k.type === t)?.
  * the flashes, Blur, Pixelate) still show there.
  */
 const NEEDS_CHANGE: TransitionType[] = ['fade', 'wipe', 'circleopen', 'radial']
-const SAME_SHOT_TIP = 'Dissolve, Wipe, Circle and Clock look like a plain cut there. Pick a slide, Whip, Zoom, Flash, Blur or Pixelate — or change the framing of one side.'
+const SAME_SHOT_TIP = 'Dissolve looks like a plain cut there. Pick Slide, Whip, Zoom, Flash or Blur — or change the framing of one side.'
 
 /**
  * The Transitions tool, one set of controls for the whole clip:
@@ -282,7 +295,7 @@ export function TransitionsPanel({ joins, transitions, currentTimeMs, canAddHere
       )}
       {savedAsDissolve && (
         <span className="tr-hint" data-tone="warn">
-          The database doesn&apos;t take the newer transitions yet, so they were saved as Dissolve. Restart the backend once (it updates the database), then pick them again.
+          The new transitions aren&apos;t switched on yet, so this one was saved as Dissolve for now. Pick it again once they&apos;re switched on.
         </span>
       )}
 
@@ -343,19 +356,27 @@ function KindTiles({ picked, label, disabled, weak, onPick }: {
   weak?: boolean
   onPick: (type: TransitionType) => void
 }) {
+  const tile = (k: (typeof TRANSITION_KINDS)[number]) => (
+    <button key={k.type} type="button" role="radio" aria-checked={picked === k.type} disabled={disabled}
+      // (drag it onto a cut on the timeline: that cut gets it)
+      draggable={!disabled} onDragStart={e => { e.dataTransfer.setData(TRANSITION_DRAG_TYPE, k.type); e.dataTransfer.effectAllowed = 'copy' }}
+      className="tr-tile" data-on={picked === k.type || undefined} data-weak={(weak && NEEDS_CHANGE.includes(k.type)) || undefined}
+      title={weak && NEEDS_CHANGE.includes(k.type) ? `${k.name} barely shows between two parts of the same shot` : undefined}
+      onClick={() => onPick(k.type)}>
+      <span className="tr-demo" data-kind={k.type} aria-hidden="true">
+        <i className="tr-a" /><i className="tr-b" /><i className="tr-fx" />
+        {k.fresh ? <b className="tr-badge" data-new>New</b> : k.trending && <b className="tr-badge">Trending</b>}
+      </span>
+      <span className="tr-name">{k.name}</span>
+    </button>
+  )
+  // (an older kind shows only while it is the one picked, so the clip's own choice stays visible)
+  const shown = TRANSITION_KINDS.filter(k => !k.hidden || picked === k.type)
   return (
-    <div className="grid grid-cols-3 gap-1.5" role="radiogroup" aria-label={label}>
-      {TRANSITION_KINDS.map(k => (
-        <button key={k.type} type="button" role="radio" aria-checked={picked === k.type} disabled={disabled}
-          // (drag it onto a cut on the timeline: that cut gets it)
-          draggable={!disabled} onDragStart={e => { e.dataTransfer.setData(TRANSITION_DRAG_TYPE, k.type); e.dataTransfer.effectAllowed = 'copy' }}
-          className="tr-tile" data-on={picked === k.type || undefined} data-weak={(weak && NEEDS_CHANGE.includes(k.type)) || undefined}
-          title={weak && NEEDS_CHANGE.includes(k.type) ? `${k.name} barely shows between two parts of the same shot` : undefined}
-          onClick={() => onPick(k.type)}>
-          <span className="tr-demo" data-kind={k.type} aria-hidden="true"><i className="tr-a" /><i className="tr-b" /></span>
-          <span className="tr-name">{k.name}</span>
-        </button>
-      ))}
+    <div className="flex flex-col gap-2.5" role="radiogroup" aria-label={label}>
+      <div className="grid grid-cols-3 gap-1.5">{shown.filter(k => !k.fresh).map(tile)}</div>
+      <span className="tr-label">Trending on Reels and Shorts</span>
+      <div className="grid grid-cols-3 gap-1.5">{shown.filter(k => k.fresh).map(tile)}</div>
     </div>
   )
 }

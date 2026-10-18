@@ -785,7 +785,7 @@ export function SegmentTimeline({
     const onWheel = (e: WheelEvent) => {
       const overStrip = !!(e.target as HTMLElement | null)?.closest?.('[data-lane="main"]')
       const vertical = Math.abs(e.deltaY) > Math.abs(e.deltaX)
-      if (e.ctrlKey || e.metaKey || (overStrip && vertical && !e.shiftKey)) {
+      if (e.ctrlKey || e.metaKey) {
         e.preventDefault()   // (and the page itself doesn't zoom)
         // A pinch sends small steps, a mouse wheel ~100 per notch: each notch about ×1.3
         const k = e.ctrlKey && Math.abs(e.deltaY) < 40 ? 0.012 : 0.0026
@@ -799,38 +799,77 @@ export function SegmentTimeline({
         setZoomRef.current(z)
         return
       }
-      // Up / down: through the tracks when there are more than fit (Shift or a sideways swipe: along the time)
-      if (vertical && !e.shiftKey && el.scrollHeight > el.clientHeight) return
+      // Up / down: through the tracks when there are more than fit (over the video strip, Shift or a
+      // sideways swipe: along the time). Along the time a little slower than the swipe, so it moves steadily
+      if (vertical && !e.shiftKey && !overStrip && el.scrollHeight > el.clientHeight) return
       if (el.scrollWidth <= el.clientWidth) return
       const d = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY
       if (!d) return
       e.preventDefault()
-      el.scrollLeft += d
+      el.scrollLeft += d * 0.6
     }
     el.addEventListener('wheel', onWheel, { passive: false })
     return () => el.removeEventListener('wheel', onWheel)
   }, [])
-  useLayoutEffect(() => {
-    const el = scrollRef.current, a = zoomAnchor.current
-    if (!el || !a) return
-    zoomAnchor.current = null
-    el.scrollLeft = Math.max(0, a.share * el.scrollWidth - a.x)
-  }, [zoom])
-
-  // Keep the playhead in view when zoomed in (after seeking or while playing): from the live time,
-  // so it scrolls on with the playhead even while the rest of the timeline redraws less often
-  const followRef = useRef({ zoom, duration })
-  followRef.current = { zoom, duration }
-  const keepPlayheadInView = useCallback(() => {
-    const el = scrollRef.current, { zoom: z, duration: d } = followRef.current
-    if (!el || z === 1 || d <= 0 || performance.now() - wheelZoomAt.current < 600) return
-    const x = (liveTime.get() / d) * el.scrollWidth
-    if (x < el.scrollLeft + 24 || x > el.scrollLeft + el.clientWidth - 24) {
-      el.scrollLeft = Math.max(0, x - el.clientWidth * 0.2)
-    }
+  // ── The fixed line (as CapCut): the playhead stays in the middle of the timeline and the timeline
+  // slides under it. The moment in the middle is the current time: swiping or pulling the timeline
+  // moves the video there; playing or seeking slides the timeline so the current moment stays in the
+  // middle. Half the view's width of room before the start and after the end lets both reach it.
+  const [lineViewW, setLineViewW] = useState(0)
+  useEffect(() => {
+    const el = scrollRef.current
+    if (!el) return
+    const ro = new ResizeObserver(() => setLineViewW(el.clientWidth))
+    ro.observe(el)
+    setLineViewW(el.clientWidth)
+    return () => ro.disconnect()
   }, [])
-  useEffect(() => liveTime.subscribe(keepPlayheadInView), [keepPlayheadInView])
-  useEffect(() => { keepPlayheadInView() }, [zoom, duration, keepPlayheadInView])
+  /** The timeline box's side padding: 14 px, plus half the view when the line is fixed in the middle */
+  const sidePad = lineViewW ? lineViewW / 2 + 14 : 14
+  /** Where this code last scrolled to (a scroll anywhere else is the user's) */
+  const ownScroll = useRef<number | null>(null)
+  const lastLeft = useRef(0)
+  const userScrollAt = useRef(0)
+  const followRef = useRef({ duration, busy: false })
+  // (an edge, join, ◆ or bar being dragged: the timeline holds still under the pointer, though the
+  // drag moves the video to show its frame)
+  followRef.current = { duration, busy: dragging !== null || viewDragT !== null }
+  const centreOn = useCallback((ms: number) => {
+    const el = scrollRef.current, tr = trackRef.current, d = followRef.current.duration
+    if (!el || !tr || d <= 0) return
+    const r = tr.getBoundingClientRect(), v = el.getBoundingClientRect()
+    const x = r.left + (Math.max(0, Math.min(d, ms)) / d) * r.width
+    const next = Math.max(0, Math.min(el.scrollWidth - el.clientWidth, Math.round(el.scrollLeft + x - (v.left + el.clientWidth / 2))))
+    if (Math.abs(next - el.scrollLeft) < 1) return
+    ownScroll.current = next
+    el.scrollLeft = next
+    lastLeft.current = el.scrollLeft
+  }, [])
+  // Playing or seeking (not while the user is moving the timeline): the current moment stays in the middle
+  const followLine = useCallback(() => {
+    if (followRef.current.busy || performance.now() - userScrollAt.current < 250) return
+    centreOn(liveTime.get())
+  }, [centreOn])
+  useEffect(() => liveTime.subscribe(followLine), [followLine])
+  useLayoutEffect(() => { centreOn(liveTime.get()) }, [zoom, duration, lineViewW, centreOn])
+  // The user moved the timeline (swipe, wheel, pulling the strip): the moment now in the middle is the time
+  const scrubIdle = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const onTimelineScroll = () => {
+    measureLanes()
+    const el = scrollRef.current
+    if (!el || el.scrollLeft === lastLeft.current) return
+    lastLeft.current = el.scrollLeft
+    if (ownScroll.current !== null && Math.abs(el.scrollLeft - ownScroll.current) < 1.5) { ownScroll.current = null; return }
+    ownScroll.current = null
+    userScrollAt.current = performance.now()
+    // (the editor doesn't redraw while the time is moved this way; it catches up a moment after)
+    const store = usePlayerStore.getState()
+    store.setScrubbing(true)
+    if (scrubIdle.current) clearTimeout(scrubIdle.current)
+    scrubIdle.current = setTimeout(() => usePlayerStore.getState().setScrubbing(false), 180)
+    const v = el.getBoundingClientRect()
+    onSeek(msFromClientX(v.left + el.clientWidth / 2))
+  }
 
 
   function msFromClientX(clientX: number): number {
@@ -943,18 +982,26 @@ export function SegmentTimeline({
       const hit = onStrip ? mains.find(m => t >= m.start_ms && t < m.end_ms) ?? (layered ? undefined : brolls.find(b => t >= b.start_ms && t < b.end_ms)) : undefined
       if (onStrip) onPickSegment(hit?.id ?? null)
     }
-    // While the playhead is dragged the editor doesn't redraw (the playhead, the time and both
-    // views follow the live time); it catches up on release
-    const { setScrubbing } = usePlayerStore.getState()
-    setScrubbing(true)
-    onSeek(msFromClientX(e.clientX))
-    const move = (ev: PointerEvent) => onSeek(msFromClientX(ev.clientX))
-    const up = () => {
+    // The line stays in the middle: pulling the strip (or the ruler) slides the timeline under it,
+    // and the moment that comes under the line is the time (onTimelineScroll). A click on the ruler
+    // without pulling slides that moment to the line.
+    const el = scrollRef.current
+    if (!el) return
+    const startX = e.clientX, startLeft = el.scrollLeft
+    const onRuler = (() => { const r = trackRef.current?.getBoundingClientRect(); return !!r && e.clientY - r.top < RULER_H })()
+    let moved = false
+    const move = (ev: PointerEvent) => {
+      const dx = ev.clientX - startX
+      if (!moved && Math.abs(dx) < 4) return
+      moved = true
+      el.scrollLeft = startLeft - dx
+    }
+    const up = (ev: Event) => {
       window.removeEventListener('pointermove', move)
       window.removeEventListener('pointerup', up)
       window.removeEventListener('pointercancel', up)
       window.removeEventListener('blur', up)
-      setScrubbing(false)
+      if (!moved && onRuler && ev instanceof PointerEvent && ev.type === 'pointerup') onSeek(msFromClientX(startX))
     }
     window.addEventListener('pointermove', move)
     window.addEventListener('pointerup', up)
@@ -1859,7 +1906,7 @@ export function SegmentTimeline({
         })}
       </div>
       {/* No visible scrollbar: when zoomed in, the wheel scrolls sideways and the view follows the playhead */}
-      <div ref={scrollRef} onScroll={measureLanes} className="relative flex-1 min-w-0 overflow-auto rounded-2xl no-scrollbar"
+      <div ref={scrollRef} onScroll={onTimelineScroll} className="relative flex-1 min-w-0 overflow-auto rounded-2xl no-scrollbar"
         style={{
           background: 'linear-gradient(180deg, rgb(var(--ed-fg) / 0.035), rgb(var(--ed-fg) / 0.01)), var(--ed-ruler)',
           border: '1px solid rgb(var(--ed-fg) / 0.08)',
@@ -1868,11 +1915,13 @@ export function SegmentTimeline({
         }}>
         {/* Side padding keeps the handles at the very ends of the clip clear of the rounded border */}
         {/* Drops (files from the computer, stock footage) are taken anywhere here: the strip and every media lane */}
-        <div className="relative" style={{ width: `${zoom * 100}%`, minWidth: '100%', padding: '0 14px' }}
+        <div className="relative" style={lineViewW
+          ? { width: lineViewW * zoom + lineViewW, minWidth: '100%', padding: `0 ${lineViewW / 2 + 14}px` }
+          : { width: `${zoom * 100}%`, minWidth: '100%', padding: '0 14px' }}
           onDragOver={onDragOver} onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDropAt(null) }} onDrop={onDrop}>
           {/* Where a dragged file or stock clip would go (the box has 14 px of padding each side) */}
           {dropAt && (
-            <div className="absolute top-0 bottom-0 pointer-events-none" style={{ left: `calc(14px + (100% - 28px) * ${at(dropAt.ms) / 100})`, zIndex: 60 }}>
+            <div className="absolute top-0 bottom-0 pointer-events-none" style={{ left: `calc(${sidePad}px + (100% - ${sidePad * 2}px) * ${at(dropAt.ms) / 100})`, zIndex: 60 }}>
               <div className="absolute top-0 bottom-0" style={{ left: -1, width: 2, background: ACCENT, boxShadow: '0 0 8px rgba(200,255,0,0.6)' }} />
               <span className="absolute whitespace-nowrap text-[10px] font-bold px-1.5 py-0.5 rounded" style={{ top: 2, left: 4, background: ACCENT, color: '#000' }}>
                 Drop {dropAt.what} at {msToLabel(dropAt.ms)}
@@ -2158,33 +2207,6 @@ export function SegmentTimeline({
                 </span>
               )
             })}
-
-            {/* A "+" on every join of the strip — where two sections meet, and where a removed part
-                closed up — sitting on the strip's bottom edge (clear of the trim grips at the seam):
-                it opens the add menu for that very moment, so something can go in between */}
-            {onAddKind && !dragging && !clipDrag && (() => {
-              // (every edge of a part of the main strip: also where a part meets "Default framing")
-              const raw = [...junctions.map(j => j.left.end_ms), ...mains.flatMap(m => [m.start_ms, m.end_ms]), ...(cutJoins ?? [])]
-                .map(t => Math.round(t)).filter(t => t > 50 && t < duration - 50).sort((a, b) => a - b)
-              const seams = raw.filter((t, i) => i === 0 || t - raw[i - 1] > 30)
-              return seams.map(t => {
-                const open = !!addMenu && addAt === t
-                return (
-                  <button key={`seam-${t}`} type="button"
-                    onClick={e => { e.stopPropagation(); const r = e.currentTarget.getBoundingClientRect(); setAddAt(open ? null : t); setAddMenu(open ? null : r) }}
-                    onPointerDown={e => e.stopPropagation()}
-                    aria-haspopup="menu" aria-expanded={open}
-                    aria-label={`Add media between the parts at ${msToLabel(t)}`} title={`Add here · ${msToLabel(t)}`}
-                    className="tl-seam-add absolute grid place-items-center"
-                    data-open={open || undefined}
-                    style={{ left: `${at(t)}%`, top: STRIP_TOP + STRIP_H, zIndex: 38 }}>
-                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3.4" strokeLinecap="round" aria-hidden="true">
-                      <path d={open ? 'M6 6l12 12M18 6L6 18' : 'M12 5v14M5 12h14'} />
-                    </svg>
-                  </button>
-                )
-              })
-            })()}
 
             {/* A section about to go (its join dragged onto the next one): red, with what releasing does */}
             {doomed && (

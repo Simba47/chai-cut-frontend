@@ -129,6 +129,8 @@ export type AnimationType = 'karaoke' | 'fade' | 'none'
  */
 export type TransitionType = 'cut' | 'fade' | 'wipe' | 'fadeblack' | 'fadewhite' | 'slideleft' | 'slideup' | 'zoomin' | 'circleopen'
   | 'slideright' | 'slidedown' | 'smoothleft' | 'hblur' | 'radial' | 'pixelize'
+  // Trending (drawn by render.py's custom expressions, and swipeup as a smeared slideup)
+  | 'velocity' | 'zoomout' | 'swipeup' | 'shake' | 'glitch' | 'flare' | 'spin' | 'warp'
 
 export interface Video {
   id: string

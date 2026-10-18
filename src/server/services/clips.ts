@@ -156,7 +156,7 @@ export async function saveClip(userId: string, clipId: string, body: SaveClipInp
   // Captions moved left or right, once the worker has added the field
   const hasCaptionX = await hasColumn('caption_styles', 'position_x')
   // The newer kinds of transition: saved as they are once the backend allows them (else the nearest older kind)
-  const allTransitionKinds = await transitionKindsAllowed()
+  const transitionKindOk = await transitionKindsAllowed()
   const hasRemoveFillers = typeof body.removeFillers === 'boolean' && await clipsHasRemoveFillers()
   const hasFades = await hasColumn('audio_tracks', 'fade_in')
   const hasTextW = await hasColumn('text_overlays', 'w')
@@ -188,7 +188,7 @@ export async function saveClip(userId: string, clipId: string, body: SaveClipInp
 
   // Transitions the database can't take yet (before the backend widens its check): saved as a
   // Dissolve, and the editor is told how many, so it can say so
-  const keepsKind = (type: string) => allTransitionKinds || type === 'cut' || type === 'fade' || type === 'wipe'
+  const keepsKind = (type: string) => type === 'cut' || type === 'fade' || type === 'wipe' || transitionKindOk(type)
   const asDissolve = transitions.filter(t => segIds.includes(t.after_segment_id) && !keepsKind(t.type)).length
 
   // Every statement is built up front and pipelined in one transaction: the database is far
@@ -449,19 +449,26 @@ export async function hasColumn(table: string, column: string): Promise<boolean>
 }
 
 /**
- * Whether transitions.type takes every kind the editor offers (fadeblack, slideleft… pixelize):
- * the backend widens the table's check when it starts (its index.ts). Before that only cut / fade
- * / wipe are sure to save — anything else would fail the whole save. Known once it's true.
+ * Which kinds transitions.type takes: the backend widens the table's check when it starts (its
+ * index.ts), so a kind the editor offers may not be allowed yet (the trending ones, until the
+ * backend that knows them has started). Before that, only cut / fade / wipe are sure to save —
+ * anything else would fail the whole save, so it goes in as a Dissolve. Looked up again every
+ * minute until every kind is allowed.
  */
-let transitionKindsKnown = false
-export async function transitionKindsAllowed(): Promise<boolean> {
-  if (transitionKindsKnown) return true
-  const rows = await sql`
-    SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint
-    WHERE conrelid = 'transitions'::regclass AND conname = 'transitions_type_check'`.catch(() => null)
-  // (no check at all also takes every kind)
-  if (rows && (rows.length === 0 || String(rows[0].def).includes('pixelize'))) transitionKindsKnown = true
-  return transitionKindsKnown
+let transitionCheck: { def: string | null; at: number } | null = null
+const ALL_TRANSITION_KINDS = ['pixelize', 'velocity', 'zoomout', 'swipeup', 'shake', 'glitch', 'flare', 'spin', 'warp']
+export async function transitionKindsAllowed(): Promise<(type: string) => boolean> {
+  const fresh = transitionCheck && (Date.now() - transitionCheck.at < 60_000
+    || (transitionCheck.def !== null && ALL_TRANSITION_KINDS.every(k => transitionCheck!.def!.includes(`'${k}'`))))
+  if (!fresh) {
+    const rows = await sql`
+      SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint
+      WHERE conrelid = 'transitions'::regclass AND conname = 'transitions_type_check'`.catch(() => null)
+    // (no check at all takes every kind; a failed lookup: only the sure ones)
+    transitionCheck = rows === null ? { def: '', at: Date.now() } : { def: rows.length === 0 ? null : String(rows[0].def), at: Date.now() }
+  }
+  const def = transitionCheck!.def
+  return (type: string) => def === null || def.includes(`'${type}'`)
 }
 
 // clips.remove_fillers (added by the backend with "Remove pauses and filler words"): same rule
