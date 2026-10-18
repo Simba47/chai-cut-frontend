@@ -15,6 +15,7 @@ import { VideoPanel, type PanelVideo } from '@/components/editor/VideoPanel'
 import { MediaLibrary, type LibraryItem, type MediaSection } from '@/components/editor/MediaLibrary'
 import { PhotoSearch } from '@/components/editor/PhotoSearch'
 import { useBrollSources, useBorrowedSlots } from '@/modules/editor/brollSources'
+import { SOUND_DEFAULTS, type SoundItem, type SoundKind } from '@/modules/editor/soundCatalog'
 import { SegmentTimeline, LAYOUT_COLORS, MAX_ZOOM, ZOOM_STEPS, zoomStep, zoomLabel, STOCK_DRAG_TYPE, type LaneCtl, type LaneCtlKey } from '@/components/editor/SegmentTimeline'
 import { useVideoUpload } from '@/modules/upload/useVideoUpload'
 import { TranscriptPanel } from '@/components/editor/TranscriptPanel'
@@ -2335,7 +2336,7 @@ export function EditorShell({
       const next = rippleCut(state, Math.round(a), Math.round(b), rippleDelete)
       skipCanvasTransitionRef.current = true
       seekAfterInsertRef.current = a
-      editor.applyTrim(next.segments, next.keyframes, editor.trims)
+      editor.applyTrim(next.segments, next.keyframes, editor.trims, rangeAfterPieces(next.segments))
       useMediaStore.setState({ overlays: next.overlays, textOverlays: next.textOverlays, audioTracks: next.audioTracks, transitions: next.transitions })
       return
     }
@@ -2480,6 +2481,18 @@ export function EditorShell({
     skipCanvasTransitionRef.current = true
     st.applyTrim(segs, st.keyframes, [])
   }
+  /**
+   * A clip of pieces whose last video put in between (and last skip) goes in an edit plays simply
+   * again — over its stretch of the video (rawClip). Video cut from its end meanwhile must stay cut:
+   * the clip's own end comes in to where its last part now ends (same undo step). Undefined: no change.
+   */
+  function rangeAfterPieces(segs: SegmentLocal[]): [number, number] | undefined {
+    const all = piecesOf(segs, mainVideoId, s => isShot(s, mainVideoId))
+    if (!all.length || insertsOf(segs, mainVideoId).length || all.some(p => p.from != null && Math.abs(p.from - p.at) > 1)) return undefined
+    const last = all[all.length - 1]
+    const end = rawClip.start_ms + (last.from ?? last.at) + last.ms
+    return end < rawClip.end_ms - 1 ? [rawClip.start_ms, Math.round(end)] : undefined
+  }
   /** An inserted video taken out: what came after it moves back, and the parts it had cut in two join again */
   function removeInsert(segId: string) {
     const editor = useEditorStore.getState(), media = useMediaStore.getState()
@@ -2493,7 +2506,7 @@ export function EditorShell({
     const next = rippleCut(state, ins.start_ms, ins.end_ms, rippleDelete)
     skipCanvasTransitionRef.current = true
     seekAfterInsertRef.current = ins.start_ms
-    editor.applyTrim(next.segments, next.keyframes, editor.trims)
+    editor.applyTrim(next.segments, next.keyframes, editor.trims, rangeAfterPieces(next.segments))
     useMediaStore.setState({ overlays: next.overlays, textOverlays: next.textOverlays, audioTracks: next.audioTracks, transitions: next.transitions })
     // The part before it and the part after it are one stretch of the video again
     const before = next.segments.find(s => !isShot(s, mainVideoId) && Math.abs(s.end_ms - ins.start_ms) <= 1)
@@ -2569,7 +2582,7 @@ export function EditorShell({
       if (ins.end_ms - ins.start_ms - (b - a) < 300) return
       const next = rippleCut(state, Math.round(a), Math.round(b), rippleDelete)
       skipCanvasTransitionRef.current = true
-      editor.applyTrim(next.segments, next.keyframes, editor.trims)
+      editor.applyTrim(next.segments, next.keyframes, editor.trims, rangeAfterPieces(next.segments))
       useMediaStore.setState({ overlays: next.overlays, textOverlays: next.textOverlays, audioTracks: next.audioTracks, transitions: next.transitions })
       return
     }
@@ -3212,13 +3225,23 @@ export function EditorShell({
     loadLibrary()
   }
   /** Music already stored (from the library) put in at `atMs`: the whole song, up to the clip's end */
-  function addStoredMusic(storagePath: string, url: string | null, atMs: number) {
+  function addStoredMusic(storagePath: string, url: string | null, atMs: number, set: { volume: number; duck_under_speech: boolean; fade_in: boolean; fade_out: boolean } = SOUND_DEFAULTS.music) {
     const id = crypto.randomUUID()
     const start = Math.max(0, Math.min(Math.round(atMs), clipLengthMs - 500))
-    setAudioTracks(prev => [...prev, { id, clip_id: clip.id, storage_path: storagePath, start_ms: start, volume: 0.5, duck_under_speech: true, fade_in: true, fade_out: true }])
+    setAudioTracks(prev => [...prev, { id, clip_id: clip.id, storage_path: storagePath, start_ms: start, ...set }])
     if (url) setMusicUrls(m => ({ ...m, [id]: url }))
     pickMusicTrack(id, false)
     seekToMs(start)
+  }
+  /**
+   * A sound picked in the Music tool's sound library: stored in the user's audio (the server), then
+   * put on the clip at the playhead — a song as any song, a short effect without fades or ducking
+   */
+  async function addLibrarySound(item: SoundItem, kind: SoundKind) {
+    const res = await fetch('/api/audio/library/import', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: item.id }) })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) throw new Error(data.error ?? 'The sound could not be added.')
+    addStoredMusic(data.storage_path, data.url, currentTimeMs, SOUND_DEFAULTS[kind])
   }
   /** A library item put in at `atMs` (+ on it, or dragged onto the timeline: `lane` where it was dropped) */
   function addLibraryItem(item: LibraryItem, atMs: number, lane: string | null) {
@@ -4404,7 +4427,7 @@ export function EditorShell({
               <AudioMixerPanel tracks={audioTracks} nameOf={musicName}
                 selectedId={pickedMusicId} onSelect={pickMusic}
                 currentTimeMs={currentTimeMs} clipLengthMs={clipLengthMs} durations={musicDurations}
-                onAddTrack={addMusicTrack}
+                onAddTrack={addMusicTrack} onAddSound={addLibrarySound}
                 uploads={musicUploads}
                 missing={t => !isMainAudio(t) && !t.storage_path.startsWith('audio/') && !musicEls.current.has(t.id)}
                 onReadd={readdMusic}
