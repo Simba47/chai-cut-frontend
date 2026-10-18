@@ -15,7 +15,7 @@ import { VideoPanel, type PanelVideo } from '@/components/editor/VideoPanel'
 import { MediaLibrary, type LibraryItem, type MediaSection } from '@/components/editor/MediaLibrary'
 import { PhotoSearch } from '@/components/editor/PhotoSearch'
 import { useBrollSources, useBorrowedSlots } from '@/modules/editor/brollSources'
-import { SegmentTimeline, LAYOUT_COLORS, MAX_ZOOM, zoomStep, zoomLabel, STOCK_DRAG_TYPE, type LaneCtl, type LaneCtlKey } from '@/components/editor/SegmentTimeline'
+import { SegmentTimeline, LAYOUT_COLORS, MAX_ZOOM, ZOOM_STEPS, zoomStep, zoomLabel, STOCK_DRAG_TYPE, type LaneCtl, type LaneCtlKey } from '@/components/editor/SegmentTimeline'
 import { useVideoUpload } from '@/modules/upload/useVideoUpload'
 import { TranscriptPanel } from '@/components/editor/TranscriptPanel'
 import { CaptionStyler } from '@/components/editor/CaptionStyler'
@@ -617,7 +617,13 @@ export function EditorShell({
   /** The last save had to keep newer transitions as a Dissolve (the database doesn't take them yet) */
   const [trAsDissolve, setTrAsDissolve] = useState(false)
   const [motionMode, setMotionMode] = useState(false)
-  const [timelineZoom, setTimelineZoom] = useState(1)
+  // A long clip opens zoomed in to about a minute across the timeline: at 1x a 4-minute clip is ~8 px a
+  // second, and pulling the playhead jumped seconds at a time (zoom out with − or a pinch)
+  const [timelineZoom, setTimelineZoom] = useState(() => {
+    const minutes = (savedClip.end_ms - savedClip.start_ms) / 60_000
+    if (minutes <= 1.25) return 1
+    return [...ZOOM_STEPS].reverse().find(z => z <= minutes) ?? 1
+  })
   const [timelineHidden, setTimelineHidden] = useState(false)
   // Cleanup: the list of cuts can be folded away
   const [cutsOpen, setCutsOpen] = useState(true)
@@ -5495,7 +5501,7 @@ function ZoomSlider({ zoom, onZoom }: { zoom: number; onZoom: (z: number) => voi
   const i = zoom > 1 ? 1 : 0   // zoomed in or not
   return (
     <div className="flex items-center gap-1" role="group" aria-label="Timeline zoom"
-      title="Pinch on the trackpad, or scroll the mouse wheel over the video strip, to zoom">
+      title="Pinch on the trackpad, or hold ⌘ / Ctrl and scroll, to zoom">
       <button onClick={() => onZoom(zoomStep(zoom, -1))} disabled={i === 0} aria-label="Zoom out" title="Zoom out" className="ed-tl-btn">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="M8 11h6M20 20l-4-4" /></svg>
       </button>
