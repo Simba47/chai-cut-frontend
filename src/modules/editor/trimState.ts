@@ -201,6 +201,94 @@ export function rippleDelete(state: TimedState, a: number, b: number, newId: () 
 }
 
 /**
+ * Timeline time `d` long given back at `at` — a removed part restored (Cleanup's Restore): the
+ * opposite of rippleDelete. What runs over `at` grows over it (it carries on into what comes
+ * back), what comes after moves later by `d`.
+ *  • the main row: the section running over `at` takes the time; when the cut was at a section's
+ *    end or across a join, the section ending at `at` does; at the clip's start, the first one
+ *  • its view holds what it showed just before `at` over what comes back, then carries on
+ *  • the main video's own sound, when detached, carries on over it (its bar ending at `at` grows)
+ *  • music, photos, text and videos on top running over `at` grow; ones after it move later
+ * `isLayer`: sections that aren't the main row (B-roll, inserted videos): they only grow when they
+ * run over `at`.
+ */
+export function rippleStretch(state: TimedState, at: number, d: number, isLayer: (seg: SegmentLocal) => boolean = () => false,
+  newId: () => string = () => crypto.randomUUID()): TimedState {
+  if (!(d > 0)) return state
+  const near = (x: number, y: number) => Math.abs(x - y) <= 1
+  const over = (s: { start_ms: number; end_ms: number }) => s.start_ms < at && s.end_ms > at
+  const main = state.segments.filter(s => !isLayer(s))
+  const taker = main.find(over) ?? main.find(s => s.start_ms < at && near(s.end_ms, at)) ?? main.find(s => near(s.start_ms, at))
+  const grows = (s: SegmentLocal) => s === taker || (isLayer(s) && over(s))
+
+  const keyframes: KeyframeMap = {}
+  const segOf = new Map<string, SegmentLocal>()
+  for (const seg of state.segments) for (const box of seg.crop_boxes) segOf.set(box.id, seg)
+  for (const [boxId, kfs] of Object.entries(state.keyframes)) {
+    const seg = segOf.get(boxId)
+    if (!seg || !kfs.length) { keyframes[boxId] = kfs; continue }
+    const sorted = [...kfs].sort(byTime)
+    if (!grows(seg)) {
+      keyframes[boxId] = seg.start_ms >= at ? sorted.map(k => ({ ...k, t_ms: k.t_ms + d })) : sorted
+      continue
+    }
+    const make = (t_ms: number, p: BoxPosition): KF => ({ id: newId(), box_id: boxId, t_ms, x: p.x, y: p.y, w: p.w, h: p.h })
+    // The view just before `at` (at the section's own start when it starts there)
+    const held = getBoxPositionAtLerp(Math.max(seg.start_ms, at - 1), sorted)
+    const after = sorted.filter(k => k.t_ms >= at)
+    keyframes[boxId] = tidy([
+      ...sorted.filter(k => k.t_ms < at),
+      ...(seg.start_ms >= at - 1 ? [make(at, held)] : []),
+      // (held over what comes back, then on to where it went next)
+      ...(after.length ? [make(at + d - 1, held)] : []),
+      ...after.map(k => ({ ...k, t_ms: k.t_ms + d })),
+    ])
+  }
+
+  const shiftItems = (items: FrameItem[] | undefined, grow: boolean) => items?.map((it): FrameItem => (
+    it.start_ms >= at ? { ...it, start_ms: it.start_ms + d, end_ms: it.end_ms + d }
+      : grow && it.end_ms > at ? { ...it, end_ms: it.end_ms + d } : it))
+  const segments = state.segments.map((seg): SegmentLocal => {
+    const g = grows(seg), moved = !g && seg.start_ms >= at
+    if (!g && !moved) return seg
+    const items = shiftItems(seg.frame?.items, g)
+    return {
+      ...seg,
+      start_ms: moved ? seg.start_ms + d : seg.start_ms,
+      end_ms: seg.end_ms + d,
+      frame: seg.frame && items ? { ...seg.frame, items } : seg.frame,
+      crop_boxes: seg.crop_boxes.map(box => ({
+        ...box,
+        // (as rippleDelete: the main video's offset follows the section's start)
+        ...(moved && isMainBox(box) ? { source_offset_ms: (box.source_offset_ms ?? 0) + d } : {}),
+        keyframes: (keyframes[box.id] ?? []).map(({ t_ms, x, y, w, h }) => ({ t_ms, x, y, w, h })),
+      })),
+    }
+  })
+
+  const audioTracks = state.audioTracks.map((t): AudioTrack => {
+    const s = t.start_ms, e = t.end_ms
+    if (s >= at && !(isMainAudioTrack(t) && near(s, at) && !state.audioTracks.some(o => o !== t && isMainAudioTrack(o) && o.end_ms != null && near(o.end_ms, at)))) {
+      return { ...t, start_ms: s + d, ...(e != null ? { end_ms: e + d } : {}) }
+    }
+    if (e == null) return t
+    // Running over `at` grows; the video's own sound split there by the cut carries on over it
+    if (e > at || (isMainAudioTrack(t) && near(e, at))) return { ...t, end_ms: e + d }
+    return t
+  })
+
+  const timed = <T extends { start_ms: number; end_ms: number }>(o: T): T =>
+    o.start_ms >= at ? { ...o, start_ms: o.start_ms + d, end_ms: o.end_ms + d } : o.end_ms > at ? { ...o, end_ms: o.end_ms + d } : o
+  return dropEmpty({
+    segments, keyframes,
+    overlays: state.overlays.map(timed),
+    textOverlays: state.textOverlays.map(timed),
+    audioTracks,
+    transitions: state.transitions,
+  })
+}
+
+/**
  * Locked things the removal would cut into or remove (they must be unlocked first), by what they
  * are. Locked things after it only move up with the video they sit on: that is allowed.
  */

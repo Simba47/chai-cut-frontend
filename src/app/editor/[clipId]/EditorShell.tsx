@@ -5,9 +5,9 @@ import { musicGainAt, speechRangesInVideo, speechRanges, heardSpeech, type Range
 import { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback } from 'react'
 import type { Clip, Segment, CropBox, BoxKeyframe, CaptionStyle, TextOverlay, AudioTrack, Transition, TranscriptWord, LayoutType, Overlay } from '@chai-cut/shared'
 import { VideoPreview, OutputCanvas } from '@/components/editor/VideoPreview'
-import { computeCutRanges, reactionRanges, removedMs, withoutRanges } from '@/lib/cuts'
+import { withoutRanges } from '@/lib/cuts'
 import { cleanTrims, trimMap, addTrim, wordsOnTimeline, MAX_CLIP_MS, MIN_CLIP_MS } from '@/lib/trims'
-import { toTimelineState, toSourceState, rippleDelete, lockedInRange, insertAtStart, extendEnd, type TimedState } from '@/modules/editor/trimState'
+import { toTimelineState, toSourceState, rippleDelete, rippleStretch, lockedInRange, insertAtStart, extendEnd, type TimedState } from '@/modules/editor/trimState'
 import { insertsOf, insertedMs, rippleInsert, isInsert, piecesOf, piecesLength, videoAtPieces, timelineAtPieces, rippleCut, pieceAt, speedOf, pieceVideoMs } from '@/modules/editor/inserts'
 import { PostText, type PostTextValue } from '@/components/clips/PostText'
 import { BrollPanel, type StockResult } from '@/components/editor/BrollPanel'
@@ -35,6 +35,8 @@ import { FramesPanel } from '@/components/editor/FramesPanel'
 import { FrameTextPanel } from '@/components/editor/FrameTextPanel'
 import { useConfirm } from '@/components/editor/ConfirmDialog'
 import { BrandKitPanel, BrandKitStudio, useBrandKits } from '@/components/editor/BrandKit'
+import { CleanupPanel, type CleanupRow } from '@/components/editor/CleanupPanel'
+import { cleanupCards, isDeleted } from '@/modules/editor/cleanup'
 import { isBrandLogo, logoBox, logoSpan, showHandle, brandPalette, brandCaptionStyle, cleanProgressBar, brandLockOf, type BrandKit, type ProgressBar } from '@/lib/shared/brandKit'
 import { setBrandPalette, setBrandLock } from '@/components/editor/brandPalette'
 import { setBrandFonts, ensureBrandFont } from '@/components/editor/brandFonts'
@@ -4109,38 +4111,137 @@ export function EditorShell({
 
   const rendering = clipStatus === 'rendering' || exporting
   const hasOutput = !!outputUrl && clipStatus === 'done'
-  // What "Remove pauses and filler words" takes out of this clip, from the transcript
-  // Reaction parts (splits, trios) are never cut; at export, pauses with a laugh in them are kept too
-  const fillerCuts = useMemo(() => computeCutRanges(words, clip.start_ms, clip.end_ms, reactionRanges(playParts, clip.start_ms)), [words, clip.start_ms, clip.end_ms, playParts])
-  const fillerCutMs = useMemo(() => removedMs(fillerCuts), [fillerCuts])
-  /** Each cut, clip-relative, with the words it takes out (none = a pause) */
-  const fillerCutList = useMemo(() => fillerCuts.map(([a, b]) => ({
-    at: a - clip.start_ms,
-    ms: b - a,
-    words: words.filter(w => (w.start_ms + w.end_ms) / 2 >= a && (w.start_ms + w.end_ms) / 2 < b).map(w => w.word),
-  })), [fillerCuts, words, clip.start_ms])
-  /** "Remove pauses & filler words": in the preview column and in the Captions panel, one setting */
-  // On / off switch (not a checkbox): the whole card toggles it; lime with a black knob when on
-  const fillersToggle = (place: string) => words.length > 0 && (
-    <button type="button" role="switch" aria-checked={removeFillers} onClick={() => setRemoveFillers(!removeFillers)}
-      className={`shrink-0 ${place} w-full flex items-start gap-3 px-3 py-2.5 rounded-xl text-left transition-[background,box-shadow] duration-200`}
-      style={removeFillers
-        ? { background: 'rgba(200,255,0,0.06)', boxShadow: 'inset 0 0 0 1px rgba(200,255,0,0.4)' }
-        : { background: 'rgb(var(--ed-fg) / 0.04)', boxShadow: 'inset 0 0 0 1px rgb(var(--ed-fg) / 0.07)' }}>
-      <span className="flex-1 min-w-0 flex flex-col gap-0.5">
-        <span className="text-xs font-semibold text-[var(--ed-text)]">Remove pauses &amp; filler words</span>
-        <span className="text-[11px]" style={{ color: 'rgb(var(--ed-fg) / 0.5)' }}>
-          {fillerCutMs >= 500 ? `Removes about ${Math.round(fillerCutMs / 1000)} s. ` : 'Nothing much to remove in this clip. '}
-          Applied when you export; the preview plays the full clip.
-        </span>
-      </span>
-      <span aria-hidden="true" className="relative shrink-0 rounded-full transition-colors mt-0.5"
-        style={{ width: 36, height: 20, background: removeFillers ? '#c8ff00' : 'rgb(var(--ed-fg) / 0.15)' }}>
-        <span className="absolute rounded-full transition-all"
-          style={{ top: 3, left: removeFillers ? 19 : 3, width: 14, height: 14, background: removeFillers ? '#0a0a0a' : '#fff', boxShadow: '0 1px 3px rgba(0,0,0,0.3)' }} />
-      </span>
-    </button>
-  )
+  // ── Captions on demand (Post and Cleanup work from the clip's words) ──────────
+  // A clip without captions gets them made (as the Captions tool does, not shown on the video);
+  // this waits for them. Rejects with what to tell the user when they can't be made.
+  const captionsWaitRef = useRef<{ resolve: () => void; reject: (e: Error) => void; started: boolean } | null>(null)
+  function ensureCaptions(): Promise<void> {
+    if (!needsCaptions()) return Promise.resolve()
+    if (isFreePlan) return Promise.reject(new Error('Captions aren\u2019t part of the Free plan, so there are no words to work from.'))
+    return new Promise((resolve, reject) => {
+      captionsWaitRef.current = { resolve, reject, started: transcribing || retranscribing }
+      if (!transcribing && !retranscribing) { setRetranscribeError(null); makeCaptions() }
+    })
+  }
+  useEffect(() => {
+    const w = captionsWaitRef.current
+    if (!w) return
+    if (transcribing || retranscribing) { w.started = true; return }
+    if (!w.started) return
+    captionsWaitRef.current = null
+    if (retranscribeError) w.reject(new Error(retranscribeError))
+    else if (!sourceWords.some(x => x.start_ms >= rawClip.start_ms && x.start_ms < rawClip.end_ms)) w.reject(new Error('No speech was found in this clip.'))
+    else w.resolve()
+  }, [transcribing, retranscribing, retranscribeError, sourceWords]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Cleanup (user, 2026-10-18): silences, filler words and repeated words as cards ──
+  // Detect makes the captions if needed and has the worker find the silences; each card plays on
+  // its own, Delete cuts it out (a removed part, as the timeline's delete), a deleted card stays
+  // greyed with Restore. Cards are kept in source time (modules/editor/cleanup.ts).
+  type SilencesData = { status: string; error: string | null; ranges: [number, number][] }
+  const [silences, setSilences] = useState<SilencesData | null>(null)
+  const [cleanupDetected, setCleanupDetected] = useState(false)
+  const [cleanupWorking, setCleanupWorking] = useState<string | null>(null)
+  const [cleanupError, setCleanupError] = useState<string | null>(null)
+  const silencesUrl = `/api/clips/${clip.id}/silences`
+  // A list found before shows when the tool opens
+  useEffect(() => {
+    if (tool !== 'cleanup' || silences) return
+    fetch(silencesUrl).then(r => (r.ok ? r.json() : null)).then((d: SilencesData | null) => {
+      if (!d) return
+      setSilences(d)
+      if (d.status === 'done') setCleanupDetected(true)
+    }).catch(() => {})
+  }, [tool]) // eslint-disable-line react-hooks/exhaustive-deps
+  /** The worker looks for the silences of the clip as it is now; resolves with what it found */
+  async function scanSilencesNow(): Promise<SilencesData> {
+    const res = await fetch(silencesUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ start_ms: rawClip.start_ms, end_ms: rawClip.end_ms }) })
+    let d = await res.json().catch(() => ({})) as SilencesData
+    if (!res.ok) throw new Error((d as { error?: string }).error ?? 'Looking for silences failed. Try again.')
+    const deadline = Date.now() + 3 * 60_000
+    while ((d.status === 'queued' || d.status === 'running') && Date.now() < deadline) {
+      await new Promise(r => setTimeout(r, 2000))
+      d = await fetch(silencesUrl).then(r => r.json())
+    }
+    if (d.status === 'unavailable') throw new Error('Finding silences needs the latest worker. Try again after it restarts.')
+    if (d.status !== 'done') throw new Error(d.error ?? 'Looking for silences is taking too long. Try again in a minute.')
+    return d
+  }
+  // The old "remove pauses and filler words at export" switch (AI edit clips have it on): the first
+  // Detect deletes what it found instead, as cards — the export stays as clean, and it shows
+  const autoDeleteRef = useRef(false)
+  async function detectCleanup() {
+    setCleanupError(null)
+    const errors: string[] = []
+    const silenceScan = scanSilencesNow().catch(e => { errors.push(e instanceof Error ? e.message : String(e)); return null })
+    try {
+      if (needsCaptions()) setCleanupWorking('Getting the clip\u2019s captions to find filler and repeated words \u2014 they won\u2019t show on the video\u2026')
+      await ensureCaptions()
+    } catch (e) { errors.push(e instanceof Error ? e.message : String(e)) }
+    setCleanupWorking('Looking for silences in the clip\u2019s sound\u2026')
+    const found = await silenceScan
+    if (found) setSilences(found)
+    setCleanupWorking(null)
+    setCleanupDetected(true)
+    setCleanupError(errors.length ? errors.join(' ') : null)
+    if (removeFillersRef.current && !piecesOn) { autoDeleteRef.current = true; setRemoveFillers(false) }
+  }
+  const cleanupRows = useMemo<CleanupRow[]>(() => {
+    if (!cleanupDetected) return []
+    return cleanupCards(sourceWords, silences?.status === 'done' ? silences.ranges : null, rawClip.start_ms, rawClip.end_ms)
+      .map(c => ({ ...c, deleted: isDeleted(c, trims), at: trim.toTimeline(c.a) }))
+  }, [cleanupDetected, sourceWords, silences, rawClip.start_ms, rawClip.end_ms, trims, trim])
+  useEffect(() => {
+    if (!autoDeleteRef.current || !cleanupRows.length) return
+    autoDeleteRef.current = false
+    deleteCleanup(cleanupRows)
+  }, [cleanupRows]) // eslint-disable-line react-hooks/exhaustive-deps
+  /** Cut cards out of the clip — the last first, so an earlier cut doesn't move the later ones. One undo step. */
+  function deleteCleanup(rows: CleanupRow[]) {
+    for (const r of rows.filter(x => !x.deleted).sort((x, y) => y.a - x.a)) {
+      const map = trimMap(useEditorStore.getState().trims, rawClip.start_ms, rawClip.end_ms)
+      const a = map.toTimeline(r.a), b = map.toTimeline(r.b)
+      if (b - a >= 20) removePart(a, b)
+    }
+  }
+  /** A deleted card put back: its stretch of the video plays again where it was (trimState rippleStretch) */
+  function restoreCleanup(r: CleanupRow) {
+    pause()
+    const editor = useEditorStore.getState(), media = useMediaStore.getState()
+    const map = trimMap(editor.trims, rawClip.start_ms, rawClip.end_ms)
+    const nextTrims = cleanTrims(withoutRanges(editor.trims, [[r.a, r.b]]), rawClip.start_ms, rawClip.end_ms)
+    const d = trimMap(nextTrims, rawClip.start_ms, rawClip.end_ms).lengthMs - map.lengthMs
+    if (d <= 0) return
+    if (map.lengthMs + d > MAX_CLIP_MS) { notifyLocked('The clip is as long as a clip can be (5 minutes)'); return }
+    const at = map.toTimeline(r.a)
+    const state: TimedState = {
+      segments: editor.segments, keyframes: editor.keyframes,
+      overlays: media.overlays, textOverlays: media.textOverlays, audioTracks: media.audioTracks, transitions: media.transitions,
+    }
+    const next = rippleStretch(state, at, d, s => isShot(s, mainVideoId) || s.lane === 'broll')
+    skipCanvasTransitionRef.current = true
+    seekAfterTrimRef.current = at
+    editor.applyTrim(next.segments, next.keyframes, nextTrims)
+    useMediaStore.setState({ overlays: next.overlays, textOverlays: next.textOverlays, audioTracks: next.audioTracks, transitions: next.transitions })
+  }
+  /** A card played on its own: from a little before it to a little after (a deleted one: across where it was cut) */
+  const cleanupPlayStopRef = useRef<(() => void) | null>(null)
+  function playCleanup(r: CleanupRow) {
+    cleanupPlayStopRef.current?.()
+    const len = r.deleted ? 0 : Math.max(0, trim.toTimeline(r.b) - r.at)
+    const from = Math.max(0, r.at - (r.deleted ? 1500 : 700))
+    const to = Math.min(clipLengthMs, r.at + len + (r.deleted ? 1500 : 500))
+    seekToMs(from)
+    if (!usePlayerStore.getState().playing) togglePlay()
+    const off = liveTime.subscribe(() => { if (liveTime.get() >= to) stop() })
+    const guard = setTimeout(() => stop(false), to - from + 4000)
+    function stop(pauseIt = true) {
+      off(); clearTimeout(guard)
+      if (cleanupPlayStopRef.current === stop) cleanupPlayStopRef.current = null
+      if (pauseIt && usePlayerStore.getState().playing) pause()
+    }
+    cleanupPlayStopRef.current = stop
+  }
 
   function setRemoveFillers(on: boolean) {
     if (on && hasInserts) { notifyLocked('Remove pauses can\u2019t be used with a video put in between (yet)'); return }
@@ -4976,48 +5077,19 @@ export function EditorShell({
             )}
 
             {tool === 'cleanup' && (
-              <div className="flex flex-col gap-3 p-4 min-h-0">
-                {fillersToggle('')}
-                {words.length === 0 && <p className="text-xs" style={{ color: 'rgb(var(--ed-fg) / 0.5)' }}>This needs the clip's captions (transcript) first.</p>}
-                {fillerCutList.length > 0 && (
-                  <div className="flex flex-col gap-2 min-h-0">
-                    {/* The list of cuts folds away with the collapse / expand chevron */}
-                    <button type="button" onClick={() => setCutsOpen(v => !v)} aria-expanded={cutsOpen}
-                      title={cutsOpen ? 'Hide the list of cuts' : 'Show the list of cuts'} className="tx-fold">
-                      <span className="text-xs font-medium" style={{ color: 'rgb(var(--ed-fg) / 0.6)' }}>
-                        {fillerCutList.length} cut{fillerCutList.length === 1 ? '' : 's'}{removeFillers ? '' : ' (when switched on)'}
-                      </span>
-                      <span className="ed-collapse" data-open={cutsOpen || undefined} aria-hidden="true">
-                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M6 9l6 6 6-6" /></svg>
-                      </span>
-                    </button>
-                    {cutsOpen && (
-                    <div className="flex flex-col gap-1 overflow-y-auto -mr-2 pr-2" style={{ maxHeight: 420 }}>
-                      {fillerCutList.map(c => (
-                        <button key={c.at} onClick={() => seekToMs(Math.max(0, c.at - 1000))} title="Play from just before this cut"
-                          className="flex items-center gap-2 px-2 py-1.5 rounded-lg text-left transition-colors hover:bg-[rgb(var(--ed-fg)/0.08)]"
-                          style={{ background: 'rgb(var(--ed-fg) / 0.04)' }}>
-                          <span className="text-[11px] tabular-nums shrink-0" style={{ color: 'rgb(var(--ed-fg) / 0.5)' }}>{msToLabel(c.at)}</span>
-                          <span className="flex-1 text-xs truncate" style={{ color: 'var(--ed-text)' }}>
-                            {c.words.length ? `“${c.words.join(' ')}”` : 'Pause'}
-                          </span>
-                          <span className="text-[11px] tabular-nums shrink-0" style={{ color: 'rgb(var(--ed-fg) / 0.45)' }}>−{(c.ms / 1000).toFixed(1)}s</span>
-                        </button>
-                      ))}
-                    </div>
-                    )}
-                  </div>
-                )}
-              </div>
+              <CleanupPanel rows={cleanupRows} detected={cleanupDetected} working={cleanupWorking} error={cleanupError}
+                blockedNote={piecesOn ? 'Deleting and restoring aren\u2019t available in a clip with a video put in between or a speed change. Play still works.' : null}
+                onDetect={detectCleanup} onPlay={playCleanup}
+                onDelete={r => deleteCleanup([r])} onDeleteAll={() => deleteCleanup(cleanupRows)} onRestore={restoreCleanup}
+                onUndo={undo} />
             )}
-
             {tool === 'brand' && (
               <BrandKitPanel brand={brand} onApply={applyBrandKit} onDelete={askDeleteBrandKit} progressBar={progressBar} onProgressBarChange={setProgressBar} />
             )}
 
             {tool === 'post' && (
               <div className="p-4">
-                <PostText clipId={clip.id} value={postText} onChange={v => setPostText({ title: v.title, post_caption: v.post_caption, hashtags: v.hashtags })} />
+                <PostText clipId={clip.id} value={postText} prepare={async () => { await handleSave(); await ensureCaptions() }} onChange={v => setPostText({ title: v.title, post_caption: v.post_caption, hashtags: v.hashtags })} />
               </div>
             )}
 

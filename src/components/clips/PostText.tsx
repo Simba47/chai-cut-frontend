@@ -15,13 +15,19 @@ const fg = (a: number) => `rgb(var(--ed-fg, 255 255 255) / ${a})`
  * The words to post a clip with (title, caption, hashtags), each with Copy, and Regenerate to
  * have AI write them again (POST /api/clips/[clipId]/ai-text).
  */
-export function PostText({ clipId, value, onChange, compact = false }: {
+export function PostText({ clipId, value, onChange, compact = false, prepare }: {
   clipId: string
   value: PostTextValue
   onChange: (v: PostTextValue & { hook?: string }) => void
   compact?: boolean
+  /**
+   * Run before writing (the editor: make the clip's captions when it has none — the text is
+   * written from them). It throws with what to tell the user when it can't.
+   */
+  prepare?: () => Promise<void>
 }) {
   const [busy, setBusy] = useState(false)
+  const [preparing, setPreparing] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [copied, setCopied] = useState<string | null>(null)
   const tags = (value.hashtags ?? []).map(t => `#${t}`).join(' ')
@@ -30,6 +36,10 @@ export function PostText({ clipId, value, onChange, compact = false }: {
   async function regenerate() {
     setBusy(true); setError(null)
     try {
+      if (prepare) {
+        setPreparing(true)
+        try { await prepare() } finally { setPreparing(false) }
+      }
       const res = await fetch(`/api/clips/${clipId}/ai-text`, { method: 'POST' })
       const data = await res.json()
       if (!res.ok) throw new Error(data.error ?? 'Could not write the text')
@@ -76,6 +86,11 @@ export function PostText({ clipId, value, onChange, compact = false }: {
         </button>
         {error && <span className="text-[11px]" style={{ color: '#f87171' }}>{error}</span>}
       </div>
+      {preparing && (
+        <p role="status" className="text-[11px] leading-relaxed" style={{ color: 'var(--ed-accent-text, #c8ff00)' }}>
+          Getting the clip&rsquo;s captions so we can write your post — this takes a moment. They won&rsquo;t show on the video.
+        </p>
+      )}
     </div>
   )
 }
