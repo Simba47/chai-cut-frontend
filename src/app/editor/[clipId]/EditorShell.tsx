@@ -4125,6 +4125,34 @@ export function EditorShell({
   const activeTool = TOOLS.find(t => t.id === tool)!
 
   /** A section picked: its card in the Format panel shows its contents (opened on a double tap on the timeline) */
+  // A click anywhere outside the timeline's parts lets go of the picked part: on the page's empty
+  // space — the preview's background, the panels', the header. What can be clicked or dragged keeps
+  // it (buttons and fields act on it; a crop box, handles and the like show their own pointer), and
+  // the timeline handles its own clicks
+  // (everything that can be picked: a part, a text, a photo or video on top, a song, a frame item)
+  const anyPickedRef = useRef(false)
+  anyPickedRef.current = !!(pickedSegId || activeTextOverlayId || activeOverlayId || pickedMusicId || activeFrameItemId)
+  const clearPicksRef = useRef<() => void>(() => {})
+  clearPicksRef.current = () => {
+    pickSection(null, false)
+    setActiveTextOverlayId(null)
+    setActiveOverlayId(null)
+    setPickedMusicId(null)
+    setActiveFrameItemId(null)
+  }
+  useEffect(() => {
+    function onDown(e: PointerEvent) {
+      if (e.button !== 0 || !anyPickedRef.current) return
+      const el = e.target as Element | null
+      if (!el || !el.closest) return
+      if (el.closest('.tl2, button, a, input, select, textarea, label, [role="menu"], [role="menuitem"], [role="dialog"], [role="alertdialog"], [role="slider"], [role="radio"], [role="separator"], [contenteditable="true"]')) return
+      const cursor = getComputedStyle(el).cursor
+      if (cursor !== 'auto' && cursor !== 'default') return
+      clearPicksRef.current()
+    }
+    document.addEventListener('pointerdown', onDown)
+    return () => document.removeEventListener('pointerdown', onDown)
+  }, [])
   function pickSection(id: string | null, open = true) {
     setPickedSegId(id)
     if (!id) return
@@ -5642,7 +5670,7 @@ export function EditorShell({
           // (parts can be cut: an edge trims the video itself, as in InShot)
           onEdgeTrim={cutOk ? trimByEdgeLive : undefined}
           pickedSegmentId={pickedSegId}
-          onPickSegment={id => (id && shots.some(x => x.id === id) ? pickShot(id, doubleTap(`s${id}`)) : pickSection(id, !!id && doubleTap(`s${id}`)))}
+          onPickSegment={id => (!id ? clearPicksRef.current() : shots.some(x => x.id === id) ? pickShot(id, doubleTap(`s${id}`)) : pickSection(id, doubleTap(`s${id}`)))}
           textOverlays={textOverlays.map(o => o.locked || !isLocked({ kind: 'text', id: o.id }) ? o : { ...o, locked: true })} activeTextOverlayId={activeTextOverlayId}
           onSelectTextOverlay={id => { if (id) pickText(id, doubleTap(`t${id}`)); else setActiveTextOverlayId(null) }}
           onTextOverlayUpdate={(id, u) => { if (!blocked({ kind: 'text', id })) updateTextOverlay(id, u) }}

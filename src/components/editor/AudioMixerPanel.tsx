@@ -4,7 +4,6 @@ import { useEffect, useRef, useState } from 'react'
 import type { AudioTrack } from '@chai-cut/shared'
 import { EmptyState } from './EditorTour'
 import { TimeRange } from './ItemTimeRange'
-import { SoundLibrary } from './SoundLibrary'
 import { CC_BY_SUFFIX, type SoundItem, type SoundKind } from '@/modules/editor/soundCatalog'
 
 interface Props {
@@ -35,7 +34,7 @@ interface Props {
 /** Any audio file, or a video (its sound is used) */
 const MUSIC_ACCEPT = 'audio/*,video/*'
 
-export function AudioMixerPanel({ tracks, onAddTrack, onAddSound, onUpdateTrack, onRemoveTrack, selectedId = null, onSelect, currentTimeMs = 0, clipLengthMs, durations = {}, nameOf, uploads = {}, missing, onReadd, notice }: Props) {
+export function AudioMixerPanel({ tracks, onAddTrack, onUpdateTrack, onRemoveTrack, selectedId = null, onSelect, currentTimeMs = 0, clipLengthMs, durations = {}, nameOf, uploads = {}, missing, onReadd, notice }: Props) {
   const fileInputRef = useRef<HTMLInputElement>(null)
   // "Re-add this song": which track the picked file is for
   const readdRef = useRef<HTMLInputElement>(null)
@@ -84,8 +83,6 @@ export function AudioMixerPanel({ tracks, onAddTrack, onAddSound, onUpdateTrack,
       </button>
       <p className="-mt-2 text-[11px]" style={{ color: 'var(--text-muted)' }}>Any audio file, or a video for its sound · up to 20 MB</p>
       {notice && <p role="alert" className="-mt-1 text-xs" style={{ color: '#f87171' }}>{notice}</p>}
-
-      {onAddSound && <SoundLibrary onAdd={onAddSound} />}
 
       {creditText && (
         <button type="button" onClick={() => { navigator.clipboard?.writeText(creditText).then(() => { setCopied(true); setTimeout(() => setCopied(false), 2000) }).catch(() => {}) }}

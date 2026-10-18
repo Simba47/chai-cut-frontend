@@ -1910,6 +1910,24 @@ export function OutputCanvas({
       const len = isFinite(main.duration) ? main.duration * 1000 : Infinity
       return { src, ms: Math.max(clipStartMsRef.current, Math.min(len - 1, ms)), rate, own: false }
     }
+    /**
+     * The video carries straight on across the cut at `at`, from part `a` into part `b`: the same
+     * video, the same speed, `b` starting in it where `a` ends. The footage past either edge is then
+     * the other part's own: there each side holds its edge frame (the stills), as the export does
+     * (render.py _carries_on) — moving footage would blend the picture with itself and show nothing.
+     */
+    function carriesOnAt(a: SegmentLocal, b: SegmentLocal, at: number) {
+      const rate = (sg: SegmentLocal) => (sg.speed && sg.speed > 0 ? sg.speed : 1)
+      if (isFrameLayout(a.layout) || isFrameLayout(b.layout) || Math.abs(rate(a) - rate(b)) > 1e-3) return false
+      const ownA = sourceForRef.current?.(a), ownB = sourceForRef.current?.(b)
+      if (!ownA !== !ownB) return false
+      if (ownA && ownB) {
+        const ba = a.crop_boxes[0], bb = b.crop_boxes[0]
+        return (ownA.currentSrc || ownA.src) === (ownB.currentSrc || ownB.src)
+          && Math.abs((ba?.source_offset_ms ?? 0) + (a.end_ms - a.start_ms) - (bb?.source_offset_ms ?? 0)) <= 30
+      }
+      return Math.abs(toVideoMs(at - 1) + rate(a) - toVideoMs(at)) <= 30
+    }
     /** A side player kept on its moment: playing with the clip (corrected when it drifts), or parked on the frame */
     function syncSide(el: HTMLVideoElement, ms: number, rate: number, playing: boolean) {
       const cur = el.currentTime * 1000
@@ -1934,6 +1952,34 @@ export function OutputCanvas({
         Object.assign(s, { at, segA, segB, aOk: false, bOk: false, liveA: false })
       }
       return s
+    }
+
+    // ── Slow motion, smooth: a slowed part shows each of its video's frames for longer (a 30 fps
+    // video at 0.25x: a new one every 133 ms), so it would step. As each new frame comes, the one
+    // before fades out over the time until the next is due: motion flows on from frame to frame.
+    let blendPrev: HTMLCanvasElement | null = null, blendCur: HTMLCanvasElement | null = null
+    let blendVT = -1, blendWall = 0, blendGap = 100, blendOk = false
+    function blendSlow(ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement, video: HTMLVideoElement, seg: SegmentLocal | null) {
+      const sp = seg?.speed && seg.speed > 0 ? seg.speed : 1
+      if (video.paused || sp >= 0.99 || !seg || seg.hidden || isFrameLayout(seg.layout)) { blendVT = -1; blendOk = false; return }
+      // (the frame on screen's own time: currentTime runs on between frames)
+      if (shownMs == null) { blendOk = false; return }
+      const now = performance.now(), vt = shownMs / 1000
+      if (vt !== blendVT) {
+        // A new frame: the last one becomes the one fading out
+        const step = vt - blendVT
+        if (!blendPrev) blendPrev = document.createElement('canvas')
+        if (!blendCur) blendCur = document.createElement('canvas')
+        for (const c of [blendPrev, blendCur]) if (c.width !== canvas.width || c.height !== canvas.height) { c.width = canvas.width; c.height = canvas.height; blendOk = false }
+        blendOk = blendVT >= 0 && step > 0 && step < 0.25
+        if (blendOk) { blendGap = step * 1000 / sp; const t = blendPrev; blendPrev = blendCur; blendCur = t }
+        blendCur.getContext('2d')!.drawImage(canvas, 0, 0)
+        blendVT = vt; blendWall = now
+      }
+      if (!blendOk || !blendPrev) return
+      const fade = 1 - Math.min(1, (now - blendWall) / blendGap)
+      if (fade <= 0.01) return
+      ctx.save(); ctx.globalAlpha = fade; ctx.drawImage(blendPrev, 0, 0); ctx.restore()
     }
 
     const loop = () => {
@@ -2022,11 +2068,12 @@ export function OutputCanvas({
             if (!st.aOk && clipMsNow < soon.at) st.aOk = still(st.a, st.segA, soon.at - 1, 'a')
             // (and the side players parked where they start: the incoming part's at the transition's
             // start, the outgoing part's at the cut)
-            if (clipMsNow < soon.at - soon.ms / 2) {
+            const moves = !carriesOnAt(st.segA, st.segB, soon.at)
+            if (moves && clipMsNow < soon.at - soon.ms / 2) {
               const pb = sideSource(st.segB, soon.at - soon.ms / 2, 'b', soon.at, video)
               if (pb) syncSide(sideEl('b', pb.src, video), pb.ms, pb.rate, false)
             }
-            if (clipMsNow < soon.at) {
+            if (moves && clipMsNow < soon.at) {
               const pa = sideSource(st.segA, soon.at, 'a', soon.at, video)
               if (pa) syncSide(sideEl('a', pa.src, video), pa.ms, pa.rate, false)
             }
@@ -2052,7 +2099,12 @@ export function OutputCanvas({
             const otherSeg = before ? st.segB : st.segA
             const role: 'a' | 'b' = before ? 'b' : 'a'
             let moving: HTMLCanvasElement | null = null
-            const want = otherSeg.hidden ? null : sideSource(otherSeg, clipMsNow, role, tc.at, video)
+            // (only where the video jumps: where it carries straight on — the same video, the same
+            // speed, the incoming part starting where the outgoing one ends — the footage past each
+            // edge is the other side's own, and blending it with itself shows nothing. There each
+            // side holds its edge frame (the stills), as the export does: render.py _carries_on)
+            const carriesOn = carriesOnAt(st.segA, st.segB, tc.at)
+            const want = otherSeg.hidden || carriesOn ? null : sideSource(otherSeg, clipMsNow, role, tc.at, video)
             const playing = !video.paused
             if (want) {
               const el = sideEl(role, want.src, video)
@@ -2096,6 +2148,7 @@ export function OutputCanvas({
           } else if (!other || other.readyState >= 2) {
             paintSegment(ctx, other ?? video, seg, clipRelativeMs, getPositionAtRef.current, frameMediaRef.current,
               slotSourceForRef.current ? (sg, box) => slotSourceForRef.current!(sg, box) : null)
+            if (!other) blendSlow(ctx, canvas, video, seg)
           }
 
           // Composite the outgoing snapshot on top with decreasing alpha

@@ -362,10 +362,9 @@ export function Timeline({
     // still the one picked), else the part at that time on the main row
     const blockEl = (e.target as Element | null)?.closest?.('.tl2-block[data-part]')
     const hit = blockEl ? mains[Number(blockEl.getAttribute('data-part')) - 1] ?? null : partAt(e.clientX, e.clientY)
-    // On the main row: that part is picked (its empty space: nothing is). The ruler only moves the
-    // playhead; an empty spot on the rows under it also lets go of what was selected
-    if (hit !== undefined) onPickSegment?.(hit?.id ?? null)
-    else if (!(e.currentTarget as Element).hasAttribute('data-tl-head')) onPickSegment?.(null)
+    // On the main row: that part is picked. Anywhere else (the ruler, an empty spot): nothing is —
+    // a click outside the selected part lets go of it (the playhead still moves there)
+    onPickSegment?.(hit?.id ?? null)
     const { setScrubbing } = usePlayerStore.getState()
     onScrubStart?.()
     setScrubbing(true)
@@ -1081,7 +1080,16 @@ export function Timeline({
   const headH = RULER_H + mainRowH + (originals.length ? ORIG_ROW_H : 0) + (viewMarkers.length ? VIEW_ROW_H : 0)
 
   return (
-    <div className="tl2 flex items-stretch flex-auto min-h-0 select-none">
+    <div className="tl2 flex items-stretch flex-auto min-h-0 select-none"
+      // A click anywhere else in the timeline (under the rows, the margins, the left column) also
+      // lets go of the selected part; what handles its own clicks (the rows, parts, bars, buttons,
+      // grips, menus) is left to do so
+      onPointerDown={e => {
+        if (e.button !== 0) return
+        const el = e.target as Element
+        if (el.closest?.('[data-tl-head], .tl2-block, .tl2-bar, button, a, input, [role="menu"], [data-lane], [data-keep-selection]')) return
+        onPickSegment?.(null)
+      }}>
       {/* ── Left column: add, the main video's sound, what each row is ── */}
       <div className="tl2-left relative shrink-0" style={{ width: LEFT_W }} aria-label="Timeline rows">
         {onAddKind && (

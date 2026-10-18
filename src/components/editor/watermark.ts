@@ -3,85 +3,124 @@
 import { useEffect, useState } from 'react'
 
 /**
- * The Free-plan watermark (the Shortcut logo + name, no background), as the editor's preview draws it. The export draws
- * the same badge with the same numbers (chai-cut-backend python/render.py, WATERMARK_*): its width,
- * the gap from the right edge and from the bottom are shares of the frame, so the preview shows
- * exactly where the export will put it. The bottom gap lifts it above where captions sit (their
- * middle is at 84% of the height) and above the platforms' own caption area.
+ * The Free-plan watermark ("MADE WITH" over the Shortcut logo + name, no background), as the
+ * editor's preview draws it. The export draws the same with the same numbers (chai-cut-backend python/render.py,
+ * WATERMARK_*): its width, the gap from the right edge and from the bottom are shares of the frame,
+ * so the preview shows exactly where the export will put it. The bottom gap lifts it above where
+ * captions sit (their middle is at 84% of the height) and above the platforms' own caption area.
  */
-export const WATERMARK_WIDTH = 0.24
+export const WATERMARK_WIDTH = 0.28
 export const WATERMARK_RIGHT = 0.04
 export const WATERMARK_BOTTOM = 0.22
-export const WATERMARK_OPACITY = 0.75
-/** Its motion: in the first INTRO_S it rises by INTRO_RISE of its height and fades in; from
- *  SHINE_FIRST_S on, every SHINE_EVERY_S a light (BAND of its width each side, GAIN brightness)
- *  takes SHINE_S to sweep across it */
-const INTRO_S = 0.6
-const INTRO_RISE = 0.35
-const SHINE_FIRST_S = 1.0
-const SHINE_EVERY_S = 5.0
+export const WATERMARK_OPACITY = 0.9
+/** It plays in a loop of LOOP_S s (the times below are into each loop), as the sign-in page's heading
+ *  does (components/auth/AuthSlider.tsx PanelTitle): the S pops in at the word's middle (grows from
+ *  POP_FROM with a little overshoot, over POP_S), then from SPLIT_AT, over SPLIT_S, it splits: its top
+ *  half slides left to the S's place, its bottom half slides right to the word's end, and the word
+ *  opens from its middle between them. Then the bottom half fades away at the end of the word as the
+ *  S's bottom fades in at its place (from SETTLE_AT, over SETTLE_S), and "MADE WITH" fades in above
+ *  (from MADE_AT, over MADE_S). Places are shares of the mark's width or height (the layers are
+ *  641 x 216): the S's centre, the word's middle and half its width */
+const POP_S = 0.45
+const POP_FROM = 0.4
+const SPLIT_AT = 0.6
+const SPLIT_S = 0.75
+const SETTLE_AT = 1.35
+const SETTLE_S = 0.35
+const MADE_AT = 1.6
+const MADE_S = 0.4
+const S_CX = 97 / 641, S_CY = 115 / 216
+const WORD_CX = 382 / 641, WORD_HALF = 230 / 641
+/** "MADE WITH" (public/watermark_made.png, the mark's width, its letters in the middle) has its top
+ *  this share of the mark's width above the mark's top */
+const MADE_RISE = 0.08
+/** While it is all in, from SHINE_AT, SHINE_N times every SHINE_EVERY s a lime light sweeps across the
+ *  logo and name (left to right, SHINE_S s): the white letters light up lime as it passes */
+const SHINE_AT = 2.2
+const SHINE_EVERY = 2.4
+const SHINE_N = 2
 const SHINE_S = 0.9
-const SHINE_BAND = 0.12
-const SHINE_GAIN = 70
+/** Fully in for 5 s (to OUT_AT), it all fades out over OUT_S, stays away until the loop starts again */
+const OUT_AT = 7.0
+const OUT_S = 0.6
+const LOOP_S = 9.1
 
-let markImg: HTMLImageElement | null = null
-/** The badge's picture (public/watermark.png), loaded once */
-function mark(): HTMLImageElement | null {
+type Layer = 'logo_top' | 'logo_bottom' | 'text' | 'made'
+const imgs: Record<Layer, HTMLImageElement | null> = { logo_top: null, logo_bottom: null, text: null, made: null }
+/** A layer's picture (public/watermark_logo_top.png, _logo_bottom, _text, _made), loaded once */
+function layer(k: Layer): HTMLImageElement | null {
   if (typeof Image === 'undefined') return null
-  if (!markImg) { markImg = new Image(); markImg.src = '/watermark.png' }
-  return markImg.complete && markImg.naturalWidth > 0 ? markImg : null
+  if (!imgs[k]) { const im = new Image(); im.src = `/watermark_${k}.png`; imgs[k] = im }
+  const im = imgs[k]!
+  return im.complete && im.naturalWidth > 0 ? im : null
 }
 
-let work: HTMLCanvasElement | null = null, light: HTMLCanvasElement | null = null, glint: HTMLCanvasElement | null = null
-const canvasOf = (c: HTMLCanvasElement | null, w: number, h: number) => {
-  const el = c ?? document.createElement('canvas')
-  if (el.width !== w || el.height !== h) { el.width = w; el.height = h }
-  return el
-}
+let shine: HTMLCanvasElement | null = null
+const clamp01 = (x: number) => Math.max(0, Math.min(1, x))
+const ease = (q: number) => (q < 0.5 ? 4 * q * q * q : 1 - Math.pow(2 - 2 * q, 3) / 2)
 
-/** Draws the badge over what is already on `ctx` (a canvas `w` × `h`) as it looks at `tMs` into
- *  the clip; nothing until its picture has loaded */
+/** Draws the mark over what is already on `ctx` (a canvas `w` × `h`) as it looks at `tMs` into the
+ *  clip; nothing until its pictures have loaded */
 export function drawWatermark(ctx: CanvasRenderingContext2D, w: number, h: number, tMs: number) {
-  const img = mark()
-  if (!img) return
-  const T = Math.max(0, tMs / 1000)
-  const mw = Math.max(2, Math.round(w * WATERMARK_WIDTH / 2) * 2), mh = Math.round(mw * img.naturalHeight / img.naturalWidth)
-  const p = Math.min(1, T / INTRO_S), ease = 1 - Math.pow(1 - p, 3)
+  const top = layer('logo_top'), bottom = layer('logo_bottom'), text = layer('text'), made = layer('made')
+  if (!top || !bottom || !text || !made) return
+  const T = Math.max(0, tMs / 1000) % LOOP_S
+  const out = 1 - clamp01((T - OUT_AT) / OUT_S)
+  if (out <= 0) return
+  const mw = Math.max(2, Math.round(w * WATERMARK_WIDTH / 2) * 2), mh = Math.round(mw * top.naturalHeight / top.naturalWidth)
   const x = w - mw - Math.round(w * WATERMARK_RIGHT)
-  const y = h - mh - Math.round(h * WATERMARK_BOTTOM) + mh * INTRO_RISE * Math.pow(1 - p, 3)
-
-  let src: CanvasImageSource = img, shine: CanvasImageSource | null = null
-  const phase = (T - SHINE_FIRST_S) % SHINE_EVERY_S
-  if (T >= SHINE_FIRST_S && phase < SHINE_S) {
-    // the light: a soft diagonal band (along X - 0.35·Y). It brightens the colour (seen on the lime
-    // logo) and lifts the mark to fully solid (seen on the white word): a glint running along it.
-    // Weighted by the mark's own alpha, so its soft shadow stays as it is.
-    work = canvasOf(work, mw, mh); light = canvasOf(light, mw, mh); glint = canvasOf(glint, mw, mh)
-    const wc = work.getContext('2d')!, lc = light.getContext('2d')!, gc = glint.getContext('2d')!
-    wc.globalCompositeOperation = 'copy'; wc.drawImage(img, 0, 0, mw, mh)
-    const band = SHINE_BAND * mw, centre = -band + (mw * (1 + 2 * SHINE_BAND) + 0.35 * mh) * phase / SHINE_S
-    const k = 1 / (1 + 0.35 * 0.35)
-    const bandOf = (peak: number) => {
-      const g = lc.createLinearGradient((centre - band) * k, -(centre - band) * k * 0.35, (centre + band) * k, -(centre + band) * k * 0.35)
-      g.addColorStop(0, 'rgba(255,255,255,0)'); g.addColorStop(0.5, `rgba(255,255,255,${peak})`); g.addColorStop(1, 'rgba(255,255,255,0)')
-      return g
-    }
-    // the brighter colour
-    lc.globalCompositeOperation = 'copy'; lc.fillStyle = bandOf(SHINE_GAIN / 255); lc.fillRect(0, 0, mw, mh)
-    lc.globalCompositeOperation = 'destination-in'; lc.drawImage(work, 0, 0); lc.drawImage(work, 0, 0)
-    wc.globalCompositeOperation = 'lighter'; wc.drawImage(light, 0, 0)
-    // the lift to solid: the lit mark again, only under the band, drawn fully over the first pass
-    gc.globalCompositeOperation = 'copy'; gc.fillStyle = bandOf(1); gc.fillRect(0, 0, mw, mh)
-    gc.globalCompositeOperation = 'source-in'; gc.drawImage(work, 0, 0)
-    gc.globalCompositeOperation = 'destination-in'; gc.drawImage(work, 0, 0)
-    src = work; shine = glint
-  }
+  const y = h - mh - Math.round(h * WATERMARK_BOTTOM)
+  const A = WATERMARK_OPACITY * out
   ctx.save()
-  ctx.globalAlpha = WATERMARK_OPACITY * ease
   ctx.imageSmoothingEnabled = true
   ctx.imageSmoothingQuality = 'high'
-  ctx.drawImage(src, x, y, mw, mh)
-  if (shine) { ctx.globalAlpha = 1; ctx.drawImage(shine, x, y, mw, mh) }
+  // "MADE WITH", above (never in the light)
+  ctx.globalAlpha = A * clamp01((T - MADE_AT) / MADE_S)
+  if (ctx.globalAlpha > 0) ctx.drawImage(made, x, y - Math.round(mw * MADE_RISE), mw, Math.round(mw * made.naturalHeight / made.naturalWidth))
+  const e = ease(clamp01((T - SPLIT_AT) / SPLIT_S))
+  const settle = clamp01((T - SETTLE_AT) / SETTLE_S)
+  const ph = (T - SHINE_AT) % SHINE_EVERY
+  if (T >= SHINE_AT && T < SHINE_AT + SHINE_N * SHINE_EVERY && ph < SHINE_S && settle === 1) {
+    // All in place and the light passing: the mark drawn on its own, the light laid on its pixels only
+    if (!shine) shine = document.createElement('canvas')
+    if (shine.width !== mw || shine.height !== mh) { shine.width = mw; shine.height = mh }
+    const sx = shine.getContext('2d')!
+    sx.globalCompositeOperation = 'source-over'
+    sx.clearRect(0, 0, mw, mh)
+    sx.imageSmoothingEnabled = true; sx.imageSmoothingQuality = 'high'
+    sx.drawImage(text, 0, 0, mw, mh); sx.drawImage(top, 0, 0, mw, mh); sx.drawImage(bottom, 0, 0, mw, mh)
+    // (the band: centre line X - 0.25·Y = c, as the export's)
+    const c = (-0.25 + 1.5 * ph / SHINE_S) * mw, bw = 0.22 * mw, k = 1 / (1 + 0.25 * 0.25)
+    const g = sx.createLinearGradient((c - bw) * k, -(c - bw) * k * 0.25, (c + bw) * k, -(c + bw) * k * 0.25)
+    g.addColorStop(0, 'rgba(200,255,30,0)'); g.addColorStop(0.5, 'rgba(200,255,30,1)'); g.addColorStop(1, 'rgba(200,255,30,0)')
+    sx.globalCompositeOperation = 'source-atop'
+    sx.fillStyle = g; sx.fillRect(0, 0, mw, mh)
+    ctx.globalAlpha = A; ctx.drawImage(shine, x, y)
+    ctx.restore()
+    return
+  }
+  // The word, opening from its middle as the halves part
+  if (e > 0) {
+    ctx.save()
+    ctx.beginPath(); ctx.rect(x + (WORD_CX - e * WORD_HALF) * mw, y - mh, 2 * e * WORD_HALF * mw, 3 * mh); ctx.clip()
+    ctx.globalAlpha = A; ctx.drawImage(text, x, y, mw, mh)
+    ctx.restore()
+  }
+  // The S's halves: the pop's size (POP_FROM -> 1, a little past 1 and back) about the S's centre
+  const pp = clamp01(T / POP_S)
+  const size = POP_FROM + (1 - POP_FROM) * (1 + 2.2 * Math.pow(pp - 1, 3) + 1.2 * Math.pow(pp - 1, 2))
+  const popA = Math.min(1, 2 * pp)
+  const half = (im: HTMLImageElement, shift: number, alpha: number, popped: boolean) => {
+    ctx.globalAlpha = A * alpha
+    if (ctx.globalAlpha <= 0) return
+    const sz = popped ? size : 1
+    const lx = x + shift * mw, cx = lx + S_CX * mw, cy = y + S_CY * mh
+    ctx.drawImage(im, cx - S_CX * mw * sz, cy - S_CY * mh * sz, mw * sz, mh * sz)
+  }
+  const start = WORD_CX - S_CX, end = WORD_CX + WORD_HALF - S_CX
+  half(top, start * (1 - e), popA, true)
+  half(bottom, start + (end - start) * e, popA * (1 - settle), true)
+  half(bottom, 0, settle, false)
   ctx.restore()
 }
 
