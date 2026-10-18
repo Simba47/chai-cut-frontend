@@ -3,85 +3,83 @@
 import { useEffect, useState } from 'react'
 
 /**
- * The Free-plan watermark (the Shortcut logo + name, no background), as the editor's preview draws it. The export draws
- * the same badge with the same numbers (chai-cut-backend python/render.py, WATERMARK_*): its width,
- * the gap from the right edge and from the bottom are shares of the frame, so the preview shows
- * exactly where the export will put it. The bottom gap lifts it above where captions sit (their
- * middle is at 84% of the height) and above the platforms' own caption area.
+ * The Free-plan watermark (the Shortcut logo + name, no background), as the editor's preview draws
+ * it. The export draws the same with the same numbers (chai-cut-backend python/render.py,
+ * WATERMARK_*): its width, the gap from the right edge and from the bottom are shares of the frame,
+ * so the preview shows exactly where the export will put it. The bottom gap lifts it above where
+ * captions sit (their middle is at 84% of the height) and above the platforms' own caption area.
  */
-export const WATERMARK_WIDTH = 0.24
+export const WATERMARK_WIDTH = 0.28
 export const WATERMARK_RIGHT = 0.04
 export const WATERMARK_BOTTOM = 0.22
-export const WATERMARK_OPACITY = 0.75
-/** Its motion: in the first INTRO_S it rises by INTRO_RISE of its height and fades in; from
- *  SHINE_FIRST_S on, every SHINE_EVERY_S a light (BAND of its width each side, GAIN brightness)
- *  takes SHINE_S to sweep across it */
-const INTRO_S = 0.6
-const INTRO_RISE = 0.35
-const SHINE_FIRST_S = 1.0
-const SHINE_EVERY_S = 5.0
+export const WATERMARK_OPACITY = 0.9
+/** Its entrance: the S fades in at the mark's middle (LOGO_IN s), then over MOVE_S the S moves left
+ *  to its place while the word slides out to the right from behind it, fading in (from TEXT_AT, over
+ *  TEXT_S); then it holds. Shifts are shares of the mark's width (where each starts, from its place) */
+const LOGO_IN = 0.35
+const MOVE_AT = 0.35
+const MOVE_S = 0.6
+const TEXT_AT = 0.6
+const TEXT_S = 0.35
+const LOGO_SHIFT = 0.3503
+const TEXT_SHIFT = -0.0953
+/** Then, from SHINE_AT s, every SHINE_EVERY s a lime light sweeps across it (left to right, SHINE_S s):
+ *  the white letters light up lime as it passes, the S brightens */
+const SHINE_AT = 1.2
+const SHINE_EVERY = 3.0
 const SHINE_S = 0.9
-const SHINE_BAND = 0.12
-const SHINE_GAIN = 70
 
-let markImg: HTMLImageElement | null = null
-/** The badge's picture (public/watermark.png), loaded once */
-function mark(): HTMLImageElement | null {
+type Layer = 'logo' | 'text'
+const imgs: Record<Layer, HTMLImageElement | null> = { logo: null, text: null }
+/** A layer's picture (public/watermark_logo.png, _text), loaded once */
+function layer(k: Layer): HTMLImageElement | null {
   if (typeof Image === 'undefined') return null
-  if (!markImg) { markImg = new Image(); markImg.src = '/watermark.png' }
-  return markImg.complete && markImg.naturalWidth > 0 ? markImg : null
+  if (!imgs[k]) { const im = new Image(); im.src = `/watermark_${k}.png`; imgs[k] = im }
+  const im = imgs[k]!
+  return im.complete && im.naturalWidth > 0 ? im : null
 }
 
-let work: HTMLCanvasElement | null = null, light: HTMLCanvasElement | null = null, glint: HTMLCanvasElement | null = null
-const canvasOf = (c: HTMLCanvasElement | null, w: number, h: number) => {
-  const el = c ?? document.createElement('canvas')
-  if (el.width !== w || el.height !== h) { el.width = w; el.height = h }
-  return el
-}
+let shine: HTMLCanvasElement | null = null
+const clamp01 = (x: number) => Math.max(0, Math.min(1, x))
+const ease = (q: number) => (q < 0.5 ? 4 * q * q * q : 1 - Math.pow(2 - 2 * q, 3) / 2)
 
-/** Draws the badge over what is already on `ctx` (a canvas `w` × `h`) as it looks at `tMs` into
- *  the clip; nothing until its picture has loaded */
+/** Draws the mark over what is already on `ctx` (a canvas `w` × `h`) as it looks at `tMs` into the
+ *  clip; nothing until its pictures have loaded */
 export function drawWatermark(ctx: CanvasRenderingContext2D, w: number, h: number, tMs: number) {
-  const img = mark()
-  if (!img) return
+  const logo = layer('logo'), text = layer('text')
+  if (!logo || !text) return
   const T = Math.max(0, tMs / 1000)
-  const mw = Math.max(2, Math.round(w * WATERMARK_WIDTH / 2) * 2), mh = Math.round(mw * img.naturalHeight / img.naturalWidth)
-  const p = Math.min(1, T / INTRO_S), ease = 1 - Math.pow(1 - p, 3)
+  const mw = Math.max(2, Math.round(w * WATERMARK_WIDTH / 2) * 2), mh = Math.round(mw * logo.naturalHeight / logo.naturalWidth)
   const x = w - mw - Math.round(w * WATERMARK_RIGHT)
-  const y = h - mh - Math.round(h * WATERMARK_BOTTOM) + mh * INTRO_RISE * Math.pow(1 - p, 3)
-
-  let src: CanvasImageSource = img, shine: CanvasImageSource | null = null
-  const phase = (T - SHINE_FIRST_S) % SHINE_EVERY_S
-  if (T >= SHINE_FIRST_S && phase < SHINE_S) {
-    // the light: a soft diagonal band (along X - 0.35·Y). It brightens the colour (seen on the lime
-    // logo) and lifts the mark to fully solid (seen on the white word): a glint running along it.
-    // Weighted by the mark's own alpha, so its soft shadow stays as it is.
-    work = canvasOf(work, mw, mh); light = canvasOf(light, mw, mh); glint = canvasOf(glint, mw, mh)
-    const wc = work.getContext('2d')!, lc = light.getContext('2d')!, gc = glint.getContext('2d')!
-    wc.globalCompositeOperation = 'copy'; wc.drawImage(img, 0, 0, mw, mh)
-    const band = SHINE_BAND * mw, centre = -band + (mw * (1 + 2 * SHINE_BAND) + 0.35 * mh) * phase / SHINE_S
-    const k = 1 / (1 + 0.35 * 0.35)
-    const bandOf = (peak: number) => {
-      const g = lc.createLinearGradient((centre - band) * k, -(centre - band) * k * 0.35, (centre + band) * k, -(centre + band) * k * 0.35)
-      g.addColorStop(0, 'rgba(255,255,255,0)'); g.addColorStop(0.5, `rgba(255,255,255,${peak})`); g.addColorStop(1, 'rgba(255,255,255,0)')
-      return g
-    }
-    // the brighter colour
-    lc.globalCompositeOperation = 'copy'; lc.fillStyle = bandOf(SHINE_GAIN / 255); lc.fillRect(0, 0, mw, mh)
-    lc.globalCompositeOperation = 'destination-in'; lc.drawImage(work, 0, 0); lc.drawImage(work, 0, 0)
-    wc.globalCompositeOperation = 'lighter'; wc.drawImage(light, 0, 0)
-    // the lift to solid: the lit mark again, only under the band, drawn fully over the first pass
-    gc.globalCompositeOperation = 'copy'; gc.fillStyle = bandOf(1); gc.fillRect(0, 0, mw, mh)
-    gc.globalCompositeOperation = 'source-in'; gc.drawImage(work, 0, 0)
-    gc.globalCompositeOperation = 'destination-in'; gc.drawImage(work, 0, 0)
-    src = work; shine = glint
+  const y = h - mh - Math.round(h * WATERMARK_BOTTOM)
+  const rest = 1 - ease(clamp01((T - MOVE_AT) / MOVE_S))
+  const ph = (T - SHINE_AT) % SHINE_EVERY
+  if (T >= SHINE_AT && ph < SHINE_S && rest === 0) {
+    // In place and the light passing: the mark drawn on its own, the light laid on its pixels only
+    if (!shine) shine = document.createElement('canvas')
+    if (shine.width !== mw || shine.height !== mh) { shine.width = mw; shine.height = mh }
+    const sx = shine.getContext('2d')!
+    sx.globalCompositeOperation = 'source-over'
+    sx.clearRect(0, 0, mw, mh)
+    sx.imageSmoothingEnabled = true; sx.imageSmoothingQuality = 'high'
+    sx.drawImage(text, 0, 0, mw, mh); sx.drawImage(logo, 0, 0, mw, mh)
+    // (the band: centre line X - 0.25·Y = c, as the export's)
+    const c = (-0.25 + 1.5 * ph / SHINE_S) * mw, bw = 0.22 * mw, k = 1 / (1 + 0.25 * 0.25)
+    const g = sx.createLinearGradient((c - bw) * k, -(c - bw) * k * 0.25, (c + bw) * k, -(c + bw) * k * 0.25)
+    g.addColorStop(0, 'rgba(200,255,30,0)'); g.addColorStop(0.5, 'rgba(200,255,30,1)'); g.addColorStop(1, 'rgba(200,255,30,0)')
+    sx.globalCompositeOperation = 'source-atop'
+    sx.fillStyle = g; sx.fillRect(0, 0, mw, mh)
+    ctx.save(); ctx.globalAlpha = WATERMARK_OPACITY; ctx.drawImage(shine, x, y); ctx.restore()
+    return
   }
   ctx.save()
-  ctx.globalAlpha = WATERMARK_OPACITY * ease
   ctx.imageSmoothingEnabled = true
   ctx.imageSmoothingQuality = 'high'
-  ctx.drawImage(src, x, y, mw, mh)
-  if (shine) { ctx.globalAlpha = 1; ctx.drawImage(shine, x, y, mw, mh) }
+  // (the word under the S: it comes out from behind it)
+  ctx.globalAlpha = WATERMARK_OPACITY * clamp01((T - TEXT_AT) / TEXT_S)
+  if (ctx.globalAlpha > 0) ctx.drawImage(text, x + TEXT_SHIFT * mw * rest, y, mw, mh)
+  ctx.globalAlpha = WATERMARK_OPACITY * clamp01(T / LOGO_IN)
+  if (ctx.globalAlpha > 0) ctx.drawImage(logo, x + LOGO_SHIFT * mw * rest, y, mw, mh)
   ctx.restore()
 }
 
