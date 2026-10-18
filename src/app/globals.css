@@ -1104,92 +1104,128 @@ body {
 .tr-empty-title { font-size: 13px; font-weight: 700; color: var(--ed-text); }
 .tr-empty-text { font-size: 12px; line-height: 1.5; color: rgb(var(--ed-fg) / 0.5); }
 
-/* the little screen: A (outgoing) and B (incoming); a loop = hold A, change, hold B */
-.tr-demo { position: relative; display: block; height: 28px; border-radius: 7px; overflow: hidden; background: #000; }
-.tr-demo i { position: absolute; inset: 0; border-radius: inherit; }
-/* A (outgoing) cool and dark, B (incoming) warm and bright: told apart at a glance, mid-change too */
-.tr-a { background: radial-gradient(circle at 30% 35%, #8b8cf6 0 18%, transparent 19%), linear-gradient(135deg, #4f46e5, #1e1b4b); }
-.tr-b { background: radial-gradient(circle at 70% 65%, #fff7d6 0 18%, transparent 19%), linear-gradient(135deg, #fbbf24, #ea580c); opacity: 0; }
+/* the little screen: the Shortcut panda buried in film (A, outgoing) and cutting it into reels in the
+   same room (B, incoming). A loop: hold A, change over, hold B, then back (alternate). It plays on the
+   picked tile and the one pointed at; the others rest halfway through, so each already reads as its kind. */
+.tr-demo { --trc: 3.2s; position: relative; display: block; aspect-ratio: 16 / 10; border-radius: 8px; overflow: hidden; background: #000; isolation: isolate; }
+.tr-demo i { position: absolute; inset: 0; background-size: cover; background-position: center; will-change: transform, opacity, filter;
+  animation-duration: var(--trc); animation-iteration-count: infinite; animation-direction: alternate; animation-fill-mode: both; animation-timing-function: linear; }
+.tr-a { background-image: url('/mascot/transition-a.jpg'); }
+.tr-b { background-image: url('/mascot/transition-b.jpg'); opacity: 0; }
+.tr-badge { position: absolute; left: 4px; top: 4px; z-index: 2; padding: 1px 4px; border-radius: 4px; font-size: 8px; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; color: #c8ff00; background: rgba(0,0,0,.7); pointer-events: none; }
+.tr-tile:not(:hover):not([data-on]) .tr-demo i { animation-play-state: paused; animation-delay: calc(var(--trc) * var(--rest, -0.5)); }
+/* (the resting moment of each: where its picture reads best — not a blank black, white or blurred frame) */
+.tr-demo:is([data-kind="fadeblack"], [data-kind="fadewhite"]) { --rest: -0.38; }
+.tr-demo[data-kind="zoomin"] { --rest: -0.38; }
+.tr-demo[data-kind="smoothleft"] { --rest: -0.6; }
+.tr-demo[data-kind="hblur"] { --rest: -0.34; }
+
+/* None: a straight cut */
+.tr-demo[data-kind="cut"] .tr-b { animation-name: trx-cut; }
+@keyframes trx-cut { 0%, 49.9% { opacity: 0 } 50%, 100% { opacity: 1 } }
+/* Dissolve */
+.tr-demo[data-kind="fade"] .tr-b { animation-name: trx-fade; }
+@keyframes trx-fade { 0%, 32% { opacity: 0 } 68%, 100% { opacity: 1 } }
+/* Fade black / Flash: into the colour, out of it on the next shot */
 .tr-demo[data-kind="fadewhite"] { background: #fff; }
-/* (a still, before the loop starts: the incoming picture half in, so each tile already reads as its kind) */
-.tr-demo[data-kind="slideleft"] .tr-b { opacity: 1; transform: translateX(55%); }
-.tr-demo[data-kind="slideleft"] .tr-a { transform: translateX(-45%); }
-.tr-demo[data-kind="slideup"] .tr-b { opacity: 1; transform: translateY(55%); }
-.tr-demo[data-kind="slideup"] .tr-a { transform: translateY(-45%); }
-.tr-demo[data-kind="slideright"] .tr-b { opacity: 1; transform: translateX(-55%); }
-.tr-demo[data-kind="slideright"] .tr-a { transform: translateX(45%); }
-.tr-demo[data-kind="slidedown"] .tr-b { opacity: 1; transform: translateY(-55%); }
-.tr-demo[data-kind="slidedown"] .tr-a { transform: translateY(45%); }
-.tr-demo[data-kind="smoothleft"] .tr-b { opacity: 1; transform: translateX(55%); filter: blur(1.5px); }
-.tr-demo[data-kind="smoothleft"] .tr-a { transform: translateX(-45%); filter: blur(1.5px); }
-.tr-demo[data-kind="hblur"] .tr-a { filter: blur(3px); }
-.tr-demo[data-kind="hblur"] .tr-b { opacity: .45; filter: blur(3px); }
-.tr-demo[data-kind="radial"] .tr-b { opacity: 1; clip-path: polygon(50% 50%, 50% -60%, 160% -60%, 160% 160%, 50% 160%); }
-.tr-demo[data-kind="pixelize"] .tr-a { background: repeating-conic-gradient(#4f46e5 0 25%, #312e81 0 50%) 0 0 / 10px 10px; }
-.tr-demo[data-kind="pixelize"] .tr-b { opacity: .4; background: repeating-conic-gradient(#fbbf24 0 25%, #ea580c 0 50%) 0 0 / 10px 10px; }
-.tr-demo[data-kind="wipe"] .tr-b { opacity: 1; clip-path: inset(0 0 0 55%); }
-.tr-demo[data-kind="circleopen"] .tr-b { opacity: 1; clip-path: circle(28% at 50% 50%); }
-.tr-demo[data-kind="fade"] .tr-b { opacity: .5; }
-.tr-demo[data-kind="zoomin"] .tr-b { opacity: .3; }
-.tr-demo[data-kind="zoomin"] .tr-a { transform: scale(2.4); }
-.tr-demo[data-kind="fadeblack"] .tr-a, .tr-demo[data-kind="fadewhite"] .tr-a { opacity: .45; }
-/* the loop: on the picked tile and the one pointed at */
-:is(.tr-tile[data-on], .tr-tile:hover) .tr-demo i { animation-duration: 2.2s; animation-iteration-count: infinite; animation-timing-function: ease-in-out; }
-:is(.tr-tile[data-on], .tr-tile:hover) .tr-demo[data-kind="cut"] .tr-b { animation-name: tr-cut; animation-timing-function: steps(1, end); }
-:is(.tr-tile[data-on], .tr-tile:hover) .tr-demo[data-kind="fade"] .tr-b { animation-name: tr-in; }
-:is(.tr-tile[data-on], .tr-tile:hover) .tr-demo:is([data-kind="fadeblack"], [data-kind="fadewhite"]) .tr-a { animation-name: tr-dip-out; }
-:is(.tr-tile[data-on], .tr-tile:hover) .tr-demo:is([data-kind="fadeblack"], [data-kind="fadewhite"]) .tr-b { animation-name: tr-dip-in; }
-:is(.tr-tile[data-on], .tr-tile:hover) .tr-demo[data-kind="slideleft"] .tr-a { animation-name: tr-slide-a; }
-:is(.tr-tile[data-on], .tr-tile:hover) .tr-demo[data-kind="slideleft"] .tr-b { animation-name: tr-slide-b; }
-:is(.tr-tile[data-on], .tr-tile:hover) .tr-demo[data-kind="slideup"] .tr-a { animation-name: tr-up-a; }
-:is(.tr-tile[data-on], .tr-tile:hover) .tr-demo[data-kind="slideup"] .tr-b { animation-name: tr-up-b; }
-:is(.tr-tile[data-on], .tr-tile:hover) .tr-demo[data-kind="wipe"] .tr-b { animation-name: tr-wipe; }
-:is(.tr-tile[data-on], .tr-tile:hover) .tr-demo[data-kind="zoomin"] .tr-a { animation-name: tr-zoom-a; }
-:is(.tr-tile[data-on], .tr-tile:hover) .tr-demo[data-kind="zoomin"] .tr-b { animation-name: tr-zoom-b; }
-:is(.tr-tile[data-on], .tr-tile:hover) .tr-demo[data-kind="circleopen"] .tr-b { animation-name: tr-circle; }
-:is(.tr-tile[data-on], .tr-tile:hover) .tr-demo[data-kind="slideright"] .tr-a { animation-name: tr-slr-a; }
-:is(.tr-tile[data-on], .tr-tile:hover) .tr-demo[data-kind="slideright"] .tr-b { animation-name: tr-slr-b; }
-:is(.tr-tile[data-on], .tr-tile:hover) .tr-demo[data-kind="slidedown"] .tr-a { animation-name: tr-down-a; }
-:is(.tr-tile[data-on], .tr-tile:hover) .tr-demo[data-kind="slidedown"] .tr-b { animation-name: tr-down-b; }
-:is(.tr-tile[data-on], .tr-tile:hover) .tr-demo[data-kind="smoothleft"] i { animation-timing-function: cubic-bezier(.7,0,.3,1); }
-:is(.tr-tile[data-on], .tr-tile:hover) .tr-demo[data-kind="smoothleft"] .tr-a { animation-name: tr-whip-a; }
-:is(.tr-tile[data-on], .tr-tile:hover) .tr-demo[data-kind="smoothleft"] .tr-b { animation-name: tr-whip-b; }
-:is(.tr-tile[data-on], .tr-tile:hover) .tr-demo[data-kind="hblur"] .tr-a { animation-name: tr-blur-a; }
-:is(.tr-tile[data-on], .tr-tile:hover) .tr-demo[data-kind="hblur"] .tr-b { animation-name: tr-blur-b; }
-:is(.tr-tile[data-on], .tr-tile:hover) .tr-demo[data-kind="radial"] .tr-b { animation-name: tr-clock; animation-timing-function: linear; }
-:is(.tr-tile[data-on], .tr-tile:hover) .tr-demo[data-kind="pixelize"] .tr-a { animation-name: tr-pix-a; }
-:is(.tr-tile[data-on], .tr-tile:hover) .tr-demo[data-kind="pixelize"] .tr-b { animation-name: tr-pix-b; }
-@keyframes tr-cut { 0%, 49% { opacity: 0; } 50%, 100% { opacity: 1; } }
-@keyframes tr-in { 0%, 30% { opacity: 0; } 62%, 100% { opacity: 1; } }
-@keyframes tr-dip-out { 0%, 25% { opacity: 1; } 45%, 100% { opacity: 0; } }
-@keyframes tr-dip-in { 0%, 48% { opacity: 0; } 68%, 100% { opacity: 1; } }
-@keyframes tr-slide-a { 0%, 30% { transform: none; } 62%, 100% { transform: translateX(-100%); } }
-@keyframes tr-slide-b { 0%, 30% { opacity: 1; transform: translateX(100%); } 62%, 100% { opacity: 1; transform: none; } }
-@keyframes tr-up-a { 0%, 30% { transform: none; } 62%, 100% { transform: translateY(-100%); } }
-@keyframes tr-up-b { 0%, 30% { opacity: 1; transform: translateY(100%); } 62%, 100% { opacity: 1; transform: none; } }
-@keyframes tr-wipe { 0%, 30% { opacity: 1; clip-path: inset(0 0 0 100%); } 62%, 100% { opacity: 1; clip-path: inset(0 0 0 0); } }
-/* (as ffmpeg's zoomin: the old picture rushes into its centre, then the new one dissolves in over it) */
-@keyframes tr-zoom-a { 0%, 25% { transform: none; animation-timing-function: ease-in; } 46%, 100% { transform: scale(6); } }
-@keyframes tr-zoom-b { 0%, 46% { opacity: 0; } 70%, 100% { opacity: 1; } }
-@keyframes tr-slr-a { 0%, 30% { transform: none; } 62%, 100% { transform: translateX(100%); } }
-@keyframes tr-slr-b { 0%, 30% { opacity: 1; transform: translateX(-100%); } 62%, 100% { opacity: 1; transform: none; } }
-@keyframes tr-down-a { 0%, 30% { transform: none; } 62%, 100% { transform: translateY(100%); } }
-@keyframes tr-down-b { 0%, 30% { opacity: 1; transform: translateY(-100%); } 62%, 100% { opacity: 1; transform: none; } }
-@keyframes tr-whip-a { 0%, 36% { transform: none; filter: none; } 46% { filter: blur(3px); } 56%, 100% { transform: translateX(-100%); filter: none; } }
-@keyframes tr-whip-b { 0%, 36% { opacity: 1; transform: translateX(100%); filter: none; } 46% { filter: blur(3px); } 56%, 100% { opacity: 1; transform: none; filter: none; } }
-@keyframes tr-blur-a { 0%, 25% { filter: none; } 46% { filter: blur(5px); } 47%, 100% { filter: blur(5px); opacity: 0; } }
-@keyframes tr-blur-b { 0%, 45% { opacity: 0; filter: blur(5px); } 47% { opacity: 1; filter: blur(5px); } 70%, 100% { opacity: 1; filter: none; } }
-@keyframes tr-clock {
-  0%, 25% { opacity: 1; clip-path: polygon(50% 50%, 50% -60%, 50% -60%, 50% -60%, 50% -60%, 50% -60%); }
-  37% { opacity: 1; clip-path: polygon(50% 50%, 50% -60%, 160% -60%, 160% 50%, 160% 50%, 160% 50%); }
-  50% { opacity: 1; clip-path: polygon(50% 50%, 50% -60%, 160% -60%, 160% 160%, 50% 160%, 50% 160%); }
-  62% { opacity: 1; clip-path: polygon(50% 50%, 50% -60%, 160% -60%, 160% 160%, -60% 160%, -60% 50%); }
-  75%, 100% { opacity: 1; clip-path: polygon(50% 50%, 50% -60%, 160% -60%, 160% 160%, -60% 160%, -60% -60%); }
+.tr-demo:is([data-kind="fadeblack"], [data-kind="fadewhite"]) .tr-a { animation-name: trx-dip-out; }
+.tr-demo:is([data-kind="fadeblack"], [data-kind="fadewhite"]) .tr-b { animation-name: trx-dip-in; }
+@keyframes trx-dip-out { 0%, 30% { opacity: 1 } 48%, 100% { opacity: 0 } }
+@keyframes trx-dip-in { 0%, 52% { opacity: 0 } 70%, 100% { opacity: 1 } }
+/* Zoom: punch into the first shot, land on the next */
+.tr-demo[data-kind="zoomin"] .tr-a { animation-name: trx-zoom-a; }
+.tr-demo[data-kind="zoomin"] .tr-b { animation-name: trx-zoom-b; }
+@keyframes trx-zoom-a { 0%, 30% { transform: scale(1); filter: blur(0); opacity: 1 } 49% { transform: scale(2.6); filter: blur(4px); opacity: 1 } 50%, 100% { transform: scale(2.6); opacity: 0 } }
+@keyframes trx-zoom-b { 0%, 49.9% { opacity: 0; transform: scale(1.5); filter: blur(4px) } 50% { opacity: 1; transform: scale(1.5); filter: blur(4px) } 70%, 100% { opacity: 1; transform: scale(1); filter: blur(0) } }
+/* Whip: a fast push with motion blur */
+.tr-demo[data-kind="smoothleft"] .tr-a { animation-name: trx-whip-a; }
+.tr-demo[data-kind="smoothleft"] .tr-b { opacity: 1; animation-name: trx-whip-b; }
+@keyframes trx-whip-a { 0%, 36% { transform: translateX(0); filter: blur(0) } 47% { filter: blur(5px) } 52%, 100% { transform: translateX(-105%); filter: blur(5px) } }
+@keyframes trx-whip-b { 0%, 46% { transform: translateX(105%); filter: blur(5px) } 52% { filter: blur(5px) } 64%, 100% { transform: translateX(0); filter: blur(0) } }
+/* Blur: out of focus, back sharp on the next shot */
+.tr-demo[data-kind="hblur"] .tr-a { animation-name: trx-blur-a; }
+.tr-demo[data-kind="hblur"] .tr-b { animation-name: trx-blur-b; }
+@keyframes trx-blur-a { 0%, 28% { filter: blur(0); opacity: 1 } 48% { filter: blur(8px); opacity: 1 } 56%, 100% { filter: blur(8px); opacity: 0 } }
+@keyframes trx-blur-b { 0%, 44% { filter: blur(8px); opacity: 0 } 52% { filter: blur(8px); opacity: 1 } 72%, 100% { filter: blur(0); opacity: 1 } }
+/* Slides: the next shot pushes the first one out */
+.tr-demo:is([data-kind="slideleft"], [data-kind="slideright"], [data-kind="slideup"], [data-kind="slidedown"]) i { animation-timing-function: cubic-bezier(.65, 0, .35, 1); }
+.tr-demo:is([data-kind="slideleft"], [data-kind="slideright"], [data-kind="slideup"], [data-kind="slidedown"]) .tr-b { opacity: 1; }
+.tr-demo[data-kind="slideleft"] .tr-a { animation-name: trx-out-l; } .tr-demo[data-kind="slideleft"] .tr-b { animation-name: trx-in-l; }
+.tr-demo[data-kind="slideright"] .tr-a { animation-name: trx-out-r; } .tr-demo[data-kind="slideright"] .tr-b { animation-name: trx-in-r; }
+.tr-demo[data-kind="slideup"] .tr-a { animation-name: trx-out-u; } .tr-demo[data-kind="slideup"] .tr-b { animation-name: trx-in-u; }
+.tr-demo[data-kind="slidedown"] .tr-a { animation-name: trx-out-d; } .tr-demo[data-kind="slidedown"] .tr-b { animation-name: trx-in-d; }
+@keyframes trx-out-l { 0%, 32% { transform: translateX(0) } 68%, 100% { transform: translateX(-100%) } }
+@keyframes trx-in-l { 0%, 32% { transform: translateX(100%) } 68%, 100% { transform: translateX(0) } }
+@keyframes trx-out-r { 0%, 32% { transform: translateX(0) } 68%, 100% { transform: translateX(100%) } }
+@keyframes trx-in-r { 0%, 32% { transform: translateX(-100%) } 68%, 100% { transform: translateX(0) } }
+@keyframes trx-out-u { 0%, 32% { transform: translateY(0) } 68%, 100% { transform: translateY(-100%) } }
+@keyframes trx-in-u { 0%, 32% { transform: translateY(100%) } 68%, 100% { transform: translateY(0) } }
+@keyframes trx-out-d { 0%, 32% { transform: translateY(0) } 68%, 100% { transform: translateY(100%) } }
+@keyframes trx-in-d { 0%, 32% { transform: translateY(-100%) } 68%, 100% { transform: translateY(0) } }
+/* Older kinds (hidden from the panel; shown only when a clip already uses one) */
+.tr-demo[data-kind="wipe"] .tr-b { opacity: 1; animation-name: trx-wipe; }
+@keyframes trx-wipe { 0%, 30% { clip-path: inset(0 0 0 100%) } 70%, 100% { clip-path: inset(0 0 0 0) } }
+.tr-demo[data-kind="circleopen"] .tr-b { opacity: 1; animation-name: trx-iris; }
+@keyframes trx-iris { 0%, 30% { clip-path: circle(0% at 50% 50%) } 70%, 100% { clip-path: circle(75% at 50% 50%) } }
+.tr-demo[data-kind="radial"] .tr-b { opacity: 1; animation-name: trx-clock; }
+@keyframes trx-clock {
+  0%, 30% { clip-path: polygon(50% 50%, 50% -60%, 50% -60%, 50% -60%, 50% -60%, 50% -60%) }
+  40% { clip-path: polygon(50% 50%, 50% -60%, 160% -60%, 160% 50%, 160% 50%, 160% 50%) }
+  50% { clip-path: polygon(50% 50%, 50% -60%, 160% -60%, 160% 160%, 50% 160%, 50% 160%) }
+  60% { clip-path: polygon(50% 50%, 50% -60%, 160% -60%, 160% 160%, -60% 160%, -60% 50%) }
+  70%, 100% { clip-path: polygon(50% 50%, 50% -60%, 160% -60%, 160% 160%, -60% 160%, -60% -60%) }
 }
-@keyframes tr-pix-a { 0%, 25% { background-size: 2px 2px; opacity: 1; } 46% { background-size: 14px 14px; opacity: 1; } 47%, 100% { opacity: 0; } }
-@keyframes tr-pix-b { 0%, 45% { opacity: 0; background-size: 14px 14px; } 47% { opacity: 1; background-size: 14px 14px; } 70%, 100% { opacity: 1; background-size: 2px 2px; } }
-@keyframes tr-circle { 0%, 30% { opacity: 1; clip-path: circle(0% at 50% 50%); } 62%, 100% { opacity: 1; clip-path: circle(75% at 50% 50%); } }
-@media (prefers-reduced-motion: reduce) { .tr-tile .tr-demo i { animation: none !important; } }
+.tr-demo[data-kind="pixelize"] .tr-a { animation-name: trx-pix-a; animation-timing-function: steps(6, end); }
+.tr-demo[data-kind="pixelize"] .tr-b { animation-name: trx-pix-b; animation-timing-function: steps(6, end); }
+@keyframes trx-pix-a { 0%, 30% { filter: blur(0) contrast(1); opacity: 1 } 49% { filter: blur(3px) contrast(1.6); opacity: 1 } 50%, 100% { opacity: 0 } }
+@keyframes trx-pix-b { 0%, 49.9% { opacity: 0 } 50% { opacity: 1; filter: blur(3px) contrast(1.6) } 70%, 100% { opacity: 1; filter: blur(0) contrast(1) } }
+/* The new trending kinds (TransitionsPanel: fresh): a lime "New" badge; Glitch and Light leak use the effect layer */
+.tr-badge[data-new] { color: #0a0a0a; background: #c8ff00; }
+.tr-demo .tr-fx { opacity: 0; background: none; }
+/* Speed ramp: creeps in, rushes, lands slow */
+.tr-demo[data-kind="velocity"] .tr-a { animation-name: trx-vel-a; } .tr-demo[data-kind="velocity"] .tr-b { animation-name: trx-vel-b; }
+@keyframes trx-vel-a { 0% { transform: scale(1) } 38% { transform: scale(1.12); filter: blur(0); animation-timing-function: cubic-bezier(.9,0,1,.4) } 50% { transform: scale(2.2); filter: blur(6px); opacity: 1 } 50.1%, 100% { opacity: 0 } }
+@keyframes trx-vel-b { 0%, 49.9% { opacity: 0 } 50% { opacity: 1; transform: scale(.55); filter: blur(6px); animation-timing-function: cubic-bezier(0,.6,.1,1) } 62% { transform: scale(.98); filter: blur(0) } 100% { opacity: 1; transform: scale(1) } }
+/* Zoom out: pulls back and away, the next settles in */
+.tr-demo[data-kind="zoomout"] .tr-a { animation-name: trx-zo-a; } .tr-demo[data-kind="zoomout"] .tr-b { animation-name: trx-zo-b; }
+@keyframes trx-zo-a { 0%, 30% { transform: scale(1); filter: blur(0); opacity: 1; animation-timing-function: cubic-bezier(.6,0,1,.8) } 50% { transform: scale(.35); filter: blur(4px); opacity: 1 } 50.1%, 100% { opacity: 0 } }
+@keyframes trx-zo-b { 0%, 49.9% { opacity: 0 } 50% { opacity: 1; transform: scale(1.9); filter: blur(4px); animation-timing-function: cubic-bezier(0,.5,.3,1) } 70%, 100% { opacity: 1; transform: scale(1); filter: blur(0) } }
+/* Swipe up: the feed flick, with motion blur */
+.tr-demo[data-kind="swipeup"] .tr-b { opacity: 1; }
+.tr-demo[data-kind="swipeup"] i { animation-timing-function: cubic-bezier(.7,0,.3,1); }
+.tr-demo[data-kind="swipeup"] .tr-a { animation-name: trx-sw-a; } .tr-demo[data-kind="swipeup"] .tr-b { animation-name: trx-sw-b; }
+@keyframes trx-sw-a { 0%, 36% { transform: translateY(0); filter: blur(0) } 50% { filter: blur(5px) } 62%, 100% { transform: translateY(-110%); filter: blur(0) } }
+@keyframes trx-sw-b { 0%, 36% { transform: translateY(110%); filter: blur(0) } 50% { filter: blur(5px) } 62%, 100% { transform: translateY(0); filter: blur(0) } }
+/* Shake: a camera jolt hides the cut */
+.tr-demo[data-kind="shake"] .tr-a { animation-name: trx-sh-a; } .tr-demo[data-kind="shake"] .tr-b { animation-name: trx-sh-b; }
+@keyframes trx-sh-a { 0%, 36% { transform: none; filter: none; opacity: 1 } 39% { transform: translate(-4%, 2%) rotate(-2deg) scale(1.08) } 42% { transform: translate(5%, -3%) rotate(2deg) scale(1.12); filter: blur(2px) } 45% { transform: translate(-6%, 3%) rotate(-3deg) scale(1.15) } 48% { transform: translate(6%, -2%) rotate(3deg) scale(1.18); filter: blur(3px); opacity: 1 } 49.9%, 100% { opacity: 0 } }
+@keyframes trx-sh-b { 0%, 49.9% { opacity: 0 } 50% { opacity: 1; transform: translate(-6%, 3%) rotate(-3deg) scale(1.18); filter: blur(3px) } 53% { transform: translate(5%, -2%) rotate(2deg) scale(1.12) } 56% { transform: translate(-3%, 2%) rotate(-1deg) scale(1.06); filter: blur(1px) } 60% { transform: translate(1%, -1%) scale(1.02); filter: none } 64%, 100% { opacity: 1; transform: none } }
+/* Glitch: tears into slices and RGB-splits */
+.tr-demo[data-kind="glitch"] i { animation-timing-function: steps(1, end); }
+.tr-demo[data-kind="glitch"] .tr-a { animation-name: trx-gl-a; } .tr-demo[data-kind="glitch"] .tr-b { animation-name: trx-gl-b; }
+.tr-demo[data-kind="glitch"] .tr-fx { background: repeating-linear-gradient(0deg, rgba(255,0,80,.35) 0 2px, transparent 2px 5px, rgba(0,255,230,.3) 5px 7px, transparent 7px 10px); mix-blend-mode: screen; animation-name: trx-gl-fx; }
+@keyframes trx-gl-a { 0%, 38% { transform: none; filter: none; clip-path: inset(0); opacity: 1 } 40% { transform: translateX(-6%); filter: hue-rotate(90deg) saturate(2); clip-path: inset(10% 0 55% 0) } 42% { transform: translateX(5%); filter: none; clip-path: inset(45% 0 20% 0) } 44% { transform: translateX(-3%) skewX(8deg); clip-path: inset(0 0 70% 0) } 46% { transform: translateX(7%); clip-path: inset(30% 0 30% 0) } 48%, 100% { opacity: 0 } }
+@keyframes trx-gl-b { 0%, 47% { opacity: 0 } 48% { opacity: 1; transform: translateX(6%); filter: hue-rotate(120deg) saturate(2); clip-path: inset(20% 0 40% 0) } 50% { transform: translateX(-5%); filter: none; clip-path: inset(0 0 50% 0) } 52% { transform: translateX(4%) skewX(-8deg); clip-path: inset(50% 0 0 0) } 54% { transform: translateX(-2%); clip-path: inset(10% 0 10% 0) } 56%, 100% { opacity: 1; transform: none; filter: none; clip-path: inset(0) } }
+@keyframes trx-gl-fx { 0%, 38% { opacity: 0 } 40% { opacity: 1 } 44% { opacity: .4 } 48% { opacity: 1 } 52% { opacity: .5 } 56%, 100% { opacity: 0 } }
+/* Light leak: a warm light sweeps across and hides the cut */
+.tr-demo[data-kind="flare"] .tr-b { animation-name: trx-cut; }
+.tr-demo[data-kind="flare"] .tr-fx { mix-blend-mode: screen; background: linear-gradient(100deg, transparent 20%, rgba(255,170,60,.85) 45%, rgba(255,240,200,1) 50%, rgba(255,120,60,.8) 56%, transparent 75%); background-size: 300% 100%; animation-name: trx-fl-fx; animation-timing-function: cubic-bezier(.4,0,.6,1); }
+@keyframes trx-fl-fx { 0%, 30% { background-position: 100% 0; opacity: 0 } 36% { opacity: 1 } 64% { opacity: 1 } 70%, 100% { background-position: 0% 0; opacity: 0 } }
+/* Spin: spins away, the next spins in */
+.tr-demo[data-kind="spin"] .tr-a { animation-name: trx-sp-a; } .tr-demo[data-kind="spin"] .tr-b { animation-name: trx-sp-b; }
+@keyframes trx-sp-a { 0%, 32% { transform: none; filter: blur(0); opacity: 1; animation-timing-function: cubic-bezier(.6,0,1,1) } 50% { transform: rotate(200deg) scale(1.6); filter: blur(5px); opacity: 1 } 50.1%, 100% { opacity: 0 } }
+@keyframes trx-sp-b { 0%, 49.9% { opacity: 0 } 50% { opacity: 1; transform: rotate(-160deg) scale(1.6); filter: blur(5px); animation-timing-function: cubic-bezier(0,0,.4,1) } 68%, 100% { opacity: 1; transform: none; filter: blur(0) } }
+/* Warp: stretches sideways and snaps into the next */
+.tr-demo[data-kind="warp"] .tr-a { animation-name: trx-wp-a; } .tr-demo[data-kind="warp"] .tr-b { animation-name: trx-wp-b; }
+@keyframes trx-wp-a { 0%, 32% { transform: none; filter: none; opacity: 1; animation-timing-function: cubic-bezier(.7,0,1,.6) } 50% { transform: scale(3.2, .8) skewX(-12deg); filter: blur(3px) brightness(1.3); opacity: 1 } 50.1%, 100% { opacity: 0 } }
+@keyframes trx-wp-b { 0%, 49.9% { opacity: 0 } 50% { opacity: 1; transform: scale(3.2, .8) skewX(12deg); filter: blur(3px) brightness(1.3); animation-timing-function: cubic-bezier(0,.4,.3,1) } 68%, 100% { opacity: 1; transform: none; filter: none } }
+/* (their resting moments: a readable frame, not a blank or blurred one) */
+.tr-demo:is([data-kind="velocity"], [data-kind="zoomout"], [data-kind="spin"], [data-kind="warp"]) { --rest: -0.42; }
+.tr-demo[data-kind="swipeup"] { --rest: -0.39; }
+.tr-demo[data-kind="shake"] { --rest: -0.395; }
+.tr-demo[data-kind="glitch"] { --rest: -0.41; }
+.tr-demo[data-kind="flare"] { --rest: -0.45; }
+@media (prefers-reduced-motion: reduce) { .tr-tile .tr-demo i { animation-play-state: paused !important; animation-delay: calc(var(--trc) * var(--rest, -0.5)) !important; } }
 
 /* Colour swatches */
 .cap-swatch {

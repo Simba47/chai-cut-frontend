@@ -741,6 +741,28 @@ function drawSmeared(ctx: CanvasRenderingContext2D, src: HTMLCanvasElement, box:
   ctx.imageSmoothingEnabled = true
   ctx.drawImage(cur, 0, 0, curW, curH, 0, 0, W, H)
 }
+/** As drawSmeared, up and down (Swipe up: the export's avgblur=sizeY=40) */
+function drawSmearedV(ctx: CanvasRenderingContext2D, src: HTMLCanvasElement, box: number) {
+  const W = ctx.canvas.width, H = ctx.canvas.height
+  const target = Math.max(2, Math.round(H / Math.max(1, box)))
+  if (target >= H) { ctx.drawImage(src, 0, 0, W, H); return }
+  const w = Math.max(1, Math.ceil(W / 2))
+  let cur: CanvasImageSource = src, curW = W, curH = H, i = 8
+  while (curH > target) {
+    const h = Math.max(target, Math.ceil(curH / 2))
+    if (!smearTmp[i]) smearTmp[i] = document.createElement('canvas')
+    const c = smearTmp[i++]
+    if (c.width !== w) c.width = w
+    if (c.height !== h) c.height = h
+    const cx = c.getContext('2d')!
+    cx.imageSmoothingEnabled = true
+    cx.drawImage(cur, 0, 0, curW, curH, 0, 0, w, h)
+    cur = c; curW = w; curH = h
+  }
+  ctx.imageSmoothingEnabled = true
+  ctx.drawImage(cur, 0, 0, curW, curH, 0, 0, W, H)
+}
+
 /** A full-size canvas to put a transition frame together before smearing it */
 let mixTmp: HTMLCanvasElement | null = null
 function mixCanvas(W: number, H: number) {
@@ -835,6 +857,90 @@ function drawTransition(ctx: CanvasRenderingContext2D, a: HTMLCanvasElement, b: 
       t.drawImage(b, 0, 0, tmp.width, tmp.height)
       ctx.imageSmoothingEnabled = q < 0.05
       ctx.drawImage(tmp, 0, 0, W, H)
+      break
+    }
+    // ── The trending ones (render.py _CUSTOM_TRANSITIONS: the same moves, so the preview matches) ──
+    case 'swipeup': {
+      // Swipe up: a slide up, smeared up and down over its middle 60%
+      const smear = e > 0.2 && e < 0.8
+      const m = smear ? mixCanvas(W, H) : null
+      const t = m ? m.getContext('2d')! : ctx
+      t.drawImage(a, 0, -e * H, W, H)
+      t.drawImage(b, 0, (1 - e) * H, W, H)
+      if (m) drawSmearedV(ctx, m, H * 40 / 1920)
+      break
+    }
+    case 'velocity': case 'zoomout': case 'spin': case 'warp': case 'shake': {
+      // Each changes the first picture up to the middle, then lands the second (on black)
+      const ss = (x: number) => { const t = Math.max(0, Math.min(1, x)); return t * t * (3 - 2 * t) }
+      const first = e < 0.5
+      const u = first ? e / 0.5 : (e - 0.5) / 0.5
+      const img = first ? a : b
+      ctx.fillStyle = '#000'
+      ctx.fillRect(0, 0, W, H)
+      ctx.translate(W / 2, H / 2)
+      if (type === 'velocity') {
+        const s = first ? 1 + 1.2 * u * u * u : 0.55 + 0.45 * (1 - (1 - u) ** 3)
+        ctx.scale(s, s)
+      } else if (type === 'zoomout') {
+        const s = first ? 1 - 0.65 * ss(u) : 1.9 - 0.9 * ss(u)
+        ctx.scale(s, s)
+      } else if (type === 'spin') {
+        const k = ss(u)
+        ctx.rotate(first ? 3.4907 * k : -2.7925 * (1 - k))
+        const s = first ? 1 + 0.6 * k : 1.6 - 0.6 * k
+        ctx.scale(s, s)
+      } else if (type === 'warp') {
+        const k = first ? ss(u) : 1 - ss(u)
+        const sx = 1 + 2.2 * k, sy = 1 - 0.2 * k, sk = (first ? -0.25 : 0.25) * k
+        ctx.transform(sx, 0, sk * sy, sy, 0, 0)
+      } else {
+        // shake: a jolt of up to 5% of the width, framed 12% in so no edge shows
+        const amp = Math.sin(Math.PI * e) * 0.05 * W
+        ctx.scale(1.12, 1.12)
+        ctx.translate(-amp * Math.sin(e * 61), -amp * 0.6 * Math.cos(e * 47))
+      }
+      ctx.drawImage(img, -W / 2, -H / 2, W, H)
+      if (type === 'warp') {
+        // (brighter while stretched)
+        const k = first ? ss(u) : 1 - ss(u)
+        ctx.setTransform(1, 0, 0, 1, 0, 0)
+        ctx.globalCompositeOperation = 'lighter'
+        ctx.globalAlpha = 0.2 * k
+        ctx.fillStyle = '#fff'
+        ctx.fillRect(0, 0, W, H)
+      }
+      break
+    }
+    case 'glitch': {
+      // Ten bands torn sideways by a changing amount, between 30% and 70% of the way
+      const img = e < 0.5 ? a : b
+      const on = e >= 0.3 && e <= 0.7 ? Math.sin(Math.PI * Math.max(0, Math.min(1, (e - 0.3) / 0.4))) : 0
+      if (!on) { ctx.drawImage(img, 0, 0, W, H); break }
+      const step = Math.floor(e * 24)
+      const bandH = H / 10, sw = img.width, sh = img.height
+      for (let i = 0; i < 10; i++) {
+        const r = Math.sin(i * 12.9898 + step * 78.233) * 43758.5453
+        const off = on * (r - Math.floor(r) - 0.5) * 0.16 * W
+        const y = i * bandH
+        ctx.drawImage(img, 0, (y / H) * sh, sw, (bandH / H) * sh, -off, y, W, bandH + 1)
+      }
+      break
+    }
+    case 'flare': {
+      // Light leak: the cut at the middle, under a warm band of light sweeping across
+      ctx.drawImage(e < 0.5 ? a : b, 0, 0, W, H)
+      const c = W * (1.3 - 1.6 * e), sig = 0.14 * W, k = Math.sin(Math.PI * e)
+      const g = ctx.createLinearGradient(c - 2.2 * sig, 0, c + 2.2 * sig, 0)
+      g.addColorStop(0, 'rgba(255,170,90,0)')
+      g.addColorStop(0.35, 'rgba(255,170,90,0.55)')
+      g.addColorStop(0.5, 'rgba(255,236,200,1)')
+      g.addColorStop(0.65, 'rgba(255,150,80,0.55)')
+      g.addColorStop(1, 'rgba(255,150,80,0)')
+      ctx.globalCompositeOperation = 'lighter'
+      ctx.globalAlpha = 0.85 * k
+      ctx.fillStyle = g
+      ctx.fillRect(0, 0, W, H)
       break
     }
     case 'wipe': case 'wipeleft':
