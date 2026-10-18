@@ -6,14 +6,15 @@ import { apiError } from '@/lib/api-error'
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 
-// Stock photos (Media ▸ Search photos): ?q=mountains&page=1
+// Stock photos (Media ▸ Search photos): ?q=mountains&page=1&source=pixabay|pexels|wikimedia
+// (no q: just which libraries can be searched)
 export async function GET(req: NextRequest) {
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   const q = req.nextUrl.searchParams.get('q') ?? ''
   const page = Math.max(1, Math.min(10, Number(req.nextUrl.searchParams.get('page')) || 1))
   try {
-    return NextResponse.json(await searchPhotos(q, page))
+    return NextResponse.json(await searchPhotos(q, page, req.nextUrl.searchParams.get('source') ?? undefined))
   } catch (err) {
     return apiError(err)
   }

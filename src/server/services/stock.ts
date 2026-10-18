@@ -169,28 +169,108 @@ export async function importStock(userId: string, item: { ref: string; url: stri
 // The same libraries and keys as the videos: Pexels when PEXELS_API_KEY is set, otherwise Pixabay.
 // Free to use in the user's videos (their licences); never a web image search, whose results come
 // with no right to use them.
+// Wikimedia Commons is the other library (no key): famous people, places, history — what stock
+// libraries don't carry. Every file there is free to use, commercially too, but most ask for a
+// credit (the author and the licence), so each of its photos carries its credit line.
+
+export type PhotoSource = 'pixabay' | 'pexels' | 'wikimedia'
 
 export interface StockPhoto {
-  ref: string            // "pixabay:<id>" / "pexels:<id>"
-  provider: 'pixabay' | 'pexels'
+  ref: string            // "pixabay:<id>" / "pexels:<id>" / "wikimedia:<page id>"
+  provider: PhotoSource
   title: string
   thumb: string          // small, for the grid
   url: string            // the picture added to the clip (about 1280 px on its long side)
   width: number; height: number
+  /** Wikimedia: "Author · CC BY-SA 4.0 · Wikimedia Commons", whether the licence asks for it, and the file's page */
+  credit?: string
+  credit_required?: boolean
+  page?: string
 }
 
 const photoCache = new Map<string, { at: number; items: StockPhoto[] }>()
 
-export async function searchPhotos(query: string, page = 1): Promise<{ provider: string | null; items: StockPhoto[] }> {
+/** The photo libraries that can be searched, in the order they're offered: the stock one whose key is set, then Wikimedia Commons */
+export function photoSources(): PhotoSource[] {
+  const stock = stockProvider()
+  return stock ? [stock, 'wikimedia'] : ['wikimedia']
+}
+
+export async function searchPhotos(query: string, page = 1, source?: string): Promise<{ provider: PhotoSource; items: StockPhoto[]; sources: PhotoSource[] }> {
   const q = query.trim().slice(0, 100)
-  const provider = stockProvider()
-  if (!q || !provider) return { provider, items: [] }
+  const sources = photoSources()
+  const provider = sources.find(s => s === source) ?? sources[0]
+  if (!q) return { provider, items: [], sources }
   const key = `${provider}|${q.toLowerCase()}|${page}`
   const hit = photoCache.get(key)
-  if (hit && Date.now() - hit.at < 24 * 3600_000) return { provider, items: hit.items }
-  const items = provider === 'pexels' ? await searchPexelsPhotos(q, page) : await searchPixabayPhotos(q, page)
+  if (hit && Date.now() - hit.at < 24 * 3600_000) return { provider, items: hit.items, sources }
+  const items = provider === 'wikimedia' ? await searchWikimediaPhotos(q, page)
+    : provider === 'pexels' ? await searchPexelsPhotos(q, page) : await searchPixabayPhotos(q, page)
   photoCache.set(key, { at: Date.now(), items })
-  return { provider, items }
+  return { provider, items, sources }
+}
+
+// ── Wikimedia Commons ──
+// Its API needs no key, but every request has to say who is asking (a request without a
+// User-Agent is refused), and pictures are only served in its standard widths (500, 1280 … px).
+
+const WIKIMEDIA_API = 'https://commons.wikimedia.org/w/api.php'
+const WIKIMEDIA_HEADERS = { 'User-Agent': `Shortcut/1.0 (reel editor photo search${process.env.NEXTAUTH_URL ? `; ${process.env.NEXTAUTH_URL}` : ''})` }
+/** The picture added to a clip is this wide at most; the grid shows this width */
+const WIKIMEDIA_W = 1280, WIKIMEDIA_THUMB_W = 500
+/** A picture smaller than this on its long side is too small to put in a video */
+const WIKIMEDIA_MIN_PX = 480
+const WIKIMEDIA_INFO = {
+  prop: 'imageinfo', iiprop: 'url|size|mime|extmetadata', iiurlwidth: String(WIKIMEDIA_W),
+  iiextmetadatafilter: 'LicenseShortName|Artist|AttributionRequired', format: 'json', formatversion: '2',
+}
+interface WikimediaPage {
+  pageid: number; title: string; index?: number
+  imageinfo?: Array<{
+    url: string; descriptionurl?: string; thumburl?: string; thumbwidth?: number; thumbheight?: number
+    width: number; height: number; mime: string
+    extmetadata?: Record<string, { value?: string } | undefined>
+  }>
+}
+
+/** Text of a bit of the file page's HTML (the author is a link, often) */
+const plainText = (html: string) => html.replace(/<[^>]*>/g, ' ')
+  .replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&#0?39;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&nbsp;/g, ' ')
+  .replace(/\s+/g, ' ').trim()
+
+function wikimediaPhoto(p: WikimediaPage): StockPhoto | null {
+  const ii = p.imageinfo?.[0]
+  if (!ii || !/^image\/(jpeg|png)$/.test(ii.mime) || Math.max(ii.width, ii.height) < WIKIMEDIA_MIN_PX) return null
+  // Narrower than asked for: the file itself (the API still reports the width asked for)
+  const scaled = ii.width > WIKIMEDIA_W && !!ii.thumburl && !!ii.thumbwidth && !!ii.thumbheight
+  const url = scaled ? ii.thumburl! : ii.url
+  const meta = (k: string) => plainText(ii.extmetadata?.[k]?.value ?? '')
+  const licence = meta('LicenseShortName') || 'Free licence'
+  const author = meta('Artist').slice(0, 80)
+  return {
+    ref: `wikimedia:${p.pageid}`, provider: 'wikimedia',
+    title: p.title.replace(/^File:/, '').replace(/\.[A-Za-z0-9]+$/, '').replace(/_/g, ' ').slice(0, 120),
+    thumb: scaled ? url.replace(`/${WIKIMEDIA_W}px-`, `/${WIKIMEDIA_THUMB_W}px-`) : url,
+    url, width: scaled ? ii.thumbwidth! : ii.width, height: scaled ? ii.thumbheight! : ii.height,
+    credit: [author, licence, 'Wikimedia Commons'].filter(Boolean).join(' · '),
+    credit_required: meta('AttributionRequired') !== 'false',
+    page: ii.descriptionurl,
+  }
+}
+
+async function wikimediaPages(params: Record<string, string>): Promise<WikimediaPage[]> {
+  const res = await fetch(`${WIKIMEDIA_API}?${new URLSearchParams({ action: 'query', ...WIKIMEDIA_INFO, ...params })}`, { headers: WIKIMEDIA_HEADERS })
+  if (!res.ok) throw Object.assign(new Error('Photo search is not available right now'), { status: 502 })
+  const data = await res.json() as { query?: { pages?: WikimediaPage[] } }
+  return data.query?.pages ?? []
+}
+
+async function searchWikimediaPhotos(q: string, page: number): Promise<StockPhoto[]> {
+  // Pictures only (no PDFs, sounds or videos), in the search's own order
+  const pages = await wikimediaPages({
+    generator: 'search', gsrsearch: `${q} filetype:bitmap`, gsrnamespace: '6', gsrlimit: '40', gsroffset: String((page - 1) * 40),
+  })
+  return pages.sort((a, b) => (a.index ?? 0) - (b.index ?? 0)).flatMap(p => wikimediaPhoto(p) ?? []).slice(0, 30)
 }
 
 async function searchPixabayPhotos(q: string, page: number): Promise<StockPhoto[]> {
@@ -230,27 +310,39 @@ async function searchPexelsPhotos(q: string, page: number): Promise<StockPhoto[]
  * Only pictures from the stock libraries' own hosts are fetched (their terms: keep a copy, don't
  * link to theirs).
  */
-export async function importPhoto(userId: string, item: { ref: string; url: string; title?: string }): Promise<{ storage_path: string; preview_url: string }> {
-  if (!/^(pixabay|pexels):\d+$/.test(item.ref)) throw Object.assign(new Error('Unknown stock photo'), { status: 400 })
+export async function importPhoto(userId: string, item: { ref: string; url: string; title?: string }): Promise<{ storage_path: string; preview_url: string; credit?: string; credit_required?: boolean }> {
+  if (!/^(pixabay|pexels|wikimedia):\d+$/.test(item.ref)) throw Object.assign(new Error('Unknown stock photo'), { status: 400 })
+  // Wikimedia: the picture and its credit are read from Wikimedia itself, by the file's id — never from what the browser sent
+  const wiki = item.ref.startsWith('wikimedia:')
+    ? (await wikimediaPages({ pageids: item.ref.slice('wikimedia:'.length) })).flatMap(p => wikimediaPhoto(p) ?? [])[0]
+    : null
+  if (item.ref.startsWith('wikimedia:') && !wiki) throw Object.assign(new Error('That photo can’t be found on Wikimedia Commons any more'), { status: 404 })
+  const url = wiki?.url ?? item.url, title = wiki?.title ?? item.title
   let host = ''
-  try { host = new URL(item.url).hostname } catch { /* invalid */ }
-  if (!/(^|\.)(pixabay\.com|pexels\.com)$/.test(host)) throw Object.assign(new Error('Unknown stock photo'), { status: 400 })
+  try { host = new URL(url).hostname } catch { /* invalid */ }
+  if (!(wiki ? /^(upload|thumb)\.wikimedia\.org$/ : /(^|\.)(pixabay\.com|pexels\.com)$/).test(host)) throw Object.assign(new Error('Unknown stock photo'), { status: 400 })
 
-  const provider = item.ref.startsWith('pixabay') ? 'Pixabay' : 'Pexels'
-  const name = safeName(`${provider} ${(item.title ?? 'photo').split(',').slice(0, 3).join(' ')}`).slice(0, 60) || provider
-  const storagePath = `overlays/${userId}/${item.ref.replace(':', '-')}--${name}.jpg`
+  const provider = wiki ? 'Wikimedia' : item.ref.startsWith('pixabay') ? 'Pixabay' : 'Pexels'
+  const name = safeName(`${provider} ${(title ?? 'photo').split(',').slice(0, 3).join(' ')}`).slice(0, 60) || provider
+  const ext = wiki && /\.png$/i.test(new URL(url).pathname) ? 'png' : 'jpg'
+  const storagePath = `overlays/${userId}/${item.ref.replace(':', '-')}--${name}.${ext}`
+  const credit = wiki ? { credit: wiki.credit, credit_required: wiki.credit_required } : {}
   const sign = () => getSignedUrl(r2, new GetObjectCommand({ Bucket: R2_BUCKET, Key: storagePath }), { expiresIn: 60 * 60 })
   const saved = await r2.send(new HeadObjectCommand({ Bucket: R2_BUCKET, Key: storagePath })).then(() => true, () => false)
-  if (saved) return { storage_path: storagePath, preview_url: await sign() }
+  if (saved) return { storage_path: storagePath, preview_url: await sign(), ...credit }
 
-  const res = await fetch(item.url)
+  const res = await fetch(url, wiki ? { headers: WIKIMEDIA_HEADERS } : undefined)
   if (!res.ok) throw Object.assign(new Error('Could not download that photo'), { status: 502 })
   const type = res.headers.get('content-type') ?? ''
   if (!type.startsWith('image/')) throw Object.assign(new Error('That is not a photo'), { status: 400 })
   const body = Buffer.from(await res.arrayBuffer())
   if (body.length > 15 * 1024 * 1024) throw Object.assign(new Error('That photo is too large'), { status: 400 })
-  await r2.send(new PutObjectCommand({ Bucket: R2_BUCKET, Key: storagePath, Body: body, ContentType: type }))
-  return { storage_path: storagePath, preview_url: await sign() }
+  await r2.send(new PutObjectCommand({
+    Bucket: R2_BUCKET, Key: storagePath, Body: body, ContentType: type,
+    // The credit stays with the saved file (plain letters only in a file's notes, so it is encoded)
+    ...(wiki ? { Metadata: { source: 'wikimedia-commons', page: encodeURI(wiki.page ?? '').slice(0, 500), credit: encodeURIComponent(wiki.credit ?? '').slice(0, 900) } } : {}),
+  }))
+  return { storage_path: storagePath, preview_url: await sign(), ...credit }
 }
 
 /** 4–6 short English stock-video searches that fit what is said in the clip (Gemini) */
