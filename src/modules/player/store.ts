@@ -20,11 +20,29 @@ export const liveTime = {
   get: () => liveMs,
   subscribe(fn: () => void) { listeners.add(fn); return () => { listeners.delete(fn) } },
 }
-/** The exact playhead time, redrawing the component that uses it every frame (off: no updates) */
-export function useLiveTimeMs(on = true): number {
-  const subscribe = useCallback((fn: () => void) => (on ? liveTime.subscribe(fn) : () => {}), [on])
+/**
+ * The exact playhead time, redrawing the component that uses it every frame (off: no updates).
+ * `everyMs`: at most one redraw in that long (the last change always comes through) — for a big
+ * component: a part played faster shows up to a frame per screen refresh, and redrawing it on
+ * every one of those took the page's whole time (the picture stuttered)
+ */
+export function useLiveTimeMs(on = true, everyMs = 0): number {
+  const subscribe = useCallback((fn: () => void) => {
+    if (!on) return () => {}
+    if (!everyMs) return liveTime.subscribe(fn)
+    let last = 0
+    let timer: ReturnType<typeof setTimeout> | null = null
+    const off = liveTime.subscribe(() => {
+      const since = performance.now() - last
+      if (since >= everyMs) { last = performance.now(); fn(); return }
+      if (!timer) timer = setTimeout(() => { timer = null; last = performance.now(); fn() }, everyMs - since)
+    })
+    return () => { off(); if (timer) clearTimeout(timer) }
+  }, [on, everyMs])
   return useSyncExternalStore(subscribe, liveTime.get, liveTime.get)
 }
+/** How often the preview's big components follow the live time: ~30 times a second, as a 30 fps video at 1× */
+export const LIVE_REDRAW_MS = 33
 
 interface PlayerState {
   currentTimeMs: number   // clip-relative (0 = clip start)

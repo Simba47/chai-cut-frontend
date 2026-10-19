@@ -62,6 +62,7 @@ import { getBoxPositionAtLerp } from '@/lib/interpolation'
 import { SubjectsPanel, type SubjectItem, type AnglesView } from '@/components/editor/SubjectsPanel'
 import { angleRows, angleAt, type Angle } from '@/modules/editor/angles'
 import type { SegmentLocal, CropBoxLocal, FrameLayout, FrameLane, FrameItem, TransitionType } from '@chai-cut/shared'
+import { SPEED_MIN, SPEED_MAX } from '@chai-cut/shared'
 import { TransitionsPanel, TRANSITION_DEFAULT_MS, TRANSITION_KINDS, playedTransitionMs, type TransitionJoin } from '@/components/editor/TransitionsPanel'
 
 type Tool = 'format' | 'subjects' | 'frames' | 'captions' | 'transitions' | 'text' | 'media' | 'music' | 'cleanup' | 'post' | 'brand'
@@ -2695,24 +2696,57 @@ export function EditorShell({
    * the video and lasts that ÷ speed on the timeline; everything after it moves up or later. Its
    * views keep their places in it. One undo step. A clip with removed parts becomes pieces first.
    */
-  const pendingSpeedRef = useRef<{ segId: string; speed: number; smooth?: boolean; pitch?: boolean } | null>(null)
-  function setPartSpeed(segId: string, speedIn: number, opts: { smooth?: boolean; pitch?: boolean } = {}) {
+  const pendingSpeedRef = useRef<(() => void) | null>(null)
+  /**
+   * How much of the video the part last given a speed plays, exactly — its length on the timeline is
+   * rounded to the ms each time, so working it out again from that would drift a little with every
+   * change (the slider changes it several times a second while dragged). Good while the part is as
+   * that change left it.
+   */
+  const speedBaseRef = useRef<{ id: string; videoMs: number; len: number; speed: number } | null>(null)
+  /** How much of the main video a part plays (ms) */
+  function partVideoMs(seg: SegmentLocal) {
+    const b = speedBaseRef.current, len = seg.end_ms - seg.start_ms
+    return b && b.id === seg.id && b.len === len && b.speed === speedOf(seg) ? b.videoMs : len * speedOf(seg)
+  }
+  /** A part of the main video whose speed can change (not a video on top, an inserted video or a frame layout) */
+  const speedable = (s: SegmentLocal) => !isShot(s, mainVideoId) && !isInsert(s, mainVideoId) && !isFrameLayout(s.layout)
+  /**
+   * How slow and how fast a part can play: no shorter than the shortest part (MIN_FORMAT_MS), and
+   * the clip no longer than its limit (`clipMs`: the clip's length now — with other parts changed
+   * in the same go, as it will be). Each with why, for the Speed panel.
+   */
+  function speedLimits(seg: SegmentLocal, clipMs = clipLengthMs) {
+    const len = seg.end_ms - seg.start_ms
+    const videoMs = partVideoMs(seg)
+    const max = Math.max(SPEED_MIN, Math.min(SPEED_MAX, Math.floor((videoMs / MIN_FORMAT_MS) * 100) / 100))
+    const room = len + Math.max(0, MAX_CLIP_MS - clipMs)
+    const min = Math.min(max, Math.max(SPEED_MIN, Math.ceil((videoMs / room) * 100) / 100))
+    return {
+      min, max,
+      maxNote: `Up to ${max}× here: the part can\u2019t get shorter than ${MIN_FORMAT_MS / 1000} s`,
+      minNote: `Down to ${min}× here: the clip can\u2019t be longer than ${Math.round(MAX_CLIP_MS / 60000)} minutes`,
+    }
+  }
+  function setPartSpeed(segId: string, speedIn: number, opts: { smooth?: boolean; pitch?: boolean } = {}, clipMs?: number) {
     const editor0 = useEditorStore.getState()
     const seg0 = editor0.segments.find(s => s.id === segId)
-    if (!seg0 || isShot(seg0, mainVideoId) || isInsert(seg0, mainVideoId) || isFrameLayout(seg0.layout)) return
+    if (!seg0 || !speedable(seg0)) return
     if (blocked({ kind: 'section', id: segId })) return
     if (audioTracks.some(isMainAudio)) { notifyLocked('The clip\u2019s sound is detached: attach it again (Music) to change a part\u2019s speed'); return }
-    if (trimmed) { pendingSpeedRef.current = { segId, speed: speedIn, ...opts }; trimsToPieces(); return }
+    if (trimmed) { pendingSpeedRef.current = () => setPartSpeed(segId, speedIn, opts); trimsToPieces(); return }
     pause()
-    const speed = Math.max(0.25, Math.min(4, Math.round(speedIn * 100) / 100))
     const media = useMediaStore.getState()
     const editor = useEditorStore.getState()
     const seg = editor.segments.find(s => s.id === segId)!
-    const old = speedOf(seg)
+    const lim = speedLimits(seg, clipMs)
+    const speed = Math.max(lim.min, Math.min(lim.max, Math.round(speedIn * 100) / 100))
     const len = seg.end_ms - seg.start_ms
-    const newLen = Math.max(MIN_FORMAT_MS, Math.round((len * old) / speed))
+    const videoMs = partVideoMs(seg)
+    const newLen = Math.max(MIN_FORMAT_MS, Math.round(videoMs / speed))
     const diff = newLen - len
-    if (diff > 0 && clipLengthMs + diff > MAX_CLIP_MS) { notifyLocked('The clip would be longer than 5 minutes'); return }
+    if (diff > 0 && (clipMs ?? clipLengthMs) + diff > MAX_CLIP_MS) { notifyLocked('The clip would be longer than 5 minutes'); return }
+    speedBaseRef.current = { id: segId, videoMs, len: newLen, speed }
     let state: TimedState = {
       segments: editor.segments, keyframes: editor.keyframes,
       overlays: media.overlays, textOverlays: media.textOverlays, audioTracks: media.audioTracks, transitions: media.transitions,
@@ -2768,12 +2802,31 @@ export function EditorShell({
       pitch: (flags.pitch ?? !!seg.pitch) && sp !== 1 ? true : undefined,
     })
   }
+  /**
+   * One speed (with its smooth slow-mo and pitch) for every part of the main video that can take it.
+   * Each part as far as it can go (its own limits); one undo step.
+   */
+  function setAllPartsSpeed(speedIn: number, opts: { smooth?: boolean; pitch?: boolean }) {
+    if (audioTracks.some(isMainAudio)) { notifyLocked('The clip\u2019s sound is detached: attach it again (Music) to change a part\u2019s speed'); return }
+    if (trimmed) { pendingSpeedRef.current = () => setAllPartsSpeed(speedIn, opts); trimsToPieces(); return }
+    const ids = useEditorStore.getState().segments.filter(s => speedable(s) && !isLocked({ kind: 'section', id: s.id })).map(s => s.id)
+    // (the clip's length as the parts change one after another: each part's limit counts the ones before)
+    let clipMs = clipLengthMs
+    for (const id of ids) {
+      const before = useEditorStore.getState().segments.find(s => s.id === id)
+      if (!before) continue
+      const was = before.end_ms - before.start_ms
+      setPartSpeed(id, speedIn, opts, clipMs)
+      const after = useEditorStore.getState().segments.find(s => s.id === id)
+      if (after) clipMs += (after.end_ms - after.start_ms) - was
+    }
+  }
   // (a clip with removed parts became pieces: now its speed)
   useEffect(() => {
     const p = pendingSpeedRef.current
     if (!p || trimmed) return
     pendingSpeedRef.current = null
-    setPartSpeed(p.segId, p.speed, { smooth: p.smooth, pitch: p.pitch })
+    p()
   }, [trimmed]) // eslint-disable-line react-hooks/exhaustive-deps
   /** An inserted video taken out: what came after it moves back, and the parts it had cut in two join again */
   function removeInsert(segId: string) {
@@ -5283,8 +5336,10 @@ export function EditorShell({
                 {(() => {
                   const id = selTarget?.kind === 'section' ? selTarget.id : !selTarget ? activeSegment?.id : undefined
                   const seg = id ? segments.find(x => x.id === id) : undefined
-                  const ok = !!seg && !isShot(seg, mainVideoId) && !isInsert(seg, mainVideoId) && !isFrameLayout(seg.layout)
+                  const ok = !!seg && speedable(seg)
                   const sp = seg ? speedOf(seg) : 1
+                  const lim = ok && seg ? speedLimits(seg) : null
+                  const allCount = ok ? segments.filter(s => speedable(s) && !isLocked({ kind: 'section', id: s.id })).length : 0
                   return (
                     <span className="relative flex">
                       <button data-speed-btn onClick={() => setSpeedOpen(o => !o)} disabled={!ok}
@@ -5297,6 +5352,9 @@ export function EditorShell({
                       </button>
                       {speedOpen && ok && seg && (
                         <SpeedPanel speed={sp} smooth={!!seg.smooth} pitch={!!seg.pitch} lengthMs={seg.end_ms - seg.start_ms}
+                          minSpeed={lim?.min} maxSpeed={lim?.max} minNote={lim?.minNote} maxNote={lim?.maxNote}
+                          applyAllCount={allCount}
+                          onApplyAll={() => setAllPartsSpeed(sp, { smooth: !!seg.smooth, pitch: !!seg.pitch })}
                           onSpeed={s => setPartSpeed(seg.id, s)}
                           onSmooth={on => setPartSpeedFlags(seg.id, { smooth: on })}
                           onPitch={on => setPartSpeedFlags(seg.id, { pitch: on })}

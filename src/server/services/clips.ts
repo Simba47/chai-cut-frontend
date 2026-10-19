@@ -1,6 +1,7 @@
 import sql from '@/lib/db'
 import { cleanTrims, trimMap, MAX_CLIP_MS, MIN_CLIP_MS } from '@/lib/trims'
 import type { SegmentLocal, BoxKeyframeLocal, CaptionStyle, TextOverlay, AudioTrack, Transition, Overlay, FrameSettings, FrameItem, CornerStyle } from '@chai-cut/shared'
+import { SPEED_MIN, SPEED_MAX } from '@chai-cut/shared'
 
 interface CreateClipInput {
   video_id: string; start_ms?: number; end_ms?: number; layout?: string; title?: string
@@ -89,7 +90,7 @@ export async function saveClip(userId: string, clipId: string, body: SaveClipInp
   const hasSpeedField = await hasColumn('segments', 'speed')
   const speedOfRow = (seg: (typeof segments)[number]) => {
     const v = Number((seg as { speed?: unknown }).speed)
-    return isFinite(v) && v >= 0.25 && v <= 4 ? Math.round(v * 100) / 100 : 1
+    return isFinite(v) && v >= SPEED_MIN && v <= SPEED_MAX ? Math.round(v * 100) / 100 : 1
   }
   const speedNotSaved = hasSpeedField ? 0 : segments.filter(s => speedOfRow(s) !== 1).length
   const holdOf = (seg: (typeof sortedSegments)[number]) => {

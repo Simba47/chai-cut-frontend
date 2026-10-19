@@ -2071,6 +2071,7 @@ body {
 .lane-ctl { color: rgb(var(--ed-fg) / 0.42); transition: color .15s, background-color .15s; }
 .lane-ctl:not(:disabled):hover { color: rgb(var(--ed-fg) / 0.9); background: rgb(var(--ed-fg) / 0.08); }
 .lane-ctl[data-on] { color: #f87171; background: rgba(239,68,68,0.12); }
+.spd-presets button:disabled { opacity: 0.3; cursor: not-allowed; background: rgb(var(--ed-fg) / 0.06); color: rgb(var(--ed-fg) / 0.75); }
 .lane-ctl[data-on][data-key="locked"] { color: #c8ff00; background: rgba(200,255,0,0.12); }
 .lane-ctl:disabled { opacity: 0.3; cursor: default; }
 .lane-ctl:focus-visible { outline: 2px solid rgba(200,255,0,0.6); outline-offset: 1px; }
@@ -2081,6 +2082,10 @@ body {
 .lane-add:focus-visible { outline: 2px solid rgba(200,255,0,0.6); outline-offset: 1px; }
 
 /* ── Media library cards (MediaLibrary.tsx): the + shows on hover, like CapCut ── */
+.spd-note { margin: -4px 0 0; font-size: 10.5px; line-height: 1.35; color: rgb(var(--ed-fg) / 0.5); }
+.spd-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.spd-all { margin-left: auto; padding: 5px 10px; border-radius: 8px; font-size: 11.5px; font-weight: 700; color: var(--ed-text); background: rgb(var(--ed-fg) / 0.08); }
+.spd-all:hover { background: rgb(var(--ed-fg) / 0.14); }
 .media-card { cursor: grab; }
 .media-card .media-add, .media-card .media-del { opacity: 0; transform: scale(.85); transition: opacity .15s, transform .15s; }
 .media-card:hover .media-add, .media-card .media-add:focus-visible,
@@ -2230,7 +2235,7 @@ body {
 .spd-head { display: flex; align-items: baseline; justify-content: space-between; font-size: 13px; }
 .spd-head span { font-size: 11.5px; color: rgb(var(--ed-fg) / 0.6); }
 .spd-head span b { color: #c8ff00; }
-.spd-presets { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; }
+.spd-presets { display: grid; grid-template-columns: repeat(5, 1fr); gap: 4px; }
 .spd-presets button { height: 28px; border-radius: 8px; font-size: 12px; font-weight: 700; color: rgb(var(--ed-fg) / 0.75); background: rgb(var(--ed-fg) / 0.06); transition: background .12s, color .12s; }
 .spd-presets button:hover { background: rgb(var(--ed-fg) / 0.1); color: var(--ed-text); }
 .spd-presets button[data-on] { background: #c8ff00; color: #0a0a0a; }
