@@ -116,6 +116,28 @@ const ADD_CHOICES: { kind: 'insert' | 'overlay' | 'music' | 'text'; label: strin
 ]
 
 const RULER_H = 26
+/** A part played slower (slow motion) or faster: how it shows on the timeline (.tl2-block[data-speed]) */
+const speedKind = (seg: SegmentLocal, isInsert: boolean): 'slow' | 'fast' | null => {
+  const s = !isInsert && seg.speed && seg.speed > 0 ? seg.speed : 1
+  return s < 0.999 ? 'slow' : s > 1.001 ? 'fast' : null
+}
+const speedText = (s: number) => `${s % 1 === 0 ? s.toFixed(0) : s}×`
+/** Its tooltip line: "Slow motion 0.5× · smooth slow-mo on · pitch on" */
+const speedTitle = (seg: SegmentLocal) => {
+  const s = seg.speed ?? 1
+  return `${s < 1 ? 'Slow motion' : 'Speed'} ${speedText(s)}${s < 1 && seg.smooth ? ' · smooth slow-mo on' : ''}${seg.pitch ? ' · pitch on' : ''}`
+}
+/** Slow motion: a turtle; faster: a lightning bolt */
+function SpeedIcon({ kind }: { kind: 'slow' | 'fast' }) {
+  return kind === 'slow' ? (
+    <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+      <path d="M2.5 16c0-4.4 3.8-8 8.5-8s8.5 3.6 8.5 8z" /><circle cx="20.6" cy="13.4" r="2.3" />
+      <path d="M5.5 16v3M15.5 16v3" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" />
+    </svg>
+  ) : (
+    <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M14 1 3.5 14H11l-1.5 9L20.5 10H13z" /></svg>
+  )
+}
 const BLOCK_H = 48
 const MAIN_PAD = 6
 const VIEW_ROW_H = 20
@@ -822,9 +844,10 @@ export function Timeline({
     const url = isInsert ? videoUrls[box?.source_video_id ?? ''] : videoUrl
     const st = mainMuted && !isInsert ? { ...seg, muted: true } : seg
     const comingBack = g && g.edge === 'start' && g.to < g.from
+    const kind = speedKind(seg, isInsert)
     return (
-      <div key={seg.id} className="tl2-block absolute" data-part={i + 1} data-selected={sel || undefined}
-        title={`${isInsert ? 'Inserted video' : 'Part'} ${i + 1} · ${name} · ${msToLabel(seg.start_ms)}–${msToLabel(seg.end_ms)} · tap to select it`}
+      <div key={seg.id} className="tl2-block absolute" data-part={i + 1} data-selected={sel || undefined} data-speed={kind ?? undefined}
+        title={`${isInsert ? 'Inserted video' : 'Part'} ${i + 1} · ${name} · ${msToLabel(seg.start_ms)}–${msToLabel(seg.end_ms)}${kind ? ` · ${speedTitle(seg)}` : ''} · tap to select it`}
         // (a part narrower than it is drawn lies over its neighbours: it can still be tapped)
         style={{ ...blockBox(start, end), zIndex: sel ? 3 : (end - start) * pxPerMs < 12 ? 2 : 1 }}>
         <div className="absolute inset-0 overflow-hidden" style={{ borderRadius: 8 }}>
@@ -838,17 +861,20 @@ export function Timeline({
           {/* what comes back over the part before it, while a start is dragged out */}
           {comingBack && <div className="absolute inset-y-0 left-0" style={{ width: `${((g!.from - g!.to) / Math.max(1, end - start)) * 100}%`, background: 'rgba(200,255,0,0.18)' }} />}
           <div className="absolute inset-0 pointer-events-none" style={{ background: 'linear-gradient(180deg, rgba(0,0,0,0.45), transparent 38%, transparent 62%, rgba(0,0,0,0.55))' }} />
+          {/* slower or faster: its colour over the pictures, and a band along its top */}
+          {kind && <div className="tl2-speed-tint absolute inset-0 pointer-events-none" />}
         </div>
         {/* its format (an inserted video: the video's name), its length, its state */}
         <span className="tl2-tag absolute left-1.5 top-1">
           <i style={{ background: color }} />{isInsert ? `Video · ${name}` : name}
         </span>
         <span className="tl2-len absolute right-1.5 bottom-1">{lenLabel(end - start)}</span>
-        {/* played faster or slower: its speed (as CapCut) */}
-        {!isInsert && seg.speed != null && Math.abs(seg.speed - 1) > 0.001 && (
-          <span className="tl2-spd bottom-1" style={{ left: sel ? GRIP_W + 4 : 6 }} title={`Plays at ${seg.speed}× speed${seg.smooth ? ' · smooth slow-mo' : ''}`}>
-            <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" aria-hidden="true"><path d="M12 21a9 9 0 1 1 9-9M12 12l4.5-4.5" /></svg>
-            {seg.speed % 1 === 0 ? seg.speed.toFixed(0) : seg.speed}×
+        {/* played slower or faster: a turtle or a bolt, its speed, "smooth" for smooth slow motion */}
+        {kind && (
+          <span className="tl2-spd bottom-1" data-kind={kind} style={{ left: sel ? GRIP_W + 4 : 6 }} title={speedTitle(seg)}>
+            <SpeedIcon kind={kind} />
+            {speedText(seg.speed ?? 1)}
+            {kind === 'slow' && seg.smooth && <em>smooth</em>}
           </span>
         )}
         <span className="absolute right-1 top-1"><StateBadges st={st} /></span>
@@ -1182,6 +1208,12 @@ export function Timeline({
           {/* Ruler and main row stay at the top; the rows under them scroll */}
           <div ref={trackRef} data-tl-head className="tl2-head" style={{ height: headH }} onPointerDown={handleScrubDown}>
             <div className="relative" style={{ height: RULER_H }}>
+              {/* where the clip plays slower or faster: a strip of its colour along the ruler's foot */}
+              {mains.map(seg => {
+                const k = speedKind(seg, seg.video_offset_ms != null && !!seg.crop_boxes[0]?.source_video_id)
+                return k ? <div key={`spd-${seg.id}`} className="tl2-ruler-speed" data-kind={k} title={speedTitle(seg)}
+                  style={{ left: `calc(${at(seg.start_ms)}% + 1.5px)`, width: `max(3px, calc(${pct(seg.end_ms - seg.start_ms)}% - 3px))` }} /> : null
+              })}
               {ticks.map(({ t, major }) => (
                 <div key={t} className={major ? 'tl2-tick tl2-tick-major' : 'tl2-tick'} style={{ left: `${pct(t)}%` }}>
                   {major && <span>{tickLabel(t)}</span>}

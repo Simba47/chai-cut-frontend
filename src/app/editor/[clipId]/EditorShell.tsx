@@ -18,6 +18,7 @@ import { useBrollSources, useBorrowedSlots } from '@/modules/editor/brollSources
 import { SOUND_DEFAULTS, type SoundItem, type SoundKind } from '@/modules/editor/soundCatalog'
 import { Timeline } from '@/components/editor/timeline/Timeline'
 import { SpeedPanel } from '@/components/editor/SpeedPanel'
+import { SpeedTag } from '@/components/editor/SpeedTag'
 import { useFreeWatermark } from '@/components/editor/watermark'
 import { LAYOUT_COLORS, MAX_ZOOM, zoomStep, zoomLabel, STOCK_DRAG_TYPE, type LaneCtl, type LaneCtlKey } from '@/components/editor/SegmentTimeline'
 import { useVideoUpload } from '@/modules/upload/useVideoUpload'
@@ -2670,7 +2671,6 @@ export function EditorShell({
       const s = useEditorStore.getState().segments.find(x => !layer(x) && x.start_ms < t - 100 && x.end_ms > t + 100)
       if (s) useEditorStore.getState().splitAtMs(s.id, t, useEditorStore.getState().getPositionAt)
     }
-    const st = useEditorStore.getState()
     // The clip's own range comes in to what is kept: video removed from its start or its end is
     // simply not in the clip any more (only removed parts in between become jumps between pieces).
     // Without this, the removed start / end came back as an empty "default framing" stretch.
@@ -2678,6 +2678,7 @@ export function EditorShell({
     const range: [number, number] | undefined = first && last && (first[0] > rawClip.start_ms || last[1] < rawClip.end_ms)
       ? [first[0], last[1]] : undefined
     const start = range ? range[0] : rawClip.start_ms
+    const st = useEditorStore.getState()
     const segs = st.segments.map(s => (layer(s) || isInsert(s, mainVideoId) ? s : {
       ...s,
       crop_boxes: s.crop_boxes.map(b => (b.source_video_id || b.image_path ? b
@@ -2734,8 +2735,8 @@ export function EditorShell({
     const min = Math.min(max, Math.max(SPEED_MIN, Math.ceil((videoMs / room) * 100) / 100))
     return {
       min, max,
-      maxNote: `Up to ${max}× here: the part can\u2019t get shorter than ${MIN_FORMAT_MS / 1000} s`,
-      minNote: `Down to ${min}× here: the clip can\u2019t be longer than ${Math.round(MAX_CLIP_MS / 60000)} minutes`,
+      maxNote: `That\u2019s the fastest this part can go (${max}×): a part can\u2019t be shorter than ${MIN_FORMAT_MS / 1000} s`,
+      minNote: `That\u2019s the slowest this part can go (${min}×): the clip can\u2019t be longer than ${Math.round(MAX_CLIP_MS / 60000)} minutes`,
     }
   }
   function setPartSpeed(segId: string, speedIn: number, opts: { smooth?: boolean; pitch?: boolean } = {}, clipMs?: number) {
@@ -5025,7 +5026,10 @@ export function EditorShell({
           </div>
 
           <div className="relative flex-1 min-h-0" style={{ background: 'var(--ed-canvas)' }}>
-            <div className="absolute flex flex-col rounded-xl overflow-hidden" style={{ inset: 8, border: '1px solid rgb(var(--ed-fg) / 0.1)' }}>
+            {/* (data-speed-avoid: the Speed panel opens beside the picture in here, never over it) */}
+            <div data-speed-avoid className="absolute flex flex-col rounded-xl overflow-hidden" style={{ inset: 8, border: '1px solid rgb(var(--ed-fg) / 0.1)' }}>
+              {/* in a part played slower or faster: its speed, over the preview */}
+              <SpeedTag parts={sections} />
               <VideoPreview live segmentAt={viewAt} overlaySource={brollSource} mainVideoId={mainVideoId}
                 videoRef={videoRef} videoUrl={clipVideoUrl} currentTimeMs={currentTimeMs}
                 activeSegment={viewSegment} getPositionAt={viewGetPositionAt}

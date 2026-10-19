@@ -3319,14 +3319,16 @@ function DraggableBox({ pos, aspect, color, isActive, label, onSelect, onChange 
         textShadow: '0 1px 2px rgba(0,0,0,0.4)',
       }}>{label}</div>
 
-      {/* Zoom badge — how far this crop is punched in */}
-      <div style={{
-        position: 'absolute', top: 6, right: 6,
-        fontSize: 10, fontWeight: 700, color: '#fff', lineHeight: 1.4,
-        background: 'rgba(0,0,0,0.65)', padding: '1px 7px', borderRadius: 4, pointerEvents: 'none',
-      }}>
-        {(Math.round(10 / Math.max(0.1, pos.h)) / 10).toFixed(1)}x
-      </div>
+      {/* Zoom badge — how far this crop is punched in (only when it is: "1.0x" read like a speed) */}
+      {Math.round(10 / Math.max(0.1, pos.h)) / 10 > 1 && (
+        <div style={{
+          position: 'absolute', top: 6, right: 6,
+          fontSize: 10, fontWeight: 700, color: '#fff', lineHeight: 1.4,
+          background: 'rgba(0,0,0,0.65)', padding: '1px 7px', borderRadius: 4, pointerEvents: 'none',
+        }}>
+          Zoom {(Math.round(10 / Math.max(0.1, pos.h)) / 10).toFixed(1)}×
+        </div>
+      )}
 
       {handles.map(({ cursor, pos: hPos, dir }) => (
         <div
