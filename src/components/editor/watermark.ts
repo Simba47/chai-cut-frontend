@@ -5,14 +5,20 @@ import { useEffect, useState } from 'react'
 /**
  * The Free-plan watermark ("MADE WITH" over the Shortcut logo + name, no background), as the
  * editor's preview draws it. The export draws the same with the same numbers (chai-cut-backend python/render.py,
- * WATERMARK_*): its width, the gap from the right edge and from the bottom are shares of the frame,
- * so the preview shows exactly where the export will put it. The bottom gap lifts it above where
- * captions sit (their middle is at 84% of the height) and above the platforms' own caption area.
+ * WATERMARK_*): its width and where it sits are shares of the frame, so the preview shows exactly
+ * where the export will put it. Top left, below the apps' own top bar: the right side and the bottom
+ * of a Reel / TikTok / Short are under the apps' buttons and caption. A soft shadow under it keeps
+ * it readable on bright video.
  */
-export const WATERMARK_WIDTH = 0.28
-export const WATERMARK_RIGHT = 0.04
-export const WATERMARK_BOTTOM = 0.22
+export const WATERMARK_WIDTH = 0.22
+/** The left of the S from the frame's left; the top of "MADE WITH" from the frame's top */
+export const WATERMARK_LEFT = 0.05
+export const WATERMARK_TOP = 0.12
 export const WATERMARK_OPACITY = 0.9
+/** The shadow: black at this opacity, blurred (sigma) and dropped by these shares of the mark's width */
+const SHADOW_A = 0.55
+const SHADOW_BLUR = 0.014
+const SHADOW_Y = 0.008
 /** It plays in a loop of LOOP_S s (the times below are into each loop), as the sign-in page's heading
  *  does (components/auth/AuthSlider.tsx PanelTitle): the S pops in at the word's middle (grows from
  *  POP_FROM with a little overshoot, over POP_S), then from SPLIT_AT, over SPLIT_S, it splits: its top
@@ -31,8 +37,8 @@ const MADE_AT = 1.6
 const MADE_S = 0.4
 const S_CX = 97 / 641, S_CY = 115 / 216
 const WORD_CX = 382 / 641, WORD_HALF = 230 / 641
-/** "MADE WITH" (public/watermark_made.png, the mark's width, its letters in the middle) has its top
- *  this share of the mark's width above the mark's top */
+/** "MADE WITH" (public/watermark_made.png, the mark's width, its letters starting where the word
+ *  does) has its top this share of the mark's width above the mark's top */
 const MADE_RISE = 0.08
 /** While it is all in, from SHINE_AT, SHINE_N times every SHINE_EVERY s a lime light sweeps across the
  *  logo and name (left to right, SHINE_S s): the white letters light up lime as it passes */
@@ -68,15 +74,21 @@ export function drawWatermark(ctx: CanvasRenderingContext2D, w: number, h: numbe
   const out = 1 - clamp01((T - OUT_AT) / OUT_S)
   if (out <= 0) return
   const mw = Math.max(2, Math.round(w * WATERMARK_WIDTH / 2) * 2), mh = Math.round(mw * top.naturalHeight / top.naturalWidth)
-  const x = w - mw - Math.round(w * WATERMARK_RIGHT)
-  const y = h - mh - Math.round(h * WATERMARK_BOTTOM)
+  // (the layers are 641 wide: the S starts at 39, "MADE WITH"'s letters at y 43)
+  const x = Math.round(w * WATERMARK_LEFT) - Math.round(mw * 39 / 641)
+  const madeY = Math.round(h * WATERMARK_TOP) - Math.round(mw * 43 / 641)
+  const y = madeY + Math.round(mw * MADE_RISE)
   const A = WATERMARK_OPACITY * out
   ctx.save()
   ctx.imageSmoothingEnabled = true
   ctx.imageSmoothingQuality = 'high'
+  // (a canvas shadow's blur is twice the export's sigma)
+  ctx.shadowColor = `rgba(0,0,0,${SHADOW_A})`
+  ctx.shadowBlur = 2 * Math.max(1, mw * SHADOW_BLUR)
+  ctx.shadowOffsetY = Math.max(1, Math.round(mw * SHADOW_Y))
   // "MADE WITH", above (never in the light)
   ctx.globalAlpha = A * clamp01((T - MADE_AT) / MADE_S)
-  if (ctx.globalAlpha > 0) ctx.drawImage(made, x, y - Math.round(mw * MADE_RISE), mw, Math.round(mw * made.naturalHeight / made.naturalWidth))
+  if (ctx.globalAlpha > 0) ctx.drawImage(made, x, madeY, mw, Math.round(mw * made.naturalHeight / made.naturalWidth))
   const e = ease(clamp01((T - SPLIT_AT) / SPLIT_S))
   const settle = clamp01((T - SETTLE_AT) / SETTLE_S)
   const ph = (T - SHINE_AT) % SHINE_EVERY
