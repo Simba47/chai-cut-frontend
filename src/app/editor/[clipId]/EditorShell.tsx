@@ -2671,13 +2671,20 @@ export function EditorShell({
       if (s) useEditorStore.getState().splitAtMs(s.id, t, useEditorStore.getState().getPositionAt)
     }
     const st = useEditorStore.getState()
+    // The clip's own range comes in to what is kept: video removed from its start or its end is
+    // simply not in the clip any more (only removed parts in between become jumps between pieces).
+    // Without this, the removed start / end came back as an empty "default framing" stretch.
+    const first = map.kept[0], last = map.kept[map.kept.length - 1]
+    const range: [number, number] | undefined = first && last && (first[0] > rawClip.start_ms || last[1] < rawClip.end_ms)
+      ? [first[0], last[1]] : undefined
+    const start = range ? range[0] : rawClip.start_ms
     const segs = st.segments.map(s => (layer(s) || isInsert(s, mainVideoId) ? s : {
       ...s,
       crop_boxes: s.crop_boxes.map(b => (b.source_video_id || b.image_path ? b
-        : { ...b, source_offset_ms: Math.max(0, Math.round(map.toSource(s.start_ms) - rawClip.start_ms)) })),
+        : { ...b, source_offset_ms: Math.max(0, Math.round(map.toSource(s.start_ms) - start)) })),
     }))
     skipCanvasTransitionRef.current = true
-    st.applyTrim(segs, st.keyframes, [])
+    st.applyTrim(segs, st.keyframes, [], range)
   }
   /**
    * A clip of pieces whose last video put in between (and last skip) goes in an edit plays simply
@@ -2696,7 +2703,10 @@ export function EditorShell({
    * the video and lasts that ÷ speed on the timeline; everything after it moves up or later. Its
    * views keep their places in it. One undo step. A clip with removed parts becomes pieces first.
    */
-  const pendingSpeedRef = useRef<(() => void) | null>(null)
+  /** A speed change waiting until a clip with removed parts has become pieces (what to do, not a
+   *  function: one made then would still see the clip as it was, with its removed parts) */
+  type PendingSpeed = { all: false; segId: string; speed: number; opts: { smooth?: boolean; pitch?: boolean } } | { all: true; speed: number; opts: { smooth?: boolean; pitch?: boolean } }
+  const pendingSpeedRef = useRef<PendingSpeed | null>(null)
   /**
    * How much of the video the part last given a speed plays, exactly — its length on the timeline is
    * rounded to the ms each time, so working it out again from that would drift a little with every
@@ -2734,7 +2744,7 @@ export function EditorShell({
     if (!seg0 || !speedable(seg0)) return
     if (blocked({ kind: 'section', id: segId })) return
     if (audioTracks.some(isMainAudio)) { notifyLocked('The clip\u2019s sound is detached: attach it again (Music) to change a part\u2019s speed'); return }
-    if (trimmed) { pendingSpeedRef.current = () => setPartSpeed(segId, speedIn, opts); trimsToPieces(); return }
+    if (trimmed) { pendingSpeedRef.current = { all: false, segId, speed: speedIn, opts }; trimsToPieces(); return }
     pause()
     const media = useMediaStore.getState()
     const editor = useEditorStore.getState()
@@ -2808,7 +2818,7 @@ export function EditorShell({
    */
   function setAllPartsSpeed(speedIn: number, opts: { smooth?: boolean; pitch?: boolean }) {
     if (audioTracks.some(isMainAudio)) { notifyLocked('The clip\u2019s sound is detached: attach it again (Music) to change a part\u2019s speed'); return }
-    if (trimmed) { pendingSpeedRef.current = () => setAllPartsSpeed(speedIn, opts); trimsToPieces(); return }
+    if (trimmed) { pendingSpeedRef.current = { all: true, speed: speedIn, opts }; trimsToPieces(); return }
     const ids = useEditorStore.getState().segments.filter(s => speedable(s) && !isLocked({ kind: 'section', id: s.id })).map(s => s.id)
     // (the clip's length as the parts change one after another: each part's limit counts the ones before)
     let clipMs = clipLengthMs
@@ -2826,7 +2836,8 @@ export function EditorShell({
     const p = pendingSpeedRef.current
     if (!p || trimmed) return
     pendingSpeedRef.current = null
-    p()
+    if (p.all) setAllPartsSpeed(p.speed, p.opts)
+    else setPartSpeed(p.segId, p.speed, p.opts)
   }, [trimmed]) // eslint-disable-line react-hooks/exhaustive-deps
   /** An inserted video taken out: what came after it moves back, and the parts it had cut in two join again */
   function removeInsert(segId: string) {
