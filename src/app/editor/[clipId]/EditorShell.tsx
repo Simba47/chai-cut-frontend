@@ -17,8 +17,6 @@ import { PhotoSearch } from '@/components/editor/PhotoSearch'
 import { useBrollSources, useBorrowedSlots } from '@/modules/editor/brollSources'
 import { SOUND_DEFAULTS, type SoundItem, type SoundKind } from '@/modules/editor/soundCatalog'
 import { Timeline } from '@/components/editor/timeline/Timeline'
-import { SpeedPanel } from '@/components/editor/SpeedPanel'
-import { SpeedTag } from '@/components/editor/SpeedTag'
 import { useFreeWatermark } from '@/components/editor/watermark'
 import { LAYOUT_COLORS, MAX_ZOOM, ZOOM_STEPS, zoomStep, zoomLabel, STOCK_DRAG_TYPE, type LaneCtl, type LaneCtlKey } from '@/components/editor/SegmentTimeline'
 import { useVideoUpload } from '@/modules/upload/useVideoUpload'
@@ -675,8 +673,6 @@ export function EditorShell({
   const [renderStuckSince, setRenderStuckSince] = useState<number | null>(clip.status === 'rendering' ? Date.now() : null)
   const [renderElapsed, setRenderElapsed] = useState(0)
   const [saveState, setSaveState] = useState<SaveState>('idle')
-  /** The toolbar's Speed panel is open */
-  const [speedOpen, setSpeedOpen] = useState(false)
   /** The transition button between two parts on the timeline: the Transition tool opens on that cut */
   const [transitionFocus, setTransitionFocus] = useState<{ id: string; n: number } | null>(null)
   /** The last save had to keep newer transitions as a Dissolve (the database doesn't take them yet) */
@@ -918,11 +914,11 @@ export function EditorShell({
   // "Locked" note: a short message when an edit is refused because something is locked
   const [lockNote, setLockNote] = useState<string | null>(null)
   const lockNoteTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
-  function notifyLocked(msg: string) {
+  function notifyLocked(msg: string, ms = 2200) {
     if (quietRef.current) return   // (a live drag: told once, on release)
     setLockNote(msg)
     if (lockNoteTimer.current) clearTimeout(lockNoteTimer.current)
-    lockNoteTimer.current = setTimeout(() => setLockNote(null), 2200)
+    lockNoteTimer.current = setTimeout(() => setLockNote(null), ms)
   }
   // The section the user clicked (on the timeline strip or its card): the Delete buttons show only then
   const [pickedSegId, setPickedSegIdState] = useState<string | null>(null)
@@ -3106,7 +3102,7 @@ export function EditorShell({
    */
   /** A speed change waiting until a clip with removed parts has become pieces (what to do, not a
    *  function: one made then would still see the clip as it was, with its removed parts) */
-  type PendingSpeed = { all: false; segId: string; speed: number; opts: { smooth?: boolean; pitch?: boolean } } | { all: true; speed: number; opts: { smooth?: boolean; pitch?: boolean } }
+  type PendingSpeed = { segId: string; speed: number; opts: { smooth?: boolean; pitch?: boolean } }
   const pendingSpeedRef = useRef<PendingSpeed | null>(null)
   /**
    * How much of the video the part last given a speed plays, exactly — its length on the timeline is
@@ -3142,10 +3138,11 @@ export function EditorShell({
   function setPartSpeed(segId: string, speedIn: number, opts: { smooth?: boolean; pitch?: boolean } = {}, clipMs?: number) {
     const editor0 = useEditorStore.getState()
     const seg0 = editor0.segments.find(s => s.id === segId)
-    if (!seg0 || !speedable(seg0)) return
+    // (back to normal speed is always allowed: a part slowed down before it became a frame)
+    if (!seg0 || (!speedable(seg0) && !(speedIn === 1 && !isShot(seg0, mainVideoId) && !isInsert(seg0, mainVideoId)))) return
     if (blocked({ kind: 'section', id: segId })) return
     if (audioTracks.some(isMainAudio)) { notifyLocked('The clip\u2019s sound is detached: attach it again (Music) to change a part\u2019s speed'); return }
-    if (trimmed) { pendingSpeedRef.current = { all: false, segId, speed: speedIn, opts }; trimsToPieces(); return }
+    if (trimmed) { pendingSpeedRef.current = { segId, speed: speedIn, opts }; trimsToPieces(); return }
     pause()
     const media = useMediaStore.getState()
     const editor = useEditorStore.getState()
@@ -3203,43 +3200,22 @@ export function EditorShell({
     editor.applyTrim(segs, kf, editor.trims)
     useMediaStore.setState({ overlays: state.overlays, textOverlays: state.textOverlays, audioTracks: state.audioTracks, transitions: state.transitions })
   }
-  /** Smooth slow motion, or the pitch following the speed, switched for a part (its speed stays) */
-  function setPartSpeedFlags(segId: string, flags: { smooth?: boolean; pitch?: boolean }) {
-    const seg = useEditorStore.getState().segments.find(s => s.id === segId)
-    if (!seg || blocked({ kind: 'section', id: segId })) return
-    const sp = speedOf(seg)
-    useEditorStore.getState().updateSegment(segId, {
-      smooth: (flags.smooth ?? !!seg.smooth) && sp < 1 ? true : undefined,
-      pitch: (flags.pitch ?? !!seg.pitch) && sp !== 1 ? true : undefined,
-    })
-  }
-  /**
-   * One speed (with its smooth slow-mo and pitch) for every part of the main video that can take it.
-   * Each part as far as it can go (its own limits); one undo step.
-   */
-  function setAllPartsSpeed(speedIn: number, opts: { smooth?: boolean; pitch?: boolean }) {
-    if (audioTracks.some(isMainAudio)) { notifyLocked('The clip\u2019s sound is detached: attach it again (Music) to change a part\u2019s speed'); return }
-    if (trimmed) { pendingSpeedRef.current = { all: true, speed: speedIn, opts }; trimsToPieces(); return }
-    const ids = useEditorStore.getState().segments.filter(s => speedable(s) && !isLocked({ kind: 'section', id: s.id })).map(s => s.id)
-    // (the clip's length as the parts change one after another: each part's limit counts the ones before)
-    let clipMs = clipLengthMs
-    for (const id of ids) {
-      const before = useEditorStore.getState().segments.find(s => s.id === id)
-      if (!before) continue
-      const was = before.end_ms - before.start_ms
-      setPartSpeed(id, speedIn, opts, clipMs)
-      const after = useEditorStore.getState().segments.find(s => s.id === id)
-      if (after) clipMs += (after.end_ms - after.start_ms) - was
-    }
-  }
   // (a clip with removed parts became pieces: now its speed)
   useEffect(() => {
     const p = pendingSpeedRef.current
     if (!p || trimmed) return
     pendingSpeedRef.current = null
-    if (p.all) setAllPartsSpeed(p.speed, p.opts)
-    else setPartSpeed(p.segId, p.speed, p.opts)
+    setPartSpeed(p.segId, p.speed, p.opts)
   }, [trimmed]) // eslint-disable-line react-hooks/exhaustive-deps
+  // Speed was taken out of the editor (user, 2026-10-20). A clip opened with parts still played faster
+  // or slower gets them back at normal speed (setPartSpeed: its stretch of the video, at 1×, and
+  // everything after it moved), when the clip opens, so what's seen and exported is the video as filmed
+  useEffect(() => {
+    const parts = useEditorStore.getState().segments.filter(s => !isShot(s, mainVideoId) && !isInsert(s, mainVideoId) && speedOf(s) !== 1 && !isLocked({ kind: 'section', id: s.id }))
+    if (!parts.length) return
+    for (const sp of parts) setPartSpeed(sp.id, 1)
+    notifyLocked(`${parts.length === 1 ? 'A part' : `${parts.length} parts`} of this clip played faster or slower — back at normal speed now`, 8000)
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
   /** An inserted video taken out: what came after it moves back, and the parts it had cut in two join again */
   function removeInsert(segId: string) {
     const editor = useEditorStore.getState(), media = useMediaStore.getState()
@@ -5532,10 +5508,7 @@ export function EditorShell({
           </div>
 
           <div className="relative flex-1 min-h-0" style={{ background: 'var(--ed-canvas)' }}>
-            {/* (data-speed-avoid: the Speed panel opens beside the picture in here, never over it) */}
-            <div data-speed-avoid className="absolute flex flex-col rounded-xl overflow-hidden" style={{ inset: 8, border: '1px solid rgb(var(--ed-fg) / 0.1)' }}>
-              {/* in a part played slower or faster: its speed, over the preview */}
-              <SpeedTag parts={sections} />
+            <div className="absolute flex flex-col rounded-xl overflow-hidden" style={{ inset: 8, border: '1px solid rgb(var(--ed-fg) / 0.1)' }}>
               <VideoPreview live segmentAt={viewAt} overlaySource={brollSource} mainVideoId={mainVideoId}
                 videoRef={videoRef} videoUrl={clipVideoUrl} currentTimeMs={currentTimeMs}
                 activeSegment={viewSegment} getPositionAt={viewGetPositionAt}
@@ -5851,37 +5824,6 @@ export function EditorShell({
                     <path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14M10 11v6M14 11v6" />
                   </svg>
                 </button>
-                  )
-                })()}
-                {/* Speed: the picked part (else the part under the playhead) faster or in slow motion */}
-                {(() => {
-                  const id = selTarget?.kind === 'section' ? selTarget.id : !selTarget ? activeSegment?.id : undefined
-                  const seg = id ? segments.find(x => x.id === id) : undefined
-                  const ok = !!seg && speedable(seg)
-                  const sp = seg ? speedOf(seg) : 1
-                  const lim = ok && seg ? speedLimits(seg) : null
-                  const allCount = ok ? segments.filter(s => speedable(s) && !isLocked({ kind: 'section', id: s.id })).length : 0
-                  return (
-                    <span className="relative flex">
-                      <button data-speed-btn onClick={() => setSpeedOpen(o => !o)} disabled={!ok}
-                        aria-label="Speed" aria-expanded={speedOpen && ok} title={ok ? 'Speed: slow motion or faster for this part' : 'Pick a part of the main video to change its speed'}
-                        className="ed-tl-btn" data-active={(ok && sp !== 1) || undefined}>
-                        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                          <path d="M12 21a9 9 0 1 1 9-9" /><path d="M12 12l4.5-4.5" /><path d="M12 3v2M3 12h2M5.6 5.6l1.4 1.4" />
-                        </svg>
-                        {ok && sp !== 1 && <span className="spd-badge">{sp % 1 === 0 ? sp.toFixed(0) : sp}×</span>}
-                      </button>
-                      {speedOpen && ok && seg && (
-                        <SpeedPanel speed={sp} smooth={!!seg.smooth} pitch={!!seg.pitch} lengthMs={seg.end_ms - seg.start_ms}
-                          minSpeed={lim?.min} maxSpeed={lim?.max} minNote={lim?.minNote} maxNote={lim?.maxNote}
-                          applyAllCount={allCount}
-                          onApplyAll={() => setAllPartsSpeed(sp, { smooth: !!seg.smooth, pitch: !!seg.pitch })}
-                          onSpeed={s => setPartSpeed(seg.id, s)}
-                          onSmooth={on => setPartSpeedFlags(seg.id, { smooth: on })}
-                          onPitch={on => setPartSpeedFlags(seg.id, { pitch: on })}
-                          onClose={() => setSpeedOpen(false)} />
-                      )}
-                    </span>
                   )
                 })()}
                 {/* Detach audio: the main video's sound onto its own Music bar */}
