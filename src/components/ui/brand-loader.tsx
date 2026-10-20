@@ -36,8 +36,9 @@ const TIPS = [
  * The mark sits in a soft lime glow, over a faint dot grid; under the label a
  * thin bar sweeps like progress and a tip changes every few seconds (styles: .bls-* in globals.css).
  * `mascot`: the Shortcut panda instead of the mark alone — true / 'editor': it lounges while its
- * laptop makes clips (opening the editing board); 'clipboard': it walks along, typing, puzzling
- * out the best moments (opening the clip board).
+ * laptop makes clips (opening the editing board); 'clipboard': it walks along, typing (opening the
+ * clip board) — on a black page, as its walk is filmed on black; 'dashboard': it naps at its desk
+ * (loading the videos), on black too.
  */
 export function BrandLoaderScreen({ label, overlay = false, mascot = false }: { label: string; overlay?: boolean; mascot?: boolean | MascotScene }) {
   // Starts on the first tip (same on the server and in the browser), then picks a random one
@@ -48,7 +49,7 @@ export function BrandLoaderScreen({ label, overlay = false, mascot = false }: { 
     return () => clearInterval(t)
   }, [])
   return (
-    <div className={`bls ${overlay ? 'fixed inset-0 z-[200]' : 'relative h-dvh'}`} data-mascot={mascot ? 'true' : undefined} role={mascot ? 'status' : undefined}>
+    <div className={`bls ${overlay ? 'fixed inset-0 z-[200]' : 'relative h-dvh'}`} data-mascot={mascot === true ? 'editor' : mascot || undefined} role={mascot ? 'status' : undefined}>
       <div className="bls-grid" aria-hidden="true" />
       <div className="bls-glow" aria-hidden="true" />
       {mascot ? (

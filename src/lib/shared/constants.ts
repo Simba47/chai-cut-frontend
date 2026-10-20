@@ -2,6 +2,11 @@ export const OUTPUT_WIDTH = 1080
 export const OUTPUT_HEIGHT = 1920
 export const OUTPUT_ASPECT = '9:16'
 
+/** A part's speed (the editor's Speed): from SPEED_MIN to SPEED_MAX times as filmed. The export
+ *  takes the same range (chai-cut-backend: python/render.py, python/audio.py, jobs/render.ts) */
+export const SPEED_MIN = 0.1
+export const SPEED_MAX = 10
+
 export const MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024 // 2 GB
 export const ACCEPTED_VIDEO_TYPES = ['video/mp4', 'video/quicktime', 'video/x-matroska', 'video/webm']
 export const ACCEPTED_VIDEO_EXTENSIONS = ['.mp4', '.mov', '.mkv', '.webm']

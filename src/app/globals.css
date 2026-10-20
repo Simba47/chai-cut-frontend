@@ -1260,8 +1260,10 @@ body {
 .bls-label { position: relative; margin: 22px 0 0; font-size: 15px; font-weight: 600; letter-spacing: -0.005em; color: rgba(244,244,245,0.9); }
 .bls-bar { position: relative; width: 180px; height: 3px; margin-top: 14px; border-radius: 999px; overflow: hidden; background: rgba(255,255,255,0.08); }
 .bls-bar span {
-  position: absolute; top: 0; bottom: 0; width: 40%; border-radius: inherit;
+  position: absolute; top: 0; bottom: 0; left: 0; width: 40%; border-radius: inherit;
   background: linear-gradient(90deg, transparent, #c8ff00, transparent);
+  /* (moved with transform, not left: it runs on the compositor, smooth while the page is busy loading) */
+  will-change: transform;
   animation: bls-sweep 1.4s cubic-bezier(.65,0,.35,1) infinite;
 }
 .bls-tip {
@@ -1272,199 +1274,34 @@ body {
   flex-shrink: 0; padding: 2px 7px; border-radius: 999px; font-size: 10px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase;
   color: #c8ff00; background: rgba(200,255,0,0.1); box-shadow: inset 0 0 0 1px rgba(200,255,0,0.25);
 }
-/* ── The mascot loader (components/ui/panda-loader.tsx): the Shortcut panda lounges on its bean
-   bag (the brand's 3D render) while the laptop does the work. What moves is layered on the picture:
-   it breathes, "z z z" drift up, the lid glows and a light sweeps across it, finished clips rise
-   from behind the laptop and float away, and the floor light breathes with a few lime sparks.
-   Positions are % of the picture (1300 × 620). ── */
-.pl { position: relative; max-width: 86vw; font-size: clamp(11px, 1.15vw, 15px); user-select: none; }
-/* Until the picture has loaded only the fallback (the plain mark) shows: the effects alone, round
-   an empty space, look broken. Then the whole scene fades in, its animations starting together. */
+/* ── The mascot loader (components/ui/panda-loader.tsx): the Shortcut panda — one rendered scene
+   on black for each loading screen (editor, clip board, dashboard): a looping video over its first
+   frame as a picture (shown at once; the video fades in over it as soon as it plays). The loading
+   screens with the panda are black too, so it sits in the page with no edge. ── */
+.pl { position: relative; max-width: 86vw; user-select: none; }
+.pl[data-scene="editor"] { aspect-ratio: 760 / 586; }
+.pl[data-scene="clipboard"] { aspect-ratio: 552 / 708; }
+.pl[data-scene="dashboard"] { aspect-ratio: 760 / 564; }
+/* Until its picture has loaded only the fallback (if any) shows; then the scene fades in */
 .pl-scene { position: absolute; inset: 0; opacity: 0; transform: translateY(6px) scale(.985); transition: opacity .25s ease, transform .4s cubic-bezier(.2,.9,.3,1); }
-/* (pictures already there when it appeared: no fade at all) */
+/* (the picture already there when it appeared: no fade at all) */
 .pl[data-instant] .pl-scene, .pl[data-instant] .pl-fallback { transition: none; }
 .pl[data-ready] .pl-scene { opacity: 1; transform: none; }
-.pl:not([data-ready]) .pl-scene, .pl:not([data-ready]) .pl-scene * { animation-play-state: paused !important; }
 .pl-fallback { position: absolute; inset: 0; display: grid; place-items: center; transition: opacity .35s ease; }
 .pl[data-ready] .pl-fallback { opacity: 0; pointer-events: none; }
-.pl-art {
-  position: relative; z-index: 2; display: block; width: 100%; height: auto; pointer-events: none;
-  transform-origin: 50% 96%; animation: pl-breathe 4.2s ease-in-out infinite;
-  filter: drop-shadow(0 18px 26px rgba(0,0,0,0.55));
-}
-/* the light on the floor under everything */
-.pl-floor {
-  position: absolute; z-index: 0; left: 4%; right: 2%; bottom: -3%; height: 22%; border-radius: 50%; pointer-events: none;
-  background: radial-gradient(closest-side, rgba(200,255,0,0.34), rgba(200,255,0,0.1) 55%, transparent);
-  filter: blur(10px); animation: pl-floor 4.2s ease-in-out infinite;
-}
-/* the laptop's glow on the air around it */
-.pl-aura {
-  position: absolute; z-index: 0; left: 62%; top: 18%; width: 46%; aspect-ratio: 1; border-radius: 50%; pointer-events: none;
-  background: radial-gradient(closest-side, rgba(200,255,0,0.2), rgba(200,255,0,0.05) 60%, transparent);
-  animation: pl-aura 1.6s cubic-bezier(.65,0,.35,1) infinite;
-}
-/* the lid (its four corners on the picture): a light sweeps across it */
-.pl-lid {
-  position: absolute; z-index: 3; inset: 0; overflow: hidden; pointer-events: none; mix-blend-mode: screen;
-  clip-path: polygon(76.5% 54%, 98.7% 52.4%, 94.5% 89%, 70.6% 88.4%);
-}
-.pl-lid i {
-  position: absolute; top: 40%; bottom: 0; left: 60%; width: 9%;
-  background: linear-gradient(100deg, transparent, rgba(220,255,120,0.34) 45%, rgba(255,255,255,0.4) 50%, rgba(220,255,120,0.34) 55%, transparent);
-  transform: skewX(-14deg); animation: pl-sheen 2.8s cubic-bezier(.6,0,.3,1) infinite;
-}
-/* …and the mark on it glows, in time with the loading bar */
-.pl-markglow {
-  position: absolute; z-index: 3; left: 85.7%; top: 72%; width: 17%; aspect-ratio: 1; translate: -50% -50%; border-radius: 50%;
-  pointer-events: none; mix-blend-mode: screen;
-  background: radial-gradient(closest-side, rgba(200,255,0,0.75), rgba(200,255,0,0.22) 50%, transparent);
-  animation: pl-mark 1.6s cubic-bezier(.65,0,.35,1) infinite;
-}
-/* a finished clip: a little 9:16 card that rises from behind the lid, then drifts off and fades */
-.pl-clip {
-  position: absolute; z-index: 1; top: 54%; width: 6.4%; aspect-ratio: 9 / 16; border-radius: 22% / 12.5%; opacity: 0; pointer-events: none;
-  display: grid; place-items: center;
-  background: linear-gradient(160deg, #3d4f0a, #151a05 70%);
-  box-shadow: inset 0 0 0 1.5px #c8ff00, 0 0 14px rgba(200,255,0,0.45), 0 6px 14px rgba(0,0,0,0.5);
-  animation: pl-clip 3.75s cubic-bezier(.2,.7,.3,1) infinite;
-}
-.pl-clip svg { width: 62%; fill: #c8ff00; }
-.pl-z {
-  position: absolute; z-index: 3; font-weight: 800; line-height: 1; color: #c8ff00; opacity: 0; pointer-events: none;
-  text-shadow: 0 0 10px rgba(200,255,0,0.6); animation: pl-z 2.55s ease-out infinite;
-}
-.pl-spark {
-  position: absolute; z-index: 1; width: 3px; height: 3px; border-radius: 50%; background: #c8ff00; opacity: 0; pointer-events: none;
-  box-shadow: 0 0 8px 1px rgba(200,255,0,0.7); animation: pl-spark 4.5s ease-in-out infinite;
-}
-@keyframes pl-breathe { 0%, 100% { transform: none; } 50% { transform: scale(1.006, 1.022) translateY(-0.3%); } }
-@keyframes pl-floor { 0%, 100% { opacity: .7; transform: scaleX(.96); } 50% { opacity: 1; transform: none; } }
-@keyframes pl-aura { 0%, 100% { opacity: .35; transform: scale(.9); } 40%, 68% { opacity: 1; transform: none; } }
-@keyframes pl-mark { 0%, 100% { opacity: .1; transform: scale(.8); } 40%, 68% { opacity: 1; transform: none; } }
-@keyframes pl-sheen { 0%, 12% { left: 60%; opacity: 0; } 20% { opacity: 1; } 70% { opacity: 1; } 82%, 100% { left: 100%; opacity: 0; } }
-@keyframes pl-clip {
-  0% { opacity: 0; transform: translateY(40%) scale(.5); }
-  14% { opacity: 1; }
-  34% { opacity: 1; transform: translateY(-112%) scale(1) rotate(0deg); }
-  46% { opacity: 1; transform: translateY(-106%) scale(1) rotate(0deg); }
-  100% { opacity: 0; transform: translate(var(--dx, 30%), -330%) scale(.86) rotate(var(--rot, 12deg)); }
-}
-@keyframes pl-z { 0% { opacity: 0; transform: translate(-30%, 60%) scale(.6); } 22% { opacity: .95; } 100% { opacity: 0; transform: translate(70%, -140%) scale(1.15); } }
-@keyframes pl-spark { 0%, 100% { opacity: 0; transform: translateY(0) scale(.5); } 40% { opacity: .9; transform: translateY(-14px) scale(1); } 70% { opacity: 0; transform: translateY(-26px) scale(.6); } }
-.pl[data-scene="editor"] { aspect-ratio: 1300 / 620; }
-.pl-stage { position: absolute; inset: 0; }
-
-/* ── The clip board's scene (data-scene="clipboard"): the panda walks along, typing on its laptop,
-   puzzling something out. Its picture is in three layers the same size (the back leg, the body,
-   the front leg). One walk cycle (--pw-cycle) is two steps, as a walk is animated by hand:
-     • each leg reaches forward, plants (contact), carries the weight back (push), then lifts and
-       swings through (passing) — the two legs half a cycle apart, turning about their hips;
-     • the body drops onto each planted foot (a little squash), rises as the legs pass (a little
-       stretch), rocks with the stride and leans into it — following the legs a beat late, so the
-       weight reads;
-     • the shadow tightens as it rises and spreads as it lands; dust puffs where each foot lands;
-     • the ground runs by at the walk's own speed (a planted foot doesn't skate).
-   Over its head, a thought that floats a beat behind the bob (a scribble drawing itself, two
-   question marks), and the laptop's mark glows as it types. ── */
-.pl[data-scene="clipboard"] { aspect-ratio: 600 / 540; --pw-cycle: 1.15s; }
-.pw-fig {
-  position: absolute; left: 22%; width: 56%; bottom: 5.5%; aspect-ratio: 540 / 690;
-  transform-origin: 40% 100%; animation: pw-body var(--pw-cycle) cubic-bezier(.37,0,.63,1) infinite;
-}
-.pw-fig img { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; user-select: none; }
-.pw-body { filter: drop-shadow(0 10px 18px rgba(0,0,0,0.5)); }
-/* each leg turns about its hip (where it is in the picture); negative = foot forward */
-.pw-leg-front { transform-origin: 37.4% 70.6%; animation: pw-leg-front var(--pw-cycle) linear infinite; }
-.pw-leg-back { transform-origin: 16.1% 73.6%; animation: pw-leg-back var(--pw-cycle) linear infinite; }
-.pw-markglow {
-  position: absolute; left: 76.5%; top: 43.2%; width: 22%; aspect-ratio: 1; translate: -50% -50%; border-radius: 50%; pointer-events: none;
-  mix-blend-mode: screen; background: radial-gradient(closest-side, rgba(200,255,0,0.75), rgba(200,255,0,0.2) 55%, transparent);
-  animation: pw-type calc(var(--pw-cycle) / 2) steps(1, end) infinite, pl-mark 2.3s cubic-bezier(.65,0,.35,1) infinite;
-}
-.pw-shadow {
-  position: absolute; left: 24%; width: 50%; bottom: 2.6%; height: 6.5%; border-radius: 50%; pointer-events: none;
-  background: radial-gradient(closest-side, rgba(0,0,0,0.78), rgba(0,0,0,0.3) 60%, transparent); filter: blur(3px);
-  animation: pw-shadow calc(var(--pw-cycle) / 2) cubic-bezier(.37,0,.63,1) infinite;
-}
-/* dust where a foot lands: a soft puff that spreads and fades (front foot, then back foot) */
-.pw-dust {
-  position: absolute; bottom: 4.2%; width: 9%; aspect-ratio: 2.2; border-radius: 50%; pointer-events: none; opacity: 0;
-  background: radial-gradient(closest-side, rgba(220,230,200,0.38), rgba(200,255,0,0.08) 60%, transparent);
-  filter: blur(1.5px); transform-origin: 50% 100%; animation: pw-dust var(--pw-cycle) cubic-bezier(.2,.7,.3,1) infinite;
-}
-.pw-dust-front { left: 49%; }
-.pw-dust-back { left: 27%; animation-delay: calc(var(--pw-cycle) / -2); }
-/* the ground running by: short lime marks, fading out at both ends (it walks to the right, so they go
-   left), one mark spacing per step — about the length of a stride at this size */
-.pw-ground {
-  position: absolute; left: 0; right: 0; bottom: 4.6%; height: 2px; pointer-events: none; opacity: .7;
-  background: repeating-linear-gradient(90deg, rgba(200,255,0,0.75) 0 14px, transparent 14px 62px);
-  -webkit-mask-image: linear-gradient(90deg, transparent, #000 22%, #000 78%, transparent);
-          mask-image: linear-gradient(90deg, transparent, #000 22%, #000 78%, transparent);
-  animation: pw-ground calc(var(--pw-cycle) / 2) linear infinite;
-}
-/* the thought over its head: floats with the walk, a beat behind */
-.pw-think { position: absolute; left: 60%; top: 0; width: 27%; overflow: visible; pointer-events: none; transform-origin: 30% 100%; animation: pw-think 3.6s cubic-bezier(.45,0,.55,1) infinite, pw-think-bob calc(var(--pw-cycle) / 2) cubic-bezier(.37,0,.63,1) calc(var(--pw-cycle) / -8) infinite; }
-.pw-scribble { fill: none; stroke: #f4f4f5; stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; stroke-dasharray: 1; stroke-dashoffset: 1; animation: pw-draw 3.6s ease-in-out infinite; }
-.pw-tail { stroke-width: 2.2; animation-name: pw-draw-tail; }
-.pw-q { fill: #f4f4f5; font: 800 17px var(--font-display), system-ui, sans-serif; opacity: 0; transform-box: fill-box; transform-origin: 50% 100%; animation: pw-q 3.6s cubic-bezier(.3,1.5,.4,1) infinite; }
-.pw-q2 { font-size: 13px; animation-delay: .25s; }
-/* The body over one cycle: down on a planted foot (0%, 50%: a little squash, rocking towards that
-   foot's side), up as the legs pass (25%, 75%: a little stretch), leaning into the walk */
-@keyframes pw-body {
-  0%   { transform: translateY(0.6%) rotate(1.4deg) scale(1.012, .985); }
-  10%  { transform: translateY(0.9%) rotate(1.2deg) scale(1.016, .98); }
-  25%  { transform: translateY(-2.1%) rotate(0.4deg) scale(.994, 1.012); }
-  50%  { transform: translateY(0.6%) rotate(-0.2deg) scale(1.012, .985); }
-  60%  { transform: translateY(0.9%) rotate(0deg) scale(1.016, .98); }
-  75%  { transform: translateY(-2.1%) rotate(0.9deg) scale(.994, 1.012); }
-  100% { transform: translateY(0.6%) rotate(1.4deg) scale(1.012, .985); }
-}
-/* A leg: contact (forward, planted) → push (back, still planted: a steady sweep) → toe-off → swing
-   through, lifted (eased, quick) → contact. Front and back are half a cycle apart. */
-@keyframes pw-leg-front {
-  0%   { transform: rotate(-9deg); animation-timing-function: cubic-bezier(.33,0,.67,1); }
-  50%  { transform: rotate(15deg); animation-timing-function: cubic-bezier(.5,0,.3,1); }
-  72%  { transform: rotate(2deg) translateY(-3.2%); animation-timing-function: cubic-bezier(.4,0,.2,1); }
-  100% { transform: rotate(-9deg); }
-}
-@keyframes pw-leg-back {
-  0%   { transform: rotate(12deg); animation-timing-function: cubic-bezier(.5,0,.3,1); }
-  22%  { transform: rotate(-1deg) translateY(-3%); animation-timing-function: cubic-bezier(.4,0,.2,1); }
-  50%  { transform: rotate(-14deg); animation-timing-function: cubic-bezier(.33,0,.67,1); }
-  100% { transform: rotate(12deg); }
-}
-/* the shadow: full at each landing, tighter and lighter as the body rises (two per cycle) */
-@keyframes pw-shadow { 0%, 100% { transform: scaleX(1.02); opacity: 1; } 50% { transform: scaleX(.88); opacity: .72; } }
-/* dust: a puff just after the foot lands, then gone */
-@keyframes pw-dust {
-  0%, 2% { opacity: 0; transform: translateX(0) scale(.35, .5); }
-  8%     { opacity: .9; }
-  30%    { opacity: 0; transform: translateX(-35%) scale(1.25, 1); }
-  100%   { opacity: 0; transform: translateX(-35%) scale(1.25, 1); }
-}
-@keyframes pw-ground { to { background-position: -62px 0; } }
-/* the laptop's mark flickers a touch with each keystroke (two a step) */
-@keyframes pw-type { 0% { filter: brightness(1.15); } 50% { filter: brightness(.9); } }
-@keyframes pw-think { 0%, 100% { transform: rotate(-2deg); } 50% { transform: rotate(2deg); } }
-@keyframes pw-think-bob { 0%, 100% { translate: 0 0; } 50% { translate: 0 -2.5%; } }
-@keyframes pw-draw { 0%, 6% { stroke-dashoffset: 1; opacity: 0; } 10% { opacity: 1; } 46%, 82% { stroke-dashoffset: 0; opacity: 1; } 94%, 100% { stroke-dashoffset: 0; opacity: 0; } }
-@keyframes pw-draw-tail { 0%, 40% { stroke-dashoffset: 1; opacity: 0; } 44% { opacity: 1; } 56%, 82% { stroke-dashoffset: 0; opacity: 1; } 94%, 100% { stroke-dashoffset: 0; opacity: 0; } }
-@keyframes pw-q { 0%, 54% { opacity: 0; transform: scale(.2) rotate(-20deg); } 62%, 82% { opacity: 1; transform: rotate(8deg); } 94%, 100% { opacity: 0; transform: translateY(-20%) rotate(8deg); } }
-/* the full-screen loader with the mascot: a bigger glow behind it; the picture already carries its own light */
+.pw-poster, .pw-video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; pointer-events: none; user-select: none; background: #000; }
+.pw-video { opacity: 0; transition: opacity .2s ease; }
+.pl[data-playing] .pw-video { opacity: 1; }
+/* every loading screen with the panda is black (its videos are on black), no glow or grid */
+.bls[data-mascot] { background: #000; }
+.bls[data-mascot] .bls-glow, .bls[data-mascot] .bls-grid { display: none; }
 .bls-mascot { position: relative; margin-bottom: 6px; }
-.bls[data-mascot] .bls-glow { top: 42%; width: 720px; height: 720px; }
+/* motion turned down: the still picture only */
 @media (prefers-reduced-motion: reduce) {
-  .pl-art, .pl-floor, .pl-aura, .pl-lid i, .pl-markglow, .pl-clip, .pl-z, .pl-spark,
-  .pw-fig, .pw-leg-front, .pw-leg-back, .pw-markglow, .pw-shadow, .pw-ground, .pw-think, .pw-scribble, .pw-q, .pw-dust { animation: none; }
-  .pw-scribble { stroke-dashoffset: 0; }
-  .pw-q { opacity: 1; }
-  .pl-lid i { opacity: 0; }
-  .pl-markglow { opacity: .6; }
+  .pw-video { display: none; }
 }
 @keyframes bls-breathe { 0%, 100% { opacity: .75; scale: 1; } 50% { opacity: 1; scale: 1.06; } }
-@keyframes bls-sweep { from { left: -40%; } to { left: 100%; } }
+@keyframes bls-sweep { from { transform: translateX(-100%); } to { transform: translateX(250%); } }
 @keyframes bls-tip { from { opacity: 0; transform: translateY(6px); } }
 @media (prefers-reduced-motion: reduce) {
   .bls-glow, .bls-bar span, .bls-tip { animation: none; }
@@ -2246,18 +2083,27 @@ body {
 .ov-shape button[data-on] { background: rgb(var(--ed-fg) / 0.14); color: #c8ff00; }
 /* the toolbar's Speed panel (SpeedPanel.tsx) */
 .spd-badge { position: absolute; right: -4px; bottom: -3px; padding: 0 3px; border-radius: 4px; font-size: 8.5px; font-weight: 800; line-height: 12px; color: #0a0a0a; background: #c8ff00; }
-.spd-panel { position: absolute; left: -8px; bottom: calc(100% + 10px); z-index: 80; width: 300px; display: flex; flex-direction: column; gap: 10px; padding: 12px; border-radius: 14px;
+.spd-panel { position: fixed; z-index: 200; width: 300px; display: flex; flex-direction: column; gap: 10px; padding: 12px; border-radius: 14px;
   background: var(--ed-popover, var(--ed-panel)); border: 1px solid rgb(var(--ed-fg) / 0.14); box-shadow: 0 16px 40px rgba(0, 0, 0, 0.6); color: var(--ed-text); }
 .spd-head { display: flex; align-items: baseline; justify-content: space-between; font-size: 13px; }
 .spd-head span { font-size: 11.5px; color: rgb(var(--ed-fg) / 0.6); }
 .spd-head span b { color: #c8ff00; }
-.spd-presets { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; }
+.spd-presets { display: grid; grid-template-columns: repeat(5, 1fr); gap: 4px; }
 .spd-presets button { height: 28px; border-radius: 8px; font-size: 12px; font-weight: 700; color: rgb(var(--ed-fg) / 0.75); background: rgb(var(--ed-fg) / 0.06); transition: background .12s, color .12s; }
 .spd-presets button:hover { background: rgb(var(--ed-fg) / 0.1); color: var(--ed-text); }
 .spd-presets button[data-on] { background: #c8ff00; color: #0a0a0a; }
-.spd-slider { display: flex; align-items: center; gap: 6px; font-size: 10px; color: rgb(var(--ed-fg) / 0.45); }
-.spd-slider input { flex: 1; accent-color: #c8ff00; }
-.spd-slider output { min-width: 38px; text-align: right; font-size: 12px; font-weight: 800; color: var(--ed-text); }
+.spd-presets button:disabled { opacity: 0.3; cursor: not-allowed; background: rgb(var(--ed-fg) / 0.06); color: rgb(var(--ed-fg) / 0.75); }
+.spd-slider { display: flex; align-items: flex-start; gap: 10px; }
+.spd-track { position: relative; flex: 1; padding-bottom: 14px; }
+.spd-track input { display: block; width: 100%; margin: 4px 0 0; accent-color: #c8ff00; }
+.spd-ticks { position: absolute; left: 0; right: 0; bottom: 0; height: 12px; pointer-events: none; }
+.spd-ticks span { position: absolute; top: 0; translate: -50% 0; font-size: 9.5px; font-weight: 600; color: rgb(var(--ed-fg) / 0.4); }
+.spd-ticks span::before { content: ""; position: absolute; left: 50%; top: -5px; width: 1px; height: 4px; background: rgb(var(--ed-fg) / 0.3); }
+.spd-ticks span[data-on] { color: #c8ff00; }
+.spd-type { width: 58px; height: 28px; padding: 0 6px; border-radius: 8px; text-align: center; font-size: 12.5px; font-weight: 800; color: var(--ed-text);
+  background: rgb(var(--ed-fg) / 0.06); border: 1px solid rgb(var(--ed-fg) / 0.12); outline: none; }
+.spd-type:focus { border-color: #c8ff00; background: rgb(var(--ed-fg) / 0.1); }
+.spd-hint { margin: 0; padding: 8px 10px; border-radius: 9px; font-size: 11px; line-height: 1.4; color: rgb(var(--ed-fg) / 0.5); background: rgb(var(--ed-fg) / 0.04); }
 .spd-switch { display: flex; align-items: center; gap: 9px; padding: 7px 8px; border-radius: 9px; background: rgb(var(--ed-fg) / 0.04); cursor: pointer; }
 .spd-switch[data-off] { opacity: 0.45; cursor: default; }
 .spd-switch input { accent-color: #c8ff00; width: 15px; height: 15px; }
@@ -2265,5 +2111,28 @@ body {
 .spd-switch i { font-style: normal; font-size: 10.5px; color: rgb(var(--ed-fg) / 0.5); }
 .spd-reset { align-self: flex-start; font-size: 11.5px; font-weight: 600; color: rgb(var(--ed-fg) / 0.6); }
 .spd-reset:hover { color: var(--ed-text); }
-/* a part played at another speed: its speed beside its length on the timeline */
-.tl2-spd { position: absolute; display: flex; align-items: center; gap: 2px; padding: 1px 5px; border-radius: 5px; font-size: 10px; font-weight: 800; line-height: 15px; color: #0a0a0a; background: #c8ff00; pointer-events: none; }
+.spd-note { margin: -4px 0 0; font-size: 10.5px; line-height: 1.35; color: rgb(var(--ed-fg) / 0.5); }
+.spd-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.spd-all { margin-left: auto; padding: 5px 10px; border-radius: 8px; font-size: 11.5px; font-weight: 700; color: var(--ed-text); background: rgb(var(--ed-fg) / 0.08); }
+.spd-all:hover { background: rgb(var(--ed-fg) / 0.14); }
+/* A part played at another speed: slow motion blue, faster orange — a band along its top, its
+   colour over its pictures, its speed (turtle / bolt) bottom left, and a strip on the ruler above */
+:root { --spd-slow: #4da3ff; --spd-fast: #ff9a2e; }
+.tl2-block[data-speed="slow"] { --spd: var(--spd-slow); }
+.tl2-block[data-speed="fast"] { --spd: var(--spd-fast); }
+.tl2-block[data-speed] { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--spd) 55%, transparent); }
+.tl2-block[data-speed]::before { content: ""; position: absolute; left: 0; right: 0; top: 0; height: 3px; border-radius: 8px 8px 0 0; background: var(--spd); z-index: 1; pointer-events: none; }
+.tl2-speed-tint { background: color-mix(in srgb, var(--spd) 22%, transparent); mix-blend-mode: normal; }
+.tl2-spd { position: absolute; display: flex; align-items: center; gap: 3px; padding: 1px 5px; border-radius: 5px; font-size: 10px; font-weight: 800; line-height: 15px; color: #0a0a0a; background: var(--spd, #c8ff00); pointer-events: none; white-space: nowrap; z-index: 2; }
+.tl2-spd em { font-style: normal; font-weight: 700; font-size: 9px; opacity: .75; }
+@container (max-width: 96px) { .tl2-spd em { display: none; } }
+@container (max-width: 56px) { .tl2-spd svg { display: none; } }
+/* (a narrow part at another speed: its speed rather than its length, which is in its tooltip) */
+@container (max-width: 112px) { .tl2-block[data-speed] .tl2-len { display: none; } }
+.spd-tag { position: absolute; z-index: 30; top: 10px; left: 10px; display: flex; align-items: center; gap: 5px; padding: 3px 9px; border-radius: 999px;
+  font-size: 11px; font-weight: 800; color: #0a0a0a; pointer-events: none; box-shadow: 0 2px 10px rgba(0,0,0,0.4); }
+.spd-tag[data-kind="slow"] { background: var(--spd-slow); }
+.spd-tag[data-kind="fast"] { background: var(--spd-fast); }
+.tl2-ruler-speed { position: absolute; bottom: 0; height: 3px; border-radius: 2px; pointer-events: auto; }
+.tl2-ruler-speed[data-kind="slow"] { background: var(--spd-slow); }
+.tl2-ruler-speed[data-kind="fast"] { background: var(--spd-fast); }
