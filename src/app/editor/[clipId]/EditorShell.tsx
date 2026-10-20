@@ -2068,12 +2068,16 @@ export function EditorShell({
       const views = [...seg.crop_boxes].sort((a, b) => a.slot_index - b.slot_index).filter(b => !b.image_path
         && !(b.source_video_id && b.source_video_id !== mainVideoId)
         && (!mainSlots || (mainSlots.includes(b.slot_index) && frameSlotSize(seg.layout as FrameLayout, true, b.slot_index, seg.frame) !== null)))
+      // Two or more views: each follows the person inside it, nobody in two (viewPeople)
+      const who = views.length > 1 ? viewPeople(seg, views, tracked, kfs, cuts) : null
       views.forEach((box, i) => {
         const size = getBoxPositionAtLerp(seg.start_ms, kfs[box.id] ?? box.keyframes ?? [])
         const view = { w: size.w, h: size.h }
-        const changes = views.length === 1
+        const person = who ? who[i] : null
+        if (who && !person) return
+        const changes = !person
           ? autoDirectChanges(tracked, seg.start_ms, seg.end_ms, trim.toSource, view, cuts, trim.toTimeline)
-          : followChanges(tracked[i % tracked.length].path, seg.start_ms, seg.end_ms, trim.toSource, view, 'smooth', cuts)
+          : followChanges(person.path, seg.start_ms, seg.end_ms, trim.toSource, view, 'smooth', cuts)
         if (!changes?.length) return
         next[box.id] = buildKeyframes(changes.map((c, k) => (k === 0 ? { ...c, t_ms: seg.start_ms } : c)))
           .map(k => ({ id: crypto.randomUUID(), box_id: box.id, t_ms: k.t_ms, x: k.x, y: k.y, w: k.w, h: k.h }))
@@ -2089,6 +2093,37 @@ export function EditorShell({
     setSubjectNotice(groupNote + (names.length > 1
       ? `${groupNote ? 'Elsewhere the' : 'The'} view switches between ${names.slice(0, -1).join(', ')} and ${names[names.length - 1]} through the clip — to whoever is talking. Undo takes it back.`
       : `${groupNote ? 'Elsewhere the' : 'The'} view follows ${names[0]} through the clip. Undo takes it back.`))
+  }
+  /**
+   * Who each view of a section with two or more (Split, Trio, a frame) follows (user, 2026-10-20: a
+   * Trio placed on three people had its third view sent to the first view's person): the tracked
+   * person whose face is inside it most often through the section — as the user placed it — each
+   * person in one view at most. A view with none of them inside stays as it is (null). When no view
+   * has anyone inside (views never placed on anyone), the people seen in the section, one per view.
+   */
+  function viewPeople<P extends { path: SubjectPoint[] }>(
+    seg: SegmentLocal, views: CropBoxLocal[], tracked: P[], kfs: Record<string, BoxKeyframe[]>, cuts: number[],
+  ): Array<P | null> {
+    const moments: number[] = []
+    for (let t = seg.start_ms; t < seg.end_ms; t += 500) moments.push(t)
+    const faceAt = (p: P, t: number) => subjectBoxAt(p.path, trim.toSource(t), cuts)
+    const pairs = views.flatMap((box, i) => tracked.map((p, k) => ({
+      i, k,
+      n: moments.filter(t => {
+        const face = faceAt(p, t)
+        if (!face) return false
+        const v = getBoxPositionAtLerp(t, kfs[box.id] ?? box.keyframes ?? [])
+        const cx = face.x + face.w / 2, cy = face.y + face.h / 2
+        return cx >= v.x && cx <= v.x + v.w && cy >= v.y && cy <= v.y + v.h
+      }).length,
+    }))).filter(x => x.n > 0).sort((a, b) => b.n - a.n)
+    const out: Array<P | null> = views.map(() => null)
+    const taken = new Set<number>()
+    for (const { i, k } of pairs) if (!out[i] && !taken.has(k)) { out[i] = tracked[k]; taken.add(k) }
+    if (!out.some(x => x !== null)) {
+      tracked.filter(p => moments.some(t => faceAt(p, t))).slice(0, views.length).forEach((p, i) => { out[i] = p })
+    }
+    return out
   }
   // When tracking finishes, the clip is framed on them
   const wasBusyRef = useRef(false)
