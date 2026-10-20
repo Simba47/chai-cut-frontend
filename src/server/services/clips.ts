@@ -1,6 +1,8 @@
 import sql from '@/lib/db'
 import { cleanTrims, trimMap, MAX_CLIP_MS, MIN_CLIP_MS } from '@/lib/trims'
 import { cleanProgressBar } from '@/lib/shared/brandKit'
+import { cleanCardLook, cleanFrameBackground } from '@/lib/shared/brandCard'
+import { cleanBrandOn } from '@/lib/shared/brandOn'
 import type { SegmentLocal, BoxKeyframeLocal, CaptionStyle, TextOverlay, AudioTrack, Transition, Overlay, FrameSettings, FrameItem, CornerStyle } from '@chai-cut/shared'
 
 interface CreateClipInput {
@@ -49,6 +51,8 @@ interface SaveClipInput {
   originalSound?: { volume: number; muted: boolean }
   /** The clip's progress bar (Brand kit panel), null = none; left out by an editor that doesn't know it: what's saved stays */
   progressBar?: unknown
+  /** The brand kit on the clip and what it changed (lib/shared/brandOn.ts); null = off */
+  brand?: unknown
   /**
    * Parts of the video removed from the clip: [[start, end], …] in ms of the source video
    * (lib/trims.ts). Left out by an editor that doesn't know about them: what's saved stays.
@@ -185,6 +189,11 @@ export async function saveClip(userId: string, clipId: string, body: SaveClipInp
   // The progress bar, once the worker has added the field
   const bar = body.progressBar === undefined ? undefined : cleanProgressBar(body.progressBar)
   const savesBar = bar !== undefined && await hasColumn('clips', 'progress_bar')
+  // The brand kit switch (clips.brand, once the backend has added it). A huge `before` (thousands of
+  // texts) is dropped rather than refused: the brand then comes off without putting styles back
+  const brandOn = body.brand === undefined ? undefined : cleanBrandOn(body.brand)
+  const brandJson = brandOn && JSON.stringify(brandOn).length > 400_000 ? { ...brandOn, before: null } : brandOn
+  const savesBrand = brandJson !== undefined && await hasColumn('clips', 'brand')
 
   // Transitions the database can't take yet (before the backend widens its check): saved as a
   // Dissolve, and the editor is told how many, so it can say so
@@ -278,6 +287,7 @@ export async function saveClip(userId: string, clipId: string, body: SaveClipInp
     if (trims) q.push(tx`UPDATE clips SET trim_ranges = ${trims.length ? sql.json(trims as never) : null} WHERE id = ${clipId}`)
     if (savesLayers) q.push(tx`UPDATE clips SET layers = ${body.layers ? sql.json(body.layers as never) : null} WHERE id = ${clipId}`)
     if (savesBar) q.push(tx`UPDATE clips SET progress_bar = ${bar ? sql.json(bar as never) : null} WHERE id = ${clipId}`)
+    if (savesBrand) q.push(tx`UPDATE clips SET brand = ${brandJson ? sql.json(brandJson as never) : null} WHERE id = ${clipId}`)
     if (hasOriginal) {
       q.push(tx`UPDATE clips SET original_volume = ${Math.max(0, Math.min(1, original!.volume))}, original_muted = ${!!original!.muted} WHERE id = ${clipId}`)
     }
@@ -566,6 +576,10 @@ function cleanFrame(frame: FrameSettings): FrameSettings {
     split2: num(frame.split2, 0, 1),
     flip: frame.flip === true ? true : undefined,
     flip2: frame.flip2 === true ? true : undefined,
+    // A Branded card's own look (lib/shared/brandCard.ts)
+    card: frame.card && typeof frame.card === 'object' ? cleanCardLook(frame.card) : undefined,
+    // The frame's own background (a colour, gradient or pattern)
+    bg: frame.bg && typeof frame.bg === 'object' ? cleanFrameBackground(frame.bg) : undefined,
     face_box: frame.face_box && typeof frame.face_box === 'object' && [frame.face_box.x, frame.face_box.y, frame.face_box.w].every(v => typeof v === 'number' && isFinite(v))
       ? { x: num(frame.face_box.x, 0, 1)!, y: num(frame.face_box.y, 0, 1)!, w: num(frame.face_box.w, 0.05, 1)! } : undefined,
     main_volumes: slotMap(frame.main_volumes, v => num(v, 0, 1)),
@@ -604,12 +618,10 @@ export async function regenerateClipText(userId: string, clipId: string) {
   if (!words.length) throw Object.assign(new Error('This clip has no captions yet, so there is nothing to write from'), { status: 400 })
 
   const { generateClipText } = await import('@/lib/clipText')
-  // In the account's default brand kit's voice, when it has one (services/brandKits.ts)
-  const { defaultBrandKit } = await import('./brandKits')
-  const voice = (await defaultBrandKit(userId))?.voice ?? null
+  // (no brand voice: taken out of brand kits — user, 2026-10-20)
   let text
   try {
-    text = await generateClipText(words, clip.video_title ?? null, prompt => askGemini(prompt), 'roman', voice)
+    text = await generateClipText(words, clip.video_title ?? null, prompt => askGemini(prompt), 'roman', null)
   } catch (e) {
     console.error('[ai-text] Gemini error:', e)
     throw Object.assign(new Error('AI could not write the text right now. Try again in a moment.'), { status: 502 })

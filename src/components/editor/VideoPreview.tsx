@@ -10,6 +10,7 @@ import type { BoxPosition } from '@/lib/interpolation'
 import type { TextCase } from './CaptionStyler'
 import { applyCase } from './CaptionStyler'
 import { normalizedSlotAspect, fitToAspect } from '@/modules/editor/utils'
+import { backgroundPixels, frameBackgroundOf, type FrameBackground } from '@/lib/shared/brandCard'
 import { isFrameLayout, frameSlotLabels, frameLanesFor, frameBandShown, frameOf, itemAt, captionBandAt, cornerGeometry, MIN_ROW_H, mainRect, boxRect, MIN_BOX as MIN_MAIN_BOX, frameAreas, frameBase, areaRadius, frameSlotSize, isTextLane, frameRows, validRowOrder, slotOffers, BLUR_SOURCE_SLOT, FRAME_TEMPLATES, barAt, barFlipped, MIN_MOVABLE_W } from '@/modules/editor/frames'
 import type { FrameMediaPool } from '@/modules/editor/frameMedia'
 import { useLiveTimeMs, liveTime, usePlayerStore } from '@/modules/player/store'
@@ -614,6 +615,22 @@ function containSource(ctx: CanvasRenderingContext2D, src: CanvasImageSource, sw
   ctx.drawImage(src, 0, 0, sw, sh, dx + (dw - w) / 2, dy + (dh - h) / 2, w, h)
 }
 
+// A frame's own gradient / pattern background, drawn once per look and size (lib/shared/brandCard.ts)
+const cardBgCache = new Map<string, HTMLCanvasElement>()
+function frameBackground(bg: FrameBackground, W: number, H: number): HTMLCanvasElement | null {
+  if (bg.style === 'solid' || W < 2 || H < 2 || typeof document === 'undefined') return null
+  const key = `${W}x${H}:${JSON.stringify(bg)}`
+  let c = cardBgCache.get(key)
+  if (!c) {
+    c = document.createElement('canvas')
+    c.width = W; c.height = H
+    c.getContext('2d')!.putImageData(new ImageData(backgroundPixels(bg, W, H), W, H), 0, 0)
+    if (cardBgCache.size > 12) cardBgCache.delete(cardBgCache.keys().next().value!)
+    cardBgCache.set(key, c)
+  }
+  return c
+}
+
 function paintFrame(
   ctx: CanvasRenderingContext2D,
   video: HTMLVideoElement,
@@ -634,8 +651,15 @@ function paintFrame(
   }
   // Underneath everything: a blurred copy of the main video (Blur fill), the band's colour, or black
   const base = frameBase(layout)
-  ctx.fillStyle = base === 'band' ? bandBg : '#000'
+  // The frame's own background (frame.bg, or a Branded card's look): a colour, gradient or pattern
+  // behind and around its videos — as the export draws it
+  const ownBg = frameBackgroundOf(layout, frame)
+  ctx.fillStyle = ownBg ? ownBg.color : base === 'band' ? bandBg : '#000'
   ctx.fillRect(0, 0, W, H)
+  if (ownBg) {
+    const bgImg = frameBackground(ownBg, W, H)
+    if (bgImg) ctx.drawImage(bgImg, 0, 0)
+  }
   if (base === 'blur') {
     // The blurred picture follows what its slot shows: a photo or video put there, else the main video
     const over = itemAt(frame, BLUR_SOURCE_SLOT, tMs, seg)
@@ -678,11 +702,15 @@ function paintFrame(
     }
     const contain = area.fit === 'contain'
     const fill = area.fill ?? (contain ? '#000' : '#111')
-    // Underneath: the main video if this slot shows it, otherwise an empty (dark) slot
-    if (fill !== 'none') { ctx.save(); clipArea(ctx, a); ctx.fillStyle = fill; ctx.fillRect(a.x, a.y, a.w, a.h); ctx.restore() }
     // A photo or video put in a shown-whole slot replaces the main video while it shows (shown whole
     // too, it wouldn't cover it: the main video would peek around it)
     const coveredHere = contain && !!it && (it.kind === 'photo' || it.kind === 'video')
+    // With its own background, a slot showing a video or photo leaves the ring around a rounded
+    // one see-through: the background shows there, not black (render.py: the slot's alpha mask)
+    const showsMedia = (main.has(area.slot) && !frame.main_hidden?.[String(area.slot)]) || (!!it && (it.kind === 'photo' || it.kind === 'video'))
+    const ring = ownBg && !contain && showsMedia ? 'none' : '#000'
+    // Underneath: the main video if this slot shows it, otherwise an empty (dark) slot
+    if (fill !== 'none' && ring !== 'none') { ctx.save(); clipArea(ctx, a); ctx.fillStyle = fill; ctx.fillRect(a.x, a.y, a.w, a.h); ctx.restore() }
     if (main.has(area.slot) && !frame.main_hidden?.[String(area.slot)] && vW && vH && !coveredHere) {
       const box = seg.crop_boxes.find(b => b.slot_index === area.slot)
       // Shown whole: the video isn't cropped here — unless the slot crops the main video to its own
@@ -693,7 +721,7 @@ function paintFrame(
         const p = getPositionAt(box.id, tMs)
         inSlot(ctx, frame.main_corners?.[String(area.slot)], a,
           (dx, dy, dw, dh) => coverCrop(ctx, video, p.x * vW, p.y * vH, p.w * vW, p.h * vH, dx, dy, dw, dh),
-          mainRect(frame, area.slot))
+          mainRect(frame, area.slot), ring)
       }
     }
     if (!it) continue
@@ -705,12 +733,12 @@ function paintFrame(
       if (img && img.complete && img.naturalWidth) {
         const from = Math.max(it.start_ms, seg.start_ms), to = Math.min(it.end_ms, seg.end_ms)
         const m = photoMotion(it.motion, (tMs - from) / Math.max(1, to - from))
-        inSlot(ctx, it.corners, a, put(img, img.naturalWidth, img.naturalHeight, m.zoom, m.panX), boxRect(it.rect), contain ? fill : '#000', contain ? { w: img.naturalWidth, h: img.naturalHeight } : true)
+        inSlot(ctx, it.corners, a, put(img, img.naturalWidth, img.naturalHeight, m.zoom, m.panX), boxRect(it.rect), contain ? fill : ring, contain ? { w: img.naturalWidth, h: img.naturalHeight } : true)
       }
       continue
     }
     const v = pool?.video(it)
-    if (v && v.readyState >= 2) inSlot(ctx, it.corners, a, put(v, v.videoWidth, v.videoHeight), boxRect(it.rect), contain ? fill : '#000', contain ? { w: v.videoWidth, h: v.videoHeight } : true)
+    if (v && v.readyState >= 2) inSlot(ctx, it.corners, a, put(v, v.videoWidth, v.videoHeight), boxRect(it.rect), contain ? fill : ring, contain ? { w: v.videoWidth, h: v.videoHeight } : true)
   }
 }
 

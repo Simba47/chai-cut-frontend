@@ -1,0 +1,55 @@
+import type { CaptionStyle, CornerStyle } from './types'
+import type { ProgressBar } from './brandKit'
+
+// A clip's brand kit, on or off (user, 2026-10-19): what the editor keeps (modules/editor/brandState.ts)
+// and the clip saves (clips.brand). Shared so the server can check what it saves.
+
+/** What a frame section was before the brand went on it */
+export interface FrameBefore {
+  /** The layout it was branded as (a new layout picked there gets branded again) */
+  layout: string
+  band: { bg: string; color: string }
+  /** Its text items' colours */
+  items: Record<string, { color?: string | null; bg?: string | null }>
+  main_corners?: Record<string, CornerStyle> | null
+  /** Items' own corners (photos and videos in its slots) */
+  item_corners?: Record<string, CornerStyle | null>
+  /** A Branded card's look before (absent: none) and the text the brand added to it */
+  card?: unknown
+  added?: string[]
+}
+
+export interface BrandBefore {
+  texts: Record<string, { font: string | null; color: string | null }>
+  caption: Partial<CaptionStyle> | null
+  text_case: string | null
+  progress_bar: ProgressBar | null
+  frames: Record<string, FrameBefore>
+  /** The end card section the brand made, if it made one */
+  end_card: string | null
+}
+
+export interface BrandOn {
+  kit_id: string
+  /** null: on since the clip was made (its default kit), nothing to put back but what the brand adds */
+  before: BrandBefore | null
+}
+
+/** A saved clip's brand state made safe (clips.brand); null when off or not one */
+export function cleanBrandOn(raw: unknown): BrandOn | null {
+  if (!raw || typeof raw !== 'object') return null
+  const r = raw as { kit_id?: unknown; before?: unknown }
+  if (typeof r.kit_id !== 'string' || !/^[0-9a-f-]{36}$/i.test(r.kit_id)) return null
+  const b = r.before && typeof r.before === 'object' ? r.before as Partial<BrandBefore> : null
+  return {
+    kit_id: r.kit_id.toLowerCase(),
+    before: b ? {
+      texts: b.texts && typeof b.texts === 'object' ? b.texts : {},
+      caption: b.caption && typeof b.caption === 'object' ? b.caption : null,
+      text_case: typeof b.text_case === 'string' ? b.text_case : null,
+      progress_bar: b.progress_bar && typeof b.progress_bar === 'object' ? b.progress_bar as ProgressBar : null,
+      frames: b.frames && typeof b.frames === 'object' ? b.frames : {},
+      end_card: typeof b.end_card === 'string' ? b.end_card : null,
+    } : null,
+  }
+}

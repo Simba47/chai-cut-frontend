@@ -1,4 +1,5 @@
 import type { FrameLayout, FrameBand, FrameItem, FrameLane, FrameSettings, LayoutType, SegmentLocal, CornerStyle } from '@chai-cut/shared'
+import { cardAreas, cleanCardLook } from '@/lib/shared/brandCard'
 
 // Frame templates. Most divide the 9:16 reel top-to-bottom into rows (media slots, a letterbox
 // band for text, a caption strip) whose lines can be dragged; the others place areas anywhere —
@@ -309,7 +310,7 @@ export function isFrameLayout(layout: LayoutType | string | null | undefined): l
  * one per template row) and their order top to bottom (the bar's swap: template row numbers).
  * A plain list is just the heights.
  */
-export type RowLayout = number[] | Pick<FrameSettings, 'row_h' | 'row_order' | 'split' | 'split2' | 'flip' | 'flip2' | 'face_box'> | null | undefined
+export type RowLayout = number[] | Pick<FrameSettings, 'row_h' | 'row_order' | 'split' | 'split2' | 'flip' | 'flip2' | 'face_box' | 'card'> | null | undefined
 
 /** The smallest the movable area (the face cam) can be made, as a share of the frame's width */
 export const MIN_MOVABLE_W = 0.12
@@ -341,6 +342,14 @@ export function barFlipped(layout: FrameLayout, custom?: RowLayout, which: 1 | 2
 export function adjustFreeAreas(layout: FrameLayout, areas: readonly FrameAreaDef[], custom?: RowLayout): FrameAreaDef[] {
   const tpl = FRAME_TEMPLATES[layout]
   const set = Array.isArray(custom) ? null : custom
+  // A Branded card with its own look (frame.card): its title, video and @handle where that look puts them
+  if (layout === 'frame_brand_card' && set?.card) {
+    const placed = cardAreas(cleanCardLook(set.card))
+    return areas.map(a => {
+      const at = a.kind === 'slot' ? placed.video : a.kind === 'band' && a.lane === 'band2' ? placed.handle : a.kind === 'band' ? placed.title : null
+      return at ? { ...a, x: at.x, y: at.y, w: at.w, h: at.h, ...(a.kind === 'slot' ? { radius: at.radius } : {}) } as FrameAreaDef : { ...a }
+    })
+  }
   const out = areas.map(a => ({ ...a }))
   const mv = tpl.movable
   const shift = (bar: FreeBar, s: number, moving?: number) => {

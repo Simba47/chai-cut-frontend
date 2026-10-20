@@ -4,6 +4,7 @@ import { create } from 'zustand'
 import { useEditorStore, type KeyframeMap } from './store'
 import { useMediaStore } from '@/modules/media/store'
 import { useCaptionStore } from '@/modules/captions/store'
+import { useBrandStore } from './brandState'
 
 // Undo / redo for everything the editor saves: formats and frames, crop boxes and their motion,
 // removed parts of the video, overlays, text, audio, transitions, filters and the caption style.
@@ -23,6 +24,8 @@ interface Snapshot {
   transitions: ReturnType<typeof useMediaStore.getState>['transitions']
   filters: ReturnType<typeof useMediaStore.getState>['filters']
   captionStyle: ReturnType<typeof useCaptionStore.getState>['captionStyle']
+  /** The brand kit on the clip (brandState.ts): turning it on or off is one step like any edit */
+  brand: ReturnType<typeof useBrandStore.getState>['on']
 }
 
 const LIMIT = 100
@@ -41,6 +44,7 @@ function take(): Snapshot {
     segments: e.segments, keyframes: e.keyframes, trims: e.trims, clipRange: e.clipRange,
     overlays: m.overlays, textOverlays: m.textOverlays, audioTracks: m.audioTracks, transitions: m.transitions, filters: m.filters,
     captionStyle: c.captionStyle,
+    brand: useBrandStore.getState().on,
   }
 }
 
@@ -53,6 +57,7 @@ function restore(s: Snapshot) {
   useEditorStore.setState({ segments: s.segments, keyframes: s.keyframes, trims: s.trims, clipRange: s.clipRange })
   useMediaStore.setState({ overlays: s.overlays, textOverlays: s.textOverlays, audioTracks: s.audioTracks, transitions: s.transitions, filters: s.filters })
   useCaptionStore.setState({ captionStyle: s.captionStyle, romanize: s.captionStyle.language === 'roman' })
+  useBrandStore.setState({ on: s.brand })
 }
 
 export const useHistory = create<{ canUndo: boolean; canRedo: boolean }>(() => ({ canUndo: false, canRedo: false }))
@@ -125,7 +130,7 @@ export function redo() {
 export function startHistory(): () => void {
   past = []; future = []; inBurst = false; committed = take()
   sync()
-  const unsubs = [useEditorStore.subscribe(onChange), useMediaStore.subscribe(onChange), useCaptionStore.subscribe(onChange)]
+  const unsubs = [useEditorStore.subscribe(onChange), useMediaStore.subscribe(onChange), useCaptionStore.subscribe(onChange), useBrandStore.subscribe(onChange)]
   const down = () => { pointerDown = true }
   const up = () => { pointerDown = false }
   window.addEventListener('pointerdown', down, true)

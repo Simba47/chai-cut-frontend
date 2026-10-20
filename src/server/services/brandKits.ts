@@ -3,7 +3,7 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 import { r2, R2_BUCKET } from '@/lib/r2'
 import sql from '@/lib/db'
 import { getUserPlan } from './quota'
-import { brandKitLimit, cleanBrandKitData, DEFAULT_BRAND_KIT, brandCaptionStyle, cleanProgressBar, logoBox, logoSpan, isBrandFont, brandFontKey, MAX_KIT_SHARES, SHARE_PLANS, type BrandKit, type BrandKitData } from '@/lib/shared/brandKit'
+import { brandKitLimit, cleanBrandKitData, DEFAULT_BRAND_KIT, brandCaptionStyle, logoBox, logoSpan, isBrandFont, brandFontKey, MAX_KIT_SHARES, SHARE_PLANS, type BrandKit, type BrandKitData } from '@/lib/shared/brandKit'
 import { hasColumn } from './clips'
 import { uploadMusic, musicUrl } from './music'
 
@@ -187,8 +187,10 @@ export async function brandNewClips(userId: string, clips: Array<{ id: string; l
         }
       }))}`
     }
-    if (kit.progress.on && await hasColumn('clips', 'progress_bar')) {
-      await sql`UPDATE clips SET progress_bar = ${sql.json(cleanProgressBar(kit.progress) as never)} WHERE id = ANY(${clips.map(c => c.id)})`
+    // Saved with the kit switched on (the editor's Brand kit switch; nothing to put back when switched off)
+    if (await hasColumn('clips', 'brand')) {
+      const [row] = await sql<{ id: string }[]>`SELECT id FROM brand_kits WHERE user_id = ${userId} AND (data->>'is_default')::boolean LIMIT 1`
+      if (row) await sql`UPDATE clips SET brand = ${sql.json({ kit_id: row.id, before: null } as never)} WHERE id = ANY(${clips.map(c => c.id)})`
     }
     if (kit.captions.on) {
       const style = brandCaptionStyle(kit.captions)

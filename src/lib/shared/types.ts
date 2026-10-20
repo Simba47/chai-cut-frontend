@@ -1,3 +1,5 @@
+import type { CardLook, FrameBackground } from './brandCard'
+
 // ─── Domain types mirroring the database schema ───────────────────────────────
 
 export type VideoStatus = 'uploaded' | 'transcribing' | 'ready' | 'failed'
@@ -117,6 +119,10 @@ export interface FrameSettings {
   face_box?: { x: number; y: number; w: number } | null
   /** The main video's box inside its slot when resized / moved, per slot index: shares of the slot (absent = the whole slot) */
   main_rects?: Record<string, { x: number; y: number; w: number; h: number }>
+  /** A Branded card's own look (its background and where its video, title and @handle sit: brandCard.ts); absent = the template's */
+  card?: CardLook | null
+  /** The frame's own background behind and around its videos (a colour, gradient or pattern: brandCard.ts); absent = the template's */
+  bg?: FrameBackground | null
   items?: FrameItem[]
 }
 export type AnimationType = 'karaoke' | 'fade' | 'none'

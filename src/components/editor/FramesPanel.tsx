@@ -6,10 +6,11 @@ import type { SegmentLocal, FrameLayout, FrameItem, FrameSettings, SlotMotion, C
 import { FRAME_TEMPLATES, FRAME_LAYOUTS, isFrameLayout, frameLanes, frameOf, cornerGeometry, CORNER_MAX, mainSlotSound, frameAreas, frameBase, isTextLane } from '@/modules/editor/frames'
 import { frameItemColor, FRAME_ITEM_COLORS } from './SegmentTimeline'
 import { ItemTimeRange } from './ItemTimeRange'
+import { FrameBackgroundFields } from './FrameBackgroundFields'
 
 const ACCENT = '#c8ff00'
 
-type FramePatch = Partial<Pick<FrameSettings, 'main_slots' | 'main_volume' | 'main_muted' | 'main_volumes' | 'main_mutes' | 'main_corners'>>
+type FramePatch = Partial<Pick<FrameSettings, 'main_slots' | 'main_volume' | 'main_muted' | 'main_volumes' | 'main_mutes' | 'main_corners' | 'bg'>>
 
 interface Props {
   /** Every format that uses a frame, in time order */
@@ -232,6 +233,13 @@ export function FramesPanel({
               </div>
               {isOpen && (
                 <div onClick={e => e.stopPropagation()} onKeyDown={e => e.stopPropagation()} className="cursor-default">
+                  {/* The frame's own background behind and around its videos (not Blur fill's: that's the video blurred) */}
+                  {seg.layout !== 'frame_blur_fill' && (
+                    <div className="mx-1 mb-2 p-2.5 rounded-lg" style={{ background: 'rgb(var(--ed-fg) / 0.03)', boxShadow: 'inset 0 0 0 1px rgb(var(--ed-fg) / 0.07)' }}>
+                      <FrameBackgroundFields value={frameOf(seg).bg ?? null} disabled={!!seg.locked}
+                        onChange={bg => onUpdateFrame(seg.id, { bg })} />
+                    </div>
+                  )}
                   <FrameContents seg={seg} currentTimeMs={currentTimeMs} videoTitles={videoTitles}
                     selected={isActive ? selected : null}
                     onSelectItem={(id, atMs) => onSelectItem(seg.id, id, atMs)}

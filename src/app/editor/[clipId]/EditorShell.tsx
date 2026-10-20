@@ -35,9 +35,10 @@ import { FramesPanel } from '@/components/editor/FramesPanel'
 import { FrameTextPanel } from '@/components/editor/FrameTextPanel'
 import { useConfirm } from '@/components/editor/ConfirmDialog'
 import { BrandKitPanel, BrandKitStudio, useBrandKits } from '@/components/editor/BrandKit'
+import { useBrandStore, setBrandOn, type BrandOn, type BrandBefore, type FrameBefore } from '@/modules/editor/brandState'
 import { CleanupPanel, type CleanupRow } from '@/components/editor/CleanupPanel'
 import { cleanupCards, isDeleted } from '@/modules/editor/cleanup'
-import { isBrandLogo, logoBox, logoSpan, showHandle, brandPalette, brandCaptionStyle, cleanProgressBar, brandLockOf, type BrandKit, type ProgressBar } from '@/lib/shared/brandKit'
+import { cardLookOf, isBrandLogo, logoBox, logoSpan, showHandle, brandPalette, brandCaptionStyle, brandLockOf, type BrandKit, type ProgressBar } from '@/lib/shared/brandKit'
 import { setBrandPalette, setBrandLock } from '@/components/editor/brandPalette'
 import { setBrandFonts, ensureBrandFont } from '@/components/editor/brandFonts'
 import { EditorTour, hasSeenEditorTour } from '@/components/editor/EditorTour'
@@ -56,16 +57,17 @@ import { useCaptionStore } from '@/modules/captions/store'
 import { useMediaStore } from '@/modules/media/store'
 import { rowsToLocal, normalizeCoverage, uncoveredRanges, defaultCropForSlot, msToLabel } from '@/modules/editor/utils'
 import { isShot, flattenShots, toSaved, restoreLayers } from '@/modules/editor/shots'
-import { applyGroupShots } from '@/modules/editor/groupShots'
+import { applyGroupShots, applyFormatSpans } from '@/modules/editor/groupShots'
+import { LAYOUT_SLOT_COUNT } from '@chai-cut/shared'
 import { fitsOn, freeTrackIn, settleTracks, savedLanes, type TrackItem, type TrackRef } from '@/modules/editor/tracks'
 import { viewChanges } from '@/modules/editor/views'
 import { subjectBoxAt, seenShare, followChanges, autoDirectChanges, type SubjectPoint } from '@/modules/editor/subjects'
 import { buildKeyframes } from '@/modules/editor/views'
 import { frameSlotSize } from '@/modules/editor/frames'
-import { getBoxPositionAtLerp } from '@/lib/interpolation'
+import { getBoxPositionAtLerp, type BoxPosition } from '@/lib/interpolation'
 import { SubjectsPanel, type SubjectItem, type AnglesView } from '@/components/editor/SubjectsPanel'
-import { angleRows, angleAt, type Angle } from '@/modules/editor/angles'
-import type { SegmentLocal, CropBoxLocal, FrameLayout, FrameLane, FrameItem, TransitionType } from '@chai-cut/shared'
+import { angleRows, angleAt, type Angle, type AngleRow } from '@/modules/editor/angles'
+import type { SegmentLocal, CropBoxLocal, FrameLayout, FrameLane, FrameItem, FrameSettings, TransitionType } from '@chai-cut/shared'
 import { TransitionsPanel, TRANSITION_DEFAULT_MS, TRANSITION_KINDS, playedTransitionMs, type TransitionJoin } from '@/components/editor/TransitionsPanel'
 
 type Tool = 'format' | 'subjects' | 'frames' | 'captions' | 'transitions' | 'text' | 'media' | 'music' | 'cleanup' | 'post' | 'brand'
@@ -91,6 +93,8 @@ interface Props {
   initialOriginalSound?: { volume: number; muted: boolean }
   /** The clip's progress bar as saved (null = none) */
   initialProgressBar?: ProgressBar | null
+  /** The brand kit switched on for this clip, and what it changed (clips.brand); null = off */
+  initialBrand?: BrandOn | null
   initialTransitions: Transition[]
   initialOverlays: Overlay[]
   /** The clip board it was opened from (the dashboard's AI edit / Manual edit choice), so "Clip board" returns to it */
@@ -184,7 +188,7 @@ const TOOLS: { id: Tool; label: string; title: string; hint: string; icon: React
 export function EditorShell({
   clip: savedClip, videoUrl, words: initialWords, initialSegments,
   initialCaptionStyles, initialTextOverlays, initialAudioTracks, initialTransitions, initialOverlays,
-  initialMusicUrls, initialOriginalSound, initialProgressBar, backStart,
+  initialMusicUrls, initialOriginalSound, initialProgressBar, initialBrand, backStart,
 }: Props) {
   // ── Removed parts of the video (lib/trims.ts, modules/editor/trimState.ts) ───
   // The editor works on the clip as it plays. `rawClip` is the clip's stretch of the source video
@@ -373,6 +377,7 @@ export function EditorShell({
     })
 
     // The clip as loaded: the auto-save stays quiet until the state differs from this
+    setBrandOn(initialBrand ?? null)
     loadedStateRef.current = editableSnapshot()
 
     // Undo/redo records from here on: the loaded clip is the starting point
@@ -400,6 +405,10 @@ export function EditorShell({
   // right at its usual width (Off) and the timeline at its usual height. Sizes dragged while editing
   // last for that visit only; nothing about the layout is remembered.
   const [optionsOpen, setOptionsOpen] = useState(false)
+  // The brand kit's workshop (in the video's place): open when the tool opens; its X or Done closes it, Edit kit
+  // opens it again. Closing the options sidebar leaves it open
+  const [kitStudio, setKitStudio] = useState(true)
+  useEffect(() => { if (tool === 'brand') setKitStudio(true) }, [tool])
   // The Preview column on the right: can be closed for more room to edit
   const [previewOpen, setPreviewOpen] = useState(true)
   // Full view: the preview big, to check it properly. The browser's fullscreen when it allows it,
@@ -531,8 +540,6 @@ export function EditorShell({
   }
   useEffect(() => { loadVideoLibrary() }, [])
   const videoTitles = useMemo(() => Object.fromEntries(Object.entries(videoLibrary).map(([id, v]) => [id, v.title])), [videoLibrary])
-  /** The user's own videos (not stock footage): what a brand kit's intro and outro can be */
-  const kitVideos = useMemo(() => Object.entries(videoLibrary).filter(([, v]) => !v.stock).map(([id, v]) => ({ id, title: v.title, duration_ms: v.duration_ms ?? null })), [videoLibrary])
   const videoUrls = useMemo(() => Object.fromEntries(Object.entries(videoLibrary).map(([id, v]) => [id, v.url])), [videoLibrary])
   /** Each video's full length, where known: a video on top can't be trimmed past its own ends */
   const videoLengths = useMemo(() => Object.fromEntries(Object.entries(videoLibrary).flatMap(([id, v]) => (v.duration_ms ? [[id, v.duration_ms]] : []))), [videoLibrary])
@@ -704,6 +711,8 @@ export function EditorShell({
   // The clip's progress bar (Brand kit panel; a kit's Apply puts its own on): drawn on the preview,
   // saved with the clip, drawn by the export (render.py)
   const [progressBar, setProgressBar] = useState<ProgressBar | null>(initialProgressBar ?? null)
+  // The brand kit switched on for this clip (modules/editor/brandState.ts)
+  const brandOn = useBrandStore(st => st.on)
   const progressBarRef = useRef(progressBar)
   const progressLoadedRef = useRef(true)
   useEffect(() => {
@@ -1172,7 +1181,7 @@ export function EditorShell({
     autoSaveTimerRef.current = setTimeout(() => latestHandleSaveRef.current(), 2500)
     return () => { if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current) }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [segments, keyframes, trims, clipRange, captionStyle, textOverlays, audioTracks, transitions, filters, overlays])
+  }, [segments, keyframes, trims, clipRange, captionStyle, textOverlays, audioTracks, transitions, filters, overlays, brandOn])
 
   // The social media preview: Off each time the editor opens (part of its usual layout)
   const [platform, setPlatform] = useState<Platform>('off')
@@ -1295,6 +1304,7 @@ export function EditorShell({
           removeFillers: removeFillersRef.current,
           originalSound: originalSoundRef.current,
           progressBar: progressBarRef.current,
+          brand: useBrandStore.getState().on,
         }),
       })
       if (!res.ok) {
@@ -1478,12 +1488,51 @@ export function EditorShell({
   // left behind (frames never join: each keeps its own lanes).
   // 'section': the layout changes the WHOLE section under the playhead.
   const LAYOUT_SNAP_MS = 300
+  /** How near a camera cut a format change snaps onto it */
+  const CUT_SNAP_MS = 1000
+  /** The camera cut nearest `t` (timeline ms) within CUT_SNAP_MS, or null */
+  function cutNear(t: number): number | null {
+    let best: number | null = null
+    for (const c of cameraCuts) if (Math.abs(c - t) <= CUT_SNAP_MS && (best === null || Math.abs(c - t) < Math.abs(best - t))) best = c
+    return best
+  }
+  /** `spans` (timeline ms) given `layout` (applyFormatSpans), then each joined to a touching neighbour in the same format */
+  function formatSpans(spans: ReadonlyArray<readonly [number, number]>, layout: LayoutType, framing: Array<BoxPosition | undefined> | undefined) {
+    const done = applyFormatSpans(spans, layout, framing, clipLengthMs, getVideoAR(), mainVideoId)
+    for (const [a, b] of done) {
+      const ids = useEditorStore.getState().segments.filter(x => !isShot(x, mainVideoId) && x.end_ms > a && x.start_ms < b).map(x => x.id)
+      for (const id of ids) if (useEditorStore.getState().segments.some(x => x.id === id)) joinSameLayoutNeighbours(id, transitionAfter())
+    }
+    return done
+  }
   // (read live: a split just before, in the same action, moves the transition at a part's end)
   const transitionAfter = () => new Set(useMediaStore.getState().transitions.map(tr => tr.after_segment_id))
   function handleLayoutChange(layout: LayoutType, mode: 'section' | 'fromPlayhead' = 'section') {
-    const t = currentTimeMs
+    let t = currentTimeMs
     const ar = getVideoAR()
     if (activeSegment && sectionBlocked(activeSegment.id)) return
+    // Picked within a second of a camera cut: the new format starts on the cut (user, 2026-10-20 —
+    // picked half a second into a scene, its first moments kept the format before). It runs to the
+    // end of the format the playhead is in, as from the playhead
+    const cut = mode === 'fromPlayhead' ? cutNear(t) : null
+    if (cut !== null && Math.abs(cut - t) > 1) {
+      if (isFrameLayout(layout)) {
+        // (a frame: only inside the section under the playhead — a new frame starts with its own lanes)
+        if (activeSegment && cut >= activeSegment.start_ms && cut <= activeSegment.end_ms) t = cut
+      } else {
+        const gaps = uncoveredRanges(sections, clipLengthMs)
+        const endOf = (x: number) => (sections.find(s => x >= s.start_ms && x < s.end_ms) ?? gaps.find(g => x >= g.start_ms && x < g.end_ms))?.end_ms ?? x
+        const end = Math.max(endOf(cut + 1), endOf(t))
+        if (end - cut >= 300) {
+          pause()
+          skipCanvasTransitionRef.current = true
+          setActiveBoxId(null)
+          formatSpans([[cut, end]], layout, neighbourFraming(layout, cut, end))
+          if (t < cut) seekToMs(cut)
+          return
+        }
+      }
+    }
     if (!activeSegment && currentGap) {
       // No format here yet: create one over the uncovered stretch (from the playhead, unless 'section')
       const start = mode === 'section' || t - currentGap.start_ms <= LAYOUT_SNAP_MS ? currentGap.start_ms : t
@@ -2082,7 +2131,8 @@ export function EditorShell({
       setAnglesData({ status: 'failed', progress: 0, error: e instanceof Error ? e.message : 'The camera angles could not be listed.', angles: [], scan_start_ms: null, scan_end_ms: null })
     }
   }, [subjectsUrl, rawClip.start_ms, rawClip.end_ms])
-  useEffect(() => { if (tool === 'subjects' && !anglesData) loadAngles() }, [tool, anglesData, loadAngles])
+  // (read when the editor opens — no scan — so a format picked anywhere can snap to the camera cuts)
+  useEffect(() => { if (!anglesData) loadAngles() }, [anglesData, loadAngles])
   // Never looked for, or the clip grew past what was read: look (once for each start and end of the clip)
   const anglesAskedRef = useRef('')
   useEffect(() => {
@@ -2113,6 +2163,63 @@ export function EditorShell({
     status: !anglesData ? 'loading' : anglesData.status === 'none' || anglesData.status === 'queued' || anglesData.status === 'running' ? 'scanning' : anglesData.status,
     progress: anglesData?.progress ?? 0, error: anglesData?.error ?? null, items: angleItems, now: angleNow, stale: !!anglesStale,
   }), [anglesData, angleItems, angleNow, anglesStale])
+  // The camera cuts on the timeline (ms): where one scene meets another, from the scenes list
+  const cameraCuts = useMemo(() => {
+    const at = new Set<number>()
+    for (const r of angleItems) for (const [a, b] of r.shown) { if (a > 0) at.add(a); if (b < clipLengthMs) at.add(b) }
+    return [...at].sort((a, b) => a - b)
+  }, [angleItems, clipLengthMs])
+  /** A scene's views for `layout`: one person in Vertical → the view on them; else none of its own */
+  function sceneFraming(row: AngleRow, layout: LayoutType): Array<BoxPosition | undefined> | undefined {
+    if (layout !== 'vertical' || row.faces.length !== 1) return undefined
+    const f = row.faces[0].box
+    return [defaultCropForSlot('vertical', 0, getVideoAR(), f.x + f.w / 2)]
+  }
+  /**
+   * In the Subjects tool a format picked is the scene's (user, 2026-10-20): the whole camera shot, cut
+   * to cut, and everywhere the clip shows it again — not from the playhead on. False: not on a scene
+   * (or a frame was picked), so it's picked as anywhere else.
+   */
+  function pickForScene(layout: LayoutType): boolean {
+    if (isFrameLayout(layout)) return false
+    const i = angleAt(angleItems, currentTimeMs)
+    const row = i === null ? null : angleItems[i]
+    // (people 0: the other shots together — not one scene)
+    if (!row || row.people === 0) return false
+    if (activeSegment && sectionBlocked(activeSegment.id)) return true
+    pause()
+    skipCanvasTransitionRef.current = true
+    setActiveBoxId(null)
+    const here = row.shown.find(([a, b]) => currentTimeMs >= a && currentTimeMs < b) ?? row.shown[0]
+    const done = formatSpans(row.shown, layout, sceneFraming(row, layout) ?? neighbourFraming(layout, here[0], here[1]))
+    const name = layout === 'vertical' ? 'Vertical' : layout === 'split' ? 'Split' : layout === 'trio' ? 'Trio' : layout === 'horizontal' ? 'Horizontal' : 'this format'
+    setSubjectNotice(done.length > 1
+      ? `This scene is ${name} now, all of it — and everywhere the clip shows it (${done.length} places). Undo takes it back.`
+      : `This scene is ${name} now, all of it. Undo takes it back.`)
+    return true
+  }
+  // One-person scenes are Vertical, on the person (user, 2026-10-20): where a format of two or more
+  // views (Split, Trio…) runs into such a scene from the one beside it, or covers only part of it,
+  // that part becomes Vertical. A format given to exactly that scene is the user's and stays; locked
+  // parts, frames and a scene with a group marked stay too. Once for each scenes list, in the tool.
+  const soloScenesRef = useRef<unknown>(null)
+  useEffect(() => {
+    if (tool !== 'subjects' || !angleItems.length || soloScenesRef.current === anglesData) return
+    soloScenesRef.current = anglesData
+    const sectionsNow = () => useEditorStore.getState().segments.filter(x => !isShot(x, mainVideoId))
+    let fixed = 0
+    for (const row of angleItems) {
+      if (row.people !== 1 || row.group) continue
+      const spans = row.shown.filter(([a, b]) => {
+        const over = sectionsNow().filter(x => x.end_ms > a + 50 && x.start_ms < b - 50)
+        if (!over.some(x => !x.locked && !isFrameLayout(x.layout) && (LAYOUT_SLOT_COUNT[x.layout] ?? 1) > 1)) return false
+        return !(over.length === 1 && Math.abs(over[0].start_ms - a) <= 150 && Math.abs(over[0].end_ms - b) <= 150)
+      })
+      if (!spans.length) continue
+      fixed += formatSpans(spans, 'vertical', sceneFraming(row, 'vertical')).length
+    }
+    if (fixed) setSubjectNotice(`${fixed === 1 ? 'A one-person scene had' : `${fixed} one-person scenes had`} a Split or Trio running into ${fixed === 1 ? 'it' : 'them'} — made Vertical, on the person. Undo takes it back.`)
+  }, [tool, angleItems, anglesData]) // eslint-disable-line react-hooks/exhaustive-deps
   function openAngle(i: number) {
     const a = angleItems[i]
     if (!a) return
@@ -2152,12 +2259,9 @@ export function EditorShell({
   // (e.g. Single 0:00–0:15, then Dual Video from 0:15), each with its own ◆ keys and lanes
   // A Branded card picked: it's filled from the brand kit once it's there (see below)
   const brandFillRef = useRef<{ t: number; until: number } | null>(null)
-  // A frame picked starts with the brand kit's corners, when it has them (see below)
-  const cornerFillRef = useRef<{ t: number; layout: FrameLayout; corners: number; until: number } | null>(null)
   function handleApplyFrame(layout: FrameLayout) {
-    brandFillRef.current = layout === 'frame_brand_card' ? { t: currentTimeMs, until: Date.now() + 4000 } : null
-    const corners = paletteKit?.data.frames.corners ?? null
-    cornerFillRef.current = corners !== null ? { t: currentTimeMs, layout, corners, until: Date.now() + 4000 } : null
+    // (with the brand kit on, the brand-on watcher below dresses it, from the kit that's on)
+    brandFillRef.current = layout === 'frame_brand_card' && !useBrandStore.getState().on ? { t: currentTimeMs, until: Date.now() + 4000 } : null
     handleLayoutChange(layout, 'fromPlayhead')
   }
   // What a layout or frame picked now will cover (see handleLayoutChange)
@@ -2456,19 +2560,6 @@ export function EditorShell({
     } : null)
   }, [lockKey])
   useEffect(() => () => setBrandLock(null), [])
-  // The kit's frames, first in the Frames tool
-  const brandFrames = (paletteKit?.data.frames.preferred ?? []).filter(isFrameLayout)
-  // A frame just picked in Frames, once it's on the timeline: the kit's corners on it
-  useEffect(() => {
-    const pick = cornerFillRef.current
-    if (!pick) return
-    if (Date.now() > pick.until) { cornerFillRef.current = null; return }
-    const seg = segments.find(x => x.layout === pick.layout && pick.t >= x.start_ms - LAYOUT_SNAP_MS && pick.t < x.end_ms)
-    if (!seg) return
-    cornerFillRef.current = null
-    useEditorStore.setState(st => ({ segments: st.segments.map(x => (x.id === seg.id ? withKitCorners(x, pick.corners) : x)) }))
-  }, [segments]) // eslint-disable-line react-hooks/exhaustive-deps
-
   /** A frame with the kit's corners on its main video and its photos and videos (not on areas drawn square or with their own shape) */
   function withKitCorners(seg: SegmentLocal, corners: number): SegmentLocal {
     if (!isFrameLayout(seg.layout) || seg.locked) return seg
@@ -2495,20 +2586,23 @@ export function EditorShell({
   const usedFonts = [captionStyle.font, ...textOverlays.map(t => t.font)].filter(Boolean).join('|')
   useEffect(() => { usedFonts.split('|').forEach(f => { ensureBrandFont(f) }) }, [usedFonts])
 
-  /** A Branded card's text from a kit: its title on top and its @handle below, over the whole card */
+  /** A Branded card's text from a kit's card settings: its title and @handle (each when it shows), over the whole card */
   function brandCardItems(seg: SegmentLocal, kit: BrandKit): FrameItem[] {
-    const d = kit.data, span = { start_ms: seg.start_ms, end_ms: seg.end_ms }
+    const d = kit.data, c = d.card, span = { start_ms: seg.start_ms, end_ms: seg.end_ms }
     const title = d.card_title.trim() || kit.name, handle = showHandle(d.handle)
     const out: FrameItem[] = []
-    if (title) out.push({ id: crypto.randomUUID(), lane: 'band', kind: 'text', ...span, text: title, bg: textLaneLook(seg, 'band').bg, color: d.title.color, size: d.title.size })
-    if (handle) out.push({ id: crypto.randomUUID(), lane: 'band2', kind: 'text', ...span, text: handle, bg: textLaneLook(seg, 'band2').bg, color: d.colors.accent, size: textLaneLook(seg, 'band2').size })
+    if (title && c.title.show) out.push({ id: crypto.randomUUID(), lane: 'band', kind: 'text', ...span, text: title, bg: textLaneLook(seg, 'band').bg, color: c.title.color, size: c.title.size })
+    if (handle && c.handle.show) out.push({ id: crypto.randomUUID(), lane: 'band2', kind: 'text', ...span, text: handle, bg: textLaneLook(seg, 'band2').bg, color: c.handle.color, size: c.handle.size })
     return out
   }
-  /** A Branded card on the kit's colour, with its title and @handle when it has no text yet */
+  /**
+   * A Branded card as the kit's card settings make it (user, 2026-10-19): its look — background,
+   * where the video, title and @handle sit (frame.card) — and its title and @handle when it has no text yet
+   */
   function fillBrandCard(seg: SegmentLocal, kit: BrandKit): SegmentLocal {
-    const f = frameOf(seg)
+    const f = frameOf(seg), c = kit.data.card
     const hasText = (f.items ?? []).some(it => it.kind === 'text')
-    return { ...seg, frame: { ...f, band: { ...DEFAULT_BAND, ...f.band, bg: kit.data.colors.main }, items: hasText ? f.items : [...(f.items ?? []), ...brandCardItems(seg, kit)] } }
+    return { ...seg, frame: { ...f, card: cardLookOf(c), band: { ...DEFAULT_BAND, ...f.band, bg: c.bg.color }, items: hasText ? f.items : [...(f.items ?? []), ...brandCardItems(seg, kit)] } }
   }
   // The Branded card just picked in Frames, once it's on the timeline (a pick can ask first)
   useEffect(() => {
@@ -2523,18 +2617,56 @@ export function EditorShell({
   }, [segments]) // eslint-disable-line react-hooks/exhaustive-deps
 
   /**
-   * A kit put on this clip, all as one undo step: its logo where and when the kit says (in place of a
-   * kit's logo put on before), its captions' style when they're on in the kit (the captions themselves
-   * aren't switched on or made), its title font and colour on the clip's text, its title colour on frame
-   * text (frame text is always drawn in the frame's own font: render.py _frame_text_font), its main
-   * colour on frame bands, Branded cards filled, and its progress bar when it's on in the kit (the bar
-   * isn't part of the undo step: it's changed back in the Brand kit panel). Anything locked is left as it is.
+   * The brand on one frame section: the kit's colour on its bands, its text colours, its corners,
+   * a Branded card as the kit's card settings make it — and what the section was before (to put
+   * back when the brand is switched off). Locked sections are left alone.
    */
-  function applyBrandKit(kit: BrandKit) {
+  function brandFrame(seg: SegmentLocal, kit: BrandKit): { seg: SegmentLocal; before: FrameBefore } {
+    const d = kit.data, f = frameOf(seg), band = { ...DEFAULT_BAND, ...f.band }
+    const card = seg.layout === 'frame_brand_card'
+    const before: FrameBefore = { layout: seg.layout, band: { bg: band.bg, color: band.color }, items: {}, main_corners: f.main_corners ?? null, item_corners: {} }
+    const bandBg = card ? d.card.bg.color : d.colors.main
+    const items = (f.items ?? []).map(it => {
+      if (it.locked) return it
+      if (it.kind === 'text' && !it.captions) {
+        before.items[it.id] = { color: it.color ?? null, bg: it.bg ?? null }
+        const color = card && it.lane === 'band2' ? d.card.handle.color : card && it.lane === 'band' ? d.card.title.color : d.title.color
+        // (a band's text carries the band's colour: it follows it; a see-through or own colour stays)
+        return { ...it, color, ...(isTextLane(it.lane) && it.bg === band.bg ? { bg: bandBg } : {}) }
+      }
+      if (it.kind !== 'text') before.item_corners![it.id] = it.corners ?? null
+      return it
+    })
+    let next: SegmentLocal = { ...seg, frame: { ...f, band: { ...band, bg: bandBg, color: d.title.color }, items } }
+    if (card) {
+      before.card = f.card ?? null
+      const had = new Set((next.frame?.items ?? []).map(it => it.id))
+      next = fillBrandCard(next, kit)
+      before.added = (next.frame?.items ?? []).filter(it => !had.has(it.id)).map(it => it.id)
+    }
+    if (d.frames.corners !== null) next = withKitCorners(next, d.frames.corners)
+    return { seg: next, before }
+  }
+
+  const NO_BEFORE: BrandBefore = { texts: {}, caption: null, text_case: null, progress_bar: null, frames: {}, end_card: null }
+
+  /**
+   * A kit put on this clip, as one undo step: its logo where and when the kit says (in place of a
+   * kit's logo put on before), its captions' style when they're on in the kit (the captions themselves
+   * aren't switched on or made), its title font and colour on the clip's text, the brand on every frame
+   * (brandFrame). Anything locked is left as it is. Returns what it changed, to put back when switched off.
+   * (A kit's intro, outro, end card, progress bar and sound aren't put on any more — user, 2026-10-20.)
+   */
+  function applyBrandKit(kit: BrandKit): BrandBefore {
     const d = kit.data
-    if (d.progress.on) setProgressBar(cleanProgressBar(d.progress))
-    // (the end card first: the kit's colour and text below go on it as on any Branded card)
-    if (d.end_card.on) brandEndCard(d.end_card.seconds, d.outro)
+    const before: BrandBefore = {
+      ...NO_BEFORE,
+      texts: Object.fromEntries(textOverlays.filter(t => !t.locked).map(t => [t.id, { font: t.font ?? null, color: t.color ?? null }])),
+      caption: d.captions.on ? Object.fromEntries(Object.keys(brandCaptionStyle(d.captions)).map(k => [k, (captionStyle as unknown as Record<string, unknown>)[k] ?? null])) as Partial<CaptionStyle> : null,
+      text_case: d.captions.on ? captionTextCase : null,
+      progress_bar: progressBar,
+      frames: {},
+    }
     setOverlays(prev => {
       const rest = prev.filter(o => !(o.type === 'image' && isBrandLogo(o.storage_path) && !o.locked))
       if (!d.logo.path) return rest
@@ -2554,142 +2686,120 @@ export function EditorShell({
     }
     useEditorStore.setState(st => ({
       segments: st.segments.map(seg => {
-        if (!isFrameLayout(seg.layout) || seg.locked) return seg
-        const f = frameOf(seg), band = { ...DEFAULT_BAND, ...f.band }
-        const card = seg.layout === 'frame_brand_card'
-        const items = (f.items ?? []).map(it => (it.kind !== 'text' || it.locked || it.captions ? it : {
-          ...it,
-          color: card && it.lane === 'band2' ? d.colors.accent : d.title.color,
-          // (a band's text carries the band's colour: it follows it; a see-through or own colour stays)
-          ...(isTextLane(it.lane) && it.bg === band.bg ? { bg: d.colors.main } : {}),
-        }))
-        const next: SegmentLocal = { ...seg, frame: { ...f, band: { ...band, bg: d.colors.main, color: d.title.color }, items } }
-        const filled = card ? fillBrandCard(next, kit) : next
-        return d.frames.corners !== null ? withKitCorners(filled, d.frames.corners) : filled
+        if (!isFrameLayout(seg.layout) || seg.locked || isShot(seg, mainVideoId)) return seg
+        const r = brandFrame(seg, kit)
+        before.frames[seg.id] = r.before
+        return r.seg
       }),
     }))
-    void brandEnds(kit)
+    return before
   }
+
+  /** The brand kit switched on for this clip (user, 2026-10-19): a different kit on before comes off first. One undo step. */
+  function turnBrandOn(kit: BrandKit) {
+    if (useBrandStore.getState().on) turnBrandOff()
+    setBrandOn({ kit_id: kit.id, before: applyBrandKit(kit) })
+  }
+
+  /**
+   * The brand kit switched off: what it put on comes off — its logo, the Branded card text it added,
+   * and (on clips it was switched on for before they were taken out) its sound, progress bar, intro,
+   * outro and end card — and what it changed goes back as it was:
+   * text, captions, frame colours and corners (each only where it still is as the brand left it, so
+   * the user's own changes since are kept). Locked things stay. One undo step.
+   */
+  function turnBrandOff() {
+    const on = useBrandStore.getState().on
+    if (!on) return
+    const kit = brand.kits.find(k => k.id === on.kit_id) ?? null
+    const d = kit?.data, b = on.before
+    setOverlays(prev => prev.filter(o => !(o.type === 'image' && isBrandLogo(o.storage_path) && !o.locked)))
+    if (d) {
+      const sounds = [d.sound.music?.path, d.sound.sting?.path].filter((x): x is string => !!x)
+      if (sounds.length) setAudioTracks(prev => prev.filter(t => t.locked || !sounds.includes(t.storage_path)))
+      if (b) setProgressBar(b.progress_bar)
+      if (b) {
+        const font = d.title.font ?? 'sans-serif'
+        setTextOverlays(prev => prev.map(t => {
+          const was = b.texts[t.id]
+          return was && !t.locked && t.font === font && t.color === d.title.color ? { ...t, font: was.font, color: was.color } : t
+        }))
+        if (b.caption && d.captions.on && captionStyle.template === d.captions.template && captionStyle.color === d.captions.color) {
+          updateCaptionStyle(b.caption)
+          if (b.text_case) setCaptionTextCase(b.text_case as typeof captionTextCase)
+        }
+      }
+    }
+    if (b) {
+      useEditorStore.setState(st => ({
+        segments: st.segments.map(seg => {
+          const was = b.frames[seg.id]
+          if (!was || seg.locked || was.layout !== seg.layout || !isFrameLayout(seg.layout)) return seg
+          const f = frameOf(seg)
+          const added = new Set(was.added ?? [])
+          const items = (f.items ?? []).filter(it => it.locked || !added.has(it.id)).map(it => {
+            if (it.locked) return it
+            const w = was.items[it.id]
+            if (w) return { ...it, color: w.color ?? undefined, bg: w.bg ?? undefined }
+            if (was.item_corners && it.id in was.item_corners) return { ...it, corners: was.item_corners[it.id] ?? undefined }
+            return it
+          })
+          return {
+            ...seg,
+            frame: {
+              ...f, items, band: { ...DEFAULT_BAND, ...f.band, bg: was.band.bg, color: was.band.color },
+              ...(d && d.frames.corners !== null ? { main_corners: was.main_corners ?? undefined } : {}),
+              ...(seg.layout === 'frame_brand_card' ? { card: (was.card as FrameSettings['card']) ?? null } : {}),
+            },
+          }
+        }),
+      }))
+    }
+    if (d) {
+      // Its intro and outro taken out
+      for (const id of [d.intro, d.outro]) {
+        if (!id) continue
+        for (const x of useEditorStore.getState().segments.filter(sg => isInsert(sg, mainVideoId) && playsVideo(sg, id) && !sg.locked)) removeInsert(x.id)
+      }
+    }
+    // The end card it made goes back to a plain part
+    const endCard = b?.end_card ? useEditorStore.getState().segments.find(x => x.id === b.end_card) : undefined
+    if (endCard && endCard.layout === 'frame_brand_card' && !endCard.locked) {
+      applyLayout(endCard.id, 'vertical', getVideoAR(), neighbourFraming('vertical', endCard.start_ms, endCard.end_ms, endCard.id))
+    }
+    setBrandOn(null)
+  }
+
+  // While the brand is on: every frame picked gets it (a new section, or a section given another
+  // frame), and the logo keeps covering the whole clip when the kit shows it throughout. In the same
+  // undo step as the pick (history.ts groups a burst of changes).
+  const kitOn = brandOn ? brand.kits.find(k => k.id === brandOn.kit_id) ?? null : null
+  useEffect(() => {
+    const on = useBrandStore.getState().on
+    if (!on || !kitOn) return
+    const known = on.before?.frames ?? {}
+    const todo = new Set(useEditorStore.getState().segments
+      .filter(x => isFrameLayout(x.layout) && !x.locked && !isShot(x, mainVideoId) && known[x.id]?.layout !== x.layout).map(x => x.id))
+    if (todo.size) {
+      const add: Record<string, FrameBefore> = {}
+      useEditorStore.setState(st => ({
+        segments: st.segments.map(x => {
+          if (!todo.has(x.id)) return x
+          const r = brandFrame(x, kitOn)
+          add[x.id] = r.before
+          return r.seg
+        }),
+      }))
+      setBrandOn({ ...on, before: { ...(on.before ?? NO_BEFORE), frames: { ...known, ...add } } })
+    }
+    if (kitOn.data.logo.show === 'all') {
+      const short = useMediaStore.getState().overlays.find(o => o.type === 'image' && isBrandLogo(o.storage_path) && !o.locked && (o.end_ms < clipLengthMs - 1 || o.end_ms > clipLengthMs + 1))
+      if (short) setOverlays(prev => prev.map(o => (o.id === short.id ? { ...o, start_ms: 0, end_ms: clipLengthMs } : o)))
+    }
+  }, [segments, kitOn?.id, clipLengthMs]) // eslint-disable-line react-hooks/exhaustive-deps
 
   /** Is this part of the clip video `id` put in between (a kit's intro or outro)? */
   const playsVideo = (s: SegmentLocal, id: string) => s.crop_boxes.length === 1 && s.crop_boxes[0].source_video_id === id
-  /**
-   * A kit's intro and outro put in at the clip's start and end (insertVideo), unless the clip already
-   * starts or ends with them. The outro first: the intro moves it later. Their lengths are known from
-   * the library, so they go in with the rest of Apply — one undo step (history.ts: one burst of changes).
-   */
-  async function brandEnds(kit: BrandKit) {
-    const { intro, outro } = kit.data
-    const segs = useEditorStore.getState().segments
-    const want = [
-      outro && !segs.some(s => s.end_ms >= clipLengthMs - 1 && playsVideo(s, outro)) ? { id: outro, at: clipLengthMs } : null,
-      intro && !segs.some(s => s.start_ms <= 1 && playsVideo(s, intro)) ? { id: intro, at: 0 } : null,
-    ].filter((w): w is { id: string; at: number } => !!w)
-    if (want.length) {
-      try {
-        const lens = await Promise.all(want.map(w => videoLengthMs(w.id)))
-        const missing = want.findIndex((w, i) => !lens[i] && !videoLibraryRef.current[w.id])
-        if (missing >= 0) notifyLocked(`The kit's ${want[missing].at === 0 ? 'intro' : 'outro'} video isn't in your library any more`)
-        else want.forEach((w, i) => insertVideo(w.id, w.at, lens[i], 0))
-      } catch (e) {
-        notifyLocked(e instanceof Error ? e.message : 'Could not put the intro or outro in')
-      }
-    }
-    // The clip as it is now: its length, and where its own part runs (between the intro and outro)
-    const after = useEditorStore.getState().segments
-    const introSeg = intro ? after.find(s => s.start_ms <= 1 && playsVideo(s, intro)) : undefined
-    const outroSeg = outro ? after.filter(s => playsVideo(s, outro)).sort((a, b) => b.end_ms - a.end_ms)[0] : undefined
-    const added = want.reduce((sum, w) => {
-      const s = w.at === 0 ? introSeg : outroSeg
-      return sum + (s ? s.end_ms - s.start_ms : 0)
-    }, 0)
-    const total = clipLengthMs + added
-    const mainFrom = introSeg ? introSeg.end_ms : 0
-    const mainTo = outroSeg && outroSeg.end_ms >= total - 1 ? outroSeg.start_ms : total
-    await brandSound(kit, total, mainFrom, mainTo)
-  }
-
-  /**
-   * A kit's sound on the clip, in place of the kit's sound put on before: its music under the clip's own
-   * part (`mainFrom`–`mainTo`), at its volume and quieter while someone talks, faded in and out; its sound
-   * logo at the very start, or ending at the very end. Locked tracks stay as they are.
-   */
-  async function brandSound(kit: BrandKit, total: number, mainFrom: number, mainTo: number) {
-    const s = kit.data.sound
-    if (!s.music && !s.sting) return
-    const ours = (t: AudioTrack) => t.storage_path === s.music?.path || t.storage_path === s.sting?.path
-    const lockedOurs = audioTracks.filter(t => t.locked && ours(t))
-    const add: AudioTrack[] = []
-    const urls: Record<string, string> = {}
-    if (s.music && mainTo - mainFrom >= 500 && !lockedOurs.some(t => t.storage_path === s.music!.path)) {
-      const id = crypto.randomUUID()
-      add.push({ id, clip_id: clip.id, storage_path: s.music.path, start_ms: Math.round(mainFrom), end_ms: Math.round(mainTo), volume: s.music.volume, duck_under_speech: true, fade_in: true, fade_out: true })
-      if (kit.music_url) urls[id] = kit.music_url
-    }
-    if (s.sting && !lockedOurs.some(t => t.storage_path === s.sting!.path)) {
-      const len = s.sting_at === 'end' && kit.sting_url ? await audioLengthMs(kit.sting_url) : null
-      const id = crypto.randomUUID()
-      const start = s.sting_at === 'end' ? Math.max(0, total - (len ?? 3000)) : 0
-      add.push({ id, clip_id: clip.id, storage_path: s.sting.path, start_ms: Math.round(start), volume: 1, duck_under_speech: false, fade_in: false, fade_out: false })
-      if (kit.sting_url) urls[id] = kit.sting_url
-    }
-    setAudioTracks(prev => [...prev.filter(t => t.locked || !ours(t)), ...add])
-    if (Object.keys(urls).length) setMusicUrls(m => ({ ...m, ...urls }))
-  }
-  /** A sound file's length (ms) from its link, or null */
-  function audioLengthMs(url: string): Promise<number | null> {
-    return new Promise(resolve => {
-      const a = new Audio()
-      a.preload = 'metadata'
-      const done = (v: number | null) => { a.removeAttribute('src'); resolve(v) }
-      a.onloadedmetadata = () => done(isFinite(a.duration) && a.duration > 0 ? Math.round(a.duration * 1000) : null)
-      a.onerror = () => done(null)
-      setTimeout(() => done(null), 6000)
-      a.src = url
-    })
-  }
-
-  /**
-   * A kit's end card: the clip's last `seconds` — before its outro, when it ends with the kit's one —
-   * become one Branded card (as picking it in Frames there would; applyBrandKit then fills it with the
-   * kit's title and @handle). Nothing when the clip already ends on one, is too short, or that part is locked.
-   */
-  function brandEndCard(seconds: number, outro: string | null) {
-    const card: LayoutType = 'frame_brand_card'
-    const mains = () => useEditorStore.getState().segments.filter(s => !isShot(s, mainVideoId)).sort((a, b) => a.start_ms - b.start_ms)
-    const ending = outro ? mains().find(s => s.end_ms >= clipLengthMs - 1 && playsVideo(s, outro)) : undefined
-    const end = ending ? ending.start_ms : clipLengthMs
-    const t = Math.round(end - seconds * 1000)
-    if (t < 1000) return
-    if (mains().some(s => s.layout === card && s.start_ms < end && s.end_ms >= end - 1)) return
-    const locked = lockedSectionOver(t, end)
-    if (locked) { notifyLocked(`The end card needs ${msToLabel(locked.start_ms)}–${msToLabel(locked.end_ms)}, which is locked — unlock it first`); return }
-    const ar = getVideoAR()
-    // Stretches with no format (default framing) get one, so the card can take them in
-    for (const g of uncoveredRanges(mains(), clipLengthMs)) {
-      const a = Math.max(t, g.start_ms), b = Math.min(end, g.end_ms)
-      if (b - a >= 1) addFormat(a, b, 'vertical', ar, neighbourFraming('vertical', a, b))
-    }
-    const at = mains().find(s => t >= s.start_ms && t < s.end_ms)
-    if (!at) return
-    let first = at.id
-    if (t - at.start_ms > 1) {
-      const id = splitAtMs(at.id, t, getPositionAt)
-      if (!id) return
-      first = id
-      // (a new frame starts empty, as a frame picked from the playhead does)
-      const fresh = useEditorStore.getState().segments.find(x => x.id === id)
-      if (fresh?.frame?.items?.length) updateSegment(id, { frame: { ...fresh.frame, items: [] } })
-    }
-    // The parts after it, up to the end, become part of it
-    for (const s of mains().filter(x => x.id !== first && x.start_ms >= t && x.start_ms < end - 1)) {
-      if (s.end_ms > end + 1) splitAtMs(s.id, end, getPositionAt)
-      absorbSection(s.id, first)
-    }
-    const seg = useEditorStore.getState().segments.find(x => x.id === first)
-    if (seg && seg.layout !== card) applyLayout(first, card, ar, neighbourFraming(card, seg.start_ms, seg.end_ms, first))
-  }
-
   function askDeleteBrandKit(kit: BrandKit) {
     confirm({
       title: `Delete “${kit.name}”?`,
@@ -4977,7 +5087,6 @@ export function EditorShell({
                 onReplaceMedia={(segId, id, kind) => { if (sectionBlocked(segId)) return; pause(); setFramePicker({ segId, kind, replaceId: id }) }}
                 onRemoveFrame={askRemoveFrame}
                 onRemoveMain={askRemoveMain}
-                brandFrames={brandFrames}
               />
             )}
 
@@ -5084,7 +5193,8 @@ export function EditorShell({
                 onUndo={undo} />
             )}
             {tool === 'brand' && (
-              <BrandKitPanel brand={brand} onApply={applyBrandKit} onDelete={askDeleteBrandKit} progressBar={progressBar} onProgressBarChange={setProgressBar} />
+              <BrandKitPanel brand={brand} onKitId={brandOn?.kit_id ?? null} onTurnOn={turnBrandOn} onTurnOff={turnBrandOff} onDelete={askDeleteBrandKit} progressBar={progressBar} onProgressBarChange={setProgressBar}
+                editing={kitStudio} onEdit={() => setKitStudio(true)} />
             )}
 
             {tool === 'post' && (
@@ -5280,9 +5390,10 @@ export function EditorShell({
         {/* The player: format bar, the video, play controls */}
         <main data-layout-panel="Video view" className="ed-card relative flex flex-col flex-1 min-w-0 min-h-0">
           {/* Brand kit: its workshop in the video's place (the video stays underneath: the Preview plays from it) */}
-          {tool === 'brand' && optionsOpen && (
+          {/* (not tied to the options sidebar: closing that leaves the workshop open — user, 2026-10-20) */}
+          {tool === 'brand' && kitStudio && (
             <div className="absolute inset-0 overflow-hidden" style={{ zIndex: 30, borderRadius: 'inherit', background: 'var(--ed-panel)' }}>
-              <BrandKitStudio brand={brand} onApply={applyBrandKit} onClose={() => toggleOptions(false)} videos={kitVideos} />
+              <BrandKitStudio brand={brand} onKitId={brandOn?.kit_id ?? null} onTurnOn={turnBrandOn} onTurnOff={turnBrandOff} onClose={() => setKitStudio(false)} />
             </div>
           )}
           {/* Canvas toolbar: two docks, centred — Layout (a segmented switch with a sliding lime
@@ -5291,7 +5402,7 @@ export function EditorShell({
             <FormatSwitcher
               activeId={activeSegment ? formatLayoutOf(activeSegment.layout) : null}
               play={formatPlay}
-              onPick={id => { setFormatPlay(p => ({ id, n: (p?.n ?? 0) + 1 })); handleLayoutChange(id, 'fromPlayhead') }}
+              onPick={id => { setFormatPlay(p => ({ id, n: (p?.n ?? 0) + 1 })); if (tool === 'subjects' && pickForScene(id)) return; handleLayoutChange(id, 'fromPlayhead') }}
             />
             {/* Where a layout picked now goes: from the playhead to the end of this section */}
             {frameTarget && (

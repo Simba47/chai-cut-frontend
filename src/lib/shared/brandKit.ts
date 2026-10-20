@@ -9,6 +9,7 @@
  * brandNewClips), and by Make my clips (the worker's lib/brandKit.ts mirrors what it puts on).
  */
 import type { CaptionStyle, AnimationType } from './types'
+import { cleanCardLook, DEFAULT_CARD_LOOK, type CardLook } from './brandCard'
 
 export type LogoCorner = 'tl' | 'tr' | 'bl' | 'br'
 /** When the logo shows: the whole clip, or only its first / last seconds */
@@ -89,6 +90,12 @@ export interface BrandKitData {
   title: { font: string | null; color: string; size: number }
   /** The Branded card's title */
   card_title: string
+  /**
+   * The Branded card, as the brand wants it (user, 2026-10-19: the one frame a kit customizes): its
+   * look (background — a colour, a gradient or a pattern — and where the video, title and @handle
+   * sit: brandCard.ts) and its title's and @handle's colour and size, and whether each shows
+   */
+  card: BrandCardSettings
   /** The account's default kit: new clips get it by themselves (at most one kit is) */
   is_default: boolean
   /**
@@ -102,13 +109,21 @@ export interface BrandKitData {
     sting_at: 'start' | 'end'
   }
   /**
-   * Frames the brand uses: shown first in the Frames tool (up to MAX_BRAND_FRAMES template ids), and
-   * a corner rounding (0–100, the Corners slider) Apply puts on the clip's frames and new frames start with; null = as the frame has it
+   * Brand corners: a rounding (0–100, the Corners slider) the brand puts on every frame of a clip it's
+   * on, and frames picked while it's on; null = frames keep their own. (The kit's own list of frames,
+   * shown first in the Frames tool, was dropped 2026-10-19: the brand shows on whatever is picked.)
    */
-  frames: { preferred: string[]; corners: number | null }
+  frames: { corners: number | null }
   /** Brand lock: the people the kit is shared with can pick only its colours and fonts (brandLockOf) */
   lock: boolean
 }
+
+/** The Branded card a kit customizes: its look, and its title's and @handle's colour, size and whether each shows */
+export interface BrandCardSettings extends CardLook {
+  title: { show: boolean; color: string; size: number }
+  handle: { show: boolean; color: string; size: number }
+}
+export const CARD_TEXT_SIZE: [number, number] = [24, 120]
 
 export interface BrandKit {
   id: string
@@ -143,8 +158,6 @@ export const brandFontKey = (userId: string, family: string) => `brand/${userId}
 
 /** The logo shown only at the start or end: for this long (s) */
 export const LOGO_SECONDS: [number, number] = [1, 15]
-/** Frames a kit can put first in the Frames tool */
-export const MAX_BRAND_FRAMES = 4
 /** How many people one kit can be shared with, and the plans that can share (user's plan names) */
 export const MAX_KIT_SHARES = 10
 export const SHARE_PLANS = ['agency']
@@ -171,7 +184,7 @@ export const DEFAULT_BRAND_KIT: BrandKitData = {
   outro: null,
   end_card: { on: false, seconds: 3 },
   sound: { music: null, sting: null, sting_at: 'start' },
-  frames: { preferred: [], corners: null },
+  frames: { corners: null },
   lock: false,
   fonts: [],
   voice: { tone: '', avoid: '', hashtags: [], cta: '' },
@@ -179,6 +192,7 @@ export const DEFAULT_BRAND_KIT: BrandKitData = {
   handle: '',
   title: { font: null, color: '#ffffff', size: 64 },
   card_title: '',
+  card: { ...DEFAULT_CARD_LOOK, title: { show: true, color: '#ffffff', size: 64 }, handle: { show: true, color: '#c8ff00', size: 40 } },
   is_default: false,
 }
 
@@ -269,6 +283,13 @@ export function cleanBrandKitData(raw: unknown, userId?: string): BrandKitData {
       size: Math.round(num(d.title?.size, 24, 160, def.title.size)),
     },
     card_title: text(d.card_title, 80),
+    // (a kit from before its card was customized: the card as it looked then — the main colour,
+    // the title style's colour and size, the accent on the @handle)
+    card: cleanCard(d.card, {
+      ...DEFAULT_CARD_LOOK, bg: { ...DEFAULT_CARD_LOOK.bg, color: color(d.colors?.main, def.colors.main) },
+      title: { show: true, color: color(d.title?.color, def.title.color), size: Math.round(num(d.title?.size, CARD_TEXT_SIZE[0], CARD_TEXT_SIZE[1], def.title.size)) },
+      handle: { show: true, color: color(d.colors?.accent, def.colors.accent), size: 40 },
+    }),
     is_default: d.is_default === true,
     sound: {
       music: audioPath(d.sound?.music?.path, userId)
@@ -278,13 +299,25 @@ export function cleanBrandKitData(raw: unknown, userId?: string): BrandKitData {
       sting_at: d.sound?.sting_at === 'end' ? 'end' : 'start',
     },
     frames: {
-      preferred: [...new Set((Array.isArray(d.frames?.preferred) ? d.frames.preferred : [])
-        .filter((f: unknown): f is string => typeof f === 'string' && /^frame_[a-z0-9_]{1,40}$/.test(f)))].slice(0, MAX_BRAND_FRAMES) as string[],
       corners: typeof d.frames?.corners === 'number' && isFinite(d.frames.corners) ? Math.round(num(d.frames.corners, 0, 100, 80)) : null,
     },
     lock: d.lock === true,
   }
 }
+
+/** A kit's Branded card settings made safe; anything missing or wrong takes `fallback`'s */
+function cleanCard(raw: unknown, fallback: BrandCardSettings): BrandCardSettings {
+  const d = (raw && typeof raw === 'object' ? raw : {}) as Record<string, any>
+  const textOf = (t: any, f: BrandCardSettings['title']) => ({
+    show: typeof t?.show === 'boolean' ? t.show : f.show,
+    color: color(t?.color, f.color),
+    size: Math.round(num(t?.size, CARD_TEXT_SIZE[0], CARD_TEXT_SIZE[1], f.size)),
+  })
+  return { ...cleanCardLook(d, fallback), title: textOf(d.title, fallback.title), handle: textOf(d.handle, fallback.handle) }
+}
+
+/** The look a Branded card section carries (FrameSettings.card) from a kit's card settings */
+export const cardLookOf = (c: BrandCardSettings): CardLook => ({ bg: c.bg, video: c.video, title_at: c.title_at, handle_at: c.handle_at })
 
 /** A kit's sound file: the owner's stored audio only */
 const audioPath = (p: unknown, userId?: string): p is string =>
