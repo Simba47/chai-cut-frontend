@@ -2099,3 +2099,10 @@ body {
 .ov-shape button { display: flex; align-items: center; gap: 5px; height: 26px; padding: 0 9px; border-radius: 7px; font-size: 11.5px; font-weight: 600; color: rgb(var(--ed-fg) / 0.6); white-space: nowrap; transition: background .15s, color .15s; }
 .ov-shape button:hover { color: var(--ed-text); }
 .ov-shape button[data-on] { background: rgb(var(--ed-fg) / 0.14); color: #c8ff00; }
+/* The Text tool's animation kinds (TextOverlayPanel AnimationPicker): chips as the caption styles' */
+.tx-an-kind { display: inline-flex; align-items: center; gap: 5px; height: 28px; padding: 0 11px; border-radius: 999px; font-size: 11.5px; font-weight: 600;
+  color: rgb(var(--ed-fg) / 0.7); background: rgb(var(--ed-fg) / 0.05); box-shadow: inset 0 0 0 1px rgb(var(--ed-fg) / 0.08); transition: background-color .15s, color .15s; }
+.tx-an-kind:hover { color: var(--ed-text); background: rgb(var(--ed-fg) / 0.09); }
+.tx-an-kind[data-on] { color: #0a0a0a; background: #c8ff00; box-shadow: none; }
+.tx-an-kind i { width: 6px; height: 6px; border-radius: 50%; background: #c8ff00; }
+.tx-an-kind[data-on] i { background: #0a0a0a; }

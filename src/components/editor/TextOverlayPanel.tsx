@@ -8,7 +8,7 @@ import { FontPicker, loadVideoFonts } from './CaptionStyler'
 import { EmptyState } from './EditorTour'
 import { TimeRange } from './ItemTimeRange'
 import { EmojiButton, EmojiGrid, insertAtCursor } from './EmojiPicker'
-import { TEXT_ANIMATION_GROUPS, TEXT_PRESETS, replayTextAnimation, textCss, type TextStyle } from '@/modules/editor/textStyle'
+import { TEXT_ANIMATION_GROUPS, TEXT_PRESETS, replayTextAnimation, textCss, type TextStyle, type TextAnimation } from '@/modules/editor/textStyle'
 
 interface Props {
   overlays: TextOverlay[]
@@ -258,28 +258,48 @@ function TextItem({ o, open, currentTimeMs, clipDurationMs, onToggle, onUpdate, 
               Replay
             </button>
           }>
-            {TEXT_ANIMATION_GROUPS.map(g => (
-              <div key={g.name} className="flex flex-col gap-1.5">
-                <span className="tx-an-group">{g.name}</span>
-                <div className="grid grid-cols-3 gap-1.5" role="radiogroup" aria-label={`${g.name} animations`}>
-                  {g.items.map(a => {
-                    const on = (o.animation ?? 'none') === a.id
-                    return (
-                      <button key={a.id} role="radio" aria-checked={on} onClick={() => { onUpdate({ animation: a.id }); replayTextAnimation(o.id) }}
-                        className="tx-an" data-on={on || undefined} title={a.label}>
-                        <span className="tx-an-screen" aria-hidden="true">
-                          <span className={`tx-an-demo tx-an-${a.id}`} data-text="Aa">{a.id === 'typewriter' ? <span className="tx-an-type">Aa</span> : 'Aa'}</span>
-                        </span>
-                        <span className="tx-an-name">{a.label}</span>
-                      </button>
-                    )
-                  })}
-                </div>
-              </div>
-            ))}
+            <AnimationPicker key={o.id} value={o.animation ?? 'none'} onPick={id => { onUpdate({ animation: id }); replayTextAnimation(o.id) }} />
           </Fold>
         </div>
       )}
+    </div>
+  )
+}
+
+/**
+ * The entrance animations, one kind at a time (as the caption styles): a chip per kind (Basic, Move,
+ * Stylish — a dot on the kind holding the picked one), and that kind's tiles, each playing its
+ * animation on a loop (.tx-an-* in globals.css). Opens on the kind of the text's animation.
+ */
+function AnimationPicker({ value, onPick }: { value: TextAnimation; onPick: (id: TextAnimation) => void }) {
+  const holding = TEXT_ANIMATION_GROUPS.find(g => g.items.some(a => a.id === value))?.name ?? TEXT_ANIMATION_GROUPS[0].name
+  const [kind, setKind] = useState(holding)
+  const g = TEXT_ANIMATION_GROUPS.find(x => x.name === kind) ?? TEXT_ANIMATION_GROUPS[0]
+  return (
+    <div className="flex flex-col gap-2.5">
+      <div role="tablist" aria-label="Kinds of animation" className="flex flex-wrap gap-1.5">
+        {TEXT_ANIMATION_GROUPS.map(x => (
+          <button key={x.name} role="tab" aria-selected={kind === x.name} onClick={() => setKind(x.name)}
+            className="tx-an-kind" data-on={kind === x.name || undefined}>
+            {x.name}
+            {x.name === holding && value !== 'none' && <i aria-label="has the animation picked" />}
+          </button>
+        ))}
+      </div>
+      <div className="grid grid-cols-3 gap-1.5" role="radiogroup" aria-label={`${g.name} animations`}>
+        {g.items.map(a => {
+          const on = value === a.id
+          return (
+            <button key={a.id} role="radio" aria-checked={on} onClick={() => onPick(a.id)}
+              className="tx-an" data-on={on || undefined} title={a.label}>
+              <span className="tx-an-screen" aria-hidden="true">
+                <span className={`tx-an-demo tx-an-${a.id}`} data-text="Aa">{a.id === 'typewriter' ? <span className="tx-an-type">Aa</span> : 'Aa'}</span>
+              </span>
+              <span className="tx-an-name">{a.label}</span>
+            </button>
+          )
+        })}
+      </div>
     </div>
   )
 }
