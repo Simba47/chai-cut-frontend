@@ -6484,7 +6484,8 @@ function msToClock(ms: number) {
 function ClipClock({ lengthMs }: { lengthMs: number }) {
   const now = useLiveTimeMs()
   const fmt = (ms: number, tenths: boolean) => {
-    const t = Math.max(0, ms) / 1000, m = Math.floor(t / 60), s = t - m * 60
+    // (rounded first: 9.96 s is 0:10.0, not 0:010.0)
+    const t = (tenths ? Math.round(Math.max(0, ms) / 100) / 10 : Math.floor(Math.max(0, ms) / 1000)), m = Math.floor(t / 60), s = t - m * 60
     return `${m}:${s < 10 ? '0' : ''}${tenths ? s.toFixed(1) : Math.floor(s)}`
   }
   return (

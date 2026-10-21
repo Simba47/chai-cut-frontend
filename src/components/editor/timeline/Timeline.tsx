@@ -133,11 +133,13 @@ const MIN_PART_MS = 300
 
 /** A clip time as the playhead's bubble shows it: 0:12.4 */
 function clockLabel(ms: number) {
-  const t = Math.max(0, ms) / 1000
-  const m = Math.floor(t / 60)
-  const s = t - m * 60
+  // (to tenths first: 9.96 s is 0:10.0, not 0:010.0)
+  const tenths = Math.round(Math.max(0, ms) / 100)
+  const m = Math.floor(tenths / 600), s = (tenths % 600) / 10
   return `${m}:${s < 10 ? '0' : ''}${s.toFixed(1)}`
 }
+/** How long a part just made longer shows what it gained (then it looks as any other part) */
+const GROWN_SHOW_MS = 1600
 /** A block's length: 12.4s, or 1:05.2 */
 function lenLabel(ms: number) {
   return ms < 60000 ? `${(ms / 1000).toFixed(1)}s` : clockLabel(ms)
@@ -176,6 +178,14 @@ export function Timeline({
   const [viewDragT, setViewDragT] = useState<number | null>(null)
   /** A grip being dragged: where its edge is now (the start of a block applies on release) */
   const [edgeGhost, setEdgeGhost] = useState<{ id: string; from: number; to: number; edge: 'start' | 'end' } | null>(null)
+  // A part just made longer by dragging an edge out: which, at which edge, and how long it was before —
+  // what it gained shows for a moment (GROWN_SHOW_MS), then it looks as any other part
+  const [grown, setGrown] = useState<{ id: string; edge: 'start' | 'end'; before: number; key: number } | null>(null)
+  useEffect(() => {
+    if (!grown) return
+    const t = setTimeout(() => setGrown(g => (g && g.key === grown.key ? null : g)), GROWN_SHOW_MS)
+    return () => clearTimeout(t)
+  }, [grown])
   /** While a grip is dragged the timeline keeps its scale (the clip's length changes under it) */
   const [frozenDur, setFrozenDur] = useState<number | null>(null)
   const [brollGhost, setBrollGhost] = useState<{ id: string; start: number; end: number } | null>(null)
@@ -427,6 +437,14 @@ export function Timeline({
     const from = edge === 'start' ? seg.start_ms : seg.end_ms
     let to = from, moved = false, lastX = sx
     const k = msPerPx()
+    // A start dragged out brings back the video before the part — as far back as the video goes
+    // (its own start: 0 s of the video). Holding at the view's left edge keeps bringing more back:
+    // the layer stays still meanwhile (the part's end and its grip stay where they are, in view), the
+    // start stays at the view's edge, and how much is coming back counts up (`extra`, on the tip)
+    let extra = 0
+    const isMain = !(seg.video_offset_ms != null && seg.crop_boxes[0]?.source_video_id)
+    const videoBefore = edge === 'start' && isMain ? Math.max(0, sourceAt ? sourceAt(seg.start_ms) : clipStartMs + seg.start_ms) : 0
+    const minTo = edge === 'start' ? from - videoBefore : -Infinity
     // The layer keeps still meanwhile (the playhead line goes to the edge being cut, as in CapCut)
     const tx0 = currentTx()
     freezeRef.current = tx0
@@ -450,8 +468,8 @@ export function Timeline({
     const update = () => {
       // (the layer may have been scrolled along by holding near the view's edge)
       const shift = (freezeRef.current ?? tx0) - tx0
-      const t = from + (lastX - sx - shift) * k
-      to = edge === 'start' ? Math.min(seg.end_ms - MIN_PART_MS, t) : Math.max(seg.start_ms + MIN_PART_MS, t)
+      const t = from + (lastX - sx - shift) * k - extra
+      to = edge === 'start' ? Math.max(minTo, Math.min(seg.end_ms - MIN_PART_MS, t)) : Math.max(seg.start_ms + MIN_PART_MS, t)
       setEdgeGhost({ id: seg.id, from, to, edge })
       if (edge === 'end' && !raf) raf = requestAnimationFrame(apply)
       if (edge === 'start') follow()
@@ -462,6 +480,14 @@ export function Timeline({
       if (!vr || freezeRef.current == null) return
       const edgeZone = 40
       const v = lastX < vr.left + edgeZone ? (vr.left + edgeZone - lastX) : lastX > vr.right - edgeZone ? -(lastX - (vr.right - edgeZone)) : 0
+      // A start held at the left edge with the layer as far left as it goes (the clip's 0:00 in view):
+      // more video comes back, faster the further into the edge, the layer still
+      if (v > 0 && moved && edge === 'start' && freezeRef.current >= PAD - 0.5 && to > minTo + 1) {
+        extra = Math.min(from - minTo, extra + Math.min(18, v * 0.35) * k)
+        update()
+        auto = requestAnimationFrame(autoScroll)
+        return
+      }
       if (v !== 0 && moved) {
         // (only as far as there is more of the clip to show: at 1× the whole clip is in view)
         const next = Math.max(PAD - maxScroll(), Math.min(PAD, freezeRef.current + Math.max(-18, Math.min(18, v * 0.35))))
@@ -490,6 +516,8 @@ export function Timeline({
       setEdgeGhost(null)
       setFrozenDur(null)
       if (moved) onEdgeTrim(seg.id, edge, Math.round(from), Math.round(to), true)
+      // (dragged out: what it gained shows for a moment)
+      if (moved && (edge === 'start' ? to < from : to > from)) setGrown({ id: seg.id, edge, before: seg.end_ms - seg.start_ms, key: performance.now() })
       unfreeze()
     }
     window.addEventListener('pointermove', move)
@@ -813,8 +841,10 @@ export function Timeline({
     const isInsert = seg.video_offset_ms != null && !!seg.crop_boxes[0]?.source_video_id
     const sel = isSel(seg.id, seg.id === (pickedSegmentId ?? activeSegmentId))
     const g = trimming && trimming.id === seg.id ? trimming : null
-    // A start being dragged: the block shows where it will start (applied on release)
-    const start = g && g.edge === 'start' ? g.to : seg.start_ms
+    // A start being dragged: the block shows where it will start (applied on release) — from no
+    // further left than the view's edge, so its grip stays in sight (dragged out before the clip's 0:00)
+    const viewLeftMs = freezeRef.current != null ? (2 - freezeRef.current) / pxPerMs : -Infinity
+    const start = g && g.edge === 'start' ? Math.max(g.to, viewLeftMs) : seg.start_ms
     const end = seg.end_ms
     const box = seg.crop_boxes[0]
     const name = isInsert ? (videoTitles[box?.source_video_id ?? ''] ?? 'Video').replace(/^(Pixabay|Pexels): /, '').split(',')[0] : formatTag(seg)
@@ -836,7 +866,7 @@ export function Timeline({
               sourceKey={`${sourceKey ?? ''}|${seg.start_ms}`} />
           )}
           {/* what comes back over the part before it, while a start is dragged out */}
-          {comingBack && <div className="absolute inset-y-0 left-0" style={{ width: `${((g!.from - g!.to) / Math.max(1, end - start)) * 100}%`, background: 'rgba(200,255,0,0.18)' }} />}
+          {comingBack && <div className="tl2-grow absolute inset-y-0 left-0" data-edge="start" style={{ width: `${(Math.max(0, g!.from - start) / Math.max(1, end - start)) * 100}%` }} />}
           <div className="absolute inset-0 pointer-events-none" style={{ background: 'linear-gradient(180deg, rgba(0,0,0,0.45), transparent 38%, transparent 62%, rgba(0,0,0,0.55))' }} />
         </div>
         {/* its format (an inserted video: the video's name), its length, its state */}
@@ -850,7 +880,16 @@ export function Timeline({
         {cutJoins.filter(t => t > seg.start_ms + 50 && t < seg.end_ms - 50).map(t => (
           <span key={t} className="absolute top-0 bottom-0 pointer-events-none" style={{ left: `${((t - start) / Math.max(1, end - start)) * 100}%`, width: 3, marginLeft: -1.5, background: 'var(--ed-track)' }} />
         ))}
-        {sel && <div className="absolute inset-0 pointer-events-none" style={{ borderRadius: 8, boxShadow: `inset 0 0 0 2.5px ${ACCENT}, 0 0 14px rgba(200,255,0,0.35)` }} />}
+        {/* just made longer: what it gained, for a moment (then fades) */}
+        {grown && grown.id === seg.id && !g && (() => {
+          const gain = (seg.end_ms - seg.start_ms) - grown.before
+          if (gain < 50) return null
+          const w = (gain / Math.max(1, seg.end_ms - seg.start_ms)) * 100
+          return <div key={grown.key} className="tl2-grow tl2-grown absolute inset-y-0 pointer-events-none" data-edge={grown.edge}
+            style={{ width: `${w}%`, [grown.edge === 'start' ? 'left' : 'right']: 0, borderRadius: grown.edge === 'start' ? '8px 0 0 8px' : '0 8px 8px 0' }} />
+        })()}
+        {/* selected: a plain outline (the grips say it's selected) */}
+        {sel && <div className="absolute inset-0 pointer-events-none" style={{ borderRadius: 8, boxShadow: `inset 0 0 0 2px ${ACCENT}` }} />}
         {sel && (['start', 'end'] as const).map(edge => grip(seg, i, edge))}
       </div>
     )
@@ -1247,8 +1286,10 @@ export function Timeline({
                 const seg = mains.find(m => m.id === edgeGhost.id)
                 if (!seg) return null
                 const len = edgeGhost.edge === 'start' ? seg.end_ms - edgeGhost.to : seg.end_ms - seg.start_ms
-                const x = edgeGhost.edge === 'start' ? edgeGhost.to : seg.end_ms
-                return <span className="tl2-trim-tip absolute" style={{ left: `${at(x)}%` }}>{lenLabel(len)}</span>
+                const viewLeftMs = freezeRef.current != null ? (2 - freezeRef.current) / pxPerMs : -Infinity
+                const x = edgeGhost.edge === 'start' ? Math.max(edgeGhost.to, viewLeftMs + 40 / Math.max(1e-6, pxPerMs)) : seg.end_ms
+                const gain = edgeGhost.edge === 'start' ? seg.start_ms - edgeGhost.to : 0
+                return <span className="tl2-trim-tip absolute" style={{ left: `${at(x)}%` }}>{lenLabel(len)}{gain >= 100 ? ` · +${lenLabel(gain)}` : ''}</span>
               })()}
             </div>
             {originals.length > 0 && (
