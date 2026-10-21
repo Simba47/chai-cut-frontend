@@ -127,9 +127,11 @@ const SAME_SHOT_TIP = 'Dissolve looks like a plain cut there. Pick Slide, Whip, 
 /**
  * The Transitions tool, one set of controls for the whole clip:
  *
- *  - "Apply to": All cuts, or one cut (a chip per join, by its time; picking one moves the
- *    playhead there). A dot on a chip: that cut has a transition.
- *  - The tiles: the transition for what "Apply to" says (for All cuts, lit when they all share one).
+ *  - "Cut": which cut the controls are for — the one picked on the timeline, else the one nearest
+ *    the playhead (a chip per join, by its time; picking one moves the playhead there; the playhead
+ *    put on a cut picks it). A dot on a chip: that cut has a transition.
+ *  - The tiles: that cut's transition — picking one changes that cut only. "Apply to all cuts"
+ *    gives every cut the same one (with the same length).
  *  - Length, then Preview (plays through the cut, or the first one) and "+ Add cut" (splits the
  *    clip at the playhead: a new join).
  *
@@ -154,15 +156,20 @@ export function TransitionsPanel({ joins, transitions, currentTimeMs, canAddHere
   /** Opened from the transition button between two parts on the timeline: that cut (`n` changes each time) */
   focusJoin?: { id: string; n: number } | null
 }) {
-  // What the controls apply to: every cut, or one (its section id)
-  const [scope, setScope] = useState<'all' | string>(() => (focusJoin && joins.some(j => j.afterId === focusJoin.id) ? focusJoin.id : 'all'))
+  // The cut the controls are for (its section id): the one picked, else the one nearest the playhead
+  const nearestJoin = () => [...joins].sort((a, b) => Math.abs(a.at - currentTimeMs) - Math.abs(b.at - currentTimeMs))[0]
+  const [scope, setScope] = useState<string>(() => (focusJoin && joins.some(j => j.afterId === focusJoin.id) ? focusJoin.id : nearestJoin()?.afterId ?? ''))
   useEffect(() => { if (focusJoin && joins.some(j => j.afterId === focusJoin.id)) setScope(focusJoin.id) }, [focusJoin?.n]) // eslint-disable-line react-hooks/exhaustive-deps
+  // (the playhead put on a cut: that cut)
+  useEffect(() => {
+    const on = joins.find(j => Math.abs(j.at - currentTimeMs) < 150)
+    if (on && on.afterId !== scope) setScope(on.afterId)
+  }, [currentTimeMs]) // eslint-disable-line react-hooks/exhaustive-deps
   // The cut picked stays the same cut: when the part before it is split, its id goes with the left
   // half (now before the new cut), so the pick follows the cut to the part now before it
   // (only when the same pick's cut moved or went: a different cut picked is just recorded)
   const pickedAt = useRef<{ id: string; at: number } | null>(null)
   useEffect(() => {
-    if (scope === 'all') { pickedAt.current = null; return }
     const j = joins.find(x => x.afterId === scope)
     const was = pickedAt.current
     if (was && was.id === scope && (!j || Math.abs(j.at - was.at) > 1)) {
@@ -202,9 +209,8 @@ export function TransitionsPanel({ joins, transitions, currentTimeMs, canAddHere
   /** What really plays at a join, as the export makes it (ms; 0 = a plain cut) */
   const playedOf = (j: TransitionJoin) => (typeOf(j) === 'cut' ? 0 : playedTransitionMs(trOf(j)?.duration_ms || TRANSITION_DEFAULT_MS, j.room))
   const sideName = (j: TransitionJoin) => (j.shortSide === 'before' ? 'part before' : 'part after')
-  // (a cut picked that is gone — deleted or joined: the controls are for all cuts again, and say so)
-  const one = scope === 'all' ? null : joins.find(j => j.afterId === scope) ?? null
-  const allOn = !one
+  // (a cut picked that is gone — deleted or joined: the one nearest the playhead)
+  const one: TransitionJoin | null = joins.find(j => j.afterId === scope) ?? nearestJoin() ?? null
   const targets = one ? [one] : joins
   // What the tiles show: the cut's own, or for All cuts the one they share (none lit when mixed)
   const types = new Set(targets.map(typeOf))
@@ -253,14 +259,10 @@ export function TransitionsPanel({ joins, transitions, currentTimeMs, canAddHere
     <div className="flex flex-col gap-3.5 px-4 pb-5 pt-1">
       {/* Apply to: all cuts, or one */}
       <div className="flex flex-col gap-1.5">
-        <span className="tr-label">Apply to</span>
-        <div className="tr-scope" role="radiogroup" aria-label="Which cuts">
-          <button type="button" role="radio" aria-checked={allOn} data-on={allOn || undefined}
-            onClick={() => setScope('all')}>
-            All cuts <span className="tr-scope-n">{joins.length}</span>
-          </button>
+        <span className="tr-label">{joins.length > 1 ? 'Cut' : 'The cut'}</span>
+        <div className="tr-scope" role="radiogroup" aria-label="Which cut">
           {joins.map(j => (
-            <button key={j.afterId} type="button" role="radio" aria-checked={scope === j.afterId} data-on={scope === j.afterId || undefined}
+            <button key={j.afterId} type="button" role="radio" aria-checked={one?.afterId === j.afterId} data-on={one?.afterId === j.afterId || undefined}
               title={`Cut at ${fmt(j.at)}: ${nameOf(typeOf(j))}${typeOf(j) !== 'cut' && playedOf(j) === 0 ? ' (a part beside it is too short: it plays as a plain cut)' : ''}`}
               onClick={() => { setScope(j.afterId); onSeek?.(j.at) }}>
               <span className="tabular-nums">{fmt(j.at)}</span>
@@ -268,13 +270,22 @@ export function TransitionsPanel({ joins, transitions, currentTimeMs, canAddHere
             </button>
           ))}
         </div>
-        {allOn && picked === null && (
-          <span className="tr-hint">The cuts have different transitions — picking one sets it on all of them.</span>
-        )}
       </div>
 
       <KindTiles picked={picked} label={one ? `Transition at ${fmt(one.at)}` : 'Transition on every cut'} onPick={t => apply(t)}
         weak={targets.every(j => j.sameShot)} />
+      {/* the same transition on every cut: this cut's, with its length */}
+      {one && joins.length > 1 && (() => {
+        const t = typeOf(one), len = lenOf(one)
+        const same = joins.every(j => typeOf(j) === t && (t === 'cut' || lenOf(j) === len))
+        return (
+          <button type="button" className="tr-all" disabled={same}
+            title={same ? `Every cut already has ${nameOf(t)}` : `Give all ${joins.length} cuts ${nameOf(t)}${t !== 'cut' ? ` (${secs(len)})` : ''}`}
+            onClick={() => { for (const j of joins) onSet(j.afterId, t, len) }}>
+            {same ? `All ${joins.length} cuts have ${nameOf(t)}` : `Apply ${nameOf(t)} to all ${joins.length} cuts`}
+          </button>
+        )
+      })()}
       {unseen.length > 0 ? (
         // A kind that won't show picked on a same-shot cut: say so, and offer one that does in a tap
         <div className="tr-hint flex flex-col gap-2" data-tone="warn" role="alert">
@@ -337,13 +348,22 @@ export function TransitionsPanel({ joins, transitions, currentTimeMs, canAddHere
           <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M7 5v14l12-7z" /></svg>
           Preview {fmt(preview.at)}
         </button>
-        <button type="button" className="tr-play flex-1 justify-center" disabled={!canAddHere || onJoin} onClick={() => { onAddHere(addType); setScope('all') }}
+        <button type="button" className="tr-play flex-1 justify-center" disabled={!canAddHere || onJoin} onClick={() => { onAddHere(addType); setScope('') }}
           title={canAddHere && !onJoin ? `Cut the clip at ${fmt(currentTimeMs)} and add ${nameOf(addType)} there` : 'Move the playhead inside a part of the clip'}>
           <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.8" strokeLinecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
           Add cut at {fmt(currentTimeMs)}
         </button>
       </div>
     </div>
+  )
+}
+
+/** A small flame: trending (beside a tile's name, and on the trending section's heading) */
+function Flame() {
+  return (
+    <svg className="tr-flame" width="9" height="11" viewBox="0 0 12 15" fill="currentColor" aria-hidden="true">
+      <path d="M6.6.4c.4 2.3-.6 3.6-1.7 4.8C3.6 6.6 2 8.1 2 10.4 2 12.9 3.8 14.6 6 14.6s4-1.7 4-4.1c0-1.6-.7-2.7-1.4-3.6-.2 1-.8 1.8-1.6 2.2.3-2.6-.2-5.5-.4-8.7Z" />
+    </svg>
   )
 }
 
@@ -363,20 +383,22 @@ function KindTiles({ picked, label, disabled, weak, onPick }: {
       className="tr-tile" data-on={picked === k.type || undefined} data-weak={(weak && NEEDS_CHANGE.includes(k.type)) || undefined}
       title={weak && NEEDS_CHANGE.includes(k.type) ? `${k.name} barely shows between two parts of the same shot` : undefined}
       onClick={() => onPick(k.type)}>
+      {/* the picture plays the transition; nothing laid over it */}
       <span className="tr-demo" data-kind={k.type} aria-hidden="true">
         <i className="tr-a" /><i className="tr-b" /><i className="tr-fx" />
-        {k.fresh ? <b className="tr-badge" data-new>New</b> : k.trending && <b className="tr-badge">Trending</b>}
       </span>
-      <span className="tr-name">{k.name}</span>
+      {/* its name — trending ones with a small flame (the new ones are under their own heading) */}
+      <span className="tr-name">{k.trending && !k.fresh && <Flame />}{k.name}</span>
     </button>
   )
   // (an older kind shows only while it is the one picked, so the clip's own choice stays visible)
   const shown = TRANSITION_KINDS.filter(k => !k.hidden || picked === k.type)
   return (
-    <div className="flex flex-col gap-2.5" role="radiogroup" aria-label={label}>
-      <div className="grid grid-cols-3 gap-1.5">{shown.filter(k => !k.fresh).map(tile)}</div>
-      <span className="tr-label">Trending on Reels and Shorts</span>
-      <div className="grid grid-cols-3 gap-1.5">{shown.filter(k => k.fresh).map(tile)}</div>
+    <div className="tr-kinds" role="radiogroup" aria-label={label}>
+      <span className="tr-label">Basic</span>
+      <div className="tr-grid">{shown.filter(k => !k.fresh).map(tile)}</div>
+      <span className="tr-label tr-label-hot"><Flame />Trending on Reels and Shorts</span>
+      <div className="tr-grid">{shown.filter(k => k.fresh).map(tile)}</div>
     </div>
   )
 }

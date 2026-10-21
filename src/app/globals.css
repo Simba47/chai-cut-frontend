@@ -1077,16 +1077,27 @@ body {
 .tr-scope > button[data-on] .tr-scope-dot { background: #0a0a0a; }
 .tr-hint { font-size: 11px; line-height: 1.4; color: rgb(var(--ed-fg) / 0.45); }
 .tr-hint[data-tone="warn"] { padding: 8px 10px; border-radius: 10px; color: rgb(var(--ed-fg) / 0.75); background: rgba(251,191,36,0.08); box-shadow: inset 0 0 0 1px rgba(251,191,36,0.22); }
-.tr-tile { display: flex; flex-direction: column; gap: 5px; padding: 4px 4px 6px; border-radius: 11px; background: rgb(var(--ed-fg) / 0.03); box-shadow: inset 0 0 0 1px rgb(var(--ed-fg) / 0.07); transition: background-color .15s, box-shadow .15s, transform .12s; }
-.tr-tile:hover { background: rgb(var(--ed-fg) / 0.06); }
-.tr-tile:active { transform: scale(.96); }
-.tr-tile[data-on] { background: rgba(200,255,0,0.06); box-shadow: inset 0 0 0 1.5px #c8ff00; }
+/* The transition cards: the picture (it plays the transition) and the name under it — no box,
+   no labels over the picture; a thin outline that lights on hover, a lime ring when picked */
+.tr-kinds { display: flex; flex-direction: column; gap: 10px; }
+.tr-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px 8px; }
+.tr-label-hot { display: flex; align-items: center; gap: 5px; margin-top: 4px; }
+/* "Apply … to all N cuts": the picked cut's transition on every cut */
+.tr-all { width: 100%; height: 34px; border-radius: 10px; font-size: 12px; font-weight: 700; color: var(--ed-text); background: rgb(var(--ed-fg) / 0.06); box-shadow: inset 0 0 0 1px rgb(var(--ed-fg) / 0.12); transition: background-color .15s, color .15s; }
+.tr-all:hover:not(:disabled) { background: rgba(200,255,0,0.12); color: #c8ff00; box-shadow: inset 0 0 0 1px rgba(200,255,0,0.4); }
+.tr-all:disabled { color: rgb(var(--ed-fg) / 0.45); cursor: default; background: none; }
+.tr-label-hot .tr-flame { color: #c8ff00; }
+.tr-tile { min-width: 0; display: flex; flex-direction: column; gap: 6px; padding: 0; border-radius: 10px; background: none; transition: transform .12s; }
+.tr-tile .tr-demo { box-shadow: inset 0 0 0 1px rgb(var(--ed-fg) / 0.1); transition: box-shadow .15s; }
+.tr-tile:hover .tr-demo { box-shadow: inset 0 0 0 1px rgb(var(--ed-fg) / 0.35); }
+.tr-tile:active { transform: scale(.97); }
+.tr-tile[data-on] .tr-demo { box-shadow: 0 0 0 2px #c8ff00, 0 0 0 4px rgba(200,255,0,0.15); }
 /* won't show between two parts of the same shot (TransitionsPanel NEEDS_CHANGE) */
 .tr-tile[data-weak]:not([data-on]) .tr-demo { opacity: .45; }
 .tr-tile[data-weak]:not([data-on]) .tr-name { color: rgb(var(--ed-fg) / 0.38); }
 .tr-tile:focus-visible { outline: 2px solid rgba(200,255,0,0.6); outline-offset: 1px; }
 .tr-tile:disabled { opacity: .4; cursor: not-allowed; transform: none; }
-.tr-tile:disabled:hover { background: rgb(var(--ed-fg) / 0.03); }
+.tr-tile:disabled:hover .tr-demo { box-shadow: inset 0 0 0 1px rgb(var(--ed-fg) / 0.1); }
 /* no joins yet: a line on what picking does, above the tiles */
 .tr-start {
   display: flex; align-items: center; gap: 12px; padding: 12px; border-radius: 14px;
@@ -1096,8 +1107,10 @@ body {
 .tr-start .tr-empty-title { margin-bottom: 2px; }
 .tr-start .tr-empty-text { font-size: 11.5px; }
 .tr-start .tr-empty-text b { color: var(--ed-text); font-weight: 700; }
-.tr-name { font-size: 10.5px; line-height: 1.2; white-space: nowrap; font-weight: 500; text-align: center; color: rgb(var(--ed-fg) / 0.6); }
-.tr-tile[data-on] .tr-name { color: var(--ed-text); font-weight: 600; }
+.tr-name { display: flex; align-items: center; justify-content: center; gap: 4px; min-width: 0; font-size: 11.5px; line-height: 1.25; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 500; color: rgb(var(--ed-fg) / 0.7); }
+.tr-name .tr-flame { flex-shrink: 0; color: #c8ff00; }
+.tr-tile:hover .tr-name { color: var(--ed-text); }
+.tr-tile[data-on] .tr-name { color: var(--ed-text); font-weight: 650; }
 .tr-range { width: 100%; accent-color: #c8ff00; }
 .tr-empty { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 28px 22px; text-align: center; }
 .tr-empty-icon { width: 44px; height: 44px; border-radius: 13px; display: grid; place-items: center; color: rgb(var(--ed-fg) / 0.6); background: rgb(var(--ed-fg) / 0.06); }
@@ -1112,7 +1125,6 @@ body {
   animation-duration: var(--trc); animation-iteration-count: infinite; animation-direction: alternate; animation-fill-mode: both; animation-timing-function: linear; }
 .tr-a { background-image: url('/mascot/transition-a.jpg'); }
 .tr-b { background-image: url('/mascot/transition-b.jpg'); opacity: 0; }
-.tr-badge { position: absolute; left: 4px; top: 4px; z-index: 2; padding: 1px 4px; border-radius: 4px; font-size: 8px; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; color: #c8ff00; background: rgba(0,0,0,.7); pointer-events: none; }
 .tr-tile:not(:hover):not([data-on]) .tr-demo i { animation-play-state: paused; animation-delay: calc(var(--trc) * var(--rest, -0.5)); }
 /* (the resting moment of each: where its picture reads best — not a blank black, white or blurred frame) */
 .tr-demo:is([data-kind="fadeblack"], [data-kind="fadewhite"]) { --rest: -0.38; }
@@ -1179,8 +1191,7 @@ body {
 .tr-demo[data-kind="pixelize"] .tr-b { animation-name: trx-pix-b; animation-timing-function: steps(6, end); }
 @keyframes trx-pix-a { 0%, 30% { filter: blur(0) contrast(1); opacity: 1 } 49% { filter: blur(3px) contrast(1.6); opacity: 1 } 50%, 100% { opacity: 0 } }
 @keyframes trx-pix-b { 0%, 49.9% { opacity: 0 } 50% { opacity: 1; filter: blur(3px) contrast(1.6) } 70%, 100% { opacity: 1; filter: blur(0) contrast(1) } }
-/* The new trending kinds (TransitionsPanel: fresh): a lime "New" badge; Glitch and Light leak use the effect layer */
-.tr-badge[data-new] { color: #0a0a0a; background: #c8ff00; }
+/* The new trending kinds (TransitionsPanel: fresh): Glitch and Light leak use the effect layer */
 .tr-demo .tr-fx { opacity: 0; background: none; }
 /* Speed ramp: creeps in, rushes, lands slow */
 .tr-demo[data-kind="velocity"] .tr-a { animation-name: trx-vel-a; } .tr-demo[data-kind="velocity"] .tr-b { animation-name: trx-vel-b; }
