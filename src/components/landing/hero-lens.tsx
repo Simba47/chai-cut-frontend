@@ -11,7 +11,7 @@ import { ZoomFit } from '@/components/ui/zoom-fit'
  * the finished clip lifts out of the lens into the fanned stack on the right.
  */
 
-// Layout (px, at the 520px design width; ZoomFit scales it to the column: down on phones, up to 1.3x on wide screens)
+// Layout (px, at the 520px design width; ZoomFit scales it to the column: down on phones, up to 1.6x on wide screens)
 const WIDTH = 520, HEIGHT = 228
 const H = 160, W = Math.round(H * 16 / 9), GAP = 10, P = W + GAP   // 16:9 frames on the strip
 const LW = Math.round(H * 9 / 16), CX = 190, TOP = (HEIGHT - H) / 2  // the 9:16 lens, centred at CX
@@ -20,7 +20,7 @@ const LENS_LEFT = CX - LW / 2
 // One beat (ms): glide to the next speaker, lock on, caption, shoot, release
 const MOVE = 1100, LOCK_AT = 1150, WORD_AT = [1300, 1600, 1900], SHOT_AT = 2300, UNLOCK_AT = 2700, CYCLE = 3000
 
-const SCENES = [
+export const SCENES = [
   { bg: 'linear-gradient(135deg, #2b1055 0%, #7b2f7f 55%, #d8587a 100%)', skin: '#e9a88e', caption: ['Nobody', 'talks', 'about this'], side: 0.8 },
   { bg: 'linear-gradient(135deg, #0b2a3a 0%, #155e75 55%, #3fb5c4 100%)', skin: '#c98d6c', caption: ['This', 'changed', 'everything'], side: 0.18 },
   { bg: 'linear-gradient(135deg, #3a1406 0%, #9a3c12 55%, #f0a04b 100%)', skin: '#f1b996', caption: ['Here’s', 'the', 'truth'], side: 0.82 },
@@ -49,7 +49,7 @@ const ease = (t: number) => (t < 0.5 ? 16 * t ** 5 : 1 - (-2 * t + 2) ** 5 / 2) 
 
 type Card = { id: number; scene: number }
 
-function Scene({ i }: { i: number }) {
+export function Scene({ i }: { i: number }) {
   const s = SCENES[i]
   return (
     <div className="hl-scene" style={{ background: s.bg }}>
@@ -61,7 +61,7 @@ function Scene({ i }: { i: number }) {
   )
 }
 
-function Caption({ words, lit }: { words: string[]; lit: number }) {
+export function Caption({ words, lit }: { words: string[]; lit: number }) {
   return (
     <span className="hl-cap">
       {words.map((w, k) => <span key={k} className={k < lit ? (k === lit - 1 ? 'on now' : 'on') : ''}>{w}</span>).flatMap((el, k) => (k ? [' ', el] : [el]))}
@@ -135,7 +135,7 @@ export function HeroLens() {
   )
 
   return (
-    <ZoomFit width={WIDTH} max={1.3} className="hl-fit">
+    <ZoomFit width={WIDTH} max={1.6} className="hl-fit">
       <div
         ref={rootRef}
         className="hl"
