@@ -869,9 +869,10 @@ export function Timeline({
           {comingBack && <div className="tl2-grow absolute inset-y-0 left-0" data-edge="start" style={{ width: `${(Math.max(0, g!.from - start) / Math.max(1, end - start)) * 100}%` }} />}
           <div className="absolute inset-0 pointer-events-none" style={{ background: 'linear-gradient(180deg, rgba(0,0,0,0.45), transparent 38%, transparent 62%, rgba(0,0,0,0.55))' }} />
         </div>
-        {/* its format (an inserted video: the video's name), its length, its state */}
+        {/* its format (an inserted video: just "Video" — its name shows for 3 s after it goes in, in
+            InsertTag, and stays in the tooltip), its length, its state */}
         <span className="tl2-tag absolute left-1.5 top-1">
-          <i style={{ background: color }} />{isInsert ? `Video · ${name}` : name}
+          <i style={{ background: color }} />{isInsert ? 'Video' : name}
         </span>
         <span className="tl2-len absolute right-1.5 bottom-1">{lenLabel(end - start)}</span>
         <span className="absolute right-1 top-1"><StateBadges st={st} /></span>
