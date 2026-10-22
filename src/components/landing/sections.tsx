@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import { VelocityMarquee } from '@/components/ui/velocity-marquee'
 import { LayoutGroup, motion } from 'framer-motion'
+import { useProblemFlip } from '@/components/landing/problem-flip'
 
 /**
  * Landing-page sections for the "Turn every video into income" story (styles: .lx-* in
@@ -64,8 +65,32 @@ function BlindArt() {
   )
 }
 
-export function ProblemSection() {
+const FIX_ARROW = <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14M13 6l6 6-6 6" /></svg>
+
+function PainCard({ p, i }: { p: (typeof PAINS)[number]; i: number }) {
   return (
+    <article className={`lx-pain lx-pain-${p.art}`} style={{ '--i': i } as React.CSSProperties}>
+      {p.art === 'hours' ? <HoursArt /> : p.art === 'crop' ? <CropArt /> : <BlindArt />}
+      <span className="lx-pain-num">0{i + 1}</span>
+      <h3>{p.title}</h3>
+      <p>{p.desc}</p>
+      {/* How Shortcut answers it: jumps to the section that shows the fix */}
+      <a className="lx-pain-fix" href={p.href}>
+        <span>{p.fix}</span>
+        {FIX_ARROW}
+      </a>
+    </article>
+  )
+}
+
+/**
+ * The Problem. With `flip` (desktop), the cards play a scroll story (problem-flip.ts): they rise out
+ * of the hero as a deck, deal out, then each turns over to its fix, and lines lead on to How it works.
+ */
+export function ProblemSection({ flip = false }: { flip?: boolean }) {
+  const outer = useRef<HTMLDivElement>(null), stage = useRef<HTMLDivElement>(null), fit = useRef<HTMLDivElement>(null)
+  useProblemFlip(flip, outer, stage, fit)
+  const body = (
     <section className="section-inner">
       <div className="section-head reveal">
         <p className="section-eyebrow">The problem</p>
@@ -73,21 +98,28 @@ export function ProblemSection() {
         <p className="section-sub">Every hour spent scrubbing timelines and fixing crops is an hour you’re not posting. Manual editing is too slow to keep up. AI clippers are fast, but you still end up fixing their framing clip by clip.</p>
       </div>
       <div className="lx-pains reveal">
-        {PAINS.map((p, i) => (
-          <article key={p.title} className={`lx-pain lx-pain-${p.art}`} style={{ '--i': i } as React.CSSProperties}>
-            {p.art === 'hours' ? <HoursArt /> : p.art === 'crop' ? <CropArt /> : <BlindArt />}
-            <span className="lx-pain-num">0{i + 1}</span>
-            <h3>{p.title}</h3>
-            <p>{p.desc}</p>
-            {/* How Shortcut answers it: jumps to the section that shows the fix */}
-            <a className="lx-pain-fix" href={p.href}>
-              <span>{p.fix}</span>
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14M13 6l6 6-6 6" /></svg>
-            </a>
-          </article>
-        ))}
+        {PAINS.map((p, i) => flip ? (
+          <div key={p.title} className="pf-card">
+            <div className="pf-flip">
+              <PainCard p={p} i={i} />
+              {/* the back: Shortcut's answer to it */}
+              <a className="pf-back" href={p.href}>
+                <span className="pf-back-num">0{i + 1}</span>
+                <span className="pf-back-fix">{p.fix}</span>
+                <span className="pf-back-go">{FIX_ARROW}</span>
+              </a>
+            </div>
+            <span className="pf-bridge" aria-hidden="true" />
+          </div>
+        ) : <PainCard key={p.title} p={p} i={i} />)}
       </div>
     </section>
+  )
+  if (!flip) return body
+  return (
+    <div ref={outer} className="pf">
+      <div ref={stage} className="pf-stage"><div ref={fit} className="pf-fit">{body}</div></div>
+    </div>
   )
 }
 
