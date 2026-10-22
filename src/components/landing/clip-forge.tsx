@@ -11,6 +11,11 @@ import type { CSSProperties } from 'react'
  */
 
 const FRAMES = ['#1b2328', '#272019', '#1c2620', '#231d27', '#1a2229', '#26211a']
+// The pictures: panda frames (public/landing/studio-N.webp) and where the panda sits across each (%),
+// for the filmstrip's frames and for the finished clips
+const shot = (n: number, x: number) => ({ '--img': `url(/landing/studio-${n}.webp)`, '--pos': `${x}% 45%` })
+const FRAME_SHOTS = [shot(1, 40), shot(4, 50), shot(2, 46), shot(3, 40), shot(1, 62), shot(4, 36)]
+const CLIP_SHOTS = [shot(3, 42), shot(1, 42), shot(4, 51), shot(2, 47), shot(1, 44)]
 // which frames hold a best moment (index), and where each one lands in the fan
 const MOMENTS = [1, 3, 5]
 const FAN = [
@@ -41,15 +46,13 @@ export function ClipForge({ clips = 10 }: { clips?: number }) {
         <div className="cf-file"><b>podcast-episode-42.mp4</b><span>1:12:08</span></div>
         <div className="cf-strip">
           {FRAMES.map((tone, i) => (
-            <span key={i} className="cf-frame" data-hit={MOMENTS.indexOf(i) >= 0 ? MOMENTS.indexOf(i) + 1 : undefined} style={{ '--tone': tone } as CSSProperties}>
-              <i /><i />
-            </span>
+            <span key={i} className="cf-frame" data-hit={MOMENTS.indexOf(i) >= 0 ? MOMENTS.indexOf(i) + 1 : undefined} style={{ '--tone': tone, ...FRAME_SHOTS[i] } as CSSProperties} />
           ))}
           <span className="cf-scan" />
         </div>
         {/* the moments, lifting out toward the core */}
         {MOMENTS.map((f, k) => (
-          <span key={f} className="cf-lift" style={{ '--f': f, '--k': k, '--tone': FRAMES[f] } as CSSProperties} />
+          <span key={f} className="cf-lift" style={{ '--f': f, '--k': k, '--tone': FRAMES[f], ...FRAME_SHOTS[f] } as CSSProperties} />
         ))}
       </div>
 
@@ -64,8 +67,7 @@ export function ClipForge({ clips = 10 }: { clips?: number }) {
       {/* 3 · the clips */}
       <div className="cf-hand" aria-hidden="true">
         {FAN.map((p, i) => (
-          <span key={i} className="cf-clip" style={{ '--i': i, '--fx': p.x, '--fy': p.y, '--fr': `${p.r}deg`, '--tone': FRAMES[i] } as CSSProperties}>
-            <span className="cf-face"><i /><b /></span>
+          <span key={i} className="cf-clip" style={{ '--i': i, '--fx': p.x, '--fy': p.y, '--fr': `${p.r}deg`, '--tone': FRAMES[i], ...CLIP_SHOTS[i] } as CSSProperties}>
             <span className="cf-cap"><em>{CAPS[i]}</em></span>
             <span className="cf-prog" />
           </span>
