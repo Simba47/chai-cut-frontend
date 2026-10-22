@@ -18,7 +18,7 @@ import { useBrollSources, useBorrowedSlots } from '@/modules/editor/brollSources
 import { SOUND_DEFAULTS, type SoundItem, type SoundKind } from '@/modules/editor/soundCatalog'
 import { Timeline } from '@/components/editor/timeline/Timeline'
 import { useFreeWatermark } from '@/components/editor/watermark'
-import { LAYOUT_COLORS, MAX_ZOOM, ZOOM_STEPS, zoomStep, zoomLabel, STOCK_DRAG_TYPE, type LaneCtl, type LaneCtlKey } from '@/components/editor/SegmentTimeline'
+import { LAYOUT_COLORS, MAX_ZOOM, zoomStep, zoomLabel, STOCK_DRAG_TYPE, type LaneCtl, type LaneCtlKey } from '@/components/editor/SegmentTimeline'
 import { useVideoUpload } from '@/modules/upload/useVideoUpload'
 import { TranscriptPanel } from '@/components/editor/TranscriptPanel'
 import { CaptionStyler } from '@/components/editor/CaptionStyler'
@@ -678,13 +678,8 @@ export function EditorShell({
   /** The last save had to keep newer transitions as a Dissolve (the database doesn't take them yet) */
   const [trAsDissolve, setTrAsDissolve] = useState(false)
   const [motionMode, setMotionMode] = useState(false)
-  // A long clip opens zoomed in to about a minute across the timeline: at 1x a 4-minute clip is ~8 px a
-  // second, and pulling the playhead jumped seconds at a time (zoom out with − or a pinch)
-  const [timelineZoom, setTimelineZoom] = useState(() => {
-    const minutes = (savedClip.end_ms - savedClip.start_ms) / 60_000
-    if (minutes <= 1.25) return 1
-    return [...ZOOM_STEPS].reverse().find(z => z <= minutes) ?? 1
-  })
+  // The timeline always opens at 1x, the whole clip across it (zoom in with + or a pinch)
+  const [timelineZoom, setTimelineZoom] = useState(1)
   const [timelineHidden, setTimelineHidden] = useState(false)
   // Cleanup: the list of cuts can be folded away
   const [cutsOpen, setCutsOpen] = useState(true)
