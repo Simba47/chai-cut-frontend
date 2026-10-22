@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import Link from 'next/link'
 import NumberFlow from '@number-flow/react'
 import { Mail, MapPin, Menu, Phone, X } from 'lucide-react'
@@ -17,6 +17,10 @@ import { CircularCarousel, type CarouselItem } from '@/components/ui/circular-ca
 import { SectionTransition } from '@/components/ui/section-transition'
 import { FaqSection, type FaqItem } from '@/components/ui/faq-section'
 import { HeroLens } from '@/components/landing/hero-lens'
+import { HeroSplit } from '@/components/landing/hero-split'
+import { FeatureTunnel } from '@/components/landing/feature-tunnel'
+import { FlyIn } from '@/components/landing/fly-in'
+import type Lenis from 'lenis'
 import { InsightsSection, ProblemSection, ProofSection } from '@/components/landing/sections'
 import { neutralStyle, useLiteMotion } from '@/components/ui/use-lite-motion'
 import { PLANS } from '@/lib/plans'
@@ -138,7 +142,11 @@ const STEPS = [
   { title: 'Track and earn more', desc: 'See views and earnings for every clip. Shortcut learns what works for you and picks better moments next time.' },
 ]
 
-// Features shown in the circular carousel
+// Features: the fly-through on desktop, the circular carousel on smaller screens / reduced motion
+const TUNNEL_QUERY = '(min-width: 1100px) and (pointer: fine) and (prefers-reduced-motion: no-preference)'
+const tunnelSub = (on: () => void) => { const mq = window.matchMedia(TUNNEL_QUERY); mq.addEventListener('change', on); return () => mq.removeEventListener('change', on) }
+const useTunnel = () => useSyncExternalStore(tunnelSub, () => window.matchMedia(TUNNEL_QUERY).matches, () => false)
+
 const featureIcon = (glyph: string, tone: string) => <span className={`feature-icon ${tone}`} aria-hidden>{glyph}</span>
 
 const FEATURES: CarouselItem[] = [
@@ -158,6 +166,7 @@ const EXPLORE = [
   { label: 'How it works', href: '#process' },
   { label: 'Features', href: '#features' },
   { label: 'Trends', href: '#trends' },
+  { label: 'Pricing', href: '#pricing' },
 ]
 // Footer "Explore" column (the client's footer links)
 const FOOTER_LINKS = [
@@ -222,6 +231,13 @@ const SOCIALS = [
 const NAV_H = 60      // .lp-nav height (sticky, so it covers the top of the screen)
 const FIT_GAP = 16   // minimum space kept above and below a section's content
 
+// Smooth scrolling (Lenis) on desktop; null elsewhere. Page jumps go through it so they don't fight it.
+let lenis: Lenis | null = null
+function scrollToY(y: number, smooth: boolean) {
+  if (lenis) lenis.scrollTo(y, { immediate: !smooth, duration: 1.1 })
+  else window.scrollTo({ top: y, behavior: smooth ? 'smooth' : 'auto' })
+}
+
 // Document Y of an element's layout box. Uses offsetTop, so the scroll-driven
 // transforms on sections (tilt / zoom / reveal) don't skew the measurement.
 function docTop(el: HTMLElement) {
@@ -282,9 +298,17 @@ function scrollToSection(id: string, smooth: boolean) {
   const room = window.innerHeight - NAV_H
   const centred = top - NAV_H - Math.max(FIT_GAP, (room - height) / 2)
   // Don't scroll so high that the previous section peeks in above this one
-  const y = Math.max(centred, Math.min(docTop(section), top - NAV_H - FIT_GAP))
-  window.scrollTo({ top: y, behavior: smooth ? 'smooth' : 'auto' })
+  let y = Math.max(centred, Math.min(docTop(section), top - NAV_H - FIT_GAP))
+  // A pinned fly-in section (fly-in.tsx): land where its cards have all landed
+  const fly = section.querySelector<HTMLElement>('.fly-pinned')
+  if (fly?.dataset.pin) y = docTop(fly) - NAV_H + Number(fly.dataset.pin)
+  scrollToY(y, smooth)
   history.replaceState(null, '', `#${id}`)
+}
+
+// A section without the scroll-driven entrance (desktop, where FlyIn animates it instead); same surface
+function PlainSection({ id, className, children }: { id?: string; className?: string; variant?: string; children: React.ReactNode }) {
+  return <div id={id} className={`section-transition ${className ?? ''}`}>{children}</div>
 }
 
 // Hand-drawn arrow that swaps in for the label on .arrow-btn hover
@@ -302,6 +326,10 @@ export function LandingPage() {
   const sheetRef = useRef<HTMLDivElement>(null)
   const { scrollYProgress: raw } = useScroll({ target: sheetRef, offset: ['start end', 'start start'] })
   const p = useSpring(raw, { stiffness: 120, damping: 24, mass: 0.3 })
+  // Once the sheet fully covers the hero, the hero stops drawing (hidden; its animation pauses) —
+  // it stays pinned behind the Problem section for a while, and nobody can see it
+  const [heroCovered, setHeroCovered] = useState(false)
+  useEffect(() => raw.on('change', v => setHeroCovered(v >= 0.999)), [raw])
   const reduceMotion = useReducedMotion()
   // Phones/touch screens scroll plainly: per-frame blur/scale effects stutter there
   const lite = useLiteMotion()
@@ -322,6 +350,24 @@ export function LandingPage() {
   const sheetRadius = useTransform(p, [0, 1], [48, 0])
 
   const heroRef = useRef<HTMLElement>(null)
+  const tunnel = useTunnel()
+  // Desktop: the page glides (Lenis smooth scrolling); the 3D scroll animations ride on it
+  useEffect(() => {
+    if (!tunnel) return
+    let raf = 0, alive = true
+    import('lenis').then(({ default: L }) => {
+      if (!alive) return
+      lenis = new L({ lerp: 0.11, wheelMultiplier: 1, smoothWheel: true })
+      const loop = (t: number) => { lenis?.raf(t); raf = requestAnimationFrame(loop) }
+      raf = requestAnimationFrame(loop)
+    })
+    return () => { alive = false; cancelAnimationFrame(raf); lenis?.destroy(); lenis = null }
+  }, [tunnel])
+  // Desktop: sections fly in (FlyIn) instead of the tilt / zoom entrances
+  const Sec = tunnel ? PlainSection : SectionTransition
+  // TEMPORARY: the hero animation — the new one (one video into reels) by default; ?hero=old shows the old lens
+  const [heroConcept, setHeroConcept] = useState<string | null>(null)
+  useEffect(() => { setHeroConcept(new URLSearchParams(window.location.search).get('hero')) }, [])
 
   // "Your first N clips are free": N counts up from 0 once the line has faded in, like earnings
   // adding up (N is the Free plan's clip limit, so it always matches Pricing)
@@ -372,7 +418,7 @@ export function LandingPage() {
   const goHome = (e: React.MouseEvent<HTMLAnchorElement>) => {
     e.preventDefault()
     setMenuOpen(false)
-    window.scrollTo({ top: 0, behavior: reduceMotion ? 'auto' : 'smooth' })
+    scrollToY(0, !reduceMotion)
   }
 
   // Phone menu (the tab of section links is hidden below 960px)
@@ -417,7 +463,7 @@ export function LandingPage() {
         <div className="nav-right">
           <Link href="/login" className="btn-nav-ghost fill-btn fill-btn-sm"><FillButtonContent>Log in</FillButtonContent></Link>
           <Link href="/signup" className="btn-nav-primary arrow-btn">
-            <span className="arrow-btn-label">Start clipping free</span>
+            <span className="arrow-btn-label">Get started</span>
             <SquiggleArrow />
           </Link>
           <button
@@ -442,7 +488,7 @@ export function LandingPage() {
 
       {/* ── HERO + FEATURES: hero pins while features slides over it ── */}
       <div className="hero-stack">
-      <section className="hero" ref={heroRef}>
+      <section className="hero" ref={heroRef} data-covered={heroCovered || undefined}>
         {/* Soft light shade, same as the closing CTA section */}
         <div className="hero-shade" aria-hidden />
         {/* Interactive dot field: lights up around the cursor, ripples on click */}
@@ -494,7 +540,7 @@ export function LandingPage() {
         {/* recedes with the headline as the next section slides over */}
         <motion.div className="hero-visual" style={fx({ opacity: textOpacity, scale: textScale })}>
           <div className="intro" style={{ '--d': '.9s' } as React.CSSProperties}>
-            <HeroLens />
+            {heroConcept === 'old' ? <HeroLens /> : <HeroSplit />}
           </div>
         </motion.div>
         </div>
@@ -508,12 +554,13 @@ export function LandingPage() {
         className="section-wrap sheet"
         style={fx({ scale: sheetScale, borderTopLeftRadius: sheetRadius, borderTopRightRadius: sheetRadius })}
       >
-        <ProblemSection />
+        <ProblemSection flip={tunnel} />
       </motion.div>
       </div>
 
       {/* ── HOW IT WORKS ── */}
-      <SectionTransition id="process" variant="tilt" className="section-wrap">
+      <Sec id="process" variant="tilt" className="section-wrap">
+        <FlyIn on={tunnel} pieces=".pw-stage, .fly-step, .lx-loop" pin={1.1} from="above">
         <section className="section-inner">
           <div className="section-head reveal">
             <p className="section-eyebrow">How it works</p>
@@ -541,13 +588,16 @@ export function LandingPage() {
           </div>
           <div className="process-grid">
             {STEPS.map((step, i) => (
-              <TiltCard key={step.title} className="process-step" index={i}>
+              // fly-step: what flies in on desktop (FlyIn), so the card keeps its own tilt and fade
+              <div key={step.title} className="fly-step">
+              <TiltCard className="process-step" index={i}>
                 <div className="tilt-card-inner">
                   <div className="step-num"><div className="step-num-circle">{i + 1}</div> Step {i + 1}</div>
                   <h3 className="step-title">{step.title}</h3>
                   <p className="step-desc">{step.desc}</p>
                 </div>
               </TiltCard>
+              </div>
             ))}
           </div>
           <p className="lx-loop reveal">
@@ -555,9 +605,15 @@ export function LandingPage() {
             Every clip you post makes the next one smarter.
           </p>
         </section>
-      </SectionTransition>
+        </FlyIn>
+      </Sec>
 
-      {/* ── FEATURES ── */}
+      {/* ── FEATURES: desktop flies through the cards; smaller screens get the carousel ── */}
+      {tunnel ? (
+        <section id="features" className="section-wrap ft-wrap">
+          <FeatureTunnel eyebrow="Features" title="Everything you need to post more and earn more." items={FEATURES} />
+        </section>
+      ) : (
       <SectionTransition id="features" variant="zoom" className="section-wrap">
         <section className="section-inner">
           <div className="section-head reveal">
@@ -569,16 +625,17 @@ export function LandingPage() {
           </div>
         </section>
       </SectionTransition>
+      )}
 
       {/* ── INSIDE SHORTCUT: trends, earnings and output on one board (keeps the #trends anchor for the nav) ── */}
-      <SectionTransition id="trends" variant="tilt" className="section-wrap">
-        <InsightsSection />
-      </SectionTransition>
+      <Sec id="trends" variant="tilt" className="section-wrap">
+        <FlyIn on={tunnel} pieces=".bx-hint, .bx-inner"><InsightsSection /></FlyIn>
+      </Sec>
 
       {/* ── SOCIAL PROOF ── */}
-      <SectionTransition id="proof" variant="tilt" className="section-wrap">
-        <ProofSection />
-      </SectionTransition>
+      <Sec id="proof" variant="tilt" className="section-wrap">
+        <FlyIn on={tunnel} pieces=".lx-quote, .lx-trend-rows"><ProofSection /></FlyIn>
+      </Sec>
 
       {/* ── PRICING ── */}
       <SectionTransition id="pricing" variant="zoom" className="section-wrap">
