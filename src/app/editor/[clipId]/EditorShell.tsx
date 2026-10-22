@@ -4906,10 +4906,10 @@ export function EditorShell({
               </div>
             )}
             </div>
+            {/* one chevron: tucks the options panel away to the left (styles: .ed-fold) */}
             <button onClick={() => toggleOptions(false)} aria-label="Close options sidebar" title="Close options sidebar"
-              className="shrink-0 w-8 h-8 flex items-center justify-center rounded-lg transition-colors hover:bg-[rgb(var(--ed-fg)/0.1)]"
-              style={{ color: 'rgb(var(--ed-fg) / 0.55)' }}>
-              <SidebarIcon open />
+              className="ed-fold" data-dir="left">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path className="fold-arrow" d="M14.5 6.5L9 12l5.5 5.5" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" /></svg>
             </button>
           </div>
 
@@ -5528,11 +5528,9 @@ export function EditorShell({
                 marking={marking} onMark={markSubject} subjectsAt={subjectsAt}
               />
               {playingAdded && !playingAdded.hidden && (playingSegment && isInsert(playingSegment, mainVideoId)
-                // (a video put in between: lime, as on the film strip)
-                ? <div className="absolute top-3 left-3 flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-bold pointer-events-none"
-                    style={{ background: '#c8ff00', color: '#0a0a0a' }}>Inserted video</div>
-                : <div className="absolute top-3 left-3 flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold pointer-events-none"
-                    style={{ background: 'rgba(249,115,22,0.85)', color: '#fff' }}>B-roll</div>
+                // (a quiet see-through tag; its dot says which: lime = a video put in between, as on the film strip; orange = B-roll)
+                ? <div className="ed-pv-tag absolute top-3 left-3 pointer-events-none"><i style={{ background: '#c8ff00' }} />Inserted video</div>
+                : <div className="ed-pv-tag absolute top-3 left-3 pointer-events-none"><i style={{ background: '#f97316' }} />B-roll</div>
               )}
             </div>
           </div>
@@ -5554,11 +5552,11 @@ export function EditorShell({
               {/* Film-reel play button (styles: .ed-play in globals.css) */}
               <button onClick={togglePlay} aria-label={playing ? 'Pause' : 'Play'} title={`${playing ? 'Pause' : 'Play'} (Space)`}
                 data-playing={playing || undefined}
-                className="ed-play w-10 h-10 flex items-center justify-center rounded-full shrink-0 transition-opacity hover:opacity-90" style={{ background: ACCENT }}>
+                className="ed-play w-10 h-10 flex items-center justify-center rounded-full shrink-0">
                 <span key={playing ? 'pause' : 'play'} className="ed-play-icon flex">
                   {playing
-                    ? <svg width="12" height="12" viewBox="0 0 12 12" fill="black"><rect x="2" y="1.5" width="3" height="9" rx="1"/><rect x="7" y="1.5" width="3" height="9" rx="1"/></svg>
-                    : <svg width="12" height="12" viewBox="0 0 12 12" fill="black"><path d="M3 1.5l7.5 4.5L3 10.5V1.5z"/></svg>
+                    ? <svg width="13" height="13" viewBox="0 0 12 12" fill={ACCENT}><rect x="2" y="1.5" width="3" height="9" rx="1"/><rect x="7" y="1.5" width="3" height="9" rx="1"/></svg>
+                    : <svg width="13" height="13" viewBox="0 0 12 12" fill={ACCENT}><path d="M3.5 1.5l7.5 4.5L3.5 10.5V1.5z"/></svg>
                   }
                 </span>
               </button>
@@ -5576,10 +5574,10 @@ export function EditorShell({
         {/* Closed: a slim rail to bring the Preview back */}
         {!previewOpen && (
           <div className="ed-preview-rail shrink-0 flex flex-col items-center gap-2 py-3" style={{ width: 52, background: 'var(--ed-panel)', borderLeft: '1px solid rgb(var(--ed-fg) / 0.07)' }}>
+            {/* one chevron, pointing where the preview comes back from (styles: .ed-fold) */}
             <button onClick={() => togglePreview(true)} aria-label="Open the preview" title="Open the preview"
-              className="w-9 h-9 flex items-center justify-center rounded-lg transition-colors hover:bg-[rgb(var(--ed-fg)/0.1)]"
-              style={{ color: 'rgb(var(--ed-fg) / 0.7)' }}>
-              <span style={{ display: 'inline-flex', transform: 'scaleX(-1)' }}><SidebarIcon open={false} /></span>
+              className="ed-fold" data-dir="left" data-active>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path className="fold-arrow" d="M14.5 6.5L9 12l5.5 5.5" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" /></svg>
             </button>
             <button onClick={() => togglePreview(true)} title="Open the preview to watch and export"
               className="text-[11px] font-semibold tracking-wide transition-colors hover:text-[var(--ed-text)]"
@@ -5600,10 +5598,10 @@ export function EditorShell({
           <div className="ed-preview-inner flex flex-col min-h-0 h-full" style={{ width: previewW }}>
           <div className="shrink-0 px-4 flex items-center justify-between" style={{ height: 48, borderBottom: '1px solid rgb(var(--ed-fg) / 0.06)' }}>
             <span className="flex items-center gap-1">
+              {/* one chevron: sends the preview off to the right (styles: .ed-fold) */}
               <button onClick={() => togglePreview(false)} aria-label="Close the preview" title="Close the preview (more room to edit)"
-                className="-ml-1.5 w-8 h-8 flex items-center justify-center rounded-lg transition-colors hover:bg-[rgb(var(--ed-fg)/0.1)]"
-                style={{ color: 'rgb(var(--ed-fg) / 0.55)' }}>
-                <span style={{ display: 'inline-flex', transform: 'scaleX(-1)' }}><SidebarIcon open /></span>
+                className="ed-fold -ml-1 mr-1" data-dir="right">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path className="fold-arrow" d="M9.5 6.5L15 12l-5.5 5.5" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" /></svg>
               </button>
               <span className="text-sm font-semibold text-[var(--ed-text)]">Preview</span>
             </span>
@@ -5787,12 +5785,10 @@ export function EditorShell({
           <button onClick={() => setTimelineHidden(h => !h)} aria-expanded={!timelineHidden}
             aria-label={timelineHidden ? 'Show the timeline' : 'Hide the timeline'}
             data-tip={timelineHidden ? 'Show timeline' : 'Hide timeline'}
-            className="ed-tl-btn ed-tip" data-active={timelineHidden || undefined}>
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <rect x="3" y="3" width="18" height="18" rx="3" />
-              <path d="M3 15h18" />
-              <path d="M3.9 15h16.2v4.1a1.9 1.9 0 01-1.9 1.9H5.8a1.9 1.9 0 01-1.9-1.9z" fill="#c8ff00" fillOpacity={timelineHidden ? 0.15 : 0.45} stroke="none" />
-              <path d={timelineHidden ? 'M9 10.5l3-3 3 3' : 'M9 7.5l3 3 3-3'} />
+            className="ed-tl-btn ed-tip ed-tl-fold" data-active={timelineHidden || undefined}>
+            {/* one chevron: down = put the timeline away, up = bring it back (styles: .ed-tl-fold) */}
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path className="fold-arrow" d={timelineHidden ? 'M6.5 14.5L12 9l5.5 5.5' : 'M6.5 9.5L12 15l5.5-5.5'} stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" />
             </svg>
           </button>
           <span className="ed-tl-sep" aria-hidden="true" />
@@ -6452,16 +6448,6 @@ function StatusChip({ color, children }: { color: string; children: React.ReactN
       <span className="w-1.5 h-1.5 rounded-full" style={{ background: color }} />
       {children}
     </span>
-  )
-}
-
-function SidebarIcon({ open }: { open: boolean }) {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-      <rect x="3" y="4" width="18" height="16" rx="3" stroke="currentColor" strokeWidth="1.8" />
-      <path d="M9 4v16" stroke="currentColor" strokeWidth="1.8" />
-      <path d={open ? 'M16 10l-2 2 2 2' : 'M14 10l2 2-2 2'} stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
   )
 }
 
