@@ -518,126 +518,147 @@
   font-size: 22px; font-weight: 900; letter-spacing: -0.02em; color: var(--text);
 }
 
-/* "How do you want to make clips?" (EditModeDialog). A header with the video (its first frame
-   and length) and a ✕; then two cards side by side, AI edit and Manual edit. A card: a small
-   moving picture of how it works on a dark strip, the name with a tag, a line, three ticks, and
-   its button at the bottom (AI's lime: the suggested way; Manual's plain). Hover lifts a card;
-   the one picked says "Opening…" while the clip board loads. */
-.dash-modal.emd { max-width: 640px; padding: 22px; }
-.emd-head { display: flex; align-items: center; gap: 14px; margin-bottom: 18px; }
+/* "How do you want to make clips?" (EditModeDialog). One deep surface, hairline edges, and two
+   equal cards — neither is pushed. Each card explains itself with a picture drawn in white lines with lime touches:
+   AI edit, one long video → ✦ → three finished vertical clips (they fan out on hover); Manual edit,
+   the video's timeline with a stretch picked between two handles and a pointer dragging one (it
+   drags on hover). Then the name and tag, a line, three ticks and the button (lime outline; solid
+   lime on hover). The one picked says "Opening…". */
+.dash-modal.emd {
+  --emd-line: color-mix(in srgb, var(--text) 9%, transparent);
+  --emd-line-2: color-mix(in srgb, var(--text) 16%, transparent);
+  --emd-ink: color-mix(in srgb, var(--text) 78%, transparent);
+  --emd-ink-2: color-mix(in srgb, var(--text) 28%, transparent);
+  position: relative; overflow: hidden; max-width: 660px; padding: 24px; border-radius: 26px;
+  background: radial-gradient(70% 55% at 50% -10%, color-mix(in srgb, var(--accent) 8%, transparent), transparent 70%), var(--bg);
+  border: 1px solid var(--emd-line);
+  box-shadow: 0 50px 120px -30px rgba(0,0,0,.85), inset 0 1px 0 color-mix(in srgb, var(--text) 8%, transparent);
+}
+.emd-head { display: flex; align-items: center; gap: 16px; margin-bottom: 20px; }
 .emd-thumb {
-  position: relative; flex-shrink: 0; width: 84px; height: 52px; border-radius: 11px; overflow: hidden;
+  position: relative; flex-shrink: 0; width: 96px; height: 56px; border-radius: 12px; overflow: hidden;
   display: grid; place-items: center; color: var(--text-muted); background: var(--media-bg, #0a0a0a);
-  box-shadow: inset 0 0 0 1px var(--border-strong);
+  box-shadow: 0 0 0 1px var(--emd-line-2), 0 10px 24px -12px rgba(0,0,0,.8);
 }
 .emd-thumb video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; transition: opacity .3s; }
 .emd-thumb-len {
-  position: absolute; right: 4px; bottom: 4px; padding: 1px 5px; border-radius: 5px;
-  font-size: 10px; font-weight: 700; font-variant-numeric: tabular-nums; color: #fff; background: rgba(0,0,0,0.7);
+  position: absolute; right: 5px; bottom: 5px; padding: 1px 5px; border-radius: 5px;
+  font-size: 10px; font-weight: 700; font-variant-numeric: tabular-nums; color: #fff; background: rgba(0,0,0,0.72);
 }
 .emd-head-text { flex: 1; min-width: 0; }
-.dash-modal.emd h2 { margin: 0 0 4px; font-size: 19px; line-height: 1.25; }
+.dash-modal.emd h2 { margin: 0 0 5px; font-size: 21px; line-height: 1.2; letter-spacing: -0.025em; }
 .dash-modal.emd .emd-sub { margin: 0; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.emd-sub b { color: var(--text); font-weight: 700; }
+.emd-sub b { color: var(--text); font-weight: 600; }
 .emd-close {
-  align-self: flex-start; flex-shrink: 0; width: 32px; height: 32px; border-radius: 10px; display: grid; place-items: center;
-  color: var(--text-muted); background: transparent; border: 0; cursor: pointer; transition: color .15s, background-color .15s;
+  align-self: flex-start; flex-shrink: 0; width: 32px; height: 32px; border-radius: 50%; display: grid; place-items: center;
+  color: var(--text-muted); background: transparent; border: 1px solid var(--emd-line); cursor: pointer; transition: color .15s, border-color .15s;
 }
-.emd-close:hover:not(:disabled) { color: var(--text); background: var(--hover); }
+.emd-close:hover:not(:disabled) { color: var(--text); border-color: var(--emd-line-2); }
 .emd-close:disabled { opacity: .4; cursor: default; }
 
 .emd-options { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .emd-card {
-  display: flex; flex-direction: column; gap: 14px; padding: 10px 10px 12px; border-radius: 18px; text-align: left;
-  color: var(--text); cursor: pointer; font: inherit;
-  background: color-mix(in srgb, var(--text) 3%, transparent); border: 1px solid var(--border-strong);
-  transition: border-color .18s, background-color .18s, transform .18s, box-shadow .18s;
+  position: relative; display: flex; flex-direction: column; gap: 16px; padding: 8px 8px 10px; border-radius: 20px; text-align: left;
+  color: var(--text); cursor: pointer; font: inherit; background: transparent; border: 1px solid color-mix(in srgb, var(--accent) 14%, var(--emd-line));
+  transition: border-color .25s, transform .25s, box-shadow .25s, background-color .25s;
 }
-.emd-card:hover:not(:disabled), .emd-card:focus-visible {
-  transform: translateY(-2px); outline: none;
-  border-color: color-mix(in srgb, var(--text) 32%, transparent);
-  background: color-mix(in srgb, var(--text) 5%, transparent);
-  box-shadow: 0 14px 30px -18px rgba(0,0,0,0.7);
+.emd-card:hover:not(:disabled), .emd-card:focus-visible, .emd-card[data-picked] {
+  transform: translateY(-3px); outline: none; border-color: color-mix(in srgb, var(--accent) 50%, transparent);
+  background: color-mix(in srgb, var(--accent) 3%, transparent);
+  box-shadow: 0 26px 44px -28px rgba(0,0,0,.95), 0 0 0 4px color-mix(in srgb, var(--accent) 6%, transparent);
 }
-.emd-card:hover:not(:disabled), .emd-card:focus-visible { border-color: color-mix(in srgb, var(--accent) 60%, transparent); }
-.emd-card[data-picked] { border-color: var(--accent); }
-.emd-card:disabled:not([data-picked]) { opacity: .4; cursor: default; }
+.emd-card:disabled:not([data-picked]) { opacity: .35; cursor: default; }
 
-/* the picture: a dark screen with the video's strip (dark in both themes, like a video) */
+/* the picture: a dark screen with a faint lime light at its foot */
 .emd-art {
-  position: relative; display: flex; align-items: center; height: 96px; padding: 0 14px; border-radius: 12px; overflow: hidden;
-  background: radial-gradient(120% 90% at 50% 0%, rgba(255,255,255,0.06), transparent 60%), #0d0d0f;
-  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.06);
+  position: relative; display: grid; place-items: center; height: 118px; border-radius: 14px; overflow: hidden;
+  background:
+    radial-gradient(70% 80% at 50% 120%, color-mix(in srgb, var(--accent) 15%, transparent), transparent 70%),
+    color-mix(in srgb, var(--text) 2.5%, transparent);
+  box-shadow: inset 0 0 0 1px var(--emd-line);
+  transition: background-color .3s;
 }
-.emd-strip {
-  position: relative; display: flex; align-items: center; justify-content: space-between; gap: 2px; width: 100%; height: 40px;
-  padding: 0 6px; border-radius: 8px; background: rgba(255,255,255,0.04); box-shadow: inset 0 0 0 1px rgba(255,255,255,0.07);
+.emd-card:hover:not(:disabled) .emd-art, .emd-card:focus-visible .emd-art, .emd-card[data-picked] .emd-art {
+  background:
+    radial-gradient(70% 80% at 50% 120%, color-mix(in srgb, var(--accent) 24%, transparent), transparent 70%),
+    color-mix(in srgb, var(--text) 3.5%, transparent);
 }
-.emd-strip > i { width: 3px; border-radius: 2px; background: rgba(255,255,255,0.22); }
-.emd-strip > b { position: absolute; display: block; }
-/* AI: the best moments light up one after another, a spark over the first */
-.emd-pick {
-  top: -4px; bottom: -4px; border-radius: 7px; opacity: 0;
-  background: rgba(200,255,0,0.16); box-shadow: inset 0 0 0 1.5px #c8ff00;
-}
-.emd-card:hover:not(:disabled) .emd-pick, .emd-card:focus-visible .emd-pick, .emd-card[data-picked] .emd-pick { animation: emd-pick 4.2s ease-in-out infinite; }
-@keyframes emd-pick { 0%, 8% { opacity: 0; transform: scaleY(.6); } 18%, 78% { opacity: 1; transform: none; } 90%, 100% { opacity: 0; transform: none; } }
-.emd-spark { position: absolute; left: calc(8% + 2px); top: -24px; color: #c8ff00; opacity: 0; }
-.emd-card:hover:not(:disabled) .emd-spark, .emd-card:focus-visible .emd-spark, .emd-card[data-picked] .emd-spark { animation: emd-spark 4.2s ease-in-out infinite; }
-@keyframes emd-spark { 0%, 8% { opacity: 0; transform: scale(.4) rotate(-30deg); } 18%, 78% { opacity: 1; transform: none; } 90%, 100% { opacity: 0; } }
-/* Manual: a stretch held between two handles, the playhead running through it; hovering the
-   card pulls the handles wider, as if dragging them */
-.emd-range { left: 30%; width: 40%; top: -4px; bottom: -4px; border-radius: 7px; background: rgba(255,255,255,0.1); box-shadow: inset 0 2px 0 #fff, inset 0 -2px 0 #fff; transition: left .3s, width .3s; }
-.emd-handle { top: -4px; bottom: -4px; width: 8px; border-radius: 4px; background: #fff; transition: left .3s; }
-.emd-handle::after { content: ''; position: absolute; left: 3px; top: 35%; bottom: 35%; width: 2px; border-radius: 1px; background: rgba(0,0,0,0.45); }
-.emd-handle[data-side="in"] { left: calc(30% - 4px); }
-.emd-handle[data-side="out"] { left: calc(70% - 4px); }
-.emd-card:hover .emd-range { left: 22%; width: 54%; }
-.emd-card:hover .emd-handle[data-side="in"] { left: calc(22% - 4px); }
-.emd-card:hover .emd-handle[data-side="out"] { left: calc(76% - 4px); }
-.emd-playhead { top: -12px; bottom: -12px; width: 2px; margin-left: -1px; border-radius: 1px; background: #c8ff00; animation: emd-play 3.6s linear infinite; }
-@keyframes emd-play { from { left: 32%; } to { left: 68%; } }
+.emd-art::after { content: ''; position: absolute; inset: 0; pointer-events: none;
+  background: radial-gradient(85% 95% at 50% 50%, transparent 45%, var(--bg) 100%); opacity: .75; }
+.emd-art > * { position: relative; z-index: 1; }
+.emd-card .emd-art * { transition: transform .5s cubic-bezier(.2,.8,.2,1), opacity .4s ease, left .5s cubic-bezier(.2,.8,.2,1), width .5s cubic-bezier(.2,.8,.2,1); }
 
-.emd-body { display: flex; flex-direction: column; gap: 6px; padding: 0 4px; flex: 1; }
-.emd-name { display: flex; align-items: center; gap: 8px; font-size: 16px; font-weight: 800; letter-spacing: -0.01em; }
-.emd-tag {
-  padding: 2px 7px; border-radius: 999px; font-size: 10px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase;
-  color: var(--text-muted); background: color-mix(in srgb, var(--text) 8%, transparent);
+/* AI edit: one long video → ✦ → three clips */
+.emd-flow { display: flex; align-items: center; gap: 12px; }
+.emd-long { position: relative; display: block; width: 92px; height: 52px; border-radius: 8px; box-shadow: inset 0 0 0 1.5px var(--emd-ink); }
+.emd-play { position: absolute; left: 50%; top: 40%; translate: -50% -50%; width: 0; height: 0; border-style: solid; border-width: 6px 0 6px 10px; border-color: transparent transparent transparent var(--emd-ink); }
+.emd-long-bar { position: absolute; left: 7px; right: 7px; bottom: 7px; height: 3px; border-radius: 3px; background: var(--emd-ink-2); }
+.emd-long-bar b { position: absolute; left: 0; top: 0; bottom: 0; width: 70%; border-radius: 3px; background: var(--accent); }
+.emd-ai { display: grid; place-items: center; width: 30px; height: 30px; border-radius: 50%; color: var(--accent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 40%, transparent), 0 0 14px -4px color-mix(in srgb, var(--accent) 50%, transparent); position: relative; }
+.emd-ai::before, .emd-ai::after { content: ''; position: absolute; top: 50%; width: 9px; height: 1.5px; background: var(--emd-ink-2); }
+.emd-ai::before { right: calc(100% + 2px); }
+.emd-ai::after { left: calc(100% + 2px); }
+.emd-card:hover:not(:disabled) .emd-ai svg, .emd-card:focus-visible .emd-ai svg, .emd-card[data-picked] .emd-ai svg { transform: rotate(90deg) scale(1.15); }
+.emd-clips { position: relative; display: block; width: 76px; height: 62px; }
+.emd-clip {
+  position: absolute; left: 50%; top: 50%; width: 32px; height: 56px; margin: -28px 0 0 -16px; border-radius: 6px;
+  background: var(--bg); box-shadow: inset 0 0 0 1.5px var(--emd-ink); transform: translateX(calc((var(--k) - 1) * 8px)) rotate(calc((var(--k) - 1) * 4deg));
 }
-.emd-card:hover:not(:disabled) .emd-tag, .emd-card:focus-visible .emd-tag, .emd-card[data-picked] .emd-tag { color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); }
-[data-theme="light"] .emd-card:hover:not(:disabled) .emd-tag, [data-theme="light"] .emd-card:focus-visible .emd-tag, [data-theme="light"] .emd-card[data-picked] .emd-tag { color: #4d6400; }
-.emd-desc { font-size: 13px; line-height: 1.5; color: var(--text-muted); }
-.emd-points { display: flex; flex-direction: column; gap: 5px; margin-top: 4px; }
-.emd-points > span { display: flex; align-items: center; gap: 7px; font-size: 12.5px; font-weight: 500; color: color-mix(in srgb, var(--text) 82%, transparent); }
-.emd-points svg { flex-shrink: 0; color: var(--text-muted); }
-.emd-card:hover:not(:disabled) .emd-points svg, .emd-card:focus-visible .emd-points svg, .emd-card[data-picked] .emd-points svg { color: var(--accent); }
+.emd-clip i { position: absolute; left: 50%; top: 13px; width: 10px; height: 10px; margin-left: -5px; border-radius: 50%; background: color-mix(in srgb, var(--accent) 70%, transparent); }
+.emd-clip b { position: absolute; left: 5px; right: 5px; bottom: 9px; height: 3px; border-radius: 2px; background: var(--accent); }
+.emd-card:hover:not(:disabled) .emd-clip, .emd-card:focus-visible .emd-clip, .emd-card[data-picked] .emd-clip {
+  transform: translateX(calc((var(--k) - 1) * 22px)) translateY(calc(var(--k) * 0px)) rotate(calc((var(--k) - 1) * 9deg));
+}
 
+/* Manual edit: the timeline, a picked stretch, a pointer on its end */
+.emd-trim { position: relative; display: flex; flex-direction: column; align-items: center; gap: 9px; width: 86%; }
+.emd-time { padding: 2px 8px; border-radius: 999px; font-size: 10.5px; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--accent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 40%, transparent); }
+.emd-reel { position: relative; display: flex; gap: 3px; width: 100%; height: 40px; }
+.emd-reel > i { flex: 1; border-radius: 4px; background: color-mix(in srgb, var(--text) 10%, transparent); box-shadow: inset 0 0 0 1px var(--emd-line); }
+.emd-sel { position: absolute; top: -4px; bottom: -4px; left: 30%; width: 38%; border-radius: 7px; box-shadow: inset 0 0 0 2px var(--text); background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.emd-sel b { position: absolute; top: -1px; bottom: -1px; width: 9px; border-radius: 4px; background: var(--text); }
+.emd-sel b[data-side="in"] { left: -4px; }
+.emd-sel b[data-side="out"] { right: -4px; }
+.emd-sel b::after { content: ''; position: absolute; left: 3.5px; top: 35%; bottom: 35%; width: 2px; border-radius: 1px; background: var(--bg); opacity: .7; }
+.emd-ph { position: absolute; top: -9px; bottom: -9px; left: 46%; width: 2px; margin-left: -1px; border-radius: 1px; background: var(--accent); box-shadow: 0 0 8px color-mix(in srgb, var(--accent) 60%, transparent); }
+.emd-cursor { position: absolute; right: 22%; bottom: -14px; color: var(--text); filter: drop-shadow(0 2px 4px rgba(0,0,0,.6)); }
+.emd-card:hover:not(:disabled) .emd-sel, .emd-card:focus-visible .emd-sel, .emd-card[data-picked] .emd-sel { width: 50%; }
+.emd-card:hover:not(:disabled) .emd-cursor, .emd-card:focus-visible .emd-cursor, .emd-card[data-picked] .emd-cursor { transform: translateX(calc(12% * 4.3)); }
+
+.emd-body { display: flex; flex-direction: column; gap: 7px; padding: 0 6px; flex: 1; }
+.emd-name { display: flex; align-items: baseline; gap: 10px; font-size: 17px; font-weight: 800; letter-spacing: -0.015em; }
+.emd-tag { font-size: 10px; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; color: color-mix(in srgb, var(--accent) 85%, transparent); }
+[data-theme="light"] .emd-tag { color: #4d6400; }
+.emd-desc { font-size: 13px; line-height: 1.55; color: var(--text-muted); }
+.emd-points { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; padding-top: 12px; border-top: 1px solid var(--emd-line); }
+.emd-points > span { display: flex; align-items: center; gap: 8px; font-size: 12.5px; font-weight: 500; color: color-mix(in srgb, var(--text) 82%, transparent); }
+.emd-points svg { flex-shrink: 0; color: var(--accent); }
+[data-theme="light"] .emd-points svg { color: #4d6400; }
+
+/* the button: the same on both — outlined, solid white on hover */
 .emd-cta {
-  display: flex; align-items: center; justify-content: center; gap: 7px; height: 40px; border-radius: 11px;
-  font-size: 13.5px; font-weight: 700; color: var(--text); background: color-mix(in srgb, var(--text) 6%, transparent);
-  box-shadow: inset 0 0 0 1px var(--border-strong); transition: background-color .18s, filter .18s;
+  display: flex; align-items: center; justify-content: center; gap: 7px; height: 42px; border-radius: 12px;
+  font-size: 13.5px; font-weight: 700; color: var(--text); background: transparent;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 38%, transparent); transition: background-color .2s, color .2s, box-shadow .2s;
 }
-.emd-cta svg { transition: transform .18s; }
-.emd-card:hover:not(:disabled) .emd-cta { background: color-mix(in srgb, var(--text) 10%, transparent); }
-.emd-card:hover:not(:disabled) .emd-cta svg { transform: translateX(3px); }
-.emd-card:hover:not(:disabled) .emd-cta, .emd-card:focus-visible .emd-cta, .emd-card[data-picked] .emd-cta { color: #0a0a0a; background: var(--accent); box-shadow: none; }
-.emd-card:hover:not(:disabled) .emd-cta { filter: brightness(1.06); }
+.emd-cta svg { transition: transform .2s; }
+.emd-card:hover:not(:disabled) .emd-cta, .emd-card:focus-visible .emd-cta, .emd-card[data-picked] .emd-cta {
+  color: #0a0a0a; background: var(--accent); box-shadow: 0 8px 24px -10px color-mix(in srgb, var(--accent) 70%, transparent);
+}
+.emd-card:hover:not(:disabled) .emd-cta svg, .emd-card:focus-visible .emd-cta svg { transform: translateX(3px); }
 
-.dash-modal.emd .emd-foot { margin: 16px 2px 0; font-size: 12px; line-height: 1.5; text-align: center; color: var(--text-muted); }
+.dash-modal.emd .emd-foot { margin: 18px 2px 0; font-size: 12px; line-height: 1.5; text-align: center; color: color-mix(in srgb, var(--text) 45%, transparent); }
 
 @media (max-width: 600px) {
   .dash-modal.emd { padding: 18px; max-height: calc(100dvh - 32px); overflow-y: auto; }
   .emd-options { grid-template-columns: 1fr; }
-  .emd-art { height: 86px; }
-  .emd-thumb { width: 64px; height: 40px; }
+  .emd-art { height: 104px; }
+  .emd-thumb { width: 68px; height: 42px; }
   .dash-modal.emd h2 { font-size: 17px; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .emd-card, .emd-cta svg, .emd-range, .emd-handle { transition: none; }
+  .emd-card, .emd-cta svg, .emd-card .emd-art * { transition: none; }
   .emd-card:hover:not(:disabled) { transform: none; }
-  .emd-card:hover:not(:disabled) .emd-pick, .emd-card:hover:not(:disabled) .emd-spark, .emd-card:focus-visible .emd-pick, .emd-card:focus-visible .emd-spark,
-  .emd-card[data-picked] .emd-pick, .emd-card[data-picked] .emd-spark { animation: none; opacity: 1; }
-  .emd-playhead { animation: none; left: 50%; }
 }
 
 /* Confirm dialog */

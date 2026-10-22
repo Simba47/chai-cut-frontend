@@ -909,8 +909,6 @@ function EditModeDialog({ title, videoUrl, durationMs, onClose, onPick }: {
       points: ['Scrub to any moment', 'Set each start and end', 'Fine-tune in the editor'],
     },
   ]
-  // The strip's sound wave in the pictures: fixed heights (%), so it looks the same every time
-  const wave = [38, 62, 45, 80, 55, 30, 68, 90, 52, 40, 74, 58, 35, 64, 86, 48, 60, 42, 70, 50, 33, 66, 78, 44]
   return (
     <div className="dash-modal-backdrop" onClick={() => { if (!picked) onClose() }}>
       <div className="dash-modal emd" role="dialog" aria-modal="true" aria-labelledby="emd-title" aria-describedby="emd-sub" onClick={e => e.stopPropagation()}>
@@ -936,26 +934,30 @@ function EditModeDialog({ title, videoUrl, durationMs, onClose, onPick }: {
           {options.map((o, i) => (
             <button key={o.mode} type="button" className="emd-card" data-kind={o.mode} data-picked={picked === o.mode || undefined}
               disabled={!!picked && picked !== o.mode} onClick={() => pick(o.mode)} autoFocus={i === 0}>
-              {/* How it works, as a picture: the video's strip, its sound wave, and what happens on it */}
+              {/* How it works, as a picture. AI: one long video → AI → three finished vertical clips.
+                  Manual: the video's timeline, a stretch picked between two handles, a pointer dragging one. */}
               <span className="emd-art" aria-hidden="true">
-                <span className="emd-strip">
-                  {wave.map((h, j) => <i key={j} style={{ height: `${h}%` }} />)}
-                  {o.mode === 'ai' ? (
-                    <>
-                      <b className="emd-pick" style={{ left: '8%', width: '17%' }} />
-                      <b className="emd-pick" style={{ left: '41%', width: '14%', animationDelay: '.35s' }} />
-                      <b className="emd-pick" style={{ left: '70%', width: '19%', animationDelay: '.7s' }} />
-                      <svg className="emd-spark" width="18" height="18" viewBox="0 0 24 24"><path d="M12 3l1.9 5.6L19.5 10.5l-5.6 1.9L12 18l-1.9-5.6L4.5 10.5l5.6-1.9z" fill="currentColor" /></svg>
-                    </>
-                  ) : (
-                    <>
-                      <b className="emd-range" />
-                      <b className="emd-handle" data-side="in" />
-                      <b className="emd-handle" data-side="out" />
-                      <b className="emd-playhead" />
-                    </>
-                  )}
-                </span>
+                {o.mode === 'ai' ? (
+                  <span className="emd-flow">
+                    <span className="emd-long"><i className="emd-play" /><span className="emd-long-bar"><b /></span></span>
+                    <span className="emd-ai">
+                      <svg width="16" height="16" viewBox="0 0 24 24"><path d="M12 3l1.9 5.6L19.5 10.5l-5.6 1.9L12 18l-1.9-5.6L4.5 10.5l5.6-1.9z" fill="currentColor" /></svg>
+                    </span>
+                    <span className="emd-clips">
+                      {[0, 1, 2].map(k => <span key={k} className="emd-clip" style={{ '--k': k } as React.CSSProperties}><i /><b /></span>)}
+                    </span>
+                  </span>
+                ) : (
+                  <span className="emd-trim">
+                    <span className="emd-time">0:42 – 1:10</span>
+                    <span className="emd-reel">
+                      {Array.from({ length: 9 }, (_, k) => <i key={k} />)}
+                      <span className="emd-sel"><b data-side="in" /><b data-side="out" /></span>
+                      <span className="emd-ph" />
+                    </span>
+                    <svg className="emd-cursor" width="18" height="18" viewBox="0 0 24 24"><path d="M5 3l14 8-6 1.6L10 19z" fill="currentColor" stroke="#0a0a0a" strokeWidth="1.2" strokeLinejoin="round" /></svg>
+                  </span>
+                )}
               </span>
               <span className="emd-body">
                 <span className="emd-name">{o.name}<span className="emd-tag">{o.tag}</span></span>
