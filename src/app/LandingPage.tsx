@@ -16,7 +16,6 @@ import { BrandLogo } from '@/components/ui/brand-logo'
 import { CircularCarousel, type CarouselItem } from '@/components/ui/circular-carousel'
 import { SectionTransition } from '@/components/ui/section-transition'
 import { FaqSection, type FaqItem } from '@/components/ui/faq-section'
-import { HeroLens } from '@/components/landing/hero-lens'
 import { HeroSplit } from '@/components/landing/hero-split'
 import { FeatureTunnel } from '@/components/landing/feature-tunnel'
 import { FlyIn } from '@/components/landing/fly-in'
@@ -365,9 +364,6 @@ export function LandingPage() {
   }, [tunnel])
   // Desktop: sections fly in (FlyIn) instead of the tilt / zoom entrances
   const Sec = tunnel ? PlainSection : SectionTransition
-  // TEMPORARY: the hero animation — the new one (one video into reels) by default; ?hero=old shows the old lens
-  const [heroConcept, setHeroConcept] = useState<string | null>(null)
-  useEffect(() => { setHeroConcept(new URLSearchParams(window.location.search).get('hero')) }, [])
 
   // "Your first N clips are free": N counts up from 0 once the line has faded in, like earnings
   // adding up (N is the Free plan's clip limit, so it always matches Pricing)
@@ -540,7 +536,7 @@ export function LandingPage() {
         {/* recedes with the headline as the next section slides over */}
         <motion.div className="hero-visual" style={fx({ opacity: textOpacity, scale: textScale })}>
           <div className="intro" style={{ '--d': '.9s' } as React.CSSProperties}>
-            {heroConcept === 'old' ? <HeroLens /> : <HeroSplit />}
+            <HeroSplit />
           </div>
         </motion.div>
         </div>

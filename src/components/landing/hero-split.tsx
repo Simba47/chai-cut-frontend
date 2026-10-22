@@ -2,7 +2,6 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { ZoomFit } from '@/components/ui/zoom-fit'
-import { Caption, SCENES } from '@/components/landing/hero-lens'
 
 /**
  * Hero animation, concept A — one long video splits into reels (styles: .hs-* in app/landing.css).
@@ -32,11 +31,11 @@ const FOOTAGE = [
   { src: '/landing/studio-3.webp', focus: 0.42 },
 ]
 // The moments the AI picks: where they sit on the timeline (share of it), how long, their scores,
-// the frame each shows (FOOTAGE) and its caption (SCENES in hero-lens)
+// the frame each shows (FOOTAGE) and its caption, word by word
 const MOMENTS = [
-  { at: 0.12, len: 0.13, score: 92, shot: 0, scene: 4 },
-  { at: 0.44, len: 0.12, score: 88, shot: 1, scene: 1 },
-  { at: 0.74, len: 0.13, score: 85, shot: 2, scene: 5 },
+  { at: 0.12, len: 0.13, score: 92, shot: 0, caption: ['Do', 'this', 'instead'] },
+  { at: 0.44, len: 0.12, score: 88, shot: 1, caption: ['This', 'changed', 'everything'] },
+  { at: 0.74, len: 0.13, score: 85, shot: 2, caption: ['My', 'biggest', 'mistake'] },
 ]
 // One loop (ms): the playhead runs the timeline; each moment lifts out as the playhead leaves it
 const SCAN = 4200, LIFT = 950, WORD = 260, HOLD_END = 7600, FADE = 600, CYCLE = HOLD_END + FADE + 250
@@ -48,6 +47,15 @@ const clock = (s: number) => `${String(Math.floor(s / 60)).padStart(2, '0')}:${S
 const clamp01 = (x: number) => Math.max(0, Math.min(1, x))
 const ease = (x: number) => (x < 0.5 ? 4 * x ** 3 : 1 - (-2 * x + 2) ** 3 / 2)
 const lerp = (a: number, b: number, k: number) => a + (b - a) * k
+
+/** Karaoke caption: the first `lit` words are lime, the newest one pops (styles: .hl-cap) */
+function Caption({ words, lit }: { words: string[]; lit: number }) {
+  return (
+    <span className="hl-cap">
+      {words.map((w, k) => <span key={k} className={k < lit ? (k === lit - 1 ? 'on now' : 'on') : ''}>{w}</span>).flatMap((el, k) => (k ? [' ', el] : [el]))}
+    </span>
+  )
+}
 
 /** One frame of the long video, slowly zooming and drifting (t: the loop clock, ms) */
 function Shot({ i, t }: { i: number; t: number }) {
@@ -152,7 +160,7 @@ export function HeroSplit() {
               style={{ left: x, top: y, width: w, height: h, zIndex: 10 + s.z, transform: `rotate(${(s.r * e).toFixed(2)}deg)`, borderRadius: lerp(10, 18, e), opacity: 1 - out }}>
               {/* the wide picture, cropped around its subject */}
               <div className="hs-reel-scene" style={{ width: h * 16 / 9, left: Math.max(w - h * 16 / 9, Math.min(0, w / 2 - FOOTAGE[m.shot].focus * h * 16 / 9)) }}><Shot i={m.shot} t={t} /></div>
-              {words > 0 && <div className="hs-cap"><Caption words={SCENES[m.scene].caption} lit={words} /></div>}
+              {words > 0 && <div className="hs-cap"><Caption words={m.caption} lit={words} /></div>}
               {k >= 1 && <span className="hs-ratio">9:16</span>}
             </div>
           )

@@ -1170,70 +1170,8 @@ a:hover > .brand .brand-bottom { translate: 12px 12px; }
 .lp-root .hero-cta-main { position: relative; }
 .lp-root .cta-section .hero-cta-main { display: inline-flex; }
 
-/* Hero: the lens (HeroLens in components/landing/hero-lens.tsx). Sizes come in as --hl-* vars */
+/* Hero animation box (sized by ZoomFit; HeroSplit in components/landing/hero-split.tsx) */
 .lp-root .hl-fit { width: 100%; max-width: 520px; margin: 26px auto 0; }
-.lp-root .hl { position: relative; width: var(--hl-w); height: var(--hl-h); perspective: 900px; text-align: left; }
-.lp-root .hl-layer { position: absolute; inset: 0; }
-.lp-root .hl-strip { position: absolute; left: 0; top: var(--hl-top); height: var(--hl-fh); will-change: transform; }
-.lp-root .hl-frame { position: absolute; top: 0; width: var(--hl-fw); height: var(--hl-fh); border-radius: 12px; overflow: hidden; }
-/* raw footage: grey and dim, fading in from the left and gone just past the lens */
-.lp-root .hl-base {
-  filter: grayscale(1) brightness(.58) contrast(1.05);
-  -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 70px, #000 calc(var(--hl-lx) + var(--hl-lw) + 14px), transparent calc(var(--hl-lx) + var(--hl-lw) + 54px));
-  mask-image: linear-gradient(90deg, transparent 0, #000 70px, #000 calc(var(--hl-lx) + var(--hl-lw) + 14px), transparent calc(var(--hl-lx) + var(--hl-lw) + 54px));
-}
-/* film sprockets along the raw footage */
-.lp-root .hl-base .hl-frame::after {
-  content: ''; position: absolute; inset: 6px 8px; pointer-events: none;
-  background:
-    repeating-linear-gradient(90deg, rgba(255,255,255,.22) 0 6px, transparent 6px 14px) top / 100% 3px no-repeat,
-    repeating-linear-gradient(90deg, rgba(255,255,255,.22) 0 6px, transparent 6px 14px) bottom / 100% 3px no-repeat;
-}
-.lp-root .hl-color { clip-path: inset(var(--hl-top) calc(var(--hl-w) - var(--hl-lx) - var(--hl-lw)) var(--hl-top) var(--hl-lx) round 14px); }
-
-/* a shot: graded backdrop, two soft lights, the speaker centred and someone else off to the side */
-.lp-root .hl-scene { position: absolute; inset: 0; overflow: hidden; }
-.lp-root .hl-scene::before { content: ''; position: absolute; inset: 0; background: radial-gradient(120% 80% at 50% 110%, rgba(0,0,0,.55), transparent 60%); }
-.lp-root .hl-bokeh { position: absolute; left: var(--bx); top: var(--by); width: 64px; height: 64px; margin: -32px; border-radius: 50%; background: radial-gradient(circle, rgba(255,255,255,.38), transparent 68%); filter: blur(2px); }
-.lp-root .hl-bokeh-2 { width: 40px; height: 40px; margin: -20px; opacity: .7; }
-.lp-root .hl-person { position: absolute; left: 50%; bottom: 0; width: 64px; height: 92px; margin-left: -32px; }
-.lp-root .hl-person i {
-  position: absolute; left: 50%; top: 0; width: 30px; height: 34px; margin-left: -15px; border-radius: 48% 48% 46% 46%;
-  background: radial-gradient(circle at 38% 34%, color-mix(in srgb, var(--skin), #fff 14%), var(--skin) 45%, color-mix(in srgb, var(--skin) 60%, #000) 100%);
-  box-shadow: 0 -5px 0 -1px #15110f;   /* hair */
-}
-.lp-root .hl-person b {
-  position: absolute; left: 0; right: 0; bottom: 0; height: 56px; border-radius: 30px 30px 6px 6px;
-  background: linear-gradient(180deg, #1c1c22, #0c0c10);
-  box-shadow: inset 0 1px 0 rgba(255,255,255,.14);
-}
-.lp-root .hl-person-side { width: 50px; height: 74px; margin-left: -25px; opacity: .85; }
-.lp-root .hl-person-side i { width: 24px; height: 27px; margin-left: -12px; }
-.lp-root .hl-person-side b { height: 46px; }
-
-/* the lens: corner brackets that close in when it locks on, a REC light, the ratio tag */
-.lp-root .hl-lens {
-  position: absolute; left: var(--hl-lx); top: var(--hl-top); width: var(--hl-lw); height: var(--hl-fh); z-index: 20; border-radius: 14px;
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 30%, transparent), 0 24px 60px -18px rgba(0,0,0,.9);
-  transition: box-shadow .5s ease;
-}
-.lp-root .hl-lens[data-lock] { box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 70%, transparent), 0 0 34px -6px color-mix(in srgb, var(--accent) 55%, transparent), 0 24px 60px -18px rgba(0,0,0,.9); }
-.lp-root .hl-lens > i {
-  position: absolute; width: 16px; height: 16px; border: 0 solid var(--accent); pointer-events: none;
-  transition: translate .55s cubic-bezier(.2,1.4,.4,1), opacity .4s ease; opacity: .55;
-}
-.lp-root .hl-lens > i:nth-of-type(1) { left: -7px; top: -7px; border-width: 2.5px 0 0 2.5px; border-top-left-radius: 9px; translate: -5px -5px; }
-.lp-root .hl-lens > i:nth-of-type(2) { right: -7px; top: -7px; border-width: 2.5px 2.5px 0 0; border-top-right-radius: 9px; translate: 5px -5px; }
-.lp-root .hl-lens > i:nth-of-type(3) { left: -7px; bottom: -7px; border-width: 0 0 2.5px 2.5px; border-bottom-left-radius: 9px; translate: -5px 5px; }
-.lp-root .hl-lens > i:nth-of-type(4) { right: -7px; bottom: -7px; border-width: 0 2.5px 2.5px 0; border-bottom-right-radius: 9px; translate: 5px 5px; }
-.lp-root .hl-lens[data-lock] > i { translate: 0 0; opacity: 1; }
-.lp-root .hl-ratio {
-  position: absolute; left: 50%; top: -32px; translate: -50% 0; padding: 2px 8px; border-radius: 999px;
-  font-size: 10px; font-weight: 700; letter-spacing: .04em; line-height: 1.4; color: var(--accent); white-space: nowrap;
-  background: color-mix(in srgb, var(--accent) 10%, transparent); border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
-}
-.lp-root .hl-rec { position: absolute; left: 8px; top: 8px; width: 6px; height: 6px; border-radius: 50%; background: #ff3b3b; box-shadow: 0 0 8px #ff3b3b; opacity: 0; transition: opacity .3s; }
-.lp-root .hl-lens[data-lock] .hl-rec { opacity: 1; animation: lp-pulse-dot 1.2s ease-in-out infinite; }
 
 /* karaoke captions: words light up lime one by one, the newest one pops */
 .lp-root .hl-cap {
@@ -1244,28 +1182,6 @@ a:hover > .brand .brand-bottom { translate: 12px 12px; }
 .lp-root .hl-cap span { display: inline-block; transition: color .2s ease, scale .35s cubic-bezier(.2,1.6,.4,1); }
 .lp-root .hl-cap .on { color: #c8ff00; }
 .lp-root .hl-cap .now { scale: 1.14; }
-.lp-root .hl-lens .hl-cap { opacity: 0; translate: 0 6px; transition: opacity .3s ease, translate .4s ease; }
-.lp-root .hl-lens[data-lock] .hl-cap { opacity: 1; translate: 0 0; }
-.lp-root .hl-card .hl-cap .now { scale: 1; }
-
-/* shutter: a white flash inside the lens, and a lime bloom behind it */
-.lp-root .hl-flash { position: absolute; inset: 0; border-radius: inherit; background: #fff; pointer-events: none; animation: hl-flash .45s ease-out both; }
-@keyframes hl-flash { from { opacity: .55; } to { opacity: 0; } }
-.lp-root .hl-glow {
-  position: absolute; left: calc(var(--hl-lx) + var(--hl-lw) / 2); top: 50%; width: 260px; height: 260px; margin: -130px; border-radius: 50%; pointer-events: none;
-  background: radial-gradient(circle, color-mix(in srgb, var(--accent) 22%, transparent), transparent 62%);
-  animation: hl-glow 1.4s ease-out both;
-}
-@keyframes hl-glow { from { opacity: 1; scale: .8; } to { opacity: .35; scale: 1.15; } }
-
-/* a captured clip: lifts out of the lens and settles into the stack */
-.lp-root .hl-card {
-  position: absolute; left: var(--hl-lx); top: var(--hl-top); width: var(--hl-lw); height: var(--hl-fh); border-radius: 14px; overflow: hidden;
-  transform-origin: 50% 60%;
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 45%, transparent), 0 22px 44px -16px rgba(0,0,0,.95), 0 10px 40px -20px color-mix(in srgb, var(--accent) 60%, transparent);
-}
-.lp-root .hl-card-scene { position: absolute; top: 0; bottom: 0; left: calc((var(--hl-lw) - var(--hl-fw)) / 2); width: var(--hl-fw); }
-.lp-root .hl-card::after { content: ''; position: absolute; inset: 0; border-radius: inherit; background: linear-gradient(160deg, rgba(255,255,255,.14), transparent 40%); pointer-events: none; }
 .lp-root .lx-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 8px var(--accent); animation: lp-pulse-dot 1.6s ease-in-out infinite; }
 
 /* Problem: three cards */
@@ -1555,7 +1471,6 @@ a:hover > .brand .brand-bottom { translate: 12px 12px; }
   .lp-root .lx-split-rev .lx-split-text { order: 0; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .lp-root .hl-lens[data-lock] .hl-rec { animation: none; }
   .lp-root .lx-dot, .lp-root .lx-topic-bar span, .lp-root .lx-graph-line, .lp-root .lx-graph-area { animation: none; }
   .lp-root .lx-graph-line { stroke-dashoffset: 0; }
   .lp-root .lx-graph-area { opacity: 1; }
@@ -1637,10 +1552,6 @@ a:hover > .brand .brand-bottom { translate: 12px 12px; }
   .lp-root .hero-grid { max-width: 1440px; grid-template-columns: auto minmax(0, 1fr); gap: clamp(28px, 3.5vw, 64px); }
   .lp-root .hero-visual { align-self: center; }
   .lp-root .hl-fit { max-width: 832px; margin: 0; }
-  .lp-root .hl-base {
-    -webkit-mask-image: linear-gradient(90deg, transparent 0, transparent 40px, #000 100px, #000 calc(var(--hl-lx) + var(--hl-lw) + 14px), transparent calc(var(--hl-lx) + var(--hl-lw) + 54px));
-            mask-image: linear-gradient(90deg, transparent 0, transparent 40px, #000 100px, #000 calc(var(--hl-lx) + var(--hl-lw) + 14px), transparent calc(var(--hl-lx) + var(--hl-lw) + 54px));
-  }
   /* the dots a little softer; a fine grain over the hero */
   .lp-root .hero-field canvas { opacity: .65; }
   .lp-root .hero::after {
