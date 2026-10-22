@@ -4485,6 +4485,9 @@ export function EditorShell({
       // The main video's sound here: off when this section is muted, or the whole clip's sound is
       // (the same on the timeline, in the section list, by Trim and Delete, and in the Music panel)
       const seg = segments.find(x => x.id === t.id)
+      // A video put in between plays its own sound (the main video waits meanwhile): its mute is
+      // that video's own (the box's, as the preview and the export read it)
+      if (seg && isInsert(seg, mainVideoId)) return { hidden: seg.hidden, locked: seg.locked, muted: seg.crop_boxes[0]?.muted !== false }
       return seg && { hidden: seg.hidden, locked: seg.locked, muted: originalMuted || !!seg.muted }
     }
     if (t.kind === 'broll') {
@@ -4552,7 +4555,12 @@ export function EditorShell({
   }
   function toggleCtl(t: CtlTarget, k: CtlKey) {
     const patch = { [k]: !ctlState(t)?.[k] } as Partial<Record<CtlKey, boolean>>
-    if (t.kind === 'section' && k === 'muted' && originalMuted) {
+    const insertSeg = t.kind === 'section' && k === 'muted' ? segments.find(x => x.id === t.id && isInsert(x, mainVideoId)) : undefined
+    if (insertSeg) {
+      // A video put in between: switch its own sound (the main video's mute doesn't reach it)
+      updateSegment(insertSeg.id, { crop_boxes: insertSeg.crop_boxes.map((b, i) => i === 0 ? { ...b, muted: !!patch.muted } : b) })
+    }
+    else if (t.kind === 'section' && k === 'muted' && originalMuted) {
       // The whole clip's sound was off: this section's comes on, the others stay silent
       setOriginalMuted(false)
       for (const s of sections) if (s.id !== t.id && !s.muted) updateSegment(s.id, { muted: true })
@@ -4684,12 +4692,19 @@ export function EditorShell({
     toggleCtl(t, k)
   }
   /** The main video is silent everywhere: the whole clip's switch is off, or every section is muted */
-  const mainAllMuted = originalMuted || (sections.length > 0 && sections.every(s => s.muted))
-  const someSectionsMuted = !mainAllMuted && sections.some(s => s.muted)
-  /** The Music panel's switch: every section's sound off (or all back on) */
+  // A section's sound is off: the main video's here, or (a video put in between) that video's own
+  const insertMuted = (s: SegmentLocal) => s.crop_boxes[0]?.muted !== false
+  const sectionSilent = (s: SegmentLocal) => isInsert(s, mainVideoId) ? insertMuted(s) : originalMuted || !!s.muted
+  const mainAllMuted = sections.length > 0 ? sections.every(sectionSilent) : originalMuted
+  const someSectionsMuted = !mainAllMuted && sections.some(sectionSilent)
+  /** The Music panel's switch (and "Mute clip audio"): every part of the main row silent, inserted videos too (or all back on) */
   function setMainAllMuted(on: boolean) {
     setOriginalMuted(false)
-    for (const s of sections) if (!!s.muted !== on) updateSegment(s.id, { muted: on })
+    for (const s of sections) {
+      if (isInsert(s, mainVideoId)) {
+        if (insertMuted(s) !== on) updateSegment(s.id, { crop_boxes: s.crop_boxes.map((b, i) => i === 0 ? { ...b, muted: on } : b) })
+      } else if (!!s.muted !== on) updateSegment(s.id, { muted: on })
+    }
   }
   function laneCtl(kind: string): LaneCtl | null {
     if (kind === 'main') return mainCtl()
