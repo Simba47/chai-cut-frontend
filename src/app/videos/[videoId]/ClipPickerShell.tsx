@@ -2313,14 +2313,29 @@ function ClipCard({ id, focused, number, origin, title, startMs, endMs, status, 
   selected?: boolean
   onToggle?: () => void
 }) {
-  const [menu, setMenu] = useState<false | 'open' | 'confirm'>(false)
+  // The delete button's "Delete this clip?" (no ⋯ menu: Edit and the time line cover the rest)
+  const [menu, setMenu] = useState<false | 'confirm'>(false)
   const sub = useSubEdit(id, onSubEdited)
+  // Hovered (with a mouse): the full card with all its buttons shows, without opening the preview
+  const [hovered, setHovered] = useState(false)
+  const hoverOn = (e: React.PointerEvent) => { if (e.pointerType === 'mouse') setHovered(true) }
+  const hoverOff = (e: React.PointerEvent) => { if (e.pointerType === 'mouse') setHovered(false) }
+  // Opened: a click anywhere outside the card closes it again (not while picking clips, nor in its own pop-ups)
+  useEffect(() => {
+    if (!open || selecting) return
+    const away = (e: PointerEvent) => {
+      const t = e.target as HTMLElement | null
+      if (!t || t.closest(`#clip-${CSS.escape(id)}`) || t.closest('[role="dialog"], [role="alertdialog"], [role="menu"]')) return
+      onClose?.()
+    }
+    document.addEventListener('pointerdown', away)
+    return () => document.removeEventListener('pointerdown', away)
+  }, [open, selecting, id, onClose])
   const chip =
     status === 'rendering' ? { label: 'Rendering', color: ACCENT } :
     status === 'done' ? { label: 'Exported', color: '#4ade80' } :
     status === 'failed' ? { label: 'Render failed', color: '#f87171' } :
     { label: 'Draft', color: 'rgba(255,255,255,0.45)' }
-  const border = selected || focused || previewing ? ACCENT : playing ? 'rgba(255,255,255,0.3)' : 'rgba(255,255,255,0.07)'
   const heart = (
     <button type="button" onClick={e => { e.stopPropagation(); onFavorite() }} aria-pressed={favorite}
       aria-label={favorite ? 'Remove from favorites' : 'Add to favorites'} title={favorite ? 'Remove from favorites' : 'Add to favorites'}
@@ -2330,14 +2345,15 @@ function ClipCard({ id, focused, number, origin, title, startMs, endMs, status, 
   )
 
   // Slim: picture, title, length and the heart; clicking it opens it (and its preview)
-  if (!open && !focused && !selecting) {
+  if (!open && !focused && !selecting && !hovered) {
     return (
-      <div id={`clip-${id}`} role="button" tabIndex={0}
+      <div id={`clip-${id}`} role="button" tabIndex={0} onPointerEnter={hoverOn}
         onClick={e => { if (!disabled && !(e.target as HTMLElement).closest('button')) onPreview() }}
         onKeyDown={e => { if ((e.key === 'Enter' || e.key === ' ') && !disabled && e.target === e.currentTarget) { e.preventDefault(); onPreview() } }}
         title={`${title} · click to open and preview`}
-        className="group shrink-0 flex items-center gap-3 rounded-xl p-2 min-h-[68px] cursor-pointer transition-colors hover:bg-white/[0.05] focus-visible:outline focus-visible:outline-2"
-        style={{ background: 'rgba(255,255,255,0.03)', border: `1px solid ${playing ? 'rgba(255,255,255,0.3)' : 'rgba(255,255,255,0.07)'}`, outlineColor: ACCENT }}>
+        data-playing={playing || undefined}
+        className="cb-card group shrink-0 flex items-center gap-3 p-2.5 min-h-[72px] cursor-pointer focus-visible:outline focus-visible:outline-2"
+        style={{ outlineColor: ACCENT }}>
         <ClipThumb videoUrl={videoUrl} atMs={startMs} number={number} w={84} h={48} />
         <span className="flex-1 min-w-0 flex flex-col gap-1">
           <span className="text-sm font-semibold text-white leading-snug line-clamp-2 break-words">{title}</span>
@@ -2369,8 +2385,9 @@ function ClipCard({ id, focused, number, origin, title, startMs, endMs, status, 
   }
 
   return (
-    <div id={`clip-${id}`} className={`relative rounded-xl p-2.5 transition-all duration-300 ${focused ? 'shadow-[0_0_0_3px_rgba(200,255,0,0.25)]' : ''} ${selecting ? 'cursor-pointer select-none hover:bg-white/[0.06] focus-visible:outline focus-visible:outline-2' : 'cursor-pointer hover:bg-white/[0.04]'}`}
-      style={{ background: selected ? 'rgba(200,255,0,0.06)' : 'rgba(255,255,255,0.03)', border: `1px solid ${border}`, outlineColor: ACCENT }}
+    <div id={`clip-${id}`} onPointerEnter={hoverOn} onPointerLeave={hoverOff} data-playing={playing || undefined} data-on={selected || focused || previewing || undefined}
+      className={`cb-card relative p-2.5 ${focused ? 'shadow-[0_0_0_3px_rgba(200,255,0,0.25)]' : ''} ${selecting ? 'cursor-pointer select-none focus-visible:outline focus-visible:outline-2' : 'cursor-pointer'}`}
+      style={{ ...(selected ? { background: 'rgba(200,255,0,0.06)' } : {}), outlineColor: ACCENT }}
       {...(selecting ? {
         role: 'checkbox',
         'aria-checked': !!selected,
@@ -2403,28 +2420,19 @@ function ClipCard({ id, focused, number, origin, title, startMs, endMs, status, 
             {!selecting && heart}
             {!selecting && (
               <span className="relative shrink-0">
-                <button type="button" onClick={e => { e.stopPropagation(); setMenu(m => m ? false : 'open') }} aria-label="More" title="More"
-                  className="w-7 h-7 flex items-center justify-center rounded-lg transition-colors hover:bg-white/10" style={{ color: 'rgba(255,255,255,0.6)' }}>
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="12" cy="5" r="1.8" /><circle cx="12" cy="12" r="1.8" /><circle cx="12" cy="19" r="1.8" /></svg>
+                <button type="button" onClick={e => { e.stopPropagation(); setMenu(m => m ? false : 'confirm') }} aria-label="Delete clip" title="Delete clip"
+                  aria-expanded={!!menu}
+                  className="w-7 h-7 flex items-center justify-center rounded-lg transition-colors hover:bg-red-500/15 hover:text-red-400" style={{ color: menu ? '#f87171' : 'rgba(255,255,255,0.6)' }}>
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v6M14 11v6" /></svg>
                 </button>
                 {menu && (
                   <span className="absolute right-0 top-8 z-20 flex flex-col p-1 rounded-lg min-w-[150px]" onClick={e => e.stopPropagation()}
                     style={{ background: '#1a1a1a', border: '1px solid rgba(255,255,255,0.12)', boxShadow: '0 12px 30px -8px rgba(0,0,0,0.8)' }}>
-                    {menu === 'open' ? (
-                      <>
-                        <button type="button" onClick={() => { setMenu(false); onEdit() }} className="px-2.5 py-1.5 rounded-md text-left text-xs text-white hover:bg-white/10">Open in editor</button>
-                        <button type="button" onClick={() => { setMenu(false); onSeek() }} className="px-2.5 py-1.5 rounded-md text-left text-xs text-white hover:bg-white/10">Play in the video</button>
-                        <button type="button" onClick={() => setMenu('confirm')} className="px-2.5 py-1.5 rounded-md text-left text-xs hover:bg-white/10" style={{ color: '#f87171' }}>Delete clip</button>
-                      </>
-                    ) : (
-                      <>
-                        <span className="px-2.5 py-1.5 text-xs text-white">Delete this clip?</span>
-                        <span className="flex gap-1 px-1 pb-1">
-                          <button type="button" onClick={() => setMenu(false)} className="flex-1 px-2 py-1 rounded-md text-xs hover:bg-white/10" style={{ color: 'rgba(255,255,255,0.7)' }}>Cancel</button>
-                          <button type="button" onClick={() => { setMenu(false); onDelete() }} className="flex-1 px-2 py-1 rounded-md text-xs font-semibold" style={{ background: 'rgba(239,68,68,0.15)', color: '#f87171' }}>Delete</button>
-                        </span>
-                      </>
-                    )}
+                    <span className="px-2.5 py-1.5 text-xs text-white">Delete this clip?</span>
+                    <span className="flex gap-1 px-1 pb-1">
+                      <button type="button" onClick={() => setMenu(false)} autoFocus className="flex-1 px-2 py-1 rounded-md text-xs hover:bg-white/10" style={{ color: 'rgba(255,255,255,0.7)' }}>Cancel</button>
+                      <button type="button" onClick={() => { setMenu(false); onDelete() }} className="flex-1 px-2 py-1 rounded-md text-xs font-semibold" style={{ background: 'rgba(239,68,68,0.15)', color: '#f87171' }}>Delete</button>
+                    </span>
                   </span>
                 )}
               </span>
@@ -2451,32 +2459,10 @@ function ClipCard({ id, focused, number, origin, title, startMs, endMs, status, 
         </div>
       </div>
       {reason && !selecting && <p className="mt-2 text-[11px] leading-relaxed line-clamp-2" style={{ color: 'rgba(255,255,255,0.5)' }}>{reason}</p>}
-      {/* Sub-edit · Edit · Download (a click on the card itself previews it) */}
+      {/* Edit · Download (a click on the card itself previews it); a Sub-edit already running still shows its overlay */}
       {!selecting && sub.error && <p role="alert" className="mt-2 text-[11px]" style={{ color: '#f87171' }}>{sub.error}</p>}
       {!selecting && (
-        <div className="mt-2.5 grid grid-cols-3 gap-1.5">
-          <button onClick={e => { e.stopPropagation(); if (sub.state === 'done') onEdit(); else sub.start() }} disabled={sub.busy || disabled}
-            title={sub.busy ? 'Finding the people and framing the clip on whoever is talking — you can keep working'
-              : sub.state === 'done' ? 'Sub-edited: framed on whoever is talking. Open it in the editor'
-              : `Sub-edit: finds everyone in this clip and frames it on whoever is talking, by itself${sub.estimate ? ` — takes about ${aboutLabel(sub.estimate)}` : ''}`}
-            className="h-8 flex items-center justify-center gap-1.5 rounded-lg text-xs font-semibold transition-colors hover:bg-white/10 disabled:cursor-default"
-            style={{
-              color: sub.state === 'done' ? '#4ade80' : sub.busy ? ACCENT : 'rgba(255,255,255,0.9)',
-              border: `1px solid ${sub.busy ? 'rgba(200,255,0,0.5)' : sub.state === 'done' ? 'rgba(74,222,128,0.45)' : 'rgba(255,255,255,0.14)'}`,
-            }}>
-            {sub.busy ? <Spinner /> : sub.state === 'done' ? (
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5" /></svg>
-            ) : (
-              // People with a frame round them
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                <path d="M3 7V4h3M21 7V4h-3M3 17v3h3M21 17v3h-3" /><circle cx="12" cy="10" r="2.6" /><path d="M7.5 17c.7-2.2 2.4-3.4 4.5-3.4s3.8 1.2 4.5 3.4" />
-              </svg>
-            )}
-            {sub.busy ? 'Sub-editing' : sub.state === 'done' ? 'Sub-edited' : 'Sub-edit'}
-            {!sub.busy && sub.state !== 'done' && sub.estimate && (
-              <span className="font-medium tabular-nums" style={{ color: 'rgba(255,255,255,0.45)' }}>~{aboutLabel(sub.estimate)}</span>
-            )}
-          </button>
+        <div className="mt-2.5 grid grid-cols-2 gap-1.5">
           <button onClick={e => { e.stopPropagation(); onEdit() }} disabled={disabled} title="Open in the editor"
             className="h-8 flex items-center justify-center gap-1.5 rounded-lg text-xs font-semibold transition-colors hover:bg-white/10 disabled:opacity-40"
             style={{ color: 'rgba(255,255,255,0.85)', border: '1px solid rgba(255,255,255,0.14)' }}>
