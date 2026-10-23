@@ -6072,42 +6072,42 @@ export function EditorShell({
           })()}
         </div>
         <span className="ed-tl-sep" aria-hidden="true" />
-        <div className="relative">
-          <button onClick={() => setConfirmResetAll(v => !v)} aria-expanded={confirmResetAll}
-            title="Reset all edits" data-tip="Reset all edits"
-            className="ed-tl-btn ed-tip" data-active={confirmResetAll || undefined}>
-            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <path d="M3 12a9 9 0 109-9 9.75 9.75 0 00-6.74 2.74L3 8" /><path d="M3 3v5h5" />
-            </svg>
-          </button>
-          {confirmResetAll && (
-            <>
-              <div className="fixed inset-0" style={{ zIndex: 70 }} onClick={() => setConfirmResetAll(false)} aria-hidden="true" />
-              <div role="alertdialog" aria-labelledby="reset-all-title" aria-describedby="reset-all-desc"
-                className="absolute left-0 bottom-full mb-2 flex flex-col gap-3 p-4 rounded-xl"
-                style={{ width: 280, zIndex: 71, background: 'var(--ed-panel)', border: '1px solid rgb(var(--ed-fg) / 0.12)', boxShadow: '0 12px 32px rgba(0,0,0,0.55)' }}>
-                <p id="reset-all-title" className="text-sm font-semibold text-[var(--ed-text)]">Reset all edits?</p>
-                <p id="reset-all-desc" className="text-xs leading-relaxed" style={{ color: 'rgb(var(--ed-fg) / 0.55)' }}>
-                  The clip goes back to how it was made: its original start and end, nothing cut out. Formats, frames, text, media, music, the video’s sound and the caption look go back to the start, and the people marked in Subjects are removed. Your captions stay. Undo brings back everything except the marked people.
-                </p>
-                <div className="flex justify-end gap-2">
-                  <button onClick={() => setConfirmResetAll(false)} autoFocus
-                    className="h-8 px-3 rounded-lg text-xs font-medium transition-colors hover:bg-[rgb(var(--ed-fg)/0.08)]"
-                    style={{ color: 'rgb(var(--ed-fg) / 0.75)' }}>Cancel</button>
-                  <button onClick={handleResetAll}
-                    className="h-8 px-3 rounded-lg text-xs font-semibold transition-opacity hover:opacity-90"
-                    style={{ background: '#ef4444', color: '#fff' }}>Reset everything</button>
-                </div>
-              </div>
-            </>
-          )}
-        </div>
+        <UndoRedo />
         <div className="flex-1" />
         {/* Where the playhead is, and how long the clip is (as in CapCut) */}
         <ClipClock lengthMs={clipLengthMs} />
         <div className="flex-1" />
         <div className="ml-auto shrink-0 flex items-center gap-1">
-          <UndoRedo />
+          <div className="relative">
+            <button onClick={() => setConfirmResetAll(v => !v)} aria-expanded={confirmResetAll}
+              title="Reset all edits" data-tip="Reset all edits"
+              className="ed-tl-btn ed-tip" data-active={confirmResetAll || undefined}>
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M3 12a9 9 0 109-9 9.75 9.75 0 00-6.74 2.74L3 8" /><path d="M3 3v5h5" />
+              </svg>
+            </button>
+            {confirmResetAll && (
+              <>
+                <div className="fixed inset-0" style={{ zIndex: 70 }} onClick={() => setConfirmResetAll(false)} aria-hidden="true" />
+                <div role="alertdialog" aria-labelledby="reset-all-title" aria-describedby="reset-all-desc"
+                  className="absolute right-0 bottom-full mb-2 flex flex-col gap-3 p-4 rounded-xl"
+                  style={{ width: 280, zIndex: 71, background: 'var(--ed-panel)', border: '1px solid rgb(var(--ed-fg) / 0.12)', boxShadow: '0 12px 32px rgba(0,0,0,0.55)' }}>
+                  <p id="reset-all-title" className="text-sm font-semibold text-[var(--ed-text)]">Reset all edits?</p>
+                  <p id="reset-all-desc" className="text-xs leading-relaxed" style={{ color: 'rgb(var(--ed-fg) / 0.55)' }}>
+                    The clip goes back to how it was made: its original start and end, nothing cut out. Formats, frames, text, media, music, the video’s sound and the caption look go back to the start, and the people marked in Subjects are removed. Your captions stay. Undo brings back everything except the marked people.
+                  </p>
+                  <div className="flex justify-end gap-2">
+                    <button onClick={() => setConfirmResetAll(false)} autoFocus
+                      className="h-8 px-3 rounded-lg text-xs font-medium transition-colors hover:bg-[rgb(var(--ed-fg)/0.08)]"
+                      style={{ color: 'rgb(var(--ed-fg) / 0.75)' }}>Cancel</button>
+                    <button onClick={handleResetAll}
+                      className="h-8 px-3 rounded-lg text-xs font-semibold transition-opacity hover:opacity-90"
+                      style={{ background: '#ef4444', color: '#fff' }}>Reset everything</button>
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
           <span className="ed-tl-sep" aria-hidden="true" />
           <ZoomSlider zoom={timelineZoom} onZoom={setTimelineZoom} />
         </div>
