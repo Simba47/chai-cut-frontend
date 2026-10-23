@@ -393,14 +393,20 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
   const [clipTab, setClipTab] = useState<ClipTab>(manualOnly ? 'yours' : 'all')
   // The clipboard badge: Manual edit counts only the user's own clips, as that board lists only those
   // Clips on this board: Start with AI never lists the clips cut by hand (they belong to Pick my moments)
-  const boardClips = manualOnly ? clips : clips.filter(c => c.origin !== 'yours')
-  const badgeCount = manualOnly ? clips.filter(c => c.origin === 'yours').length : boardClips.length
+  // Numbered in the order they were made (Clip 1 is the first one, and keeps its number), listed newest first
+  // (created_at comes from the database as a Date, from a new clip as text: compared as times)
+  const madeAt = (c: { created_at: string | Date }) => new Date(c.created_at).getTime() || 0
+  const byTime = [...clips].sort((a, b) => madeAt(a) - madeAt(b))
+    .map((c, i) => (c.index === i + 1 ? c : { ...c, index: i + 1 }))
+    .reverse()
+  const boardClips = manualOnly ? byTime : byTime.filter(c => c.origin !== 'yours')
+  const badgeCount = manualOnly ? byTime.filter(c => c.origin === 'yours').length : boardClips.length
   // Edited = opened in the editor at least once (the editor creates a clip's formats on first open)
   // (Manual edit lists only the user's own clips, so an AI-made clip never counts, even though it has formats)
   const isEdited = (c: { layout: string | null; origin: ClipOrigin }) => c.layout != null && (!manualOnly || c.origin === 'yours')
-  const shownClips = clipTab === 'all' ? boardClips : clipTab === 'fav' ? boardClips.filter(c => c.favorite) : clipTab === 'edited' ? clips.filter(isEdited) : clips.filter(c => c.origin === clipTab)
+  const shownClips = clipTab === 'all' ? boardClips : clipTab === 'fav' ? boardClips.filter(c => c.favorite) : clipTab === 'edited' ? byTime.filter(isEdited) : byTime.filter(c => c.origin === clipTab)
   // Clip preview plays 9:16 clips as edited: in Manual edit only the edited ones
-  const previewable = manualOnly ? clips.filter(isEdited) : boardClips
+  const previewable = manualOnly ? byTime.filter(isEdited) : boardClips
   // A clip to bring into view and flash in the list (e.g. the clip a Best moment was saved as)
   const [focusClipId, setFocusClipId] = useState<string | null>(null)
   function focusClip(id: string, origin: ClipOrigin | 'all') {
@@ -956,7 +962,7 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
   )
 
   // ── Clip preview (in place of the video): the clip played in 9:16 as edited ──
-  const previewed = clips.find(c => c.id === previewId) ?? null
+  const previewed = byTime.find(c => c.id === previewId) ?? null
   const previewData = previewId ? previews[previewId] : undefined
   const previewList = shownClips.some(c => c.id === previewId) ? shownClips.filter(c => previewable.includes(c)) : previewable
   const previewIdx = previewList.findIndex(c => c.id === previewId)
@@ -1083,19 +1089,18 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
             )
           })()}
           <div style={{ width: withHours ? 140 : 100 }}>
-            <TimeField id="clip-end" label="End" value={formEnd} onChange={setFormEnd} showHours={withHours} />
+            <TimeField id="clip-end" label="End" value={formEnd} onChange={setFormEnd} showHours={withHours} prevId="clip-start" />
           </div>
         </div>
         <div className="flex gap-2">
           <button type="submit" disabled={!!busy}
-            className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-bold disabled:opacity-50" style={{ background: ACCENT, color: '#000' }}>
+            className="cb-cta h-[52px] flex items-center gap-2 px-5 rounded-xl text-sm font-bold disabled:opacity-50">
             {busy === 'form' && <Spinner />} Create &amp; edit
           </button>
           {/* Save it to the clip board only (edit it later) */}
           <button type="button" onClick={() => submitForm(false)} disabled={!!busy}
             title="Save this clip to your clip board without opening the editor"
-            className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition-colors hover:bg-white/10 disabled:opacity-50"
-            style={{ color: '#fff', border: '1px solid rgba(255,255,255,0.22)' }}>
+            className="cb-ghost h-[52px] flex items-center gap-2 px-4 rounded-xl text-sm font-semibold disabled:opacity-50">
             {busy === 'board' ? <Spinner /> : (
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                 <rect x="3" y="4" width="18" height="16" rx="2.5" /><path d="M12 9v6M9 12h6" />
@@ -1716,12 +1721,12 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
                 {CLIP_TABS.find(t => t.id === clipTab)?.empty}
               </p>
             )}
-            {shownClips.map((clip, idx) => (
+            {shownClips.map(clip => (
               <ClipCard
                 key={clip.id}
                 id={clip.id}
                 focused={focusClipId === clip.id}
-                number={idx + 1}
+                number={clip.index}
                 origin={clipTab === 'all' || clipTab === 'fav' || clipTab === 'edited' ? clip.origin : undefined}
                 videoUrl={videoUrl}
                 favorite={!!clip.favorite}
@@ -1832,7 +1837,7 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
  * Under an hour of video (`showHours` false) the hours part isn't shown: the box reads 4:05.
  * `nextId`: the time field to go on to once the seconds are typed (Start → End).
  */
-function TimeField({ id, label, value, onChange, showHours = true, nextId }: { id: string; label: string; value: string; onChange: (v: string) => void; showHours?: boolean; nextId?: string }) {
+function TimeField({ id, label, value, onChange, showHours = true, nextId, prevId }: { id: string; label: string; value: string; onChange: (v: string) => void; showHours?: boolean; nextId?: string; /** ← from the first part goes back to this field's seconds */ prevId?: string }) {
   type Parts = [string, string, string]
   const pad = (n: number) => String(n).padStart(2, '0')
   const split = (v: string): Parts => {
@@ -1917,7 +1922,6 @@ function TimeField({ id, label, value, onChange, showHours = true, nextId }: { i
   function key(i: number, e: React.KeyboardEvent<HTMLInputElement>) {
     const el = e.currentTarget
     const atStart = el.selectionStart === 0 && el.selectionEnd === 0
-    const atEnd = el.selectionStart === el.value.length && el.selectionEnd === el.value.length
     // Digits are taken here (two make the part), not left to the browser's cursor
     if (/^[0-9]$/.test(e.key) && !e.ctrlKey && !e.metaKey && !e.altKey) { e.preventDefault(); digit(i, e.key); return }
     if (e.key === 'Backspace' && typing.current?.i === i) {
@@ -1930,12 +1934,24 @@ function TimeField({ id, label, value, onChange, showHours = true, nextId }: { i
     }
     if (e.key === ':' || e.key === '.' || e.key === ' ') { e.preventDefault(); if (i < 2) go(i + 1); return }
     if (e.key === 'Backspace' && (!el.value || atStart) && i > first) { e.preventDefault(); go(i - 1, 'end'); return }
-    if (e.key === 'ArrowLeft' && atStart && i > first) { e.preventDefault(); go(i - 1, 'end'); return }
-    if (e.key === 'ArrowRight' && atEnd && i < 2) { e.preventDefault(); go(i + 1); return }
-    // Next: → from the seconds (or Enter anywhere in Start) goes on to the End time
-    if (nextId && ((e.key === 'ArrowRight' && i === 2 && (atEnd || el.selectionEnd === el.value.length)) || e.key === 'Enter')) {
-      e.preventDefault(); finish(el); return
+    // ← → step from part to part, wherever the cursor is (a part is only two digits) — and across:
+    // → from Start's seconds goes on to End, ← from End's first part back to Start's seconds
+    if (e.key === 'ArrowLeft' && !e.shiftKey) {
+      e.preventDefault()
+      if (i > first) go(i - 1)
+      else {
+        const prev = prevId ? document.getElementById(`${prevId}-s`) as HTMLInputElement | null : null
+        if (prev) { prev.focus(); requestAnimationFrame(() => prev.select()) }
+      }
+      return
     }
+    if (e.key === 'ArrowRight' && !e.shiftKey) {
+      e.preventDefault()
+      if (i < 2) go(i + 1); else finish(el)
+      return
+    }
+    // Enter anywhere in Start goes on to the End time
+    if (nextId && e.key === 'Enter') { e.preventDefault(); finish(el); return }
     if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
       e.preventDefault()
       const n = (Number(live.current[i] || 0) + (e.key === 'ArrowUp' ? 1 : -1) + max(i) + 1) % (max(i) + 1)
