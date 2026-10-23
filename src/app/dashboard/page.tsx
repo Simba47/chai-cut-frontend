@@ -8,6 +8,7 @@ import type { Video } from '@chai-cut/shared'
 import { ACCEPTED_VIDEO_EXTENSIONS } from '@chai-cut/shared'
 import { Breadcrumbs } from '@/components/ui/breadcrumbs'
 import { AccountMenu } from '@/components/ui/account-menu'
+import ThemeSwitch from '@/components/ui/cinematic-theme-switcher'
 import { BrandLoaderScreen } from '@/components/ui/brand-loader'
 import { FillButtonContent } from '@/components/ui/fill-button'
 import { useVideoUpload } from '@/modules/upload/useVideoUpload'
@@ -204,7 +205,7 @@ export default function DashboardPage() {
       onDragLeave={onDragLeave}
       onDrop={onDrop}
     >
-      <nav className="dash-nav">
+      <nav className="dash-nav app-nav">
         <Breadcrumbs shine items={[{ label: 'Dashboard' }]} />
         <div className="dash-nav-right">
           {planInfo && (
@@ -219,6 +220,7 @@ export default function DashboardPage() {
           {planInfo?.plan === 'free' && (
             <a href="/pricing" className="dash-btn-fill fill-btn fill-btn-sm"><FillButtonContent>Upgrade</FillButtonContent></a>
           )}
+          <ThemeSwitch />
           <AccountMenu planInfo={planInfo} />
         </div>
       </nav>

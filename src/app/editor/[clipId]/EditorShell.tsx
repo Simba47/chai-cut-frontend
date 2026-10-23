@@ -27,6 +27,7 @@ import { AudioMixerPanel } from '@/components/editor/AudioMixerPanel'
 import { MediaPickerModal } from '@/components/editor/MediaPickerModal'
 import { shownSegment, addedVideoBox, STAND_IN_SUFFIX } from '@/modules/editor/visibility'
 import { AccountMenu } from '@/components/ui/account-menu'
+import ThemeSwitch from '@/components/ui/cinematic-theme-switcher'
 import { BrandLogo } from '@/components/ui/brand-logo'
 import { BrandLoader } from '@/components/ui/brand-loader'
 import { SpinningBorderButton } from '@/components/ui/spinning-border-button'
@@ -5149,7 +5150,7 @@ export function EditorShell({
 
       {/* ── Header: logo · where am I · is it saved · export ───────────────────── */}
       {/* Above everything in the body (preview overlays use z-index 10–20), so the account menu isn't drawn underneath them */}
-      <header className="relative shrink-0 flex items-center gap-3 px-4"
+      <header className="app-nav relative shrink-0 flex items-center gap-3 px-4"
         style={{ height: 56, background: 'var(--ed-panel)', borderBottom: '1px solid rgb(var(--ed-fg) / 0.07)', zIndex: 60 }}>
         {/* Same vector logo (with its intro) as the landing page, dashboard and clip board */}
         <a href="/dashboard" onClick={e => leaveTo(e, '/dashboard')} title="Go to the dashboard" aria-label="Shortcut dashboard"
@@ -5185,6 +5186,7 @@ export function EditorShell({
               <circle cx="12" cy="12" r="9" /><path d="M9.5 9a2.5 2.5 0 015 .5c0 1.5-2.5 2-2.5 3.5M12 17h.01" />
             </svg>
           </button>
+          <ThemeSwitch />
           {/* Shared profile button; saves pending edits before leaving the editor */}
           <AccountMenu
             onNavigate={href => leave(() => { window.location.href = href })}

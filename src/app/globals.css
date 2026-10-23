@@ -2235,3 +2235,143 @@ body {
   transform: translateX(-110%); }
 .cb-sheen:hover::after { transform: translateX(110%); transition: transform 1s cubic-bezier(.2, .8, .2, 1); }
 @media (prefers-reduced-motion: reduce) { .cb-sheen::after { display: none; } .cb-reveal .cb-act, .cb-tool-hide { transition: none; } }
+
+/* ── Light mode: the dashboard, the clip board and the editor only (their dark / light switch:
+   components/ui/cinematic-theme-switcher.tsx). Every other page stays dark, and so does every top
+   bar (.app-nav): black in both modes. Dark is untouched: all of this is under [data-theme="light"] ── */
+/* the clip board's own colours (ClipPickerShell writes its tints as rgb(var(--cb-fg) / a)) */
+:root { --cb-fg: 255 255 255; --cb-text: #fff; --cb-pop: #161616; }
+[data-theme="light"] {
+  color-scheme: light;
+  --cb-fg: 12 12 14; --cb-text: #0c0c0e; --cb-pop: #ffffff;
+}
+
+/* the top bars stay black: the dark colours again, inside them */
+[data-theme="light"] .app-nav {
+  color-scheme: dark;
+  --bg: #000; --nav: #000; --surface: #141414;
+  --border: rgba(255,255,255,0.08); --border-strong: rgba(255,255,255,0.16);
+  --text: #F4F4F5; --text-muted: rgba(244,244,245,0.58); --text-dim: rgba(244,244,245,0.36); --accent: #C8FF00;
+  --cb-fg: 255 255 255; --cb-text: #fff; --cb-pop: #161616;
+  --ed-fg: 244 244 245; --ed-text: #F4F4F5; --ed-panel: #000; --ed-raise: #1A1A1A; --ed-popover: #1A1A1A; --ed-accent-text: #C8FF00;
+  background: #000; color: #F4F4F5; border-bottom-color: rgba(255,255,255,0.08);
+}
+
+/* ── clip board: dark mode's look, every surface flipped (as the dashboard) ── */
+[data-theme="light"] .cb-page { background: radial-gradient(1200px 420px at 50% -220px, rgba(200, 255, 0, 0.12), transparent 70%), #f4f5f7; color: #0c0c0e; }
+[data-theme="light"] .cb-panel { border-color: rgba(12, 12, 14, 0.07); background: #ffffff;
+  box-shadow: 0 1px 2px rgba(12, 12, 14, 0.04), 0 18px 40px -28px rgba(12, 12, 14, 0.25); }
+/* (dark mode's thin light along the top edge: a faint lime one here) */
+[data-theme="light"] .cb-panel::before { background: linear-gradient(90deg, transparent, rgba(143, 184, 0, 0.35), transparent); }
+[data-theme="light"] .cb-player { border-color: rgba(12, 12, 14, 0.06); box-shadow: 0 22px 46px -28px rgba(12, 12, 14, 0.5); }
+/* Video / Clip preview: a white knob with deep lime on it (dark mode: a black knob with lime) */
+[data-theme="light"] .view-switch { background: #f1f2f4; box-shadow: inset 0 0 0 1px rgba(12, 12, 14, 0.07), inset 0 1px 2px rgba(12, 12, 14, 0.05); }
+[data-theme="light"] .view-switch-knob { background: #ffffff; box-shadow: inset 0 0 0 1px rgba(143, 184, 0, 0.45), 0 2px 8px -3px rgba(12, 12, 14, 0.3); }
+[data-theme="light"] .view-switch-opt { color: rgba(12, 12, 14, 0.55); }
+[data-theme="light"] .view-switch-opt:hover:not([data-on]) { color: #0c0c0e; }
+[data-theme="light"] .view-switch-opt[data-on] { color: #4d6400; }
+/* the new-clip box */
+[data-theme="light"] .cb-form { border-color: rgba(12, 12, 14, 0.07); background: #f8f9fa; box-shadow: inset 0 1px 0 #ffffff; }
+[data-theme="light"] .cb-label { color: rgba(12, 12, 14, 0.5); }
+[data-theme="light"] .cb-input { background: #ffffff; border-color: rgba(12, 12, 14, 0.1); box-shadow: 0 1px 2px rgba(12, 12, 14, 0.04); }
+[data-theme="light"] .cb-input:hover { border-color: rgba(12, 12, 14, 0.18); }
+[data-theme="light"] :is(.cb-input:focus, .cb-input:focus-within) { border-color: rgba(143, 184, 0, 0.7); box-shadow: 0 0 0 3px rgba(200, 255, 0, 0.22); }
+/* Create & edit: the one black button (as Upload video on the dashboard); lime on hover */
+[data-theme="light"] .cb-cta { background: #0c0c0e; color: #ffffff; border-color: #0c0c0e; box-shadow: 0 8px 18px -10px rgba(12, 12, 14, 0.55); }
+[data-theme="light"] .cb-cta:hover:not(:disabled) { background: #0c0c0e; border-color: #0c0c0e; color: #c8ff00; }
+[data-theme="light"] .cb-ghost { color: #0c0c0e; border-color: rgba(12, 12, 14, 0.12); background: #ffffff; box-shadow: 0 1px 2px rgba(12, 12, 14, 0.04); }
+[data-theme="light"] .cb-ghost:hover:not(:disabled) { background: #f4f5f7; border-color: rgba(12, 12, 14, 0.22); }
+/* the Clipboard: the picked tab a soft grey pill (as dark mode's soft white one) */
+[data-theme="light"] .cb-tab { border-color: rgba(12, 12, 14, 0.09); background: #ffffff; }
+[data-theme="light"] .cb-tab:hover { background: #f4f5f7; }
+[data-theme="light"] .cb-tab[aria-selected="true"] { color: #0c0c0e; background: rgba(12, 12, 14, 0.07); border-color: rgba(12, 12, 14, 0.16); }
+[data-theme="light"] .cb-card { border-color: rgba(12, 12, 14, 0.08); background: #ffffff; box-shadow: 0 1px 2px rgba(12, 12, 14, 0.04); }
+[data-theme="light"] :is(.cb-card:hover, .cb-card:focus-within) { border-color: rgba(143, 184, 0, 0.55); box-shadow: 0 16px 32px -20px rgba(120, 160, 0, 0.4); }
+[data-theme="light"] .cb-card[data-playing] { border-color: rgba(143, 184, 0, 0.5); box-shadow: inset 2px 0 0 #8fb800; }
+[data-theme="light"] .cb-card[data-on] { border-color: #8fb800; }
+[data-theme="light"] .cb-sheen::after { background: linear-gradient(105deg, transparent 35%, rgba(255, 255, 255, 0.85) 48%, rgba(255, 255, 255, 0.3) 55%, transparent 65%); }
+[data-theme="light"] .cb-thumb { box-shadow: 0 0 0 1px rgba(12, 12, 14, 0.06), 0 6px 14px -8px rgba(12, 12, 14, 0.45); }
+[data-theme="light"] .cb-act { color: #0c0c0e; border-color: rgba(12, 12, 14, 0.12); background: #ffffff; }
+[data-theme="light"] .cb-act:hover:not(:disabled) { background: #f4f5f7; border-color: rgba(12, 12, 14, 0.22); }
+[data-theme="light"] .cb-act[data-tone="danger"] { color: #dc2626; border-color: rgba(220, 38, 38, 0.3); background: rgba(220, 38, 38, 0.05); }
+[data-theme="light"] .cb-act[data-tone="danger"]:hover:not(:disabled) { color: #fff; background: #dc2626; border-color: #dc2626; }
+[data-theme="light"] .cb-tool { color: rgba(12, 12, 14, 0.45); }
+[data-theme="light"] .cb-tool:hover { color: #0c0c0e; background: rgba(12, 12, 14, 0.06); }
+[data-theme="light"] :is(.cb-tool[data-tone="danger"]:hover, .cb-tool[data-tone="danger"][data-on]) { color: #dc2626; background: rgba(220, 38, 38, 0.08); }
+/* white text and white hover tints written as Tailwind classes, in the page (not in the top bar) */
+[data-theme="light"] .cb-page :is(.text-white, .hover\:text-white:hover):not(.app-nav *) { color: #0c0c0e; }
+[data-theme="light"] .cb-page :is(.hover\:bg-white\/5, .hover\:bg-white\/10, .hover\:bg-white\/\[0\.04\], .hover\:bg-white\/\[0\.05\]):hover { background-color: rgba(12, 12, 14, 0.06); }
+[data-theme="light"] .cb-page .focus\:bg-white\/15:focus { background-color: rgba(12, 12, 14, 0.08); }
+[data-theme="light"] .cb-page .placeholder\:text-white\/30::placeholder { color: rgba(12, 12, 14, 0.3); }
+/* lime reads poorly on white: text and lines in it take a deeper lime */
+[data-theme="light"] .cb-page :not(.app-nav *)[style*="color: rgb(200, 255, 0)"] { color: #4d6400 !important; }
+[data-theme="light"] .cb-page main svg[stroke="#c8ff00"], [data-theme="light"] .cb-page aside svg[stroke="#c8ff00"] { stroke: #4d6400; }
+
+/* ── dashboard: dark mode's look, every surface flipped ── */
+[data-theme="light"] .dash {
+  --bg: #f4f5f7; --surface: #ffffff; --surface-2: #f4f5f7; --hover: rgba(12,12,14,0.05);
+  --border: rgba(12,12,14,0.08); --border-strong: rgba(12,12,14,0.12);
+  --text: #0c0c0e; --text-muted: rgba(12,12,14,0.55); --text-dim: rgba(12,12,14,0.35);
+  --accent: #a8d900;
+  --title-top: #0c0c0e; --title-bottom: #6b7280;
+  background: radial-gradient(1200px 420px at 50% -220px, rgba(200, 255, 0, 0.12), transparent 70%), var(--bg);
+}
+/* (the bar along the top keeps the dark colours: .app-nav) */
+[data-theme="light"] .dash :is(.dash-input:hover, .dash-link-btn:hover) { border-color: rgba(12, 12, 14, 0.22); }
+[data-theme="light"] .dash :is(.dash-input:focus, .dash-input:focus-visible) { border-color: rgba(12, 12, 14, 0.35); }
+[data-theme="light"] .dash :is(.dash-input, .dash-sort-btn, .dash-count) { box-shadow: 0 1px 2px rgba(12, 12, 14, 0.05); }
+[data-theme="light"] .dash .dash-select-toggle.is-on { color: #4d6400; border-color: #a8d900; }
+/* the upload strip: white, dashed; its button the other way round from dark mode (black, a lime dot) */
+[data-theme="light"] .dash .dash-drop { border-color: rgba(12, 12, 14, 0.16); box-shadow: 0 1px 2px rgba(12, 12, 14, 0.04); }
+[data-theme="light"] .dash .dash-drop-icon { background: rgba(200, 255, 0, 0.22); color: #4d6400; }
+[data-theme="light"] .dash .dash-drop-text a { color: #4d6400; }
+[data-theme="light"] .dash .dash-upload-btn { background: #0c0c0e; color: #ffffff; box-shadow: 0 8px 18px -10px rgba(12, 12, 14, 0.6); }
+[data-theme="light"] .dash .dash-upload-icon { background: #c8ff00; color: #0c0c0e; }
+/* the video cards: white, a soft shadow, the lime edge and glow on hover as in dark mode */
+[data-theme="light"] .dash .vcard { border-color: rgba(12, 12, 14, 0.08); box-shadow: 0 1px 2px rgba(12, 12, 14, 0.04), 0 14px 30px -24px rgba(12, 12, 14, 0.35); }
+[data-theme="light"] .dash .vcard.is-ready:hover { border-color: rgba(143, 184, 0, 0.7); box-shadow: 0 22px 46px -24px rgba(120, 160, 0, 0.45); }
+[data-theme="light"] .dash .vcard-thumb { background: #e9ebef; }
+[data-theme="light"] .dash .vcard-open { border-color: rgba(12, 12, 14, 0.14); }
+
+/* ── editor (its colours live on .editor-theme) ── */
+[data-theme="light"] .editor-theme {
+  color-scheme: light;
+  --bg: #eef0f3; --surface: #ffffff;
+  --border: rgba(12,12,14,0.08); --border-strong: rgba(12,12,14,0.16);
+  --text: #0c0c0e; --text-muted: rgba(12,12,14,0.58); --text-dim: rgba(12,12,14,0.36);
+  --ed-fg: 12 12 14;
+  --ed-text: #0c0c0e;
+  --ed-app: #eef0f3;
+  --ed-panel: #ffffff;
+  --ed-canvas: #e3e5e9;
+  --ed-track: #f6f7f9;
+  --ed-ruler: #f6f7f9;
+  --ed-raise: #ffffff;
+  --ed-popover: #ffffff;
+  --ed-accent-text: #4d6400;
+  --surface-2: #f1f2f4; --hover: rgba(12,12,14,0.05);
+}
+/* the app around the panels: the light grey of the dashboard and the clip board */
+[data-theme="light"] .editor-theme { --ed-app: #f4f5f7; }
+/* the tool rail (Format · Subjects · Frames …): dark marks on white, the picked one a soft grey tile with the lime marker */
+[data-theme="light"] .editor-theme .ed-tool { color: rgba(12, 12, 14, 0.6); }
+[data-theme="light"] .editor-theme .ed-tool[data-active] { background: rgba(12, 12, 14, 0.06); color: #0c0c0e; box-shadow: inset 0 0 0 1px rgba(12, 12, 14, 0.1); }
+[data-theme="light"] .editor-theme .ed-tool[data-active]::before { background: #8fb800; }
+[data-theme="light"] .editor-theme .ed-tool-danger[data-active] { color: #dc2626; background: rgba(220, 38, 38, 0.08); box-shadow: inset 0 0 0 1px rgba(220, 38, 38, 0.25); }
+/* Play: a lime sign on a black circle, as in dark mode */
+[data-theme="light"] .editor-theme .ed-play { background: #0c0c0e; box-shadow: 0 6px 16px -8px rgba(12, 12, 14, 0.6); }
+[data-theme="light"] .editor-theme .ed-play:hover { background: #222226; box-shadow: 0 8px 20px -8px rgba(12, 12, 14, 0.65); }
+[data-theme="light"] .editor-theme .ed-zoom-range::-webkit-slider-thumb { background: #0c0c0e; }
+[data-theme="light"] .editor-theme .ed-zoom-range::-moz-range-thumb { background: #0c0c0e; }
+/* white text and white hover tints written as Tailwind classes in the panels (not on the dark badges over
+   pictures, nor in the tour's own dark card) */
+[data-theme="light"] .editor-theme :is(.text-white, .hover\:text-white:hover):not([style*="rgba(0, 0, 0"]):not(.ed-tour-card *):not(.app-nav *) { color: #0c0c0e; }
+[data-theme="light"] .editor-theme :is(.hover\:bg-white\/5, .hover\:bg-white\/10, .hover\:bg-white\/\[0\.04\], .hover\:bg-white\/\[0\.05\]):hover:not(.ed-tour-card *) { background-color: rgba(12, 12, 14, 0.06); }
+[data-theme="light"] .editor-theme .ed-tool:hover { background: rgba(12, 12, 14, 0.06); color: #0c0c0e; }
+[data-theme="light"] .editor-theme .ed-dock-choice[data-on] { color: #0c0c0e; }
+[data-theme="light"] .editor-theme .ed-tl-btn:hover:not(:disabled) { color: #0c0c0e; }
+[data-theme="light"] .tl2-block { box-shadow: inset 0 0 0 1px rgba(12, 12, 14, 0.12); }
+[data-theme="light"] .tl2-bar { color: #0c0c0e; }
+[data-theme="light"] .tl2-playhead { background: #0c0c0e; box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.7), 0 0 8px rgba(12, 12, 14, 0.2); }
+[data-theme="light"] .tl2-bubble { color: #fff; background: #0c0c0e; }
+[data-theme="light"] .tl2-grip:focus-visible { outline-color: #0c0c0e; }
