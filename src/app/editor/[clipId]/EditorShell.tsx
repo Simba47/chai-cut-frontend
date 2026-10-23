@@ -8,7 +8,7 @@ import { VideoPreview, OutputCanvas } from '@/components/editor/VideoPreview'
 import { withoutRanges } from '@/lib/cuts'
 import { cleanTrims, trimMap, addTrim, wordsOnTimeline, MAX_CLIP_MS, MIN_CLIP_MS } from '@/lib/trims'
 import { toTimelineState, toSourceState, rippleDelete, rippleStretch, lockedInRange, insertAtStart, extendEnd, type TimedState } from '@/modules/editor/trimState'
-import { insertsOf, insertedMs, rippleInsert, isInsert, piecesOf, piecesLength, videoAtPieces, timelineAtPieces, rippleCut, pieceAt, speedOf, pieceVideoMs } from '@/modules/editor/inserts'
+import { insertsOf, insertedMs, rippleInsert, isInsert, piecesOf, piecesLength, videoAtPieces, timelineAtPieces, rippleCut, pieceAt, speedOf, pieceVideoMs, mainFrom } from '@/modules/editor/inserts'
 import { PostText, type PostTextValue } from '@/components/clips/PostText'
 import { BrollPanel, type StockResult } from '@/components/editor/BrollPanel'
 import { VideoPanel, type PanelVideo } from '@/components/editor/VideoPanel'
@@ -3233,6 +3233,81 @@ export function EditorShell({
     const before = next.segments.find(s => !isShot(s, mainVideoId) && Math.abs(s.end_ms - ins.start_ms) <= 1)
     if (before) joinSameLayoutNeighbours(before.id, new Set(next.transitions.map(t => t.after_segment_id)))
   }
+  /**
+   * A block of the main row dragged along it and let go at `toMs` (where it goes in, in the timeline
+   * as it was): a part of the main video, or a video put in between. It's taken out where it was and
+   * put in there, playing just what it played (each part keeps its own moment of the video: the clip
+   * becomes pieces). The clip keeps its length; photos, text, music and videos on top stay where they
+   * are (as in Resolve); the main video's own sound goes with its parts. One step.
+   */
+  const pendingMoveRef = useRef<{ segId: string; toMs: number } | null>(null)
+  function movePart(segId: string, toMs: number) {
+    if (trimmed) {
+      // Parts cut out the older way: first the clip becomes pieces, then the move (once redrawn)
+      pendingMoveRef.current = { segId, toMs }
+      trimsToPieces()
+      return
+    }
+    const editor = useEditorStore.getState(), media = useMediaStore.getState()
+    const seg = editor.segments.find(x => x.id === segId)
+    if (!seg || isShot(seg, mainVideoId)) return
+    if (seg.locked) { notifyLocked('This part is locked — unlock it to move it'); return }
+    const ins = isInsert(seg, mainVideoId)
+    const a = seg.start_ms, len = seg.end_ms - seg.start_ms
+    // (where it goes, in the clip without it)
+    const at = Math.round(toMs >= seg.end_ms ? toMs - len : toMs > a ? a : Math.max(0, toMs))
+    if (Math.abs(at - a) < 30) return
+    // Every part of the main video says which moment of it it starts at (as it plays now), so moved
+    // parts keep playing their own stretch of the video
+    const main = (b: { source_video_id?: string | null; image_path?: string | null }) => !b.source_video_id && !b.image_path
+    const pinned = editor.segments.map(x => {
+      if (isShot(x, mainVideoId) || isInsert(x, mainVideoId)) return x
+      const was = mainFrom(x)
+      const d = (piecesOn ? was ?? x.start_ms : x.start_ms) - (was ?? 0)
+      return d ? { ...x, crop_boxes: x.crop_boxes.map(box => (main(box) ? { ...box, source_offset_ms: Math.max(0, (box.source_offset_ms ?? 0) + d) } : box)) } : x
+    })
+    const me = pinned.find(x => x.id === segId)!
+    const state: TimedState = {
+      segments: pinned, keyframes: editor.keyframes,
+      overlays: media.overlays, textOverlays: media.textOverlays, audioTracks: media.audioTracks, transitions: media.transitions,
+    }
+    const out = rippleCut(state, a, seg.end_ms, rippleDelete)
+    if (out.segments.some(x => x.locked && x.start_ms < at && x.end_ms > at)) { notifyLocked('The part of the clip there is locked — unlock it first'); return }
+    pause()
+    const next = rippleInsert(out, at, len)
+    const d = at - a
+    const moved: SegmentLocal = {
+      ...me, start_ms: at, end_ms: at + len,
+      ...(ins ? { video_offset_ms: Math.round(videoAtPieces(piecesOf(out.segments, mainVideoId, x => isShot(x, mainVideoId)), at)) } : {}),
+      frame: me.frame?.items ? { ...me.frame, items: me.frame.items.map(it => ({ ...it, start_ms: it.start_ms + d, end_ms: it.end_ms + d })) } : me.frame,
+    }
+    // (videos on top stay where they were too, as they are)
+    const onTop = editor.segments.filter(x => isShot(x, mainVideoId))
+    const segs = [...next.segments.filter(x => x.id !== segId && !isShot(x, mainVideoId)), ...onTop, moved]
+      .sort((x, y) => x.start_ms - y.start_ms || x.sort_order - y.sort_order).map((x, i) => ({ ...x, sort_order: i }))
+    const kfs = { ...next.keyframes }
+    for (const x of onTop) for (const box of x.crop_boxes) kfs[box.id] = editor.keyframes[box.id] ?? []
+    for (const box of seg.crop_boxes) kfs[box.id] = (editor.keyframes[box.id] ?? []).map(k => ({ ...k, t_ms: k.t_ms + d }))
+    skipCanvasTransitionRef.current = true
+    seekAfterInsertRef.current = at
+    editor.applyTrim(segs, kfs, editor.trims, rangeAfterPieces(segs))
+    useMediaStore.setState({
+      audioTracks: [...next.audioTracks.filter(isMainAudio), ...media.audioTracks.filter(t => !isMainAudio(t))],
+      transitions: next.transitions.filter(t => segs.some(x => x.id === t.after_segment_id)),
+    })
+    // Parts that now play on without a jump are one part again: where it was, and where it went
+    const gap = at < a ? a + len : a
+    const left = segs.find(x => !isShot(x, mainVideoId) && !isInsert(x, mainVideoId) && Math.abs(x.end_ms - gap) <= 1)
+    if (left) joinSameLayoutNeighbours(left.id, transitionAfter())
+    const kept = ins ? segId : joinSameLayoutNeighbours(segId, transitionAfter())
+    setActiveSegmentId(kept ?? segId)
+  }
+  useEffect(() => {
+    const p = pendingMoveRef.current
+    if (!p || trimmed) return
+    pendingMoveRef.current = null
+    movePart(p.segId, p.toMs)
+  }, [trimmed]) // eslint-disable-line react-hooks/exhaustive-deps
 
   /**
    * A part's edge being dragged (live, as the clip's own ends): each step starts again from the clip
@@ -5985,7 +6060,7 @@ export function EditorShell({
             id: o.id, start_ms: o.start_ms, end_ms: o.end_ms, url: o.preview_url, hidden: o.hidden, locked: isLocked({ kind: 'photo', id: o.id }), track: o.track, full: o.x <= 0.001 && o.y <= 0.001 && o.w >= 0.999 && o.h >= 0.999,
             ...(o.type === 'video' ? { video: { url: videoUrls[o.source_video_id!] ?? o.preview_url, offset: o.source_offset_ms ?? 0, muted: !!o.muted } } : {}),
           }))}
-          onTrackDrop={dropOnTrack}
+          onTrackDrop={dropOnTrack} onMovePart={movePart}
           activePhotoId={activeOverlayId} onSelectPhoto={id => pickPhoto(id, doubleTap(`p${id}`))}
           onPhotoTimeChange={(id, t) => {
             if (blocked({ kind: 'photo', id })) return
