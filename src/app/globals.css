@@ -1105,11 +1105,18 @@ body {
 .tr-all:hover:not(:disabled) { background: rgba(200,255,0,0.12); color: #c8ff00; box-shadow: inset 0 0 0 1px rgba(200,255,0,0.4); }
 .tr-all:disabled { color: rgb(var(--ed-fg) / 0.45); cursor: default; background: none; }
 .tr-label-hot .tr-flame { color: #c8ff00; }
-.tr-tile { min-width: 0; display: flex; flex-direction: column; gap: 6px; padding: 0; border-radius: 10px; background: none; transition: transform .12s; }
-.tr-tile .tr-demo { box-shadow: inset 0 0 0 1px rgb(var(--ed-fg) / 0.1); transition: box-shadow .15s; }
-.tr-tile:hover .tr-demo { box-shadow: inset 0 0 0 1px rgb(var(--ed-fg) / 0.35); }
+.tr-tile { min-width: 0; display: flex; flex-direction: column; gap: 7px; padding: 0; border-radius: 12px; background: none; transition: transform .18s ease; }
+.tr-tile .tr-demo { box-shadow: 0 0 0 1px rgb(var(--ed-fg) / 0.1), 0 6px 14px -8px rgba(0, 0, 0, 0.8); transition: box-shadow .18s; }
+.tr-tile:hover:not(:disabled) { transform: translateY(-2px); }
+.tr-tile:hover .tr-demo { box-shadow: 0 0 0 1px rgb(var(--ed-fg) / 0.3), 0 10px 20px -10px rgba(0, 0, 0, 0.9); }
 .tr-tile:active { transform: scale(.97); }
-.tr-tile[data-on] .tr-demo { box-shadow: 0 0 0 2px #c8ff00, 0 0 0 4px rgba(200,255,0,0.15); }
+.tr-tile[data-on] .tr-demo { box-shadow: 0 0 0 2px #c8ff00, 0 8px 20px -10px rgba(200, 255, 0, 0.35); }
+/* over both shots: a soft cinematic shade (top and bottom), and the ✓ of the picked one */
+.tr-demo::after { content: ''; position: absolute; inset: 0; z-index: 3; pointer-events: none; border-radius: inherit;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.04), transparent 40%, transparent 70%, rgba(0, 0, 0, 0.12)); }
+.tr-tile[data-on] .tr-demo::before { content: ''; position: absolute; top: 5px; right: 5px; z-index: 4; width: 16px; height: 16px; border-radius: 50%;
+  background: #c8ff00 url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='3.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 12.5l4.5 4.5L19 7.5'/%3E%3C/svg%3E") center / 10px no-repeat;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.5); }
 /* won't show between two parts of the same shot (TransitionsPanel NEEDS_CHANGE) */
 .tr-tile[data-weak]:not([data-on]) .tr-demo { opacity: .45; }
 .tr-tile[data-weak]:not([data-on]) .tr-name { color: rgb(var(--ed-fg) / 0.38); }
@@ -1125,7 +1132,7 @@ body {
 .tr-start .tr-empty-title { margin-bottom: 2px; }
 .tr-start .tr-empty-text { font-size: 11.5px; }
 .tr-start .tr-empty-text b { color: var(--ed-text); font-weight: 700; }
-.tr-name { display: flex; align-items: center; justify-content: center; gap: 4px; min-width: 0; font-size: 11.5px; line-height: 1.25; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 500; color: rgb(var(--ed-fg) / 0.7); }
+.tr-name { display: flex; align-items: center; justify-content: center; gap: 4px; min-width: 0; font-size: 11.5px; line-height: 1.25; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 600; letter-spacing: -0.005em; color: rgb(var(--ed-fg) / 0.62); }
 .tr-name .tr-flame { flex-shrink: 0; color: #c8ff00; }
 .tr-tile:hover .tr-name { color: var(--ed-text); }
 .tr-tile[data-on] .tr-name { color: var(--ed-text); font-weight: 650; }
@@ -1138,14 +1145,17 @@ body {
 /* the little screen: the Shortcut panda buried in film (A, outgoing) and cutting it into reels in the
    same room (B, incoming). A loop: hold A, change over, hold B, then back (alternate). It plays on the
    picked tile and the one pointed at; the others rest halfway through, so each already reads as its kind. */
-.tr-demo { --trc: 3.2s; position: relative; display: block; aspect-ratio: 16 / 10; border-radius: 8px; overflow: hidden; background: #000; isolation: isolate; }
+.tr-demo { --trc: 3.2s; position: relative; display: block; aspect-ratio: 16 / 10; border-radius: 10px; overflow: hidden; background: #000; isolation: isolate; }
 .tr-demo i { position: absolute; inset: 0; background-size: cover; background-position: center; will-change: transform, opacity, filter;
   animation-duration: var(--trc); animation-iteration-count: infinite; animation-direction: alternate; animation-fill-mode: both; animation-timing-function: linear; }
-.tr-a { background-image: url('/mascot/transition-a.jpg'); }
-.tr-b { background-image: url('/mascot/transition-b.jpg'); opacity: 0; }
+/* Two shots, plain black (no pictures, no marks) */
+.tr-a { background: #0a0a0a; }
+.tr-b { opacity: 0; background: #000; }
 .tr-tile:not(:hover):not([data-on]) .tr-demo i { animation-play-state: paused; animation-delay: calc(var(--trc) * var(--rest, -0.5)); }
 /* (the resting moment of each: where its picture reads best — not a blank black, white or blurred frame) */
 .tr-demo:is([data-kind="fadeblack"], [data-kind="fadewhite"]) { --rest: -0.38; }
+/* (Flash rests just before its white: the tiles stay black) */
+.tr-demo[data-kind="fadewhite"] { --rest: -0.25; }
 .tr-demo[data-kind="zoomin"] { --rest: -0.38; }
 .tr-demo[data-kind="smoothleft"] { --rest: -0.6; }
 .tr-demo[data-kind="hblur"] { --rest: -0.34; }
