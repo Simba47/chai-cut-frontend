@@ -157,13 +157,8 @@ interface Props {
 const ACCENT = '#c8ff00'
 // Card look shared by the AI tools and the new-clip bar
 const CARD: React.CSSProperties = { background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)' }
-const PANEL_BG = '#111'
+const PANEL_BG = '#000'
 const PANEL_LINE = '1px solid rgba(255,255,255,0.07)'
-// The page's three panels (AI tools · video/preview · Clipboard): separate rounded cards with space between
-const PANEL_CARD: React.CSSProperties = {
-  background: PANEL_BG, border: '1px solid rgba(255,255,255,0.08)', borderRadius: 16,
-  boxShadow: '0 8px 24px -12px rgba(0,0,0,0.7)',
-}
 
 // Wide screens get three columns (AI tools · video · clips); narrower ones stack the AI tools under the video
 const WIDE_QUERY = '(min-width: 1280px)'
@@ -1050,11 +1045,11 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
   // Manual edit: the form is always there, except while a clip is previewed (then only Edit this clip)
   const formOpen = manualOnly ? !(editingPreviewed || editingMoment) : showForm
   const newClipBar = formOpen ? (
-    <form className="shrink-0 rounded-2xl p-4 flex flex-col gap-3" style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.14)' }}
+    <form className="cb-form shrink-0 p-4 flex flex-col gap-3"
       onSubmit={e => { e.preventDefault(); submitForm(true) }}>
       <div className="flex flex-wrap items-end gap-3">
         <div className="flex flex-col gap-1 flex-1" style={{ minWidth: 200 }}>
-          <label htmlFor="clip-title" className="text-[11px] font-medium" style={{ color: 'rgba(255,255,255,0.5)' }}>New clip · title (optional)</label>
+          <label htmlFor="clip-title" className="cb-label">New clip <span style={{ color: 'rgba(255,255,255,0.3)', letterSpacing: '0.04em', textTransform: 'none', fontWeight: 500 }}>· title (optional)</span></label>
           <input
             id="clip-title"
             type="text"
@@ -1062,8 +1057,7 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
             value={formTitle}
             onChange={e => setFormTitle(e.target.value)}
             autoFocus={!manualOnly}
-            className="w-full px-3 py-2 rounded-lg text-sm text-white outline-none focus:border-[#c8ff00]"
-            style={{ background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.12)' }}
+            className="cb-input w-full h-[52px] px-3.5 rounded-xl text-sm text-white outline-none placeholder:text-white/30"
           />
         </div>
         {/* Start → how long → End */}
@@ -1606,43 +1600,42 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
   const aiTools = aiLocked ? aiToolsLocked : aiToolsOpen
 
   return (
-    <div className="h-screen flex flex-col overflow-hidden" style={{ background: '#0d0d0d' }}>
+    <div className="cb-page h-screen flex flex-col overflow-hidden">
       {/* Opening a clip: covers the page while the clip is created and the editor loads */}
       {busy && <BrandLoaderScreen mascot overlay label="Getting your clip ready, please wait…" />}
       {/* Nav */}
-      <nav className="flex items-center gap-3 px-4 shrink-0"
-        style={{ height: 56, background: '#111', borderBottom: '1px solid rgba(255,255,255,0.07)' }}>
+      <nav className="cb-nav relative z-10 flex items-center gap-3 px-4 shrink-0" style={{ height: 56 }}>
         {/* Where am I: Shortcut | Dashboard › Clip board */}
         <Breadcrumbs shine items={[{ label: 'Dashboard', href: '/dashboard' }, { label: 'Clip board' }]} />
         <div className="flex-1" />
         <AccountMenu />
       </nav>
 
-      <div className="flex-1 flex gap-3 p-3 min-h-0 overflow-hidden" style={{ background: '#090909' }}>
+      <div className="flex-1 flex gap-4 p-4 min-h-0 overflow-hidden">
 
         {/* ── Left: AI tools (wide screens) ─────────────────────── */}
         {wide && isReady && !manualOnly && (
-          <aside className="shrink-0 flex flex-col gap-3 p-3 min-h-0 overflow-y-auto" style={{ ...PANEL_CARD, width: 340 }}>
+          <aside className="cb-panel shrink-0 flex flex-col gap-3 p-3 min-h-0 overflow-y-auto" style={{ width: 340 }}>
             {aiTools}
           </aside>
         )}
 
         {/* ── Centre: the video, as large as fits, with the new-clip bar right under it ── */}
-        <main className="flex-1 min-w-0 flex flex-col gap-3 p-3 overflow-y-auto" style={PANEL_CARD}>
+        <main className="cb-panel flex-1 min-w-0 flex flex-col gap-4 p-4 overflow-y-auto">
           {viewBar}
           {wide ? (
             // Container-query box: the player takes the biggest size (in the video's own shape) that fits both ways
             <div className="flex-1 min-h-0 flex items-center justify-center" style={{ containerType: 'size' }}>
-              <div className="rounded-2xl overflow-hidden flex items-center justify-center bg-black"
-                style={{ width: `min(100cqw, calc(100cqh * ${frameRatio}))`, aspectRatio: `${frameRatio}`, border: '1px solid rgba(255,255,255,0.08)' }}>
+              <div className="cb-player rounded-2xl overflow-hidden flex items-center justify-center bg-black"
+                style={{ width: `min(100cqw, calc(100cqh * ${frameRatio}))`, aspectRatio: `${frameRatio}` }}>
                 {/* The video stays mounted (hidden) while a clip previews, so it keeps its place */}
                 <div className="w-full h-full flex items-center justify-center" style={{ display: viewMode === 'video' ? 'flex' : 'none' }}>{player}</div>
                 {viewMode === 'preview' && previewPane}
               </div>
             </div>
           ) : (
-            <div className="w-full rounded-2xl overflow-hidden flex items-center justify-center bg-black shrink-0"
-              style={{ aspectRatio: `${frameRatio}`, maxHeight: '70vh', margin: '0 auto', width: `min(100%, calc(70vh * ${frameRatio}))`, border: '1px solid rgba(255,255,255,0.08)' }}>
+            <div className="cb-player w-full rounded-2xl overflow-hidden flex items-center justify-center bg-black shrink-0"
+              style={{ aspectRatio: `${frameRatio}`, maxHeight: '70vh', margin: '0 auto', width: `min(100%, calc(70vh * ${frameRatio}))` }}>
               <div className="w-full h-full flex items-center justify-center" style={{ display: viewMode === 'video' ? 'flex' : 'none' }}>{player}</div>
               {viewMode === 'preview' && previewPane}
             </div>
@@ -1654,12 +1647,12 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
         </main>
 
         {/* ── Right: your clips ─────────────────────────────────── */}
-        <aside className="shrink-0 flex flex-col min-h-0 overflow-hidden" style={{ ...PANEL_CARD, width: manualOnly ? 420 : 340 }}>
+        <aside className="cb-panel shrink-0 flex flex-col min-h-0 overflow-hidden" style={{ width: manualOnly ? 420 : 340 }}>
           <div className="px-4 pt-4 pb-3 flex items-center gap-2 shrink-0">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={ACCENT} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
               <rect x="5" y="4" width="14" height="17" rx="2" /><path d="M9 4V3h6v1M9 10h6M9 14h4" />
             </svg>
-            <h2 className="text-sm font-semibold text-white">Clipboard</h2>
+            <h2 className="text-[15px] font-semibold text-white tracking-tight">Clipboard</h2>
             {(
               <span className="text-[11px] font-bold px-2 py-0.5 rounded-full" style={{ color: ACCENT, background: 'rgba(200,255,0,0.1)', border: '1px solid rgba(200,255,0,0.25)' }}>
                 {badgeCount} clip{badgeCount === 1 ? '' : 's'}
@@ -1691,10 +1684,8 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
                 return (
                   <button key={t.id} type="button" role="tab" aria-selected={on}
                     onClick={() => { setClipTab(t.id); setSelected(new Set()) }}
-                    className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold transition-colors hover:bg-white/10"
-                    style={on
-                      ? { background: 'rgba(255,255,255,0.14)', color: '#fff', border: '1px solid rgba(255,255,255,0.25)' }
-                      : { color: n ? 'rgba(255,255,255,0.65)' : 'rgba(255,255,255,0.35)', border: '1px solid rgba(255,255,255,0.1)' }}>
+                    className="cb-tab flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] font-semibold"
+                    style={on ? undefined : { color: n ? 'rgba(255,255,255,0.7)' : 'rgba(255,255,255,0.35)' }}>
                     {dot && <span aria-hidden="true" className="w-1.5 h-1.5 rounded-full" style={{ background: dot }} />}
                     {t.id === 'fav' && <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 21s-7.5-4.6-9.5-9.2C1 8 3.4 4.5 7 4.5c2 0 3.6 1.1 5 3 1.4-1.9 3-3 5-3 3.6 0 6 3.5 4.5 7.3C19.5 16.4 12 21 12 21z" /></svg>}
                     {t.label}
@@ -1969,8 +1960,7 @@ function TimeField({ id, label, value, onChange, showHours = true, nextId, prevI
   }
   const names = ['hours', 'minutes', 'seconds']
   return (
-    <div className="flex items-center justify-center h-[52px] px-3 rounded-xl transition-[border-color,background-color] focus-within:border-white/30 focus-within:bg-white/[0.07]"
-      style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)' }}>
+    <div className="cb-input flex items-center justify-center h-[52px] px-3 rounded-xl">
       <div className="min-w-0 flex flex-col items-center justify-center">
         <label htmlFor={`${id}-${'hms'[first]}`} className="text-[10px] font-semibold uppercase leading-none" style={{ color: 'rgba(255,255,255,0.45)', letterSpacing: '0.08em' }}>{label}</label>
         <div className="flex items-center mt-1.5 text-[18px] font-semibold tabular-nums leading-none text-white">
@@ -2018,7 +2008,7 @@ function Spinner() {
 function ClipThumb({ videoUrl, atMs, number, w, h }: { videoUrl: string; atMs: number; number?: number; w: number; h: number }) {
   const src = useFrameAt(videoUrl, atMs)
   return (
-    <span className="relative shrink-0 block rounded-lg overflow-hidden" style={{ width: w, height: h, background: 'rgba(255,255,255,0.06)' }}>
+    <span className="cb-thumb relative shrink-0 block rounded-[10px] overflow-hidden" style={{ width: w, height: h, background: 'rgba(255,255,255,0.06)' }}>
       {/* eslint-disable-next-line @next/next/no-img-element */}
       {src && <img src={src} alt="" className="w-full h-full object-cover" />}
       {number != null && (

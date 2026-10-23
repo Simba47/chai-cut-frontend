@@ -2128,3 +2128,40 @@ body {
 .tx-an-kind[data-on] { color: #0a0a0a; background: #c8ff00; box-shadow: none; }
 .tx-an-kind i { width: 6px; height: 6px; border-radius: 50%; background: #c8ff00; }
 .tx-an-kind[data-on] i { background: #0a0a0a; }
+
+/* ── Clip board (videos/[videoId]): the premium look — black, a soft lime glow, glass cards ── */
+.cb-page { background: radial-gradient(1100px 380px at 50% -180px, rgba(200, 255, 0, 0.03), transparent 70%), #000; }
+.cb-nav { background: rgba(0, 0, 0, 0.55); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); border-bottom: 1px solid rgba(255, 255, 255, 0.06); }
+/* the three panels: a dark gradient, a soft shadow, a thin lime light along the top edge */
+.cb-panel { position: relative; border-radius: 20px; border: 1px solid rgba(255, 255, 255, 0.07);
+  background: linear-gradient(180deg, #0e0e0e 0%, #070707 60%, #050505 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 30px 60px -35px rgba(0, 0, 0, 0.95); }
+.cb-panel::before { content: ''; position: absolute; top: 0; left: 18%; right: 18%; height: 1px; pointer-events: none;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.12), transparent); }
+/* the video: framed, lifted on a faint lime glow */
+.cb-player { border: 1px solid rgba(255, 255, 255, 0.08); box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6), 0 20px 50px -25px rgba(0, 0, 0, 0.9); }
+/* the new-clip box */
+.cb-form { border-radius: 18px; border: 1px solid rgba(255, 255, 255, 0.08);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.012)), #060606;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05); }
+.cb-label { font-size: 10.5px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; color: rgba(255, 255, 255, 0.45); }
+.cb-input { background: #030303; border: 1px solid rgba(255, 255, 255, 0.09); transition: border-color .15s, box-shadow .15s, background-color .15s; }
+.cb-input:hover { border-color: rgba(255, 255, 255, 0.16); }
+.cb-input:focus, .cb-input:focus-within { border-color: rgba(200, 255, 0, 0.4); box-shadow: 0 0 0 3px rgba(200, 255, 0, 0.06); }
+.cb-cta { background: #c8ff00; color: #000; box-shadow: none; transition: transform .15s, box-shadow .15s, filter .15s; }
+.cb-cta:hover:not(:disabled) { transform: translateY(-1px); filter: brightness(1.04); box-shadow: 0 8px 20px -12px rgba(200, 255, 0, 0.35); }
+.cb-ghost { color: #fff; border: 1px solid rgba(255, 255, 255, 0.14); background: rgba(255, 255, 255, 0.03); transition: background-color .15s, border-color .15s; }
+.cb-ghost:hover:not(:disabled) { background: rgba(255, 255, 255, 0.07); border-color: rgba(255, 255, 255, 0.24); }
+/* the Clipboard's section tabs */
+.cb-tab { border: 1px solid rgba(255, 255, 255, 0.08); background: rgba(255, 255, 255, 0.02); transition: background-color .15s, border-color .15s, color .15s; }
+.cb-tab:hover { background: rgba(255, 255, 255, 0.06); }
+.cb-tab[aria-selected="true"] { color: #fff; background: rgba(255, 255, 255, 0.1); border-color: rgba(255, 255, 255, 0.2); }
+/* a clip card: lifts and glows lime on hover; the one playing keeps a lime edge */
+.cb-card { border-radius: 14px; border: 1px solid rgba(255, 255, 255, 0.07);
+  background: linear-gradient(180deg, #121212 0%, #0a0a0a 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  transition: transform .18s ease, border-color .18s, box-shadow .18s; }
+.cb-card:hover { transform: translateY(-1px); border-color: rgba(255, 255, 255, 0.16); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 14px 30px -18px rgba(0, 0, 0, 0.9); }
+.cb-card[data-playing] { border-color: rgba(200, 255, 0, 0.3); box-shadow: inset 2px 0 0 rgba(200, 255, 0, 0.7); }
+.cb-card[data-on] { border-color: #c8ff00; }
+.cb-thumb { box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08), 0 6px 14px -6px rgba(0, 0, 0, 0.8); }
