@@ -98,6 +98,22 @@ export function useBrollSources(
       if (!el.seeking && Math.abs(el.currentTime - want) > 0.05) el.currentTime = want
     },
     /**
+     * The next part's video started just before its turn — muted, from as far ahead of its first
+     * frame as the part still is — so at the join it's already running in step: no start-up stall
+     * and no catch-up seek there. (Its own sound comes on at the join, when it's the one playing.)
+     */
+    preroll(seg: SegmentLocal, inMs: number) {
+      const box = !isFrameLayout(seg.layout) ? seg.crop_boxes[0] : undefined
+      const id = box?.source_video_id && box.source_video_id !== mainVideoId ? box.source_video_id : null
+      if (!id || id === active.current) return
+      const el = elFor(id)
+      if (!el) return
+      el.muted = true
+      const want = Math.max(0, ((box?.source_offset_ms ?? 0) - Math.max(0, inMs)) / 1000)
+      if (!el.seeking && Math.abs(el.currentTime - want) > 0.15) el.currentTime = want
+      if (el.paused) el.play().catch(() => {})
+    },
+    /**
      * A part's picture held at one moment (clip ms), for a transition's still frame: undefined
      * when the part shows the main video (the preview holds that itself), null while its video
      * isn't on that frame yet — it is parked there, unless it's the one playing (never disturbed).

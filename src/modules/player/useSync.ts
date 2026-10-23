@@ -50,8 +50,10 @@ export function useVideoSync(clipStartMs = 0, clipEndMs?: number, pieces?: Piece
    * How far a held piece's own video (the inserted one) has really played, ms into the piece; null
    * while it isn't playing yet. Given, it runs the clock through the piece — the timeline waits for
    * the video to start and never runs ahead of its picture (no stall-and-jump at the join).
+   * undefined: the piece has no video of its own to follow (the empty stretch after the main video):
+   * the wall clock runs it, with no wait.
    */
-  heldPlayedMs?: (piece: Piece) => number | null,
+  heldPlayedMs?: (piece: Piece) => number | null | undefined,
 ) {
   const heldPlayedRef = useRef(heldPlayedMs)
   heldPlayedRef.current = heldPlayedMs
@@ -216,7 +218,7 @@ export function useVideoSync(clipStartMs = 0, clipEndMs?: number, pieces?: Piece
     if (played != null) {
       t = h.piece.at + Math.max(0, played)
       h.startWall = performance.now() - (t - h.piece.at)   // (the wall clock carries on from here if it stops telling)
-    } else if (heldPlayedRef.current && performance.now() - h.enteredWall < 1500) {
+    } else if (played === null && heldPlayedRef.current && performance.now() - h.enteredWall < 1500) {
       // Not playing yet (just started, still loading): wait for it, up to 1.5 s
       t = Math.max(h.piece.at, Math.min(wall, liveTime.get()))
       h.startWall = performance.now() - (t - h.piece.at)
