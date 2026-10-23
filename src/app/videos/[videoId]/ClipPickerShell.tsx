@@ -884,17 +884,13 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
   }, [needsProxy, initialVideo.id])
 
   // Arrived from the dashboard's "AI edit / Manual edit" choice: that part of the clip board (the
-  // Make my clips card, or New clip under the video) is scrolled into view and glows for a moment.
+  // Make my clips card, or New clip under the video) is scrolled into view (no glow).
   // The choice then leaves the address, so a refresh doesn't point again.
   useEffect(() => {
     if (!startWith) return
     const t = setTimeout(() => {
       const el = document.querySelector<HTMLElement>(`[data-start-target="${startWith}"]`)
-      if (el) {
-        el.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
-        el.setAttribute('data-start-glow', '')
-        setTimeout(() => el.removeAttribute('data-start-glow'), 2600)
-      }
+      if (el) el.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
       // (Manual edit keeps its choice in the address, so a refresh stays on the manual board)
       if (startWith !== 'manual') window.history.replaceState(window.history.state, '', window.location.pathname)
     }, 350)
