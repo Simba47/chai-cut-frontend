@@ -4241,7 +4241,37 @@ export function EditorShell({
       if (activeSegment) askDeleteFormat(activeSegment.id)
     },
   }
+  // Holding ← / → skips through the video, faster the longer it's held (a tap still moves a frame)
+  const [skipRate, setSkipRate] = useState<number | null>(null)
   useEffect(() => {
+    // ── Hold to skip ─────────────────────────────────────────────────────────────
+    // A press moves one frame (Shift: 5 s). Held, the key's auto-repeat starts a skip run on the
+    // screen's own clock (smooth whatever the keyboard's repeat rate): 2× real time, doubling every
+    // second held up to 16× (Shift: from 4×). Playing when it began: it pauses meanwhile and plays
+    // on from where it stopped once the key is let go.
+    let hold: { key: string; dir: number; shift: boolean; start: number; pos: number; last: number; raf: number; resume: boolean; rate: number } | null = null
+    const rateAt = (heldSec: number, shift: boolean) => Math.min(16, (shift ? 4 : 2) * Math.pow(2, Math.max(0, Math.floor(heldSec))))
+    function skipFrame(now: number) {
+      const h = hold
+      if (!h) return
+      const s = shortcutsRef.current
+      const rate = rateAt((now - h.start) / 1000, h.shift)
+      if (rate !== h.rate) { h.rate = rate; setSkipRate(h.dir * rate) }
+      h.pos = Math.max(0, Math.min(s.clipDurationMs - 1, h.pos + h.dir * rate * Math.min(now - h.last, 50)))
+      h.last = now
+      s.seekToMs(h.pos)
+      if ((h.dir < 0 && h.pos <= 0) || (h.dir > 0 && h.pos >= s.clipDurationMs - 1)) return   // at an end: wait there
+      h.raf = requestAnimationFrame(skipFrame)
+    }
+    function endSkip() {
+      const h = hold
+      hold = null
+      if (!h) return
+      cancelAnimationFrame(h.raf)
+      setSkipRate(null)
+      if (h.resume && !usePlayerStore.getState().playing) shortcutsRef.current.togglePlay()
+    }
+    function onKeyUp(e: KeyboardEvent) { if (hold && e.key === hold.key) endSkip() }
     function onKey(e: KeyboardEvent) {
       const target = e.target as HTMLElement | null
       // Ctrl/⌘+Z undo · Ctrl/⌘+Shift+Z or Ctrl+Y redo. While typing in a text box the browser's own
@@ -4270,12 +4300,27 @@ export function EditorShell({
         e.preventDefault(); s.deleteSelected()
       } else if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
         e.preventDefault()
+        const dir = e.key === 'ArrowLeft' ? -1 : 1
+        if (e.repeat) {
+          // Held: skip (the run starts on the first repeat; later repeats just keep it going)
+          if (!hold || hold.key !== e.key) {
+            endSkip()
+            const now = performance.now()
+            const playing = usePlayerStore.getState().playing
+            if (playing) s.togglePlay()
+            hold = { key: e.key, dir, shift: e.shiftKey, start: now, pos: usePlayerStore.getState().currentTimeMs, last: now, raf: 0, resume: playing, rate: 0 }
+            hold.raf = requestAnimationFrame(skipFrame)
+          }
+          return
+        }
         // One frame per press (Shift: 5 s)
-        const step = (e.shiftKey ? 5000 : FRAME_MS) * (e.key === 'ArrowLeft' ? -1 : 1)
+        const step = (e.shiftKey ? 5000 : FRAME_MS) * dir
         s.seekToMs(Math.max(0, Math.min(s.clipDurationMs, s.currentTimeMs + step)))
       }
     }
     window.addEventListener('keydown', onKey)
+    window.addEventListener('keyup', onKeyUp)
+    window.addEventListener('blur', endSkip)
     // Pressing anywhere outside a text box ends typing in it. The timeline's handles stop the
     // browser from moving focus, so without this a text box stays focused through a drag and
     // takes the next Ctrl+Z (or Delete) for itself.
@@ -4285,7 +4330,11 @@ export function EditorShell({
       el!.blur()
     }
     window.addEventListener('pointerdown', onPointerDown, true)
-    return () => { window.removeEventListener('keydown', onKey); window.removeEventListener('pointerdown', onPointerDown, true) }
+    return () => {
+      endSkip()
+      window.removeEventListener('keydown', onKey); window.removeEventListener('keyup', onKeyUp); window.removeEventListener('blur', endSkip)
+      window.removeEventListener('pointerdown', onPointerDown, true)
+    }
   }, [])
 
   // ── Render ────────────────────────────────────────────────────────────────────
@@ -5531,6 +5580,12 @@ export function EditorShell({
                 // (a quiet see-through tag; its dot says which: lime = a video put in between, as on the film strip; orange = B-roll)
                 ? <div className="ed-pv-tag absolute top-3 left-3 pointer-events-none"><i style={{ background: '#c8ff00' }} />Inserted video</div>
                 : <div className="ed-pv-tag absolute top-3 left-3 pointer-events-none"><i style={{ background: '#f97316' }} />B-roll</div>
+              )}
+              {/* Holding ← / →: how fast it's skipping */}
+              {skipRate !== null && (
+                <div className="ed-pv-tag ed-skip absolute top-3 left-1/2 -translate-x-1/2 pointer-events-none" role="status">
+                  {skipRate < 0 ? '⏪' : '⏩'} {Math.abs(skipRate)}×
+                </div>
               )}
             </div>
           </div>
