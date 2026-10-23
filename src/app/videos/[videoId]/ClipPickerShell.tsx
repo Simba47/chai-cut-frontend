@@ -1963,13 +1963,18 @@ function TimeField({ id, label, value, onChange, showHours = true, nextId, prevI
     <div className="cb-input flex items-center justify-center h-[52px] px-3 rounded-xl">
       <div className="min-w-0 flex flex-col items-center justify-center">
         <label htmlFor={`${id}-${'hms'[first]}`} className="text-[10px] font-semibold uppercase leading-none" style={{ color: 'rgba(255,255,255,0.45)', letterSpacing: '0.08em' }}>{label}</label>
-        <div className="flex items-center mt-1.5 text-[18px] font-semibold tabular-nums leading-none text-white">
-          {parts.map((p, i) => i < first ? null : (
+        <div className="flex items-center mt-[5px] text-[18px] font-semibold tabular-nums leading-none text-white">
+          {parts.map((p, i) => {
+            if (i < first) return null
+            // Read as one time, as on a clock: the parts close in on the ":" (the first one only as wide
+            // as its digits, so the time sits in the middle under the label)
+            const shown = i === first && !showHours && p.startsWith('0') && p.length === 2 ? p.slice(1) : p
+            const lone = i === first && !showHours
+            return (
             <span key={i} className="flex items-center">
-              {/* (a clear gap round the ":" between the parts) */}
-              {i > first && <span aria-hidden="true" className="select-none mx-1.5 -translate-y-px" style={{ color: 'rgba(255,255,255,0.55)' }}>:</span>}
+              {i > first && <span aria-hidden="true" className="select-none mx-[3px] -translate-y-px" style={{ color: 'rgba(255,255,255,0.55)' }}>:</span>}
               <input ref={refs[i]} id={`${id}-${'hms'[i]}`} type="text" inputMode="numeric" autoComplete="off"
-                aria-label={`${label} ${names[i]}`} placeholder={i === first && !showHours ? '0' : '00'} value={i === first && !showHours && p.startsWith('0') && p.length === 2 ? p.slice(1) : p}
+                aria-label={`${label} ${names[i]}`} placeholder={lone ? '0' : '00'} value={shown}
                 onChange={e => type(i, e.target.value)} onKeyDown={e => key(i, e)} onPaste={paste}
                 // (a phone keyboard's action key: "next" moves on, as Enter does here)
                 enterKeyHint={nextId ? 'next' : 'done'}
@@ -1978,10 +1983,11 @@ function TimeField({ id, label, value, onChange, showHours = true, nextId, prevI
                 onMouseUp={e => e.preventDefault()}
                 onBlur={() => { const cur = live.current; if (cur[i].length === 1) { const next = [...cur] as Parts; next[i] = pad(Number(cur[i])); put(next) } }}
                 // The part being typed in: a plain light pill, instead of the browser's blue selection
-                className="bg-transparent outline-none text-center rounded-md py-1 placeholder:text-white/30 focus:bg-white/15 selection:bg-transparent selection:text-white transition-colors"
-                style={{ width: i === first && !showHours ? '2ch' : '2.6ch' }} />
+                className="bg-transparent outline-none rounded-md py-0.5 placeholder:text-white/30 focus:bg-white/15 selection:bg-transparent selection:text-white transition-colors"
+                style={{ width: lone ? `${Math.max(1, shown.length) + 0.4}ch` : '2.4ch', textAlign: i === first ? 'right' : i === 2 ? 'left' : 'center' }} />
             </span>
-          ))}
+            )
+          })}
         </div>
       </div>
     </div>
@@ -2316,10 +2322,6 @@ function ClipCard({ id, focused, number, origin, title, startMs, endMs, status, 
   // The delete button's "Delete this clip?" (no ⋯ menu: Edit and the time line cover the rest)
   const [menu, setMenu] = useState<false | 'confirm'>(false)
   const sub = useSubEdit(id, onSubEdited)
-  // Hovered (with a mouse): the full card with all its buttons shows, without opening the preview
-  const [hovered, setHovered] = useState(false)
-  const hoverOn = (e: React.PointerEvent) => { if (e.pointerType === 'mouse') setHovered(true) }
-  const hoverOff = (e: React.PointerEvent) => { if (e.pointerType === 'mouse') setHovered(false) }
   // Opened: a click anywhere outside the card closes it again (not while picking clips, nor in its own pop-ups)
   useEffect(() => {
     if (!open || selecting) return
@@ -2344,19 +2346,34 @@ function ClipCard({ id, focused, number, origin, title, startMs, endMs, status, 
     </button>
   )
 
-  // Slim: picture, title, length and the heart; clicking it opens it (and its preview)
-  if (!open && !focused && !selecting && !hovered) {
+  // Slim: picture, title, length and the heart; clicking it opens it (and its preview). Pointed at
+  // (or tabbed into), Edit · Download · Delete slide open under it, in CSS: the card itself stays
+  // as it is (it used to be swapped for the full card, which rebuilt its picture and jumped)
+  if (!open && !focused && !selecting) {
     return (
-      <div id={`clip-${id}`} role="button" tabIndex={0} onPointerEnter={hoverOn}
+      <div id={`clip-${id}`} role="button" tabIndex={0}
         onClick={e => { if (!disabled && !(e.target as HTMLElement).closest('button')) onPreview() }}
         onKeyDown={e => { if ((e.key === 'Enter' || e.key === ' ') && !disabled && e.target === e.currentTarget) { e.preventDefault(); onPreview() } }}
         title={`${title} · click to open and preview`}
         data-playing={playing || undefined}
-        className="cb-card group shrink-0 flex items-center gap-3 p-2.5 min-h-[72px] cursor-pointer focus-visible:outline focus-visible:outline-2"
+        className="cb-card cb-sheen group shrink-0 flex items-center gap-3 p-2.5 min-h-[72px] cursor-pointer focus-visible:outline focus-visible:outline-2"
         style={{ outlineColor: ACCENT }}>
         <ClipThumb videoUrl={videoUrl} atMs={startMs} number={number} w={84} h={48} />
         <span className="flex-1 min-w-0 flex flex-col gap-1">
-          <span className="text-sm font-semibold text-white leading-snug line-clamp-2 break-words">{title}</span>
+          <span className="flex items-start gap-2">
+            <span className="flex-1 min-w-0 text-sm font-semibold text-white leading-snug line-clamp-2 break-words">{title}</span>
+            {/* ♡ and 🗑, a pair at the top right; the bin slides in beside the heart while the card is pointed at */}
+            <span className="cb-tools -mt-1 -mr-1">
+              <button type="button" onClick={e => { e.stopPropagation(); setMenu(m => (m ? false : 'confirm')) }} aria-expanded={!!menu}
+                className="cb-tool cb-tool-hide" data-tone="danger" data-on={menu ? '' : undefined} aria-label="Delete clip" title="Delete clip">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v6M14 11v6" /></svg>
+              </button>
+              <button type="button" onClick={e => { e.stopPropagation(); onFavorite() }} aria-pressed={favorite} className="cb-tool" data-on={favorite ? '' : undefined}
+                aria-label={favorite ? 'Remove from favorites' : 'Add to favorites'} title={favorite ? 'Remove from favorites' : 'Add to favorites'}>
+                <Heart on={favorite} />
+              </button>
+            </span>
+          </span>
           <span className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-[11px] tabular-nums" style={{ color: 'rgba(255,255,255,0.5)' }}>
             <ClockIcon />{manual ? <><span style={{ color: ACCENT }}>{msToDisplay(startMs)} – {msToDisplay(endMs)}</span> · {durLabel(startMs, endMs)}</> : durLabel(startMs, endMs)}
             {edited && (
@@ -2365,27 +2382,39 @@ function ClipCard({ id, focused, number, origin, title, startMs, endMs, status, 
             {status === 'rendering' && <span className="flex items-center gap-1" style={{ color: ACCENT }}>· <Spinner /> Exporting</span>}
             {sub.busy && <SubEditInline startedAt={sub.startedAt} estimate={sub.estimate} ahead={sub.ahead} onStop={sub.stop} />}
           </span>
-          {manual && (
-            <span className="flex gap-1.5 mt-0.5 transition-opacity [@media(hover:hover)]:opacity-0 group-hover:opacity-100 group-focus-within:opacity-100">
-              <button type="button" onClick={e => { e.stopPropagation(); onEdit() }} disabled={disabled}
-                className="h-7 px-2.5 rounded-md text-[11px] font-semibold transition-colors hover:bg-white/10 disabled:opacity-40" style={{ color: 'rgba(255,255,255,0.85)', border: '1px solid rgba(255,255,255,0.18)' }}>
-                Edit
-              </button>
-              <button type="button" onClick={e => { e.stopPropagation(); onDownload() }} disabled={download === 'preparing'}
-                className="h-7 px-2.5 rounded-md text-[11px] font-semibold transition-colors hover:bg-white/10 disabled:opacity-70"
-                style={{ color: download === 'failed' ? '#f87171' : 'rgba(255,255,255,0.85)', border: `1px solid ${download === 'failed' ? 'rgba(239,68,68,0.45)' : 'rgba(255,255,255,0.18)'}` }}>
-                {download === 'preparing' ? 'Preparing…' : download === 'failed' ? 'Retry' : 'Download'}
-              </button>
+          <span className="cb-reveal" data-open={menu ? '' : undefined}>
+            <span className="cb-reveal-in">
+              {menu ? (
+                <span className="flex items-center gap-1.5 pt-2" onClick={e => e.stopPropagation()}>
+                  <span className="text-[11px] text-white mr-auto">Delete this clip?</span>
+                  <button type="button" onClick={() => setMenu(false)} autoFocus className="cb-act">Cancel</button>
+                  <button type="button" onClick={() => { setMenu(false); onDelete() }} className="cb-act" data-tone="danger">Delete</button>
+                </span>
+              ) : (
+                <span className="flex items-center gap-1.5 pt-2">
+                  <button type="button" onClick={e => { e.stopPropagation(); onEdit() }} disabled={disabled} className="cb-act" title="Open in the editor">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 20h9" /><path d="M16.5 3.5a2.1 2.1 0 013 3L7 19l-4 1 1-4z" /></svg>
+                    Edit
+                  </button>
+                  <button type="button" onClick={e => { e.stopPropagation(); onDownload() }} disabled={download === 'preparing'} className="cb-act"
+                    data-tone={download === 'failed' ? 'danger' : undefined}
+                    title={download === 'preparing' ? 'Exporting — it downloads by itself when ready' : download === 'failed' ? 'The export failed — try again' : 'Download this clip'}>
+                    {download === 'preparing' ? <Spinner /> : (
+                      <svg width="12" height="12" viewBox="0 0 14 14" fill="none" aria-hidden="true"><path d="M7 2v7M4 7l3 3 3-3M2 11.5h10" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /></svg>
+                    )}
+                    {download === 'preparing' ? 'Preparing' : download === 'failed' ? 'Retry' : 'Download'}
+                  </button>
+                </span>
+              )}
             </span>
-          )}
+          </span>
         </span>
-        {heart}
       </div>
     )
   }
 
   return (
-    <div id={`clip-${id}`} onPointerEnter={hoverOn} onPointerLeave={hoverOff} data-playing={playing || undefined} data-on={selected || focused || previewing || undefined}
+    <div id={`clip-${id}`} data-playing={playing || undefined} data-on={selected || focused || previewing || undefined}
       className={`cb-card relative p-2.5 ${focused ? 'shadow-[0_0_0_3px_rgba(200,255,0,0.25)]' : ''} ${selecting ? 'cursor-pointer select-none focus-visible:outline focus-visible:outline-2' : 'cursor-pointer'}`}
       style={{ ...(selected ? { background: 'rgba(200,255,0,0.06)' } : {}), outlineColor: ACCENT }}
       {...(selecting ? {
