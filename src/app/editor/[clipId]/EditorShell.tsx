@@ -3879,34 +3879,44 @@ export function EditorShell({
   /** B-roll uploaded from the device (B-roll panel, Upload): at the playhead, 5 s or the video's own length if shorter */
   async function addUploadedBroll(videoId: string) { await addUploadedVideo(videoId, currentTimeMs, 'broll') }
   /** An uploaded video put in at `atMs`: as B-roll, or as one of the user's videos (its panel opens) */
-  async function addUploadedVideo(videoId: string, atMs: number, lane: 'broll' | 'video') {
+  async function addUploadedVideo(videoId: string, atMs: number, lane: 'broll' | 'video'): Promise<number | null> {
     const at = Math.max(0, Math.min(atMs, clipLengthMs - 500))
     // The whole video goes in, up to the clip's end (its handles trim it)
     const own = await videoLengthMs(videoId)
     const len = Math.min(own ?? clipLengthMs, clipLengthMs - at)
-    if (rangeBlocked(at, at + len)) return
+    if (rangeBlocked(at, at + len)) return null
     const id = placeBroll(videoId, at, at + len, lane === 'broll' ? 'broll' : undefined, freeTrack(at, at + len))
     pickShot(id, lane === 'video')
     seekToMs(at)
+    // (where it ends: the next of several files dropped together goes in there)
+    return at + len
   }
 
   // ── Drag and drop: files from the computer (on the timeline or the sidebar), stock footage
   //    from the B-roll search (on the timeline) ──
   const dropTargetRef = useRef<{ atMs: number; lane: 'broll' | 'video' | 'insert'; frame?: { segId: string; slot: number } } | null>(null)
+  /** Several files dropped together (dropSeveral): told where the video just uploaded ends (null: it didn't go in) */
+  const dropNextRef = useRef<((endMs: number | null) => void) | null>(null)
+  const dropNext = (endMs: number | null) => { const go = dropNextRef.current; dropNextRef.current = null; go?.(endMs) }
   const dropUpload = useVideoUpload(videoId => {
     const t = dropTargetRef.current
     dropTargetRef.current = null
     // Dropped on a frame's lane: into that slot once it's uploaded
-    if (t?.frame && segments.some(x => x.id === t.frame!.segId)) { loadVideoLibrary(); videoIntoSlot(t.frame, videoId, t.atMs) }
+    if (t?.frame && segments.some(x => x.id === t.frame!.segId)) { loadVideoLibrary(); videoIntoSlot(t.frame, videoId, t.atMs); dropNext(null) }
     else if (t?.lane === 'insert') {
       // Into the main strip, in between (inserts.ts)
-      loadVideoLibrary().then(() => videoLengthMs(videoId)).then(len => insertVideo(videoId, t.atMs, len))
-        .catch(e => notifyLocked(e instanceof Error ? e.message : 'Could not put the video in'))
-    } else if (t) addUploadedVideo(videoId, t.atMs, t.lane).catch(e => notifyLocked(e instanceof Error ? e.message : 'Could not add the video'))
+      loadVideoLibrary().then(() => videoLengthMs(videoId)).then(len => { insertVideo(videoId, t.atMs, len); dropNext(len != null ? t.atMs + len : null) })
+        .catch(e => { notifyLocked(e instanceof Error ? e.message : 'Could not put the video in'); dropNext(null) })
+    } else if (t) addUploadedVideo(videoId, t.atMs, t.lane).then(dropNext, e => { notifyLocked(e instanceof Error ? e.message : 'Could not add the video'); dropNext(null) })
+    else dropNext(null)
     loadLibrary()
   }, { asset: true })
   const dropUploading = dropUpload.state.phase === 'uploading' || dropUpload.state.phase === 'finishing'
-  useEffect(() => { if (dropUpload.state.phase === 'failed' && dropUpload.state.error) notifyLocked(`Upload failed: ${dropUpload.state.error}`) }, [dropUpload.state.phase]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (dropUpload.state.phase !== 'failed') return
+    if (dropUpload.state.error) notifyLocked(`Upload failed: ${dropUpload.state.error}`)
+    dropNext(null)
+  }, [dropUpload.state.phase]) // eslint-disable-line react-hooks/exhaustive-deps
   const [sidebarDrop, setSidebarDrop] = useState(false)
   const kindOfFile = (f: File): 'video' | 'photo' | 'music' | null => {
     const ext = f.name.split('.').pop()?.toLowerCase() ?? ''
@@ -4097,6 +4107,7 @@ export function EditorShell({
    * Music lane gives its sound. Photos and music go on their own lanes.
    */
   function dropFiles(files: File[], atMs: number, lane: string | null) {
+    if (files.length > 1 && !lane?.startsWith('frame:')) { dropSeveral(files, atMs, lane); return }
     const f = files[0]
     if (!f) return
     const kind = (lane === 'music' || lane?.startsWith('audio-')) && kindOfFile(f) === 'video' ? 'music' : kindOfFile(f)
@@ -4123,6 +4134,58 @@ export function EditorShell({
       return
     }
     notifyLocked('That kind of file can\u2019t be added: drop a video, a photo or music')
+  }
+  /** How long a song (or a video's sound) is, from the file (null: unknown) */
+  function audioFileMs(f: File): Promise<number | null> {
+    return new Promise(resolve => {
+      const a = new Audio(), url = URL.createObjectURL(f)
+      const done = (ms: number | null) => { URL.revokeObjectURL(url); resolve(ms) }
+      a.preload = 'metadata'
+      a.onloadedmetadata = () => done(isFinite(a.duration) ? Math.round(a.duration * 1000) : null)
+      a.onerror = () => done(null)
+      a.src = url
+    })
+  }
+  /**
+   * Several files dropped together (as in Resolve): each goes in where the one before ends, in the
+   * order they were picked, on the row they were dropped on — a photo for 5 s, music and videos
+   * their own length. Videos upload one at a time; what no longer fits before the clip's end, or
+   * isn't a photo, video or music, is left out (and said so).
+   */
+  async function dropSeveral(files: File[], atMs: number, lane: string | null) {
+    if (dropUploading) { notifyLocked('Wait for the upload in progress to finish'); return }
+    pause()
+    let at = Math.round(atMs), left = 0, opened = false
+    for (const [i, f] of files.entries()) {
+      const kind = (lane === 'music' || lane?.startsWith('audio-')) && kindOfFile(f) === 'video' ? 'music' : kindOfFile(f)
+      if (!kind) { left++; continue }
+      if (at > clipLengthMs - 500) { left += files.length - i; break }
+      preferTrack(lane)
+      let end: number | null = null
+      try {
+        if (kind === 'photo') {
+          await addPhotoFileAt(f, at)
+          end = Math.min(clipLengthMs, at + 5000)
+        } else if (kind === 'music') {
+          if (musicTooBig(f)) { left++; continue }
+          const len = await audioFileMs(f)
+          addMusicTrack(f, at)
+          end = Math.min(clipLengthMs, at + (len ?? 5000))
+        } else {
+          if (!opened) { opened = true; openMedia(lane === 'broll' ? 'library' : 'media') }
+          end = await new Promise<number | null>(resolve => {
+            dropNextRef.current = resolve
+            dropTargetRef.current = { atMs: at, lane: lane === 'main' ? 'insert' : lane === 'broll' ? 'broll' : 'video' }
+            dropUpload.start(f)
+          })
+        }
+      } catch (e) {
+        notifyLocked(e instanceof Error ? e.message : 'Could not add that file')
+      }
+      if (end == null) { left++; continue }
+      at = end
+    }
+    if (left) notifyLocked(`${left} of the ${files.length} files couldn\u2019t go in: no room before the clip\u2019s end, or not a photo, video or music`, 3500)
   }
   /** Stock footage dragged from the B-roll search onto the timeline: in at that spot, its whole length (up to the clip's end) */
   function dropStock(json: string, atMs: number, lane?: string | null) {
