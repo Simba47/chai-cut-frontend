@@ -2498,6 +2498,9 @@ export function EditorShell({
       clipRange: origStart === savedClip.start_ms && origEnd === savedClip.end_ms ? null : [origStart, origEnd],
     })
     seekAfterTrimRef.current = 0
+    // The playhead goes back to the start of the clip, once the reset clip is in place (the
+    // removed-parts effect does it only when those changed; this always does, and clears its ask)
+    setTimeout(() => { seekAfterTrimRef.current = null; seekToMs(0) }, 0)
     addFormat(0, origEnd - origStart, 'vertical', getVideoAR())
     if (removeFillers) setRemoveFillers(false)
     useMediaStore.setState({
