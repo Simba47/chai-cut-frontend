@@ -243,7 +243,7 @@ export function EditorShell({
 
   // ── Video player ─────────────────────────────────────────────────────────────
   // (an inserted video drives the clock while it plays: it is asked how far it has got — brollSource, below)
-  const heldPlayedRef = useRef<(id: string) => number | null>(() => null)
+  const heldPlayedRef = useRef<(id: string) => number | null | undefined>(() => null)
   const { videoRef, seekToMs, togglePlay, pause } = useVideoSync(rawClip.start_ms, rawClip.end_ms, pieces, trimmed ? trim.kept : undefined,
     piecesOn ? p => (p.id ? heldPlayedRef.current(p.id) : null) : undefined)
   const { currentTimeMs, durationMs, playing } = usePlayerStore()
@@ -550,7 +550,18 @@ export function EditorShell({
   // section cut where a video plays over it — what the preview draws and what is saved.
   const sections = useMemo(() => segments.filter(s => !isShot(s, mainVideoId)), [segments, mainVideoId])
   const shots = useMemo(() => segments.filter(s => isShot(s, mainVideoId)).sort((a, b) => a.start_ms - b.start_ms), [segments, mainVideoId])
-  const playParts = useMemo(() => flattenShots(segments, mainVideoId), [segments, mainVideoId])
+  /**
+   * How many rows of videos, photos and text sit under the main video on the timeline (tracks
+   * 0 … n-1; the rest are above it). Saved with the clip (layers.below). Stacked as shown: the rows
+   * above cover the main video, the main video covers the rows under it (flattenShots).
+   */
+  const [belowRows, setBelowRows] = useState(() => {
+    const n = ((savedClip as unknown as { layers?: { below?: unknown } | null }).layers)?.below
+    return typeof n === 'number' && Number.isInteger(n) && n > 0 ? n : 0
+  })
+  const belowRowsRef = useRef(belowRows)
+  belowRowsRef.current = belowRows
+  const playParts = useMemo(() => flattenShots(segments, mainVideoId, false, belowRows), [segments, mainVideoId, belowRows])
 
   // ── Transitions: where one section of the main strip ends exactly where the next begins ──
   const transitionJoins = useMemo<TransitionJoin[]>(() => {
@@ -651,6 +662,9 @@ export function EditorShell({
     hasInserts ? () => ({ ms: liveTime.get(), playing: usePlayerStore.getState().playing }) : undefined)
   heldPlayedRef.current = id => {
     const seg = useEditorStore.getState().segments.find(s => s.id === id)
+    // The empty stretch after the main video has no video of its own to follow (its box only names
+    // one of the videos running on there — following that one ran the clock away): real time runs it
+    if (seg && isInsert(seg, mainVideoId) && seg.hidden && seg.crop_boxes[0]?.hidden) return undefined
     return seg ? brollSource.playedMs(seg) : null
   }
   // Borrowed reaction slots (Make my clips): the clip's own video from another moment, per slot
@@ -968,16 +982,21 @@ export function EditorShell({
   // frame 2.5 s ahead, so it plays at once at the join instead of stalling there
   const preparePartsRef = useRef(playParts)
   preparePartsRef.current = playParts
+  // …and, while playing, started (muted) just before its turn so it's already running in step at the join
   useEffect(() => {
     let last: string | null = null
+    let rolled: SegmentLocal | null = null
     return liveTime.subscribe(() => {
       const t = liveTime.get()
+      const playing = usePlayerStore.getState().playing
       const next = preparePartsRef.current
         .filter(s => s.start_ms > t && s.start_ms - t <= 2500 && addedVideoBox(s, mainVideoId))
         .sort((a, b) => a.start_ms - b.start_ms)[0]
-      if (!next || next.id === last) return
-      last = next.id
-      brollSource.prepare(next)
+      // (stopped just before the join: back to parked on its first frame)
+      if (rolled && (!playing || rolled.id !== next?.id)) { if (!playing) brollSource.prepare(rolled); rolled = null }
+      if (!next) return
+      if (next.id !== last) { last = next.id; brollSource.prepare(next) }
+      if (playing && !rolled && next.start_ms - t <= 400) { rolled = next; brollSource.preroll(next, next.start_ms - t) }
     })
   }, [brollSource, mainVideoId])
   // What plays here: a video on top, else the section (default framing where no format is set)
@@ -1279,14 +1298,14 @@ export function EditorShell({
     const saved = toSaved(segments.map(s => ({
       ...s,
       crop_boxes: s.crop_boxes.map(b => ({ ...b, keyframes: (keyframes[b.id] ?? b.keyframes ?? []).map(({ t_ms, x, y, w, h }) => ({ t_ms, x, y, w, h })) })),
-    })), mainVideoId)
+    })), mainVideoId, belowRowsRef.current)
     try {
       const res = await fetch(`/api/clips/${clip.id}/save`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           segments: saved.rows,
-          layers: withLanes(saved.layers, [...overlays, ...textOverlays, ...audioTracks]),
+          layers: withLanes(saved.layers, [...overlays, ...textOverlays, ...audioTracks], belowRowsRef.current),
           captionStyle, textOverlays, audioTracks, transitions, filters,
           // A photo on a higher track is drawn over one on a lower track (the export orders photos by z_index)
           overlays: overlays.map(o => (o.type === 'image' && o.track != null ? { ...o, z_index: o.track + 1 } : o)),
@@ -3000,14 +3019,14 @@ export function EditorShell({
    * after moves later (rippleInsert). A part of the clip running across the spot is cut in two.
    * Close to a join, it goes in at the join. One undo step.
    */
-  function insertVideo(videoId: string, atMs: number, ownMs: number | null, snapMs = 60) {
+  function insertVideo(videoId: string, atMs: number, ownMs: number | null, snapMs = 60, from?: { offsetMs: number; muted?: boolean; volume?: number }) {
     setInsertAtMs(null)
     if (trimmed) {
       // Parts cut out the older way (removed parts of the source): first the clip becomes pieces —
       // each part keeps its own moment of the video, so nothing it plays changes — then the video
       // goes in (once the editor has redrawn with the pieces). (A kit's intro and outro wait together.)
       const first = !pendingInsertRef.current.length
-      pendingInsertRef.current.push({ videoId, atMs, ownMs, snapMs })
+      pendingInsertRef.current.push({ videoId, atMs, ownMs, snapMs, from })
       if (first) trimsToPieces()
       return
     }
@@ -3030,8 +3049,8 @@ export function EditorShell({
     const id = crypto.randomUUID(), boxId = crypto.randomUUID()
     const view = { x: 0, y: 0, w: 1, h: 1 }
     const box = {
-      id: boxId, slot_index: 0, source_video_id: videoId, source_offset_ms: 0,
-      image_path: null, image_motion: null, volume: 1, muted: false,
+      id: boxId, slot_index: 0, source_video_id: videoId, source_offset_ms: Math.max(0, Math.round(from?.offsetMs ?? 0)),
+      image_path: null, image_motion: null, volume: from?.volume ?? 1, muted: from?.muted ?? false,
       keyframes: [{ t_ms: at, ...view }],
     } as CropBoxLocal
     const seg: SegmentLocal = { id, start_ms: at, end_ms: at + len, layout: 'vertical', sort_order: 0, crop_boxes: [box], video_offset_ms: hold }
@@ -3042,13 +3061,61 @@ export function EditorShell({
     useMediaStore.setState({ overlays: next.overlays, textOverlays: next.textOverlays, audioTracks: next.audioTracks, transitions: next.transitions })
     setActiveSegmentId(id)
   }
+  // ── After the main video: room for what's on top to run on ──────────────────────
+  // Videos on top keep their whole length wherever they go, as in Premiere / Resolve / CapCut: the
+  // timeline is as long as whatever reaches furthest. Past the main video's end the main row is
+  // empty (nothing drawn on the timeline): underneath there's a hidden, muted stretch ("the tail") —
+  // a video put in at the end, so the player and the export go on there, black (render.ts
+  // blankRanges, as the preview) and silent, with what's on top over it. One effect makes it, sizes
+  // it and takes it away, from how far the things on top reach; it's added at the end directly
+  // (never rippled in, so nothing on top is cut or moved by it).
+  const isTail = (s: SegmentLocal) => isInsert(s, mainVideoId) && !!s.hidden && !!s.crop_boxes[0]?.hidden
+  const tailOf = (segs = useEditorStore.getState().segments) => segs.find(isTail) ?? null
+  useEffect(() => {
+    if (!mainVideoId) return
+    const editor = useEditorStore.getState(), m = useMediaStore.getState()
+    const segs = editor.segments
+    const tail = tailOf(segs)
+    const mainEnd = tail ? tail.start_ms : clipLengthMs
+    // How far the things on top reach: videos on top, photos and videos in a window, text
+    const shotsOn = segs.filter(x => isShot(x, mainVideoId))
+    const reach = Math.max(0, ...shotsOn.map(x => x.end_ms), ...m.overlays.map(o => o.end_ms), ...m.textOverlays.map(o => o.end_ms))
+    const want = Math.min(Math.round(reach - mainEnd), Math.max(0, MAX_CLIP_MS - mainEnd))
+    if (want <= 100) {
+      if (!tail) return
+      // Nothing past the main video any more: the room after it goes
+      editor.applyTrim(segs.filter(x => x.id !== tail.id), editor.keyframes, editor.trims)
+      useMediaStore.setState(st => ({ transitions: st.transitions.filter(t => t.after_segment_id !== tail.id) }))
+      return
+    }
+    if (tail) {
+      if (Math.abs((tail.end_ms - tail.start_ms) - want) > 30) updateSegment(tail.id, { end_ms: tail.start_ms + want })
+      return
+    }
+    // (removed parts the older way: first the clip becomes pieces, then this runs again)
+    if (trimmed) { trimsToPieces(); return }
+    // Its box names one of the videos running on there (a video put in shows another video; hidden, it shows none)
+    const vid = shotsOn.find(x => x.end_ms > mainEnd)?.crop_boxes[0]?.source_video_id
+      ?? m.overlays.find(o => o.end_ms > mainEnd && o.source_video_id)?.source_video_id
+      ?? shotsOn[0]?.crop_boxes[0]?.source_video_id
+    if (!vid) return
+    const id = crypto.randomUUID(), boxId = crypto.randomUUID()
+    const view = { x: 0, y: 0, w: 1, h: 1 }
+    const hold = Math.round(videoAtPieces(piecesOf(segs, mainVideoId, x => isShot(x, mainVideoId)), Math.max(0, mainEnd - 1)))
+    const box = {
+      id: boxId, slot_index: 0, source_video_id: vid, source_offset_ms: 0, image_path: null, image_motion: null,
+      volume: 1, muted: true, hidden: true, keyframes: [{ t_ms: mainEnd, ...view }],
+    } as CropBoxLocal
+    const seg: SegmentLocal = { id, start_ms: mainEnd, end_ms: mainEnd + want, layout: 'vertical', sort_order: segs.length, crop_boxes: [box], video_offset_ms: hold, hidden: true }
+    editor.applyTrim([...segs, seg], { ...editor.keyframes, [boxId]: [{ id: crypto.randomUUID(), box_id: boxId, t_ms: mainEnd, ...view }] }, editor.trims)
+  }, [storeSegments, overlays, textOverlays, trimmed]) // eslint-disable-line react-hooks/exhaustive-deps
   /** Videos waiting to go in until a clip with removed parts has become pieces (insertVideo), in order */
-  const pendingInsertRef = useRef<Array<{ videoId: string; atMs: number; ownMs: number | null; snapMs: number }>>([])
+  const pendingInsertRef = useRef<Array<{ videoId: string; atMs: number; ownMs: number | null; snapMs: number; from?: { offsetMs: number; muted?: boolean; volume?: number } }>>([])
   useEffect(() => {
     const list = pendingInsertRef.current
     if (!list.length || trimmed) return
     pendingInsertRef.current = []
-    list.forEach(p => insertVideo(p.videoId, p.atMs, p.ownMs, p.snapMs))
+    list.forEach(p => insertVideo(p.videoId, p.atMs, p.ownMs, p.snapMs, p.from))
   }, [trimmed]) // eslint-disable-line react-hooks/exhaustive-deps
   /**
    * The removed parts (trims) made into pieces: each part of the main row is cut where a removed
@@ -3253,6 +3320,9 @@ export function EditorShell({
     if (!seg || isShot(seg, mainVideoId)) return
     if (seg.locked) { notifyLocked('This part is locked — unlock it to move it'); return }
     const ins = isInsert(seg, mainVideoId)
+    if (isTail(seg)) return
+    const tailNow = tailOf()
+    if (tailNow && toMs > tailNow.start_ms) toMs = tailNow.start_ms
     const a = seg.start_ms, len = seg.end_ms - seg.start_ms
     // (where it goes, in the clip without it)
     const at = Math.round(toMs >= seg.end_ms ? toMs - len : toMs > a ? a : Math.max(0, toMs))
@@ -3308,6 +3378,43 @@ export function EditorShell({
     pendingMoveRef.current = null
     movePart(p.segId, p.toMs)
   }, [trimmed]) // eslint-disable-line react-hooks/exhaustive-deps
+  /**
+   * A video put in the main row dragged off it, onto a row above or below the main video: it comes
+   * out of the main row (which closes up: removeInsert) and goes on that row from `atMs` — the same
+   * part of the same video, with its own sound as it was. The main video's own parts stay in the
+   * main row (only a video put in can move off it).
+   */
+  function partToTrack(segId: string, target: number | 'new' | 'new-below', atMs: number) {
+    const seg = useEditorStore.getState().segments.find(x => x.id === segId)
+    if (!seg) return
+    if (!isInsert(seg, mainVideoId)) { notifyLocked('This is the main video itself: only a video you put in can move to a row above or below'); return }
+    if (seg.locked) { notifyLocked('This video is locked — unlock it to move it'); return }
+    const box = seg.crop_boxes[0]
+    if (!box?.source_video_id) return
+    const len = seg.end_ms - seg.start_ms
+    const clipLen = clipLengthMs - len
+    removeInsert(segId)
+    const at = Math.round(Math.max(0, Math.min(atMs, clipLen - 200)))
+    const end = Math.min(clipLen, at + len)
+    if (end - at < 200) return
+    const items = visualItems()
+    const track = target === 'new-below' ? openRowBelow()
+      : target === 'new' ? newTopTrack(items)
+      : fitsOn(items, target, at, end) ? target : freeTrackIn(items, at, end, undefined, target)
+    const id = placeBroll(box.source_video_id, at, end, undefined, track)
+    const nb = useEditorStore.getState().segments.find(x => x.id === id)?.crop_boxes[0]
+    if (nb) updateSegment(id, { crop_boxes: [{ ...nb, source_offset_ms: box.source_offset_ms ?? 0, muted: box.muted, volume: box.volume }] })
+    pickShot(id)
+  }
+  /** A video on a row dragged onto the main row: it goes in there (insertVideo), showing the same part of it, with its sound on */
+  function shotToMain(segId: string, atMs: number) {
+    const seg = useEditorStore.getState().segments.find(x => x.id === segId)
+    const box = seg?.crop_boxes[0]
+    if (!seg || !box?.source_video_id || blocked({ kind: 'broll', id: segId })) return
+    removeBrollShot(segId)
+    tidyRowsBelow()
+    insertVideo(box.source_video_id, atMs, seg.end_ms - seg.start_ms, 60, { offsetMs: box.source_offset_ms ?? 0, muted: false, volume: box.volume ?? 1 })
+  }
 
   /**
    * A part's edge being dragged (live, as the clip's own ends): each step starts again from the clip
@@ -3732,9 +3839,9 @@ export function EditorShell({
     setPickerAtMs(null); setPendingBrollMs(null); setPickerOnly(null)
     // 5 s from here, across section edges if it gets there (it isn't cut off at the section's end)
     const at = Math.max(0, Math.min(atMs, clipLengthMs - 500))
-    // The whole video goes in, up to the clip's end (its handles trim it)
+    // The whole video goes in (its handles trim it), past the main video's end too
     const own = await videoLengthMs(videoId)
-    const end = Math.min(clipLengthMs, at + (own ?? clipLengthMs))
+    const end = Math.min(MAX_CLIP_MS, at + (own ?? clipLengthMs - at))
     if (rangeBlocked(at, end)) return
     const newId = placeBroll(videoId, at, end, undefined, freeTrack(at, end))
     // Its settings open straight away: where it plays, which part of it, its sound
@@ -3803,7 +3910,37 @@ export function EditorShell({
   }
   /** A track asked for by dropping something on that track's row: the next thing put in takes it (when it has room there) */
   const preferTrackRef = useRef<{ audio: boolean; track: number; at: number } | null>(null)
+  /** A new row above all the others: higher than every track, and above the rows under the main video */
+  const newTopTrack = (items: TrackItem[]) => Math.max(Math.max(-1, ...items.map(i => i.track ?? 0)) + 1, belowRowsRef.current)
+  /** Rows under the main video left empty (the last thing moved off one) go: the rows above close up */
+  function tidyRowsBelow() {
+    let below = belowRowsRef.current
+    for (let t = below - 1; t >= 0; t--) {
+      const items = visualItems()
+      if (items.some(i => (i.track ?? 0) === t)) continue
+      for (const i of items) if ((i.track ?? 0) > t) setTrackOf(i.ref, (i.track ?? 0) - 1)
+      below -= 1
+    }
+    if (below !== belowRowsRef.current) { belowRowsRef.current = below; setBelowRows(below) }
+  }
+  /** A new row under the main video, at the bottom: everything else moves up a track. Its track (0). */
+  function openRowBelow(except?: string): number {
+    for (const it of visualItems()) if (it.id !== except) setTrackOf(it.ref, (it.track ?? 0) + 1)
+    setBelowRows(n => n + 1)
+    belowRowsRef.current += 1
+    return 0
+  }
   function preferTrack(lane: string | null) {
+    // Dropped on "below the main video": a new row at the bottom
+    if (lane === 'track-below') {
+      preferTrackRef.current = { audio: false, track: openRowBelow(), at: Date.now() }
+      return
+    }
+    // Dropped on "above the main video" (the timeline's top): a new row over all the others
+    if (lane === 'track-new') {
+      preferTrackRef.current = { audio: false, track: newTopTrack(visualItems()), at: Date.now() }
+      return
+    }
     const m = lane ? /^(track|audio)-(\d+)$/.exec(lane) : null
     preferTrackRef.current = m ? { audio: m[1] === 'audio', track: Number(m[2]), at: Date.now() } : null
   }
@@ -3854,40 +3991,55 @@ export function EditorShell({
    * new track opens just above that one (the tracks above move up one); music takes the next audio
    * track with room.
    */
-  function dropOnTrack(ref: TrackRef, target: number | 'new') {
+  function dropOnTrack(ref: TrackRef, target: number | 'new' | 'new-below') {
     const audio = ref.kind === 'music'
     const items = audio ? audioItems() : visualItems()
     const me = items.find(i => i.id === ref.id)
     if (!me) return
+    if (target === 'new-below') {
+      if (audio) return
+      const ctl0: CtlTarget = ref.kind === 'shot' ? { kind: 'broll', id: ref.id } : { kind: ref.kind, id: ref.id }
+      if (blocked(ctl0)) return
+      // (it was the only thing on the lowest row under the main video: it stays there)
+      if ((me.track ?? 0) === 0 && belowRowsRef.current > 0 && !items.some(i => i.id !== me.id && (i.track ?? 0) === 0)) return
+      setTrackOf(ref, openRowBelow(ref.id))
+      tidyRowsBelow()
+      return
+    }
     const cur = me.track ?? 0
     const ctl: CtlTarget = ref.kind === 'shot' ? { kind: 'broll', id: ref.id } : { kind: ref.kind, id: ref.id }
     if (target !== cur && blocked(ctl)) return
     const others = items.filter(i => i.id !== me.id)
     let t: number
     const lift: TrackRef[] = []
-    if (target === 'new') t = Math.max(-1, ...others.map(i => i.track ?? 0)) + 1
+    if (target === 'new') t = audio ? Math.max(-1, ...others.map(i => i.track ?? 0)) + 1 : newTopTrack(others)
     else if (fitsOn(others, target, me.start_ms, me.end_ms)) t = target
     else if (audio) t = freeTrackIn(others, me.start_ms, me.end_ms, undefined, target)
     else {
       for (const i of others) if ((i.track ?? 0) > target) lift.push(i.ref)
       t = target + 1
+      // (the new row opens next to one under the main video: it's under the main video too)
+      if (target < belowRowsRef.current) { setBelowRows(n => n + 1); belowRowsRef.current += 1 }
     }
     if (t === cur && !lift.length) return
     for (const r of lift) setTrackOf(r, (items.find(i => i.id === r.id)!.track ?? 0) + 1)
     setTrackOf(ref, t)
+    if (!audio) tidyRowsBelow()
   }
   /** B-roll uploaded from the device (B-roll panel, Upload): at the playhead, 5 s or the video's own length if shorter */
   async function addUploadedBroll(videoId: string) { await addUploadedVideo(videoId, currentTimeMs, 'broll') }
   /** An uploaded video put in at `atMs`: as B-roll, or as one of the user's videos (its panel opens) */
   async function addUploadedVideo(videoId: string, atMs: number, lane: 'broll' | 'video'): Promise<number | null> {
     const at = Math.max(0, Math.min(atMs, clipLengthMs - 500))
-    // The whole video goes in, up to the clip's end (its handles trim it)
+    // The whole video goes in (its handles trim it), past the main video's end too: the timeline
+    // goes on for it, the main video staying as long as it is
     const own = await videoLengthMs(videoId)
-    const len = Math.min(own ?? clipLengthMs, clipLengthMs - at)
+    const len = Math.min(own ?? clipLengthMs - at, MAX_CLIP_MS - at)
     if (rangeBlocked(at, at + len)) return null
     const id = placeBroll(videoId, at, at + len, lane === 'broll' ? 'broll' : undefined, freeTrack(at, at + len))
     pickShot(id, lane === 'video')
     seekToMs(at)
+    seekAfterInsertRef.current = at
     // (where it ends: the next of several files dropped together goes in there)
     return at + len
   }
@@ -4152,9 +4304,12 @@ export function EditorShell({
    * their own length. Videos upload one at a time; what no longer fits before the clip's end, or
    * isn't a photo, video or music, is left out (and said so).
    */
-  async function dropSeveral(files: File[], atMs: number, lane: string | null) {
+  async function dropSeveral(files: File[], atMs: number, dropLane: string | null) {
     if (dropUploading) { notifyLocked('Wait for the upload in progress to finish'); return }
     pause()
+    // (dropped on "above" / "below the main video": one new row there, all of them on it)
+    const lane = dropLane === 'track-new' ? `track-${newTopTrack(visualItems())}`
+      : dropLane === 'track-below' ? `track-${openRowBelow()}` : dropLane
     let at = Math.round(atMs), left = 0, opened = false
     for (const [i, f] of files.entries()) {
       const kind = (lane === 'music' || lane?.startsWith('audio-')) && kindOfFile(f) === 'video' ? 'music' : kindOfFile(f)
@@ -4235,7 +4390,7 @@ export function EditorShell({
   }
   function panelRetime(id: string, startMs: number, endMs: number, moved: boolean) {
     if (blocked({ kind: 'broll', id })) return
-    const start = Math.round(Math.max(0, startMs)), end = Math.round(Math.min(clipLengthMs, endMs))
+    const start = Math.round(Math.max(0, startMs)), end = Math.round(Math.min(MAX_CLIP_MS, endMs))
     if (end - start < 300 || rangeBlocked(start, end, id)) return
     retimeShot(id, start, end, moved)
   }
@@ -4261,12 +4416,13 @@ export function EditorShell({
   }
   async function addStockBroll(item: StockResult, lengthMs: number, atMs?: number) {
     const at = Math.max(0, Math.min(atMs ?? currentTimeMs, clipLengthMs - 500))
-    if (rangeBlocked(at, Math.min(clipLengthMs, at + lengthMs))) return
+    if (rangeBlocked(at, Math.min(MAX_CLIP_MS, at + lengthMs))) return
     const videoId = await importStock(item)
-    const end = Math.min(clipLengthMs, at + lengthMs)
+    const end = Math.min(MAX_CLIP_MS, at + lengthMs)
     const segId = placeBroll(videoId, at, end, undefined, freeTrack(at, end))
     pickShot(segId)
     seekToMs(at)
+    seekAfterInsertRef.current = at
   }
 
   /**
@@ -4284,8 +4440,10 @@ export function EditorShell({
     const box = shot.crop_boxes[0]
     const anchor = shot.start_ms - (box?.source_offset_ms ?? 0)
     const full = videoLengths[box?.source_video_id ?? '']
-    const start = moved ? Math.max(0, Math.min(clipLengthMs - len, startMs)) : Math.max(0, anchor, Math.min(clipLengthMs - 500, startMs))
-    const end = moved ? start + len : Math.min(clipLengthMs, full ? anchor + full : Infinity, Math.max(start + 500, endMs))
+    // (past the main video's end too: the timeline goes on for it; only its own video and the longest clip limit it)
+    let start = moved ? Math.max(0, Math.min(MAX_CLIP_MS - len, startMs)) : Math.max(0, anchor, startMs)
+    let end = moved ? start + len : Math.min(MAX_CLIP_MS, full ? anchor + full : Infinity, Math.max(start + 500, endMs))
+    if (!moved) start = Math.min(start, end - 500)
     if (rangeBlocked(start, end, id)) return
     retimeShot(id, Math.round(start), Math.round(end), moved)
     // Moved or stretched onto something else on its track: a new track opens above it (once let go)
@@ -6123,7 +6281,7 @@ export function EditorShell({
             id: o.id, start_ms: o.start_ms, end_ms: o.end_ms, url: o.preview_url, hidden: o.hidden, locked: isLocked({ kind: 'photo', id: o.id }), track: o.track, full: o.x <= 0.001 && o.y <= 0.001 && o.w >= 0.999 && o.h >= 0.999,
             ...(o.type === 'video' ? { video: { url: videoUrls[o.source_video_id!] ?? o.preview_url, offset: o.source_offset_ms ?? 0, muted: !!o.muted } } : {}),
           }))}
-          onTrackDrop={dropOnTrack} onMovePart={movePart}
+          onTrackDrop={dropOnTrack} belowRows={belowRows} onMovePart={movePart} onPartToTrack={partToTrack} onShotToMain={shotToMain} maxMs={MAX_CLIP_MS}
           activePhotoId={activeOverlayId} onSelectPhoto={id => pickPhoto(id, doubleTap(`p${id}`))}
           onPhotoTimeChange={(id, t) => {
             if (blocked({ kind: 'photo', id })) return
@@ -6393,11 +6551,12 @@ function LiveTime() {
 }
 
 /** The tracks of photos, text and music, saved beside the clip's rows (read back by savedLanes, tracks.ts) */
-function withLanes<L extends object>(layers: L | null, items: Array<{ id: string; track?: number }>): L | { v: 1; rows: string[]; cut: never[]; parts: string[]; lanes: Record<string, number> } | null {
+function withLanes<L extends object>(layers: L | null, items: Array<{ id: string; track?: number }>, below = 0): L | { v: 1; rows: string[]; cut: never[]; parts: string[]; lanes: Record<string, number>; below?: number } | null {
   const lanes: Record<string, number> = {}
   for (const x of items) if (x.track != null) lanes[x.id] = x.track
   if (!Object.keys(lanes).length) return layers
-  return { ...(layers ?? { v: 1 as const, rows: [], cut: [], parts: [] }), lanes } as L & { lanes: Record<string, number> }
+  // (`below`: how many of the rows sit under the main video on the timeline)
+  return { ...(layers ?? { v: 1 as const, rows: [], cut: [], parts: [] }), lanes, ...(below > 0 ? { below } : {}) } as L & { lanes: Record<string, number>; below?: number }
 }
 
 // ── What's in a section (Format panel) ─────────────────────────────────────────

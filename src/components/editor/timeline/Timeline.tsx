@@ -95,7 +95,16 @@ export interface TimelineProps {
   onDropStock?: (json: string, atMs: number, lane?: string | null) => void
   onDropMedia?: (json: string, atMs: number, lane: string | null) => void
   photos?: { id: string; start_ms: number; end_ms: number; url?: string; hidden?: boolean; locked?: boolean; track?: number; video?: { url?: string; offset: number; muted?: boolean }; /** covers the whole frame */ full?: boolean }[]
-  onTrackDrop?: (ref: TrackRef, target: number | 'new') => void
+  /** Something dragged to another row: a track, or a new row above all (`'new'`) or under the main video (`'new-below'`) */
+  onTrackDrop?: (ref: TrackRef, target: number | 'new' | 'new-below') => void
+  /** How many of the rows of videos, photos and text sit under the main video (tracks 0 … n-1); the rest are above it */
+  belowRows?: number
+  /** A video put in the main row dragged off it, onto a row (or a new one above / under the main video), starting at `atMs` */
+  onPartToTrack?: (segId: string, target: number | 'new' | 'new-below', atMs: number) => void
+  /** A video on a row dragged onto the main row: it goes in there, at `atMs` */
+  onShotToMain?: (segId: string, atMs: number) => void
+  /** How long the timeline can grow for a video on top dragged past its end (ms; the editor makes the room) */
+  maxMs?: number
   /** A block of the main row (a part, or a video put in) dragged along it, let go at `toMs` (where it goes in, timeline ms) */
   onMovePart?: (segId: string, toMs: number) => void
   activePhotoId?: string | null
@@ -133,6 +142,24 @@ const GRIP_W = 14
 const SNAP_PX = 8
 const MIN_PART_MS = 300
 
+/** Bars whose name has been shown (each shows its name once, when it goes in), and since when the timeline is open */
+const barNamesSeen = new Set<string>()
+let barsSince = 0
+/** A video's name on its bar for 3 s after it goes in (as a video put in the main row), then `short` */
+function BarName({ id, name, short }: { id: string; name: string; short: string }) {
+  const [fresh, setFresh] = useState(() => {
+    const f = typeof performance !== 'undefined' && barsSince > 0 && performance.now() - barsSince > 1500 && !barNamesSeen.has(id)
+    barNamesSeen.add(id)
+    return f
+  })
+  useEffect(() => {
+    if (!fresh) return
+    const t = setTimeout(() => setFresh(false), 3000)
+    return () => clearTimeout(t)
+  }, [fresh])
+  return <span className="truncate">{fresh ? name : short}</span>
+}
+
 /** A clip time as the playhead's bubble shows it: 0:12.4 */
 function clockLabel(ms: number) {
   // (to tenths first: 9.96 s is 0:10.0, not 0:010.0)
@@ -164,7 +191,7 @@ export function Timeline({
   onBrollChange, videoUrls = {}, mediaLengths = {}, zoom: zoomProp, onZoomChange,
   onAddKind, cutJoins = [], isStock, onDropFiles, onDropStock, onDropMedia,
   mainMuted = false, onToggleMainMute, transitions = [], onOpenTransition, onRemoveTransition, onApplyTransitionToAll, onDropTransition,
-  onTrackDrop, onMovePart, pickedSegmentId = null, selectedId, onPickSegment,
+  onTrackDrop, belowRows = 0, onMovePart, onPartToTrack, onShotToMain, maxMs, pickedSegmentId = null, selectedId, onPickSegment,
 }: TimelineProps) {
   const viewRef = useRef<HTMLDivElement>(null)        // what shows (the playhead sits in its middle)
   const contentRef = useRef<HTMLDivElement>(null)     // the layer that slides under it
@@ -194,15 +221,38 @@ export function Timeline({
   /** A bar dragged by its body: it follows the pointer up and down too (it lands on the row it's let go
    *  over), and its new time shows over the timeline */
   const [lift, setLift] = useState<{ id: string; dy: number; start: number; end: number } | null>(null)
+  /**
+   * The view markers (where the picture's frame was placed or moved) show for 3 s after each change,
+   * then fade: pointing at their row, a picked one or one being dragged brings them back (their row
+   * keeps its room, so nothing moves when they fade)
+   */
+  const viewsKey = viewMarkers.map(v => `${v.t_ms}:${v.cut ? 1 : 0}`).join(',')
+  const [viewsFresh, setViewsFresh] = useState(false)
+  const [viewsHover, setViewsHover] = useState(false)
+  const viewsSeenRef = useRef<string | null>(null)
+  useEffect(() => {
+    // (as the editor opens: hidden; from then on each change shows them for 3 s)
+    if (viewsSeenRef.current === null) { viewsSeenRef.current = viewsKey; return }
+    if (viewsSeenRef.current === viewsKey) return
+    viewsSeenRef.current = viewsKey
+    if (!viewsKey) return
+    setViewsFresh(true)
+    const t = setTimeout(() => setViewsFresh(false), 3000)
+    return () => clearTimeout(t)
+  }, [viewsKey])
+  /** A bar being trimmed by a grip: its new length, over the edge being moved */
+  const [barTip, setBarTip] = useState<{ id: string; at: number; text: string } | null>(null)
   /** A video put in the main row, carried along it: where it will go in (`to`), how far it's carried */
-  const [insertDrag, setInsertDrag] = useState<{ id: string; to: number; dx: number; dy: number } | null>(null)
+  const [insertDrag, setInsertDrag] = useState<{ id: string; to: number; dx: number; dy: number; off?: boolean } | null>(null)
+  /** A video on a row carried over the main row: where it would go in (it goes in there when let go) */
+  const [mainDropAt, setMainDropAt] = useState<number | null>(null)
   const [addMenu, setAddMenu] = useState<DOMRect | null>(null)
   const [dropAt, setDropAt] = useState<{ ms: number; lane: string | null; what: string } | null>(null)
   // A transition tile dragged over the timeline: the cut it would land on
   const [dropCut, setDropCut] = useState<string | null>(null)
   // A cut's marker right-clicked: its menu (where, which cut)
   const [cutMenu, setCutMenu] = useState<{ afterId: string; at: number; x: number; y: number } | null>(null)
-  const [trackHover, setTrackHover] = useState<{ family: 'visual' | 'audio'; target: number | 'new' } | null>(null)
+  const [trackHover, setTrackHover] = useState<{ family: 'visual' | 'audio'; target: number | 'new' | 'new-below' } | null>(null)
   const trackHoverRef = useRef<typeof trackHover>(null)
   const [pulseLane, setPulseLane] = useState<FrameLane | null>(null)
   const lanesRef = useRef<HTMLDivElement>(null)
@@ -211,7 +261,7 @@ export function Timeline({
   const nowRef = useRef(currentTimeMs)
   nowRef.current = currentTimeMs
 
-  useEffect(() => { markTimelineOpened() }, [])
+  useEffect(() => { markTimelineOpened(); if (!barsSince) barsSince = performance.now() }, [])
   useEffect(() => {
     if (!addMenu) return
     const close = (e: KeyboardEvent) => { if (e.key === 'Escape') setAddMenu(null) }
@@ -303,6 +353,12 @@ export function Timeline({
     if (!rect || rect.width <= 0) return 0
     return Math.max(0, Math.min(((clientX - rect.left) / rect.width) * viewDur, duration))
   }
+  /** As msFromClientX, but not stopped at the timeline's end (a video on top can be taken past it) */
+  function rawMsFromClientX(clientX: number): number {
+    const rect = trackRef.current?.getBoundingClientRect()
+    if (!rect || rect.width <= 0) return 0
+    return Math.max(0, ((clientX - rect.left) / rect.width) * viewDur)
+  }
   const msPerPx = () => 1 / Math.max(1e-9, pxPerMs)
 
   // ── The parts of the main row, the videos on top, the rows under it ──
@@ -368,8 +424,9 @@ export function Timeline({
   const partAt = (clientX: number, clientY: number) => {
     const rect = trackRef.current?.getBoundingClientRect()
     if (!rect) return undefined
+    // (the main row sits under the ruler and the rows on top of it)
     const y = clientY - rect.top
-    if (y < RULER_H + MAIN_PAD || y > RULER_H + MAIN_PAD + BLOCK_H) return undefined
+    if (y < mainTop + MAIN_PAD || y > mainTop + MAIN_PAD + BLOCK_H) return undefined
     const t = msFromClientX(clientX)
     return mains.find(m => t >= m.start_ms && t < m.end_ms) ?? null
   }
@@ -381,10 +438,10 @@ export function Timeline({
     const hit = blockEl ? mains[Number(blockEl.getAttribute('data-part')) - 1] ?? null : partAt(e.clientX, e.clientY)
     // On the main row: that part is picked. Anywhere else (the ruler, an empty spot): nothing is —
     // a click outside the selected part lets go of it (the playhead still moves there)
-    onPickSegment?.(hit?.id ?? null)
+    onPickSegment?.(hit && !isTailPart(hit) ? hit.id : null)
     // A block of the main row: dragged, it moves (a tap still moves the playhead). With only one
     // part there's nowhere to move it: dragging moves the playhead, as on the ruler
-    if (hit && onMovePart && !hit.locked && mains.length > 1) { handlePartDown(e, hit); return }
+    if (hit && onMovePart && !hit.locked && mains.filter(m => !isTailPart(m)).length > 1 && !isTailPart(hit)) { handlePartDown(e, hit); return }
     const { setScrubbing } = usePlayerStore.getState()
     onScrubStart?.()
     setScrubbing(true)
@@ -410,25 +467,48 @@ export function Timeline({
   function handlePartDown(e: React.PointerEvent, seg: SegmentLocal) {
     e.preventDefault()
     const sx = e.clientX, sy = e.clientY
-    const joins = [0, duration, ...mains.flatMap(m => [m.start_ms, m.end_ms])]
-    let moved = false, to = seg.start_ms
+    const grab = msFromClientX(sx) - seg.start_ms
+    // (the joins of the main video's own row: never past its end, into the room after it)
+    const own = mains.filter(m => !isTailPart(m))
+    const joins = [0, ...own.flatMap(m => [m.start_ms, m.end_ms])]
+    // (a video put in can leave the main row for a row above or below it; the main video's own parts can't)
+    const canLeave = !!onPartToTrack && isInsertPart(seg)
+    let moved = false, to = seg.start_ms, off = false, lastX = sx
     setDragging(`insert-${seg.id}`)
     track(ev => {
       if (!moved && Math.abs(ev.clientX - sx) < 4 && Math.abs(ev.clientY - sy) < 4) return
       moved = true
+      lastX = ev.clientX
+      const main = trackRef.current?.querySelector('[data-lane="main"]')?.getBoundingClientRect()
+      off = canLeave && !!main && (ev.clientY < main.top - 8 || ev.clientY > main.bottom + 8)
+      if (off) hoverTrack(ev, 'visual', -1)
+      else if (trackHoverRef.current) { trackHoverRef.current = null; setTrackHover(null) }
       const raw = msFromClientX(ev.clientX)
       let best = raw, bestD = ev.altKey ? 0 : 14 * msPerPx()
       for (const j of joins) { const d = Math.abs(j - raw); if (d < bestD) { best = j; bestD = d } }
       to = Math.round(best)
-      setInsertDrag({ id: seg.id, to, dx: ev.clientX - sx, dy: ev.clientY - sy })
+      setInsertDrag({ id: seg.id, to, dx: ev.clientX - sx, dy: ev.clientY - sy, off })
     }, () => {
       setInsertDrag(null)
       if (!moved) { scrubTo(msFromClientX(sx)); return }
+      const h = trackHoverRef.current
+      trackHoverRef.current = null
+      setTrackHover(null)
+      // Off the main row, over a row (or where a new one opens): onto it, from where it was let go
+      if (off && h && h.target !== -1) {
+        onPartToTrack?.(seg.id, h.target as number | 'new' | 'new-below', Math.max(0, Math.round(msFromClientX(lastX) - grab)))
+        return
+      }
+      if (off) return
       // (let go over itself: it stays)
       if (to > seg.start_ms && to < seg.end_ms) return
       onMovePart?.(seg.id, to)
     })
   }
+  /** A video put in the main row (not a part of the main video itself) */
+  const isInsertPart = (s: SegmentLocal) => s.video_offset_ms != null && !!s.crop_boxes[0]?.source_video_id
+  /** The empty stretch after the main video (what's on top runs on there): put in, hidden — the editor makes and sizes it */
+  const isTailPart = (s: SegmentLocal) => isInsertPart(s) && !!s.hidden && !!s.crop_boxes[0]?.hidden
   // Wheel / trackpad: Ctrl + wheel or a pinch zooms (the moment under the pointer stays put);
   // sideways (or Shift) scrolls the zoomed timeline; up and down goes through the rows
   const zoomRef = useRef(zoom)
@@ -598,11 +678,43 @@ export function Timeline({
   }
   function hoverTrack(ev: PointerEvent, family: 'visual' | 'audio', current: number) {
     const rows = [...(viewRef.current?.querySelectorAll<HTMLElement>(`[data-track-row="${family}"]`) ?? [])]
-    if (!rows.length) return
     const y = ev.clientY
+    if (!rows.length) {
+      const main = family === 'visual' ? trackRef.current?.querySelector('[data-lane="main"]')?.getBoundingClientRect() : null
+      if (!main) return
+      const t: 'new' | 'new-below' | null = y < main.top ? 'new' : y > main.bottom ? 'new-below' : null
+      const next = t ? { family, target: t } : null
+      trackHoverRef.current = next
+      setTrackHover(prev => (prev?.family === next?.family && prev?.target === next?.target ? prev : next))
+      return
+    }
     const first = rows[0].getBoundingClientRect(), last = rows[rows.length - 1].getBoundingClientRect()
-    let target: number | 'new'
-    if (family === 'visual' ? y < first.top - ROW_GAP : y > last.bottom + ROW_GAP) target = 'new'
+    let target: number | 'new' | 'new-below'
+    // The row nearest the pointer of these (null: none)
+    const nearest = (list: HTMLElement[]) => {
+      let best: HTMLElement | null = null, bestD = Infinity
+      for (const r of list) {
+        const b = r.getBoundingClientRect()
+        const d = y < b.top ? b.top - y : y > b.bottom ? y - b.bottom : 0
+        if (d < bestD) { best = r; bestD = d }
+      }
+      return best
+    }
+    if (family === 'visual') {
+      // Measured against the main video: above it the rows above (past the highest, a new one on
+      // top); under it the rows under (past the lowest, a new one at the bottom); on it, it stays
+      const main = trackRef.current?.querySelector('[data-lane="main"]')?.getBoundingClientRect()
+      const above = rows.filter(r => Number(r.dataset.track) >= belowRows)
+      const under = rows.filter(r => Number(r.dataset.track) < belowRows)
+      if (main && y >= main.top && y <= main.bottom) target = current
+      else if (!main || y < main.top) {
+        const top = above[0]?.getBoundingClientRect()
+        target = !top || y < top.top - ROW_GAP ? 'new' : Number(nearest(above)!.dataset.track)
+      } else {
+        const low = under[under.length - 1]?.getBoundingClientRect()
+        target = !low || y > low.bottom + ROW_GAP ? 'new-below' : Number(nearest(under)!.dataset.track)
+      }
+    } else if (y > last.bottom + ROW_GAP) target = 'new'
     else target = Number((rows.find(r => y < r.getBoundingClientRect().bottom + ROW_GAP / 2) ?? rows[rows.length - 1]).dataset.track)
     const next = target === current ? null : { family, target }
     trackHoverRef.current = next
@@ -618,6 +730,7 @@ export function Timeline({
     e.stopPropagation(); e.preventDefault()
     onPickSegment?.(seg.id)
     if (seg.locked) return
+    if (part !== 'body') { handleShotTrim(e, seg, part); return }
     const sx = e.clientX, sy = e.clientY
     const grab = msFromClientX(e.clientX) - seg.start_ms
     const len = seg.end_ms - seg.start_ms
@@ -625,20 +738,31 @@ export function Timeline({
     const anchor = seg.start_ms - (box0?.source_offset_ms ?? 0)
     const full = mediaLengths[box0?.source_video_id ?? '']
     const minStart = Math.max(0, anchor)
-    const maxEnd = full ? Math.min(duration, anchor + full) : duration
-    let moved = false
+    // (past the timeline's end too: the editor makes room, up to `maxMs`)
+    const room = Math.max(duration, maxMs ?? duration)
+    const maxEnd = full ? Math.min(room, anchor + full) : room
+    let moved = false, overMain: number | null = null
     let next = { start: seg.start_ms, end: seg.end_ms }
     setDragging(`broll-${part}-${seg.id}`)
     const move = (ev: PointerEvent) => {
       if (!moved && Math.abs(ev.clientX - sx) < 3 && Math.abs(ev.clientY - sy) < 3) return
       moved = true
       noSnapRef.current = ev.altKey
-      if (part === 'body') hoverTrack(ev, 'visual', seg.track ?? 0)
-      const t = msFromClientX(ev.clientX)
       if (part === 'body') {
-        const st = snapSpanAt(Math.max(0, Math.min(duration - len, t - grab)), len, seg.id)
-        next = { start: st, end: Math.min(duration, st + len) }
+        // Over the main row: it would go in there (a lime line where); else onto the row under the pointer
+        const main = onShotToMain ? trackRef.current?.querySelector('[data-lane="main"]')?.getBoundingClientRect() : null
+        overMain = main && ev.clientY >= main.top && ev.clientY <= main.bottom ? Math.round(msFromClientX(ev.clientX)) : null
+        setMainDropAt(overMain)
+        if (overMain != null) { if (trackHoverRef.current) { trackHoverRef.current = null; setTrackHover(null) } }
+        else hoverTrack(ev, 'visual', seg.track ?? 0)
+      }
+      const t = rawMsFromClientX(ev.clientX)
+      if (part === 'body') {
+        const st = snapSpanAt(Math.max(0, Math.min(room - len, t - grab)), len, seg.id)
+        next = { start: st, end: Math.min(room, st + len) }
         setBrollGhost({ id: seg.id, ...next })
+        // (carried past the end: the timeline grows now, so it can be seen where it goes)
+        if (next.end > duration + 1) onBrollChange?.(seg.id, Math.round(next.start), Math.round(next.end), false)
         setLift({ id: seg.id, dy: ev.clientY - sy, ...next })
         return
       }
@@ -649,13 +773,91 @@ export function Timeline({
     const up = () => {
       window.removeEventListener('pointermove', move)
       window.removeEventListener('pointerup', up)
-      setDragging(null); setBrollGhost(null); setSnapLine(null); setLift(null)
+      setDragging(null); setBrollGhost(null); setSnapLine(null); setLift(null); setMainDropAt(null)
       if (!moved) return
+      if (overMain != null) { trackHoverRef.current = null; setTrackHover(null); onShotToMain?.(seg.id, overMain); return }
       onBrollChange?.(seg.id, Math.round(next.start), Math.round(next.end), true)
       endTrackDrag({ kind: 'shot', id: seg.id }, seg.track ?? 0)
     }
     window.addEventListener('pointermove', move)
     window.addEventListener('pointerup', up)
+  }
+  /**
+   * A video on top trimmed by a grip, as a part of the main video is: the timeline holds still (and
+   * scrolls along while the grip is held at the view's edge), a bubble over the edge shows its new
+   * length, the preview shows the frame the cut lands on, and pulled outward it brings its video back
+   * (to its first / last frame; past the main video's end too). Live; once more on release.
+   */
+  function handleShotTrim(e: React.PointerEvent, seg: SegmentLocal, edge: 'start' | 'end') {
+    if (e.button !== 0) return
+    const box0 = seg.crop_boxes[0]
+    const anchor = seg.start_ms - (box0?.source_offset_ms ?? 0)
+    const full = mediaLengths[box0?.source_video_id ?? '']
+    const room = Math.max(duration, maxMs ?? duration)
+    const minStart = Math.max(0, anchor)
+    const maxEnd = full ? Math.min(room, anchor + full) : room
+    const sx = e.clientX
+    let next = { start: seg.start_ms, end: seg.end_ms }, moved = false, lastX = sx
+    onScrubStart?.()
+    // The layer keeps still meanwhile, at this scale (it grows to the right if the video goes past the end)
+    freezeRef.current = currentTx()
+    setFrozenDur(duration)
+    setDragging(`broll-${edge}-${seg.id}`)
+    const vr = viewRef.current?.getBoundingClientRect()
+    let seekRaf = 0, auto = 0
+    const update = () => {
+      const t = rawMsFromClientX(lastX)
+      next = edge === 'start'
+        ? { start: Math.round(Math.max(minStart, Math.min(seg.end_ms - 500, snapEdgeAt(t, seg.id)))), end: seg.end_ms }
+        : { start: seg.start_ms, end: Math.round(Math.min(maxEnd, Math.max(seg.start_ms + 500, snapEdgeAt(t, seg.id)))) }
+      onBrollChange?.(seg.id, next.start, next.end, false)
+      setBarTip({ id: seg.id, at: edge === 'start' ? next.start : next.end, text: lenLabel(next.end - next.start) })
+      // (the preview shows the frame the cut lands on: its new first frame, or its new last)
+      if (!seekRaf) seekRaf = requestAnimationFrame(() => { seekRaf = 0; onSeek(edge === 'start' ? next.start : Math.max(next.start, next.end - 1)) })
+    }
+    // Held near the view's edge, the timeline scrolls along (more to cut, or to bring back)
+    const autoScroll = () => {
+      auto = 0
+      if (!vr || freezeRef.current == null) return
+      const zone = 40
+      const v = lastX < vr.left + zone ? vr.left + zone - lastX : lastX > vr.right - zone ? -(lastX - (vr.right - zone)) : 0
+      if (v !== 0 && moved) {
+        const nextTx = Math.max(PAD - maxScroll(), Math.min(PAD, freezeRef.current + Math.max(-18, Math.min(18, v * 0.35))))
+        if (nextTx !== freezeRef.current) { freezeRef.current = nextTx; place(); update() }
+      }
+      auto = requestAnimationFrame(autoScroll)
+    }
+    auto = requestAnimationFrame(autoScroll)
+    const move = (ev: PointerEvent) => {
+      lastX = ev.clientX
+      if (!moved && Math.abs(ev.clientX - sx) < 3) return
+      moved = true
+      noSnapRef.current = ev.altKey
+      update()
+    }
+    const up = () => {
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointerup', up)
+      window.removeEventListener('pointercancel', up)
+      if (seekRaf) cancelAnimationFrame(seekRaf)
+      if (auto) cancelAnimationFrame(auto)
+      setDragging(null); setSnapLine(null); setBarTip(null); setFrozenDur(null)
+      if (moved) onBrollChange?.(seg.id, next.start, next.end, true)
+      unfreeze()
+    }
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', up)
+    window.addEventListener('pointercancel', up)
+  }
+  /** A video on top trimmed from the keyboard (a grip focused): ← → move that end 0.1 s (Shift: 1 s) */
+  function keyTrimShot(seg: SegmentLocal, edge: 'start' | 'end', delta: number) {
+    if (seg.locked) return
+    const box0 = seg.crop_boxes[0]
+    const anchor = seg.start_ms - (box0?.source_offset_ms ?? 0)
+    const full = mediaLengths[box0?.source_video_id ?? '']
+    const room = Math.max(duration, maxMs ?? duration)
+    if (edge === 'start') onBrollChange?.(seg.id, Math.round(Math.max(Math.max(0, anchor), Math.min(seg.end_ms - 500, seg.start_ms + delta))), seg.end_ms, true)
+    else onBrollChange?.(seg.id, seg.start_ms, Math.round(Math.min(full ? Math.min(room, anchor + full) : room, Math.max(seg.start_ms + 500, seg.end_ms + delta))), true)
   }
   function handleMusicDrag(e: React.PointerEvent, m: (typeof musicTracks)[number]) {
     if (e.button !== 0) return
@@ -814,7 +1016,8 @@ export function Timeline({
     const lane = laneAt(e.target as Element)
     const ms = Math.round(msFromClientX(e.clientX))
     // (on the main row a video goes into the clip; anywhere else it goes on top)
-    const what = lane === 'main' ? 'Put in the clip' : 'Overlay'
+    const what = lane === 'main' ? 'Insert into the main video' : lane?.startsWith('audio-') ? 'Music'
+      : lane === 'track-below' || (/^track-(\d+)$/.test(lane ?? '') && Number(lane!.slice(6)) < belowRows) ? 'Below the main video' : 'Above the main video'
     setDropAt(prev => (prev && prev.ms === ms && prev.lane === lane ? prev : { ms, lane, what }))
   }
   function onDrop(e: React.DragEvent) {
@@ -849,7 +1052,7 @@ export function Timeline({
     })
     const cover = trackRef.current ? trackRef.current.getBoundingClientRect().bottom - base0 : 0
     const next = [...by].map(([kind, v]) => ({ kind, top: Math.round(v.top), h: Math.round(v.bottom - v.top) }))
-      .filter(sp => sp.kind === 'main' || sp.kind === 'original' || sp.kind === 'views' || sp.top + sp.h / 2 > cover)
+      .filter(sp => sp.kind === 'main' || sp.kind === 'original' || sp.kind === 'views' || /^track-\d+$/.test(sp.kind) || sp.top + sp.h / 2 > cover)
     setLaneSpans(prev => (JSON.stringify(prev) === JSON.stringify(next) ? prev : next))
   }
   useLayoutEffect(measureLanes)
@@ -881,6 +1084,8 @@ export function Timeline({
     left: `calc(${at(start)}% + 1.5px)`, width: `max(6px, calc(${pct(end - start)}% - 3px))`, top: MAIN_PAD, height: BLOCK_H,
   })
   const mainBlock = (seg: SegmentLocal, i: number) => {
+    // (the room after the main video, for what's on top to run on: nothing in the main row there)
+    if (isTailPart(seg)) return null
     const isInsert = seg.video_offset_ms != null && !!seg.crop_boxes[0]?.source_video_id
     const sel = isSel(seg.id, seg.id === (pickedSegmentId ?? activeSegmentId))
     const g = trimming && trimming.id === seg.id ? trimming : null
@@ -897,11 +1102,11 @@ export function Timeline({
     const comingBack = g && g.edge === 'start' && g.to < g.from
     return (
       <div key={seg.id} className="tl2-block absolute" data-part={i + 1} data-selected={sel || undefined}
-        title={`${isInsert ? 'Inserted video' : 'Part'} ${i + 1} · ${name} · ${msToLabel(seg.start_ms)}–${msToLabel(seg.end_ms)} · tap to select it${onMovePart && mains.length > 1 ? ', drag to move it' : ''}`}
+        title={`${isInsert ? 'Inserted video' : 'Part'} ${i + 1} · ${name} · ${msToLabel(seg.start_ms)}–${msToLabel(seg.end_ms)} · tap to select it${onMovePart && mains.filter(m => !isTailPart(m)).length > 1 ? ', drag to move it' : ''}`}
         // (a part narrower than it is drawn lies over its neighbours: it can still be tapped)
         style={{
           ...blockBox(start, end), zIndex: sel ? 3 : (end - start) * pxPerMs < 12 ? 2 : 1,
-          ...(onMovePart && mains.length > 1 && !seg.locked ? { cursor: 'grab' } : {}),
+          ...(onMovePart && mains.filter(m => !isTailPart(m)).length > 1 && !seg.locked ? { cursor: 'grab' } : {}),
           // (carried along the row: it follows the pointer, over everything)
           ...(insertDrag?.id === seg.id ? { transform: `translate(${insertDrag.dx}px, ${insertDrag.dy}px)`, zIndex: 40, opacity: 0.85, cursor: 'grabbing', filter: 'drop-shadow(0 8px 14px rgba(0,0,0,0.6))' } : {}),
         }}>
@@ -975,11 +1180,14 @@ export function Timeline({
   // ── Bars on the rows: slim, in their kind's colour; selected: taller, with grips ──
   const bar = (key: string, kind: 'video' | 'broll' | 'photo' | 'text' | 'music', start: number, end: number, sel: boolean, on: boolean,
     st: { hidden?: boolean; muted?: boolean; locked?: boolean }, name: string, onBody: (e: React.PointerEvent) => void,
-    onEdge: ((e: React.PointerEvent, edge: 'start' | 'end') => void) | null, title: string, inside?: React.ReactNode) => {
+    onEdge: ((e: React.PointerEvent, edge: 'start' | 'end') => void) | null, title: string, inside?: React.ReactNode,
+    keyTrim?: (edge: 'start' | 'end', deltaMs: number) => void) => {
     const color = MEDIA_COLORS[kind]
     const lifted = lift?.id === key ? lift : null
+    const tip = barTip?.id === key ? barTip : null
     return (
-      <div key={key} className="tl2-bar absolute" data-sel={sel || undefined} data-kind={kind} data-item-id={key} onPointerDown={onBody} title={title}
+      <Fragment key={key}>
+      <div className="tl2-bar absolute" data-sel={sel || undefined} data-kind={kind} data-item-id={key} onPointerDown={onBody} title={title}
         style={{
           left: `${at(start)}%`, width: `max(10px, ${pct(end - start)}%)`,
           '--bar-c': color, cursor: st.locked ? 'pointer' : on ? 'grabbing' : 'grab', zIndex: sel ? 3 : 1,
@@ -990,23 +1198,41 @@ export function Timeline({
         {inside && <div className="absolute inset-0 overflow-hidden pointer-events-none" style={{ borderRadius: 'inherit', opacity: sel ? 0.55 : 0.35 }}>{inside}</div>}
         <span className="relative flex items-center gap-1 min-w-0 pointer-events-none" style={{ paddingLeft: sel ? GRIP_W - 4 : 2, paddingRight: 6 }}>
           <MediaIcon kind={kind} />
-          <span className="truncate">{name}</span>
+          {kind === 'video' || kind === 'broll'
+            ? <BarName id={key} name={name} short={`${kind === 'broll' ? 'B-roll' : 'Video'}${/ · (full screen|window)$/.exec(name)?.[0] ?? ''}`} />
+            : <span className="truncate">{name}</span>}
           {sel && <span className="tl2-bar-len">{lenLabel(end - start)}</span>}
           <StateBadges st={st} />
         </span>
+        {/* the main video's grips: drag, or ← → (Shift: 1 s) */}
         {sel && onEdge && !st.locked && (['start', 'end'] as const).map(edge => (
-          <span key={edge} role="slider" aria-valuenow={edge === 'start' ? start : end} aria-label={`Trim the ${edge} of the ${kind === 'broll' ? 'B-roll' : kind}`}
-            className="tl2-bar-grip absolute" data-edge={edge} onPointerDown={e => onEdge(e, edge)} />
+          <button key={edge} type="button" className="tl2-grip absolute" data-edge={edge} data-on={dragging?.includes(`-${edge}-${key}`) || undefined}
+            onPointerDown={e => { e.stopPropagation(); onEdge(e, edge) }}
+            onKeyDown={e => {
+              if (!keyTrim || (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight')) return
+              e.preventDefault(); e.stopPropagation()
+              keyTrim(edge, (e.shiftKey ? 1000 : 100) * (e.key === 'ArrowLeft' ? -1 : 1))
+            }}
+            aria-label={`${edge === 'start' ? 'Start' : 'End'} of the ${kind === 'broll' ? 'B-roll' : kind} at ${msToLabel(edge === 'start' ? start : end)}. Drag or use arrow keys to trim`}
+            title={`Drag to trim the ${edge} (arrow keys: 0.1 s)`}
+            style={{ [edge === 'start' ? 'left' : 'right']: 0, width: 12 }}>
+            <svg width="6" height="10" viewBox="0 0 8 12" aria-hidden="true" style={{ transform: edge === 'start' ? 'none' : 'scaleX(-1)' }}>
+              <path d="M6 1.5L1.8 6 6 10.5" stroke="#0a0a0a" strokeWidth="2.4" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </button>
         ))}
       </div>
+      {tip && <span className="tl2-bar-tip" style={{ left: `${at(tip.at)}%` }}>{tip.text}</span>}
+      </Fragment>
     )
   }
-  const trackRow = (family: 'visual' | 'audio', t: number, edge: 'top' | 'bottom' | null, children: React.ReactNode) => {
+  const trackRow = (family: 'visual' | 'audio', t: number, edge: 'top' | 'bottom' | null, children: React.ReactNode, inHead = false) => {
     const hover = trackHover?.family === family ? trackHover.target : null
     return (
       <div key={`${family}-${t}`} data-lane={`${family === 'visual' ? 'track' : 'audio'}-${t}`} data-track-row={family} data-track={t}
         className="relative" style={{ height: ROW_H, ...(hover === t ? { boxShadow: `inset 0 0 0 1.5px ${ACCENT}`, background: 'rgba(200,255,0,0.07)', borderRadius: 6 } : {}) }}
-        onPointerDown={handleScrubDown}>
+        // (the rows above the main video are in the head, which moves the playhead itself)
+        onPointerDown={inHead ? undefined : handleScrubDown}>
         {hover === 'new' && edge && (
           <div className="absolute left-0 right-0 pointer-events-none rounded-full" aria-hidden="true"
             style={{ [edge]: -ROW_GAP / 2 - 1.5, height: 3, background: ACCENT, boxShadow: '0 0 8px rgba(200,255,0,0.6)', zIndex: 20 }} />
@@ -1027,7 +1253,8 @@ export function Timeline({
       return bar(seg.id, kind, shown.start_ms, shown.end_ms, sel, !!dragging?.endsWith(seg.id), { hidden: box?.hidden, muted: box?.muted !== false, locked: seg.locked }, `${name} · full screen`,
         e => handleBrollDown(e, seg, 'body'), (e, edge) => handleBrollDown(e, seg, edge),
         `Overlay (full screen) · ${name} · ${msToLabel(seg.start_ms)}–${msToLabel(seg.end_ms)} · click to select, drag to move`,
-        url && <VideoThumbnails tile videoUrl={url} startMs={box?.source_offset_ms ?? 0} durationMs={seg.end_ms - seg.start_ms} radius={0} dim={false} />)
+        url && <VideoThumbnails tile videoUrl={url} startMs={box?.source_offset_ms ?? 0} durationMs={seg.end_ms - seg.start_ms} radius={0} dim={false} />,
+        (edge, d) => keyTrimShot(seg, edge, d))
     }
     if (v.kind === 'photo') {
       const ph = v.ph
@@ -1037,13 +1264,23 @@ export function Timeline({
         ph.video ? 'Video · window' : full ? 'Photo · full screen' : 'Photo · window', e => handlePhotoDrag(e, ph, 'body'), (e, edge) => handlePhotoDrag(e, ph, edge),
         `Overlay (${ph.video ? 'video' : 'photo'}, ${full ? 'full screen' : 'window'}) · ${msToLabel(ph.start_ms)}–${msToLabel(ph.end_ms)} · click to select, drag to move`,
         ph.video ? (ph.video.url && <VideoThumbnails tile videoUrl={ph.video.url} startMs={ph.video.offset} durationMs={ph.end_ms - ph.start_ms} radius={0} dim={false} />)
-          : ph.url ? <div className="absolute inset-0" style={{ backgroundImage: `url("${ph.url}")`, backgroundSize: 'auto 100%', backgroundRepeat: 'repeat-x' }} /> : null)
+          : ph.url ? <div className="absolute inset-0" style={{ backgroundImage: `url("${ph.url}")`, backgroundSize: 'auto 100%', backgroundRepeat: 'repeat-x' }} /> : null,
+        (edge, d) => {
+          if (ph.locked) return
+          if (edge === 'start') onPhotoTimeChange?.(ph.id, { start_ms: Math.round(Math.max(0, Math.min(ph.end_ms - 200, ph.start_ms + d))), end_ms: ph.end_ms })
+          else onPhotoTimeChange?.(ph.id, { start_ms: ph.start_ms, end_ms: Math.round(Math.min(duration, Math.max(ph.start_ms + 200, ph.end_ms + d))) })
+        })
     }
     const o = v.o
     const sel = isSel(o.id, o.id === activeTextOverlayId)
     return bar(o.id, 'text', o.start_ms, o.end_ms, sel, dragging === `text-${o.id}`, o, o.text?.trim() || 'Text',
       e => handleTextDrag(e, o, 'body'), (e, edge) => handleTextDrag(e, o, edge),
-      `Text · “${o.text}” · ${msToLabel(o.start_ms)}–${msToLabel(o.end_ms)} · tap to select, drag to move`)
+      `Text · “${o.text}” · ${msToLabel(o.start_ms)}–${msToLabel(o.end_ms)} · tap to select, drag to move`, undefined,
+      (edge, d) => {
+        if (o.locked) return
+        if (edge === 'start') onTextOverlayUpdate?.(o.id, { start_ms: Math.round(Math.max(0, Math.min(o.end_ms - 200, o.start_ms + d))) })
+        else onTextOverlayUpdate?.(o.id, { end_ms: Math.round(Math.min(duration, Math.max(o.start_ms + 200, o.end_ms + d))) })
+      })
   }
   const musicBar = (m: (typeof musicTracks)[number]) => {
     const end = musicEnd(m)
@@ -1051,7 +1288,8 @@ export function Timeline({
     return bar(m.id, 'music', m.start_ms, end, sel, dragging === `music-${m.id}`, m, m.original ? 'Original sound' : m.name,
       e => handleMusicDrag(e, m), onMusicTrim ? (e, edge) => handleMusicTrim(e, m, edge) : null,
       `${m.original ? 'Original sound' : `Music · ${m.name}`} · ${msToLabel(m.start_ms)}–${msToLabel(end)} · tap to select, drag to move`,
-      <Waveform url={m.url} srcKey={m.key} offsetMs={m.offset_ms ?? 0} durationMs={end - m.start_ms} />)
+      <Waveform url={m.url} srcKey={m.key} offsetMs={m.offset_ms ?? 0} durationMs={end - m.start_ms} />,
+      (edge, d) => { if (!m.locked) onMusicTrim?.(m.id, edge, Math.round((edge === 'start' ? m.start_ms : end) + d)) })
   }
 
   // ── Frame lanes (the frame under the playhead: its slots and items) ──
@@ -1159,9 +1397,14 @@ export function Timeline({
     )
   }
 
-  const mainTop = RULER_H
+  // The rows of videos, photos and text on top sit above the main video (the highest track at the
+  // top, as V2 over V1 in Premiere / Resolve); music stays under it
+  const aboveTracks = visualTracks.filter(t => t >= belowRows)
+  const belowTracks = visualTracks.filter(t => t < belowRows)
+  const visualH = aboveTracks.length ? aboveTracks.length * ROW_H + (aboveTracks.length - 1) * ROW_GAP + 6 + 4 : 0
+  const mainTop = RULER_H + visualH
   const mainRowH = BLOCK_H + MAIN_PAD * 2
-  const headH = RULER_H + mainRowH + (originals.length ? ORIG_ROW_H : 0) + (viewMarkers.length ? VIEW_ROW_H : 0)
+  const headH = mainTop + mainRowH + (originals.length ? ORIG_ROW_H : 0) + (viewMarkers.length ? VIEW_ROW_H : 0)
 
   return (
     <div className="tl2 flex items-stretch flex-auto min-h-0 select-none"
@@ -1271,7 +1514,27 @@ export function Timeline({
                   {major && <span>{tickLabel(t)}</span>}
                 </div>
               ))}
+              {/* While something is dragged in: drop it here to put it on top of the video (a new
+                  row over the others); on the main video it goes into the clip instead */}
+              {dropAt && (
+                <div data-lane="track-new" className="tl2-dropzone tl2-dropzone-top" data-on={dropAt.lane === 'track-new' || undefined}>
+                  <span style={{ left: `${at(dropAt.ms)}%` }}>
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 19V5M6 11l6-6 6 6" /></svg>
+                    Drop here: above the main video
+                  </span>
+                </div>
+              )}
             </div>
+            {/* dragged up with no rows above yet: a new one opens here, over the main video */}
+            {trackHover?.family === 'visual' && trackHover.target === 'new' && aboveTracks.length === 0 && (
+              <div className="absolute left-0 right-0 pointer-events-none rounded-full" aria-hidden="true" style={{ top: RULER_H, height: 3, zIndex: 25, background: ACCENT, boxShadow: '0 0 8px rgba(200,255,0,0.6)' }} />
+            )}
+            {/* Rows on top of the main video: videos, photos, text */}
+            {aboveTracks.length > 0 && (
+              <div className="relative flex flex-col" style={{ gap: ROW_GAP, paddingTop: 6, paddingBottom: 4 }}>
+                {aboveTracks.map((t, i) => trackRow('visual', t, i === 0 ? 'top' : null, visual.filter(v => v.track === t).map(visualBar), true))}
+              </div>
+            )}
             {/* Main row: one block per part; a transition button between touching parts */}
             <div data-lane="main" className="relative" style={{ height: mainRowH }}>
               {gaps.map(g => (
@@ -1281,8 +1544,15 @@ export function Timeline({
                 </div>
               ))}
               {mains.map((seg, i) => mainBlock(seg, i))}
+              {/* a video from a row carried over the main row: it goes in here */}
+              {mainDropAt != null && (
+                <div className="absolute pointer-events-none" style={{ left: `${at(mainDropAt)}%`, top: 0, bottom: 0, zIndex: 35 }}>
+                  <div className="absolute top-0 bottom-0 rounded-full" style={{ left: -1.5, width: 3, background: ACCENT, boxShadow: '0 0 8px rgba(200,255,0,0.6)' }} />
+                  <span className="absolute whitespace-nowrap text-[10px] font-bold px-1.5 py-0.5 rounded" style={{ top: -2, left: 6, background: ACCENT, color: '#000' }}>Insert into the main video · {clockLabel(mainDropAt)}</span>
+                </div>
+              )}
               {/* a video in the main row being carried: where it will go in */}
-              {insertDrag && (() => {
+              {insertDrag && !insertDrag.off && (() => {
                 const seg = mains.find(m => m.id === insertDrag.id)
                 if (!seg) return null
                 const stays = insertDrag.to > seg.start_ms && insertDrag.to < seg.end_ms
@@ -1296,7 +1566,7 @@ export function Timeline({
                   </div>
                 )
               })()}
-              {!dragging && junctions.map(({ left, right }) => {
+              {!dragging && junctions.filter(j => !isTailPart(j.right)).map(({ left, right }) => {
                 // A marker on every cut, as in CapCut: lime with its kind's picture when it has a
                 // transition, a grey "+" when not. Beside the selected part it moves off the cut, onto
                 // the other part, so the selected part's grip stays free to drag
@@ -1365,7 +1635,11 @@ export function Timeline({
               </div>
             )}
             {viewMarkers.length > 0 && (
-              <div data-lane="views" className="relative" style={{ height: VIEW_ROW_H }}>
+              <div data-lane="views" className="relative" onPointerEnter={() => setViewsHover(true)} onPointerLeave={() => setViewsHover(false)}
+                style={{
+                  height: VIEW_ROW_H, transition: 'opacity .45s ease',
+                  ...(viewsFresh || viewsHover || selectedViewT != null || viewDragT !== null ? {} : { opacity: 0 }),
+                }}>
                 <div className="absolute left-0 right-0 top-1/2 pointer-events-none" style={{ height: 1, background: 'rgb(var(--ed-fg) / 0.08)' }} />
                 {viewDragT !== null && (() => {
                   const cache = videoUrl ? thumbsFor(videoUrl) : undefined
@@ -1420,11 +1694,29 @@ export function Timeline({
             {lift && <span className="tl2-trim-tip absolute" style={{ left: `clamp(60px, ${at(lift.start)}%, calc(100% - 60px))` }}>{clockLabel(lift.start)} – {clockLabel(lift.end)}</span>}
           </div>
 
+          {/* Rows under the main video (videos, photos and text, played over it like the rows above) */}
+          {(dropAt || belowTracks.length > 0 || trackHover?.target === 'new-below') && (
+            <div className="relative flex flex-col" style={{ gap: ROW_GAP, paddingTop: 6, paddingBottom: 2 }}>
+              {belowTracks.map(t => trackRow('visual', t, null, visual.filter(v => v.track === t).map(visualBar)))}
+              {dropAt && (
+                <div data-lane="track-below" className="tl2-dropzone" data-on={dropAt.lane === 'track-below' || undefined} style={{ height: ROW_H, margin: 0 }}>
+                  <span style={{ left: `${at(dropAt.ms)}%` }}>
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 5v14M6 13l6 6 6-6" /></svg>
+                    Drop here: below the main video
+                  </span>
+                </div>
+              )}
+              {trackHover?.target === 'new-below' && (
+                <div className="pointer-events-none rounded-full" aria-hidden="true" style={{ height: 3, background: ACCENT, boxShadow: '0 0 8px rgba(200,255,0,0.6)' }} />
+              )}
+            </div>
+          )}
+
           {frameLanes()}
 
-          {(visual.length > 0 || songs.length > 0) && (
+          {/* Music, under the main video */}
+          {songs.length > 0 && (
             <div className="relative flex flex-col" style={{ gap: ROW_GAP, paddingTop: 6, paddingBottom: 8 }}>
-              {visualTracks.map((t, i) => trackRow('visual', t, i === 0 ? 'top' : null, visual.filter(v => v.track === t).map(visualBar)))}
               {songTracks.map((t, i) => trackRow('audio', t, i === songTracks.length - 1 ? 'bottom' : null, songs.filter(m => (m.track ?? 0) === t).map(musicBar)))}
             </div>
           )}
