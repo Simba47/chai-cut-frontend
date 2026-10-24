@@ -9,9 +9,13 @@ import { subjectBoxAt, type SubjectPoint } from './subjects'
 export interface Angle {
   /** How many people it shows; 0: the other shots (no faces, or too short to be an angle) */
   people: number
-  /** A moment that shows it (source ms), and the faces there, left to right (fractions of the frame) */
+  /**
+   * A moment that shows it (source ms), and the faces there, left to right (fractions of the frame).
+   * `person`: who it is (the worker's face identities) — the same number in every angle they are in;
+   * none when the face was too small to tell, or the list is from before identities
+   */
   at: number
-  faces: Array<{ x: number; y: number; w: number; h: number }>
+  faces: Array<{ x: number; y: number; w: number; h: number; person?: number }>
   /** Wherever the clip shows it: [start, end] source ms */
   spans: Array<[number, number]>
 }
@@ -55,6 +59,22 @@ export function angleRows(
   angles: readonly Angle[], subjects: readonly AngleSubject[], cuts: readonly number[],
   toTimeline: (sourceMs: number) => number, lengthMs: number,
 ): AngleRow[] {
+  // (a mark that failed — no face there — doesn't hold a face: it can be marked again)
+  const people = subjects.filter(s => !s.shot && s.status !== 'failed')
+  // Who each marked person is: the face they were marked on, in the angle of their mark. They are
+  // marked in every angle that face's person is in (user, 2026-10-24: the same woman, marked in one
+  // close-up, showed unmarked in her other close-up and was marked again — a second subject)
+  const personOf = new Map<string, number>()
+  for (const s of people) {
+    const home = angles.find(x => x.spans.some(([b, e]) => s.mark_ms >= b && s.mark_ms < e))
+    let best: number | undefined, bestD = Infinity
+    for (const f of home?.faces ?? []) {
+      const dx = Math.abs(s.mark_x - (f.x + f.w / 2)), dy = Math.abs(s.mark_y - (f.y + f.h / 2))
+      if (f.person === undefined || dx > MARK_REACH || dx + dy >= bestD) continue
+      bestD = dx + dy; best = f.person
+    }
+    if (best !== undefined && ![...personOf.values()].includes(best)) personOf.set(s.id, best)
+  }
   return angles.flatMap((a): AngleRow[] => {
     const shown = a.spans
       .map(([s, e]): [number, number] => [Math.max(0, Math.round(toTimeline(s))), Math.min(lengthMs, Math.round(toTimeline(e)))])
@@ -62,11 +82,17 @@ export function angleRows(
     if (!shown.length) return []
     const inAngle = (sourceMs: number) => a.spans.some(([s, e]) => sourceMs >= s && sourceMs < e)
 
-    // Each marked person's place in this angle's picture: where the tracker saw them at that moment,
-    // else (not looked for yet) where they were marked, if that was in this angle
+    // Each marked person's place in this angle's picture: the face that is them (who they are), else
+    // where the tracker saw them at that moment, else (not looked for yet) where they were marked, if
+    // that was in this angle. A face known to be someone else is never theirs
     const taken = new Map<number, AngleSubject>()
-    for (const s of subjects) {
-      if (s.shot) continue
+    for (const s of people) {
+      const p = personOf.get(s.id)
+      const k = p === undefined ? -1 : a.faces.findIndex((f, i) => f.person === p && !taken.has(i))
+      if (k >= 0) taken.set(k, s)
+    }
+    for (const s of people) {
+      if ([...taken.values()].includes(s)) continue
       const seen = s.status === 'done' && s.path?.length ? subjectBoxAt(s.path, a.at, cuts as number[]) : null
       const tracked = s.status === 'done' && !!s.path?.length
       if (tracked && !seen) continue
@@ -74,7 +100,7 @@ export function angleRows(
       const px = seen ? seen.x + seen.w / 2 : s.mark_x, py = seen ? seen.y + seen.h / 2 : s.mark_y
       let best = -1, bestD = Infinity
       a.faces.forEach((f, k) => {
-        if (taken.has(k)) return
+        if (taken.has(k) || (f.person !== undefined && personOf.has(s.id))) return
         const dx = Math.abs(px - (f.x + f.w / 2)), dy = Math.abs(py - (f.y + f.h / 2))
         // Seen by the tracker: on that face. Only marked: the face nearest across
         if (seen ? dx > f.w || dy > f.h : dx > MARK_REACH) return

@@ -1919,13 +1919,18 @@ export function EditorShell({
     if (!res.ok) throw new Error(data.error ?? 'Something went wrong')
     return data
   }
+  // A tap while the last mark is still being saved is ignored (user, 2026-10-24: a double tap on a
+  // face made C and C — the face showed unmarked until the first was saved)
+  const markingSubjectRef = useRef(false)
   /** `atSourceMs`: a moment of the source video (a face of a camera angle); else the moment on screen */
   async function markSubject(x: number, y: number, atSourceMs?: number) {
+    if (markingSubjectRef.current) return
     pause()
     setMarking(false)
     setSubjectNotice(null)
     // The moment on screen, in the source video's time
     const mark_ms = atSourceMs ?? Math.round(trim.toSource(Math.max(0, liveTime.get())))
+    markingSubjectRef.current = true
     try {
       const { subject } = await subjectsCall(subjectsUrl, { method: 'POST', body: JSON.stringify({ mark_ms, x, y }) })
       setSubjects(list => [...list, { ...subject, seen: null, stale: false }])
@@ -1933,6 +1938,7 @@ export function EditorShell({
       // Not looked for yet: everyone and every group is marked first, then Mark in the whole clip
       // (markInWholeClip) finds them all together
     } catch (e) { setSubjectsError(e instanceof Error ? e.message : 'Could not mark them') }
+    finally { markingSubjectRef.current = false }
   }
   /**
    * Mark the subject: whoever the view (the 9:16 box) is on right now — no second click. Only where

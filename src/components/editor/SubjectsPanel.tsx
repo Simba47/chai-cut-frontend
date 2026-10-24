@@ -57,6 +57,8 @@ export interface AnglesView {
   items: AngleItem[]
   /** The angle at the playhead (its place in items) */
   now: number | null
+  /** Found before the clip's start or end moved out: the new part isn't in the list */
+  stale?: boolean
 }
 
 interface Props {
@@ -67,7 +69,7 @@ interface Props {
   onMarkFace: (index: number, face: number) => void
   /** Mark someone by a click on the video (a face the list doesn't show) */
   onClickMark: () => void
-  /** Look for the angles again */
+  /** Look for the people and scenes again (Try again, Detect again) */
   onScanAngles: () => void
   subjects: SubjectItem[]
   loading: boolean
@@ -126,14 +128,35 @@ export function SubjectsPanel(p: Props) {
 
   return (
     <div className="flex flex-col gap-3 p-4">
-      <div className="flex flex-col gap-0.5">
-        <span className="text-[14px] font-bold text-[var(--ed-text)]">Who is in this clip?</span>
-        <span className="text-[11.5px]" style={{ color: muted }}>
-          {p.angles.status === 'scanning' ? `Looking for people… ${scanPct}%`
-            : listed ? 'Tap everyone the view should follow. Tap each person once.'
-            : 'Pick the people the view should follow.'}
-        </span>
+      <div className="flex items-start gap-2">
+        <div className="flex-1 min-w-0 flex flex-col gap-0.5">
+          <span className="text-[14px] font-bold text-[var(--ed-text)]">Who is in this clip?</span>
+          <span className="text-[11.5px]" style={{ color: muted }}>
+            {p.angles.status === 'scanning' ? `Looking for people… ${scanPct}%`
+              : listed ? 'Tap everyone the view should follow. Tap each person once.'
+              : 'Pick the people the view should follow.'}
+          </span>
+        </div>
+        {/* Look for the people and scenes again (someone missed, a scene wrong, or the clip changed);
+            the people marked stay marked */}
+        {p.angles.status === 'done' && (
+          <button type="button" onClick={p.onScanAngles} title="Look for the people and scenes in this clip again. The people you marked stay marked."
+            className="shrink-0 h-7 px-2.5 flex items-center gap-1.5 rounded-md text-[11.5px] font-semibold transition-colors hover:bg-[rgb(var(--ed-fg)/0.12)]"
+            style={p.angles.stale
+              ? { background: 'rgba(200,255,0,0.14)', color: 'var(--ed-accent-text)', boxShadow: 'inset 0 0 0 1px rgba(200,255,0,0.5)' }
+              : { background: 'rgb(var(--ed-fg) / 0.07)', color: 'var(--ed-text)' }}>
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M21 12a9 9 0 11-2.64-6.36" /><path d="M21 4v5h-5" />
+            </svg>
+            Detect again
+          </button>
+        )}
       </div>
+      {p.angles.status === 'done' && p.angles.stale && (
+        <p className="-mt-1.5 text-[11px]" style={{ color: 'var(--ed-accent-text)' }}>
+          The clip got longer since people were found: Detect again to look in the new part too.
+        </p>
+      )}
 
       {p.angles.status === 'scanning' && (
         <>
