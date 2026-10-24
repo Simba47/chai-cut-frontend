@@ -73,7 +73,12 @@ export function ScrubPlayer({ src, videoRef, durationMs: durHint, loadKey, onTim
   function pump() {
     const v = videoRef.current
     if (!v || want.current === null || v.seeking) return
-    if (Math.abs(v.currentTime * 1000 - want.current) < 40) return
+    // Already there (e.g. letting go where the drag had jumped to): nothing to wait for, so the
+    // bar follows the video again — kept, it would ignore every time update from then on
+    if (Math.abs(v.currentTime * 1000 - want.current) < 40) {
+      if (!draggingRef.current) want.current = null
+      return
+    }
     v.currentTime = want.current / 1000
   }
   /** The real frame is (close to) the moment asked for: the stand-in picture goes */
@@ -250,7 +255,11 @@ export function ScrubPlayer({ src, videoRef, durationMs: durHint, loadKey, onTim
           if (want.current !== null && Math.abs(v.currentTime * 1000 - want.current) >= 40) pump()
           else if (!draggingRef.current) { want.current = null; onTime(v.currentTime * 1000) }
         }}
-        onPlay={() => setPlaying(true)}
+        onPlay={e => {
+          setPlaying(true)
+          // (playing with no jump on the way: the bar follows the video from here)
+          if (!e.currentTarget.seeking && !draggingRef.current) want.current = null
+        }}
         onPause={() => setPlaying(false)}
         onVolumeChange={e => setMuted(e.currentTarget.muted)}
         onError={e => onError?.(e.currentTarget)}
