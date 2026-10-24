@@ -1622,8 +1622,10 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
           </aside>
         )}
 
-        {/* ── Centre: the video, as large as fits, with the new-clip bar right under it ── */}
-        <main className="cb-panel flex-1 min-w-0 flex flex-col gap-4 p-4 overflow-y-auto">
+        {/* ── Centre: the video, as large as fits, with the new-clip bar right under it ──
+            (data-keep-clip-open: a click here — playing the clip preview, its arrows, Edit this
+            clip — doesn't count as "outside" the open clip, so the preview stays) */}
+        <main data-keep-clip-open className="cb-panel flex-1 min-w-0 flex flex-col gap-4 p-4 overflow-y-auto">
           {viewBar}
           {wide ? (
             // Container-query box: the player takes the biggest size (in the video's own shape) that fits both ways
@@ -2324,12 +2326,13 @@ function ClipCard({ id, focused, number, origin, title, startMs, endMs, status, 
   // The delete button's "Delete this clip?" (no ⋯ menu: Edit and the time line cover the rest)
   const [menu, setMenu] = useState<false | 'confirm'>(false)
   const sub = useSubEdit(id, onSubEdited)
-  // Opened: a click anywhere outside the card closes it again (not while picking clips, nor in its own pop-ups)
+  // Opened: a click anywhere outside the card closes it again (not while picking clips, nor in its
+  // own pop-ups, nor on the centre panel where it is being previewed: data-keep-clip-open)
   useEffect(() => {
     if (!open || selecting) return
     const away = (e: PointerEvent) => {
       const t = e.target as HTMLElement | null
-      if (!t || t.closest(`#clip-${CSS.escape(id)}`) || t.closest('[role="dialog"], [role="alertdialog"], [role="menu"]')) return
+      if (!t || t.closest(`#clip-${CSS.escape(id)}`) || t.closest('[role="dialog"], [role="alertdialog"], [role="menu"], [data-keep-clip-open]')) return
       onClose?.()
     }
     document.addEventListener('pointerdown', away)
