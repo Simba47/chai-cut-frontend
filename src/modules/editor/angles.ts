@@ -39,7 +39,7 @@ export interface AngleRow {
   totalMs: number
   /** The group marked on this angle */
   group: { label: string; layout: string; color: string } | null
-  /** Someone in it is marked, or it has a group */
+  /** It has a group, or (one person) they are marked — someone marked elsewhere doesn't set a group scene */
   set: boolean
   /** Where the playhead goes to show it (timeline ms) */
   jumpMs: number
@@ -123,7 +123,9 @@ export function angleRows(
       people: a.people, at: a.at, faces, shown, jumpMs,
       totalMs: shown.reduce((n, [s, e]) => n + e - s, 0),
       group: g ? { label: g.label, layout: g.shot!.layout, color: g.color } : null,
-      set: !!g || faces.some(f => f.subject),
+      // A scene of two or more is a group scene: set only by a group marked on it (user, 2026-10-24:
+      // marking the man in his close-up ticked every group scene he sits in) — each scene is its own
+      set: !!g || (a.people < 2 && faces.some(f => f.subject)),
     }]
   })
 }

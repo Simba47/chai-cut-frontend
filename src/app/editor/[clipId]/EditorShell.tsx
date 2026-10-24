@@ -2134,13 +2134,12 @@ export function EditorShell({
     if (wasBusyRef.current && !busy) frameClipOnSubjects(subjects)
     wasBusyRef.current = busy
   }, [subjects]) // eslint-disable-line react-hooks/exhaustive-deps
-  // The clip grew past what was tracked: track everyone again (the view is framed again after)
-  const restaleRef = useRef(false)
-  useEffect(() => {
-    if (restaleRef.current || subjectsBusy) return
-    const old = subjects.some(s => s.status === 'done' && (s.cuts === undefined || s.cuts === null) && s.path?.length && s.path[0].length < 6)
-    if (old || subjectItems.some(s => s.status === 'done' && s.stale)) { restaleRef.current = true; trackSubjectsNow(true) }
-  }, [subjectItems, subjectsBusy]) // eslint-disable-line react-hooks/exhaustive-deps
+  // The clip grew past what was tracked, or they were tracked by an older worker (no camera cuts, no
+  // talking): they need following again. Never started by itself (user, 2026-10-24: nothing calls the
+  // worker unless pressed) — the panel says so and Follow them again does it
+  const needsRetrack = !subjectsBusy && (
+    subjects.some(s => s.status === 'done' && (s.cuts === undefined || s.cuts === null) && s.path?.length && s.path[0].length < 6)
+    || subjectItems.some(s => s.status === 'done' && s.stale))
   // The tracked people on the video, at a clip time (while the Subjects tool is open)
   const subjectsAt = useMemo(() => {
     const tracked = subjects.filter(s => s.status === 'done' && s.path?.length)
@@ -2154,8 +2153,8 @@ export function EditorShell({
 
   // ── Camera angles (modules/editor/angles.ts) ──
   // Every angle of the clip, listed in the Subjects tool so each gets its subject or its group. The
-  // worker looks for them when the tool first opens (Raj's Subjects panel has no Detect angles
-  // button), and again when the clip grew past what it read.
+  // worker looks for them only when Detect subjects (or Detect again) is pressed (user, 2026-10-24:
+  // opening the tool started a scan by itself); a list found before is read when the editor opens.
   type AnglesData = { status: 'none' | 'queued' | 'running' | 'done' | 'failed' | 'unavailable'; progress: number; error: string | null; angles: Angle[]; scan_start_ms: number | null; scan_end_ms: number | null }
   const [anglesData, setAnglesData] = useState<AnglesData | null>(null)
   const loadAngles = useCallback(async (scan = false) => {
@@ -2172,19 +2171,7 @@ export function EditorShell({
   }, [subjectsUrl, rawClip.start_ms, rawClip.end_ms])
   // (read when the editor opens — no scan — so a format picked anywhere can snap to the camera cuts)
   useEffect(() => { if (!anglesData) loadAngles() }, [anglesData, loadAngles])
-  // Never looked for, or the clip grew past what was read: look (once for each start and end of the clip)
-  const anglesAskedRef = useRef('')
-  useEffect(() => {
-    if (tool !== 'subjects' || !anglesData) return
-    const grown = anglesData.status === 'done' && anglesData.scan_start_ms !== null && anglesData.scan_end_ms !== null
-      && (rawClip.start_ms < anglesData.scan_start_ms - 500 || rawClip.end_ms > anglesData.scan_end_ms + 500)
-    if (anglesData.status !== 'none' && !grown) return
-    const range = `${rawClip.start_ms}-${rawClip.end_ms}`
-    if (anglesAskedRef.current === range) return
-    anglesAskedRef.current = range
-    loadAngles(true)
-  }, [tool, anglesData, rawClip.start_ms, rawClip.end_ms, loadAngles])
-  // The clip grew past what was read: the list misses the new part (Detect angles again)
+  // The clip grew past what was read: the list misses the new part (Detect again)
   const anglesStale = anglesData?.status === 'done' && anglesData.scan_start_ms !== null && anglesData.scan_end_ms !== null
     && (rawClip.start_ms < anglesData.scan_start_ms - 500 || rawClip.end_ms > anglesData.scan_end_ms + 500)
   const anglesBusy = anglesData?.status === 'queued' || anglesData?.status === 'running'
@@ -2199,7 +2186,7 @@ export function EditorShell({
   )
   const angleNow = useMemo(() => (tool === 'subjects' && angleItems.length ? angleAt(angleItems, currentTimeMs) : null), [tool, angleItems, currentTimeMs])
   const anglesView = useMemo<AnglesView>(() => ({
-    status: !anglesData ? 'loading' : anglesData.status === 'none' || anglesData.status === 'queued' || anglesData.status === 'running' ? 'scanning' : anglesData.status,
+    status: !anglesData ? 'loading' : anglesData.status === 'queued' || anglesData.status === 'running' ? 'scanning' : anglesData.status,
     progress: anglesData?.progress ?? 0, error: anglesData?.error ?? null, items: angleItems, now: angleNow, stale: !!anglesStale,
   }), [anglesData, angleItems, angleNow, anglesStale])
   // The camera cuts on the timeline (ms): where one scene meets another, from the scenes list
@@ -2246,10 +2233,15 @@ export function EditorShell({
     if (tool !== 'subjects' || !angleItems.length || soloScenesRef.current === anglesData) return
     soloScenesRef.current = anglesData
     const sectionsNow = () => useEditorStore.getState().segments.filter(x => !isShot(x, mainVideoId))
+    // Where a group was found (Follow): its format, whatever the scenes list says (user, 2026-10-24: a
+    // wide shot listed in a close-up's scene had its group's Trio turned back to Vertical here)
+    const groupPlaces = subjects.filter(s => s.shot && s.status === 'done' && s.spans?.length)
+      .flatMap(s => s.spans!.map(([a, b]) => [trim.toTimeline(a), trim.toTimeline(b)] as const))
     let fixed = 0
     for (const row of angleItems) {
       if (row.people !== 1 || row.group) continue
       const spans = row.shown.filter(([a, b]) => {
+        if (groupPlaces.some(([x, y]) => Math.min(b, y) - Math.max(a, x) >= 300)) return false
         const over = sectionsNow().filter(x => x.end_ms > a + 50 && x.start_ms < b - 50)
         if (!over.some(x => !x.locked && !isFrameLayout(x.layout) && (LAYOUT_SLOT_COUNT[x.layout] ?? 1) > 1)) return false
         return !(over.length === 1 && Math.abs(over[0].start_ms - a) <= 150 && Math.abs(over[0].end_ms - b) <= 150)
@@ -2267,10 +2259,14 @@ export function EditorShell({
     seekToMs(a.jumpMs)
   }
   /** A click on a face of an angle: that person, marked at the angle's own moment */
-  function markAngleFace(i: number, k: number) {
+  const [savingFace, setSavingFace] = useState<{ index: number; face: number } | null>(null)
+  async function markAngleFace(i: number, k: number) {
     const a = angleItems[i], f = a?.faces[k]
-    if (!f || f.subject) return
-    markSubject(f.box.x + f.box.w / 2, f.box.y + f.box.h / 2, a.at)
+    if (!f || f.subject || markingSubjectRef.current) return
+    // (the face shows it is being saved until it turns into their letter)
+    setSavingFace({ index: i, face: k })
+    try { await markSubject(f.box.x + f.box.w / 2, f.box.y + f.box.h / 2, a.at) }
+    finally { setSavingFace(null) }
   }
   function markByClick() {
     setSubjectNotice(null)
@@ -5138,10 +5134,10 @@ export function EditorShell({
 
             {tool === 'subjects' && (
               <SubjectsPanel
-                angles={anglesView} onOpenAngle={openAngle} onMarkFace={markAngleFace} onClickMark={markByClick}
+                angles={anglesView} onOpenAngle={openAngle} onMarkFace={markAngleFace} savingFace={savingFace} onClickMark={markByClick}
                 onScanAngles={() => loadAngles(true)}
                 subjects={subjectItems} loading={subjectsLoading} error={subjectsError}
-                marking={marking} onToggleMarking={markFromView} onMarkShot={markShot} onMarkInClip={markInWholeClip}
+                marking={marking} onToggleMarking={markFromView} onMarkShot={markShot} onMarkInClip={markInWholeClip} retrack={needsRetrack}
                 onRemove={removeSubject} onRename={renameSubject}
                 videoUrl={videoUrl}
                 showOnVideo={showSubjects} onShowOnVideo={setShowSubjects} notice={subjectNotice}
