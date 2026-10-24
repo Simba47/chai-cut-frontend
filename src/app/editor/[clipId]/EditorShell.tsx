@@ -67,7 +67,7 @@ import { frameSlotSize } from '@/modules/editor/frames'
 import { getBoxPositionAtLerp, type BoxPosition } from '@/lib/interpolation'
 import { SubjectsPanel, type SubjectItem, type AnglesView } from '@/components/editor/SubjectsPanel'
 import { angleRows, angleAt, type Angle, type AngleRow } from '@/modules/editor/angles'
-import { autoLayoutFor } from '@/modules/editor/autoFormat'
+import { decideFormat } from '@/modules/editor/autoFormat'
 import type { SegmentLocal, CropBoxLocal, FrameLayout, FrameLane, FrameItem, FrameSettings, TransitionType } from '@chai-cut/shared'
 import { SPEED_MIN, SPEED_MAX } from '@chai-cut/shared'
 import { TransitionsPanel, TRANSITION_DEFAULT_MS, TRANSITION_KINDS, playedTransitionMs, type TransitionJoin } from '@/components/editor/TransitionsPanel'
@@ -2078,6 +2078,26 @@ export function EditorShell({
     const { segments: segs, keyframes: kfs } = useEditorStore.getState()
     const next = { ...kfs }
     let framed = 0
+    // After Auto format: a view it placed on two or more people (the middle two of a Trio, a side of
+    // the table, everyone in one Vertical) holds where it is — following would put it on one of them
+    const holdGroups = autoFollowRef.current
+    autoFollowRef.current = false
+    /** The view has two or more of them in it most of the time (someone leaning in for a moment isn't it) */
+    const onSeveral = (seg: SegmentLocal, box: CropBoxLocal) => {
+      let seen = 0, several = 0
+      for (let t = seg.start_ms; t < seg.end_ms; t += 500) {
+        const v = getBoxPositionAtLerp(t, kfs[box.id] ?? box.keyframes ?? [])
+        const inside = tracked.filter(p => {
+          const face = subjectBoxAt(p.path, trim.toSource(t), cuts)
+          if (!face) return false
+          const cx = face.x + face.w / 2, cy = face.y + face.h / 2
+          return cx >= v.x && cx <= v.x + v.w && cy >= v.y && cy <= v.y + v.h
+        }).length
+        if (inside) seen++
+        if (inside >= 2) several++
+      }
+      return seen > 0 && several * 2 >= seen
+    }
     for (const seg of segs.filter(x => !isShot(x, mainVideoId) && x.end_ms - x.start_ms > 250).sort((a, b) => a.start_ms - b.start_ms)) {
       if (seg.locked || seg.layout === 'horizontal' || inGroup(seg)) continue
       const frame = isFrameLayout(seg.layout)
@@ -2089,6 +2109,7 @@ export function EditorShell({
       // Two or more views: each follows the person inside it, nobody in two (viewPeople)
       const who = views.length > 1 ? viewPeople(seg, views, tracked, kfs, cuts) : null
       views.forEach((box, i) => {
+        if (holdGroups && onSeveral(seg, box)) return
         const size = getBoxPositionAtLerp(seg.start_ms, kfs[box.id] ?? box.keyframes ?? [])
         const view = { w: size.w, h: size.h }
         const person = who ? who[i] : null
@@ -2196,10 +2217,15 @@ export function EditorShell({
     const id = setInterval(() => loadAngles(), 2500)
     return () => clearInterval(id)
   }, [anglesBusy, tool, loadAngles])
-  const angleItems = useMemo(
-    () => (anglesData?.status === 'done' ? angleRows(anglesData.angles, subjects, subjectCuts(subjects), trim.toTimeline, clipLengthMs) : []),
-    [anglesData, subjects, trim, clipLengthMs], // eslint-disable-line react-hooks/exhaustive-deps
-  )
+  const angleItems = useMemo(() => {
+    if (anglesData?.status !== 'done') return []
+    // A scene's format: the one section covering exactly each of its stretches (Auto format, or a format picked here)
+    const formatOf = (a: number, b: number) => {
+      const over = sections.filter(x => x.end_ms > a + 50 && x.start_ms < b - 50)
+      return over.length === 1 && Math.abs(over[0].start_ms - a) <= 150 && Math.abs(over[0].end_ms - b) <= 150 ? over[0].layout : null
+    }
+    return angleRows(anglesData.angles, subjects, subjectCuts(subjects), trim.toTimeline, clipLengthMs, formatOf)
+  }, [anglesData, subjects, trim, clipLengthMs, sections]) // eslint-disable-line react-hooks/exhaustive-deps
   const angleNow = useMemo(() => (tool === 'subjects' && angleItems.length ? angleAt(angleItems, currentTimeMs) : null), [tool, angleItems, currentTimeMs])
   const anglesView = useMemo<AnglesView>(() => ({
     status: !anglesData ? 'loading' : anglesData.status === 'queued' || anglesData.status === 'running' ? 'scanning' : anglesData.status,
@@ -2292,11 +2318,10 @@ export function EditorShell({
 
   /**
    * Auto format (user, 2026-10-24: "after Detect, the format should be made automatically"): every
-   * scene not formatted yet gets the format its people call for, views on them (autoLayoutFor); the
-   * people of the one-person scenes are marked (each once — who they are), each scene of two or more
-   * becomes a group with its format (so it has it wherever its shot comes back), and Follow starts.
-   * A scene formatted by hand — each of its stretches exactly one section, as a format picked in this
-   * tool leaves it — or with a group marked stays as it is. The formats are one undo step.
+   * place of every scene not formatted yet gets the format the user's decision table gives it, views
+   * on its people (modules/editor/autoFormat.ts decideFormat — who talks there decides who goes at the
+   * bottom); everyone is marked (each once — who they are) and Follow starts. A place formatted by
+   * hand, or a scene with a group marked, stays as it is. The formats are one undo step.
    * Not detected yet (or the clip grew since): it detects first (runAutoFormat).
    */
   const [autoPhase, setAutoPhase] = useState<'idle' | 'detecting' | 'formatting'>('idle')
@@ -2306,6 +2331,8 @@ export function EditorShell({
   const autoAfterScanRef = useRef(false)
   /** This Auto format laid formats (Stop says they stay) */
   const formatsLaidRef = useRef(false)
+  /** The following Auto format started: when done, views on two or more people hold (frameClipOnSubjects) */
+  const autoFollowRef = useRef(false)
   function runAutoFormat() {
     if (autoPhase !== 'idle') return
     stopAskedRef.current = false
@@ -2335,34 +2362,53 @@ export function EditorShell({
     try {
       const ar = getVideoAR()
       const sectionsNow = () => useEditorStore.getState().segments.filter(x => !isShot(x, mainVideoId))
-      const byHand = (row: AngleRow) => !!row.group || row.shown.every(([a, b]) => {
+      // A place formatted by hand — exactly one section, as a format picked in this tool leaves it — or
+      // a scene with a group marked stays as it is
+      const byHand = ([a, b]: readonly [number, number]) => {
         const over = sectionsNow().filter(x => x.end_ms > a + 50 && x.start_ms < b - 50)
         return over.length === 1 && Math.abs(over[0].start_ms - a) <= 150 && Math.abs(over[0].end_ms - b) <= 150
-      })
-      const rows = angleItems.filter(r => r.people > 0)
-      // The formats, all at once (one undo step)
-      const laid = { vertical: 0, split: 0, trio: 0, halves: 0 }
-      const groups: Array<{ at: number; layout: string; boxes: Array<{ slot_index: number; x: number; y: number; w: number; h: number }> }> = []
-      for (const row of rows.filter(r => !byHand(r))) {
-        const plan = autoLayoutFor(row.faces.map(f => f.box), ar)
-        if (!plan) continue
-        if (!formatSpans(row.shown, plan.layout, plan.framing).length) continue
-        formatsLaidRef.current = true
-        if (plan.halves) laid.halves++
-        else if (plan.layout === 'vertical' || plan.layout === 'split' || plan.layout === 'trio') laid[plan.layout]++
-        if (row.people >= 2) groups.push({ at: row.at, layout: plan.layout, boxes: plan.framing.map((b, i) => ({ slot_index: i, x: b.x, y: b.y, w: b.w, h: b.h })) })
       }
-      // Who to follow: the person of each one-person scene, once each (where their face is biggest)
+      const rows = angleItems.filter(r => r.people > 0)
+      // Each place of each scene on its own (who talks differs between them: modules/editor/autoFormat.ts),
+      // all decided first, then laid at once (one undo step)
+      const plans = rows.filter(r => !r.group).flatMap(row => row.places.filter(pl => !byHand(pl.shown)).flatMap(pl => {
+        const plan = decideFormat(row.faces.map(f => f.box), pl.talk, ar)
+        return plan ? [{ row, shown: pl.shown, plan }] : []
+      }))
+      // A scene of two or more that gets the same format and views in every place (who talks changes
+      // nothing there: four people's Trio, say) becomes a group with it (user, 2026-10-24: the scene
+      // showed "Mark as group" after Auto format): wherever its shot comes back, Follow gives it the
+      // same — even a piece the scenes list missed. One whose speaker changes between places stays
+      // as laid, place by place (it shows as formatted)
+      const sameEverywhere = (row: AngleRow) => {
+        const mine = plans.filter(x => x.row === row)
+        if (row.people < 2 || mine.length !== row.places.length) return null
+        const key = (x: typeof mine[number]) => JSON.stringify([x.plan.layout, x.plan.framing.map(b => [b.x, b.y, b.w, b.h].map(v => Math.round(v * 1000)))])
+        return mine.every(x => key(x) === key(mine[0])) ? mine[0].plan : null
+      }
+      const groups = rows.flatMap(row => {
+        const plan = sameEverywhere(row)
+        return plan && plan.layout !== 'vertical'
+          ? [{ at: row.at, layout: plan.layout, boxes: plan.framing.map((b, i) => ({ slot_index: i, x: b.x, y: b.y, w: b.w, h: b.h })) }]
+          : []
+      })
+      const laid = { vertical: 0, split: 0, trio: 0 }
+      for (const { shown, plan } of plans) {
+        if (stopAskedRef.current) break
+        if (!formatSpans([shown], plan.layout, plan.framing).length) continue
+        formatsLaidRef.current = true
+        if (plan.layout === 'vertical' || plan.layout === 'split' || plan.layout === 'trio') laid[plan.layout]++
+      }
+      // Who to follow: everyone whose face can be told (once each, where it is biggest), and the person
+      // of a one-person scene even when it can't — a view on one person keeps on them as they move
       const people = new Map<string, { at: number; x: number; y: number; size: number }>()
-      for (const row of rows) {
-        if (row.people !== 1) continue
-        const f = row.faces[0]
-        if (!f || f.subject) continue
+      for (const row of rows) for (const f of row.faces) {
+        if (f.subject || (f.box.person === undefined && row.people !== 1)) continue
         const key = f.box.person !== undefined ? `p${f.box.person}` : `s${row.at}`
         const size = f.box.w * f.box.h, best = people.get(key)
         if (!best || size > best.size) people.set(key, { at: row.at, x: f.box.x + f.box.w / 2, y: f.box.y + f.box.h / 2, size })
       }
-      // (a person already marked elsewhere is theirs: not marked again)
+      // (a person already marked is theirs: not marked again)
       const markedPersons = new Set(rows.flatMap(r => r.faces.filter(f => f.subject && f.box.person !== undefined).map(f => `p${f.box.person}`)))
       const added: SubjectRow[] = []
       for (const [key, m] of people) {
@@ -2378,22 +2424,21 @@ export function EditorShell({
         try {
           const { subject } = await subjectsCall(subjectsUrl, { method: 'POST', body: JSON.stringify({ mark_ms: g.at, x: 0.5, y: 0.5, shot: { layout: g.layout, boxes: g.boxes } }) })
           added.push({ ...subject, seen: null, stale: false })
-        } catch { /* as above */ }
+        } catch { /* the most groups a clip can have, say: the scene stays as laid */ }
       }
       if (added.length) setSubjects(list => [...list, ...added])
-      const scenes = laid.vertical + laid.split + laid.trio + laid.halves
-      const what = [
-        laid.vertical && `${laid.vertical} Vertical`, laid.split && `${laid.split} Split`,
-        laid.trio && `${laid.trio} Trio`, laid.halves && `${laid.halves} Split by halves`,
-      ].filter(Boolean).join(', ')
+      const scenes = laid.vertical + laid.split + laid.trio
+      const what = [laid.vertical && `${laid.vertical} Vertical`, laid.split && `${laid.split} Split`, laid.trio && `${laid.trio} Trio`].filter(Boolean).join(', ')
       if (stopAskedRef.current) return
       if (!scenes && !added.length) {
         setSubjectNotice('Every scene already has its format — nothing to do.')
         return
       }
+      // When the following is done, a view on two or more people holds where it is (frameClipOnSubjects)
+      autoFollowRef.current = true
       // Follow them (it runs in the background; the bar at the bottom shows it)
       await trackSubjectsNow(true)
-      setSubjectNotice(`${scenes ? `${scenes} ${scenes === 1 ? 'scene' : 'scenes'} formatted (${what}). ` : ''}Following them now — the views keep on the people as they move. Undo takes the formats back.`)
+      setSubjectNotice(`${scenes ? `${scenes} ${scenes === 1 ? 'place' : 'places'} formatted (${what}). ` : ''}Following them now — the views keep on the people as they move. Undo takes the formats back.`)
     } catch (e) {
       setSubjectsError(e instanceof Error ? e.message : 'Auto format didn’t finish')
     } finally {

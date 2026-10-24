@@ -45,8 +45,10 @@ export interface AngleItem {
   totalMs: number
   /** The group marked on it */
   group: { label: string; layout: string; color: string } | null
-  /** Someone in it is marked, or it has a group */
+  /** Someone in it is marked (one person), or it has a group or its own format (two or more) */
   set: boolean
+  /** Its format, each of its stretches exactly one section (Auto format): the layout, 'mixed' when they differ; null: not */
+  formatted?: string | null
 }
 
 export interface AnglesView {
@@ -264,13 +266,25 @@ export function SubjectsPanel(p: Props) {
                       {cur.group.label} · {LAYOUT_NAMES[cur.group.layout] ?? cur.group.layout}
                     </span>
                   ) : (
-                    <button type="button" onClick={p.onMarkShot}
-                      title="Set this scene's layout and views first (say Split), then mark it. Every time the clip shows this shot again, it gets the same."
-                      className="h-9 flex items-center justify-center gap-2 rounded-lg text-[12.5px] font-bold transition-colors hover:bg-[rgba(200,255,0,0.2)]"
-                      style={{ background: 'rgba(200,255,0,0.12)', color: 'var(--ed-accent-text)', boxShadow: 'inset 0 0 0 1.5px rgba(200,255,0,0.55)' }}>
-                      {groupIcon(15)}
-                      Mark as group
-                    </button>
+                    <>
+                      {/* Formatted (Auto format, place by place: the speaker can change which view is whose) */}
+                      {cur.formatted && (
+                        <span className="flex items-center gap-1.5 text-[12px] font-semibold" style={{ color: 'var(--ed-accent-text)' }}
+                          title={cur.formatted === 'mixed' ? 'Each time this shot comes back it has its own format — who talks decides who is where' : undefined}>
+                          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5" /></svg>
+                          Formatted · {cur.formatted === 'mixed' ? 'by who talks' : LAYOUT_NAMES[cur.formatted] ?? cur.formatted}
+                        </span>
+                      )}
+                      <button type="button" onClick={p.onMarkShot}
+                        title="Set this scene's layout and views first (say Split), then mark it. Every time the clip shows this shot again, it gets the same."
+                        className="h-9 flex items-center justify-center gap-2 rounded-lg text-[12.5px] font-bold transition-colors hover:bg-[rgba(200,255,0,0.2)]"
+                        style={cur.formatted
+                          ? { background: 'rgb(var(--ed-fg) / 0.06)', color: 'var(--ed-text)', boxShadow: 'inset 0 0 0 1px rgb(var(--ed-fg) / 0.12)' }
+                          : { background: 'rgba(200,255,0,0.12)', color: 'var(--ed-accent-text)', boxShadow: 'inset 0 0 0 1.5px rgba(200,255,0,0.55)' }}>
+                        {groupIcon(15)}
+                        Mark as group
+                      </button>
+                    </>
                   )}
                 </>
               ) : (
