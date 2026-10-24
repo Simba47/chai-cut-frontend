@@ -203,9 +203,20 @@
   font-size: clamp(24px, 3vw, 32px); font-weight: 900; letter-spacing: -0.03em; margin-bottom: 8px;
 }
 .dash-drop.is-empty .dash-progress { margin: 10px auto 0; }
+/* uploading into the first-run box: the file's name as a title (not the big heading), the bar
+   centred under it with its percentage */
+.dash-drop.is-empty .dash-drop-text { width: 100%; max-width: 560px; }
+.dash-drop.is-empty .dash-drop-text p.dash-upload-title { font-size: 18px; font-weight: 700; letter-spacing: -0.01em; margin-bottom: 6px; }
+.dash-drop.is-empty .dash-progress-row { margin: 14px auto 0; max-width: 440px; }
+.dash-drop.is-empty .dash-progress-row .dash-progress { margin: 0; }
+.dash-drop.is-empty .dash-upload-hint { margin-top: 10px; }
 
 /* Upload interrupted: the reason, and Cancel / Retry */
 .dash-drop-text p.dash-drop-error { color: var(--danger); }
+/* the uploading file's name: at most two lines (long video names), the whole name on hover */
+.dash-drop-text p.dash-upload-title {
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere;
+}
 /* uploading: "280 MB of 924 MB · 6.2 MB/s · about 2 min left" */
 .dash-drop-text p.dash-upload-pace { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; margin-bottom: 2px; }
 .dash-drop-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
