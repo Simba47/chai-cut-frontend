@@ -8,7 +8,8 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 // batches). A failed part is retried on its own (three tries, with backoff), the upload waits
 // while the browser is offline, and "Retry" after a failure continues with the parts R2 doesn't
 // have yet instead of starting again. Our server only signs each request (/api/ingest/sign),
-// which is where the plan's size and video-count limits are checked.
+// which is where the plan's size and video-count limits are checked. The state carries the
+// measured speed and time left (uploadPace), and each upload logs how fast it went.
 
 const PART_SIZE = 16 * 1024 * 1024
 /** Parts going up at once (browsers open about 6 connections to one host) */
@@ -16,6 +17,15 @@ const PARALLEL_PARTS = 6
 /** Part links signed per request to our server */
 const SIGN_BATCH = 24
 const PART_TRIES = 3
+/** Progress reaches the page at most this often (each part reports many times a second: redrawing the page for each was wasted work) */
+const REPORT_MS = 250
+/** The speed shown is over the last this long (steady, but still follows a change in the connection) */
+const SPEED_WINDOW_MS = 8000
+/** No speed or time left until it has been measured this long (the first second runs fast: the
+ *  browser counts bytes as sent once they're in the connection's buffer, before they've gone) */
+const SPEED_MIN_MS = 3000
+/** How far the time left moves towards each new estimate (4 reports a second: settles in ~1 s) */
+const LEFT_EASE = 0.3
 
 export type UploadPhase = 'idle' | 'uploading' | 'finishing' | 'failed'
 
@@ -27,9 +37,28 @@ export interface UploadState {
   error: string | null
   /** A failed upload can continue (connection problems); a refused one can't (plan limit, file type) */
   canRetry: boolean
+  /** Bytes in R2 so far, of `total` */
+  loaded: number
+  total: number
+  /** Measured upload speed (bytes a second) and the time left at it; null until measured */
+  bytesPerSec: number | null
+  secondsLeft: number | null
 }
 
-const IDLE: UploadState = { phase: 'idle', fileName: '', progress: 0, error: null, canRetry: false }
+const IDLE: UploadState = { phase: 'idle', fileName: '', progress: 0, error: null, canRetry: false, loaded: 0, total: 0, bytesPerSec: null, secondsLeft: null }
+
+/** "924 MB", "1.4 GB" */
+export function formatBytes(n: number) {
+  const mb = n / (1024 * 1024)
+  return mb >= 1024 ? `${(mb / 1024).toFixed(1)} GB` : `${Math.max(1, Math.round(mb))} MB`
+}
+/** The speed and time left, e.g. "6.2 MB/s · about 2 min left" (null until measured) */
+export function uploadPace(s: UploadState): string | null {
+  if (s.bytesPerSec == null || s.secondsLeft == null) return null
+  const left = s.secondsLeft
+  const time = left < 10 ? 'a few seconds' : `about ${left < 60 ? `${Math.ceil(left / 10) * 10} s` : left < 3600 ? `${Math.ceil(left / 60)} min` : `${Math.floor(left / 3600)} h ${Math.ceil((left % 3600) / 60)} min`}`
+  return `${(s.bytesPerSec / (1024 * 1024)).toFixed(1)} MB/s · ${time} left`
+}
 
 async function readDurationMs(file: File): Promise<number | undefined> {
   try {
@@ -144,11 +173,42 @@ export function useVideoUpload(onDone: (videoId: string) => void, { asset = fals
     const n = mp.etags.length
     const sent = new Array<number>(n).fill(0)
     mp.etags.forEach((e, i) => { if (e) sent[i] = Math.min(PART_SIZE, file.size - i * PART_SIZE) })
-    const report = () => {
+    // Speed: bytes sent over the last SPEED_WINDOW_MS (parts R2 already had don't count)
+    const samples: Array<{ t: number; done: number }> = []
+    const began = performance.now()
+    const before = sent.reduce((a, b) => a + b, 0)
+    let lastReport = 0
+    let pending: ReturnType<typeof setTimeout> | null = null
+    // The time left shown: what is left at the measured speed, eased towards each new estimate
+    // (follows the connection both ways, without jumping at every report)
+    let shownLeft: number | null = null
+    const report = (now = false) => {
+      const t = performance.now()
+      if (!now && t - lastReport < REPORT_MS) {
+        pending ??= setTimeout(() => { pending = null; report(true) }, REPORT_MS - (t - lastReport))
+        return
+      }
+      if (pending) { clearTimeout(pending); pending = null }
+      lastReport = t
       const done = sent.reduce((a, b) => a + b, 0)
-      setState(s => (s.phase === 'uploading' ? { ...s, progress: Math.min(99, Math.round((done / file.size) * 100)) } : s))
+      samples.push({ t, done })
+      while (samples.length > 2 && t - samples[0].t > SPEED_WINDOW_MS) samples.shift()
+      const span = t - samples[0].t
+      const speed = t - began >= SPEED_MIN_MS && span > 0 ? Math.max(0, ((done - samples[0].done) * 1000) / span) : null
+      if (speed) {
+        const estimate = (file.size - done) / speed
+        shownLeft = shownLeft == null ? estimate : shownLeft + (estimate - shownLeft) * LEFT_EASE
+      }
+      setState(s => (s.phase === 'uploading' ? {
+        ...s,
+        progress: Math.min(99, Math.round((done / file.size) * 100)),
+        loaded: done,
+        total: file.size,
+        bytesPerSec: speed,
+        secondsLeft: shownLeft,
+      } : s))
     }
-    report()
+    report(true)
     const todo = mp.etags.map((e, i) => (e ? -1 : i)).filter(i => i >= 0)
     const urls = new Map<number, string>()
     /** Links for the next parts, signed in batches ahead of need */
@@ -176,7 +236,7 @@ export function useVideoUpload(onDone: (videoId: string) => void, { asset = fals
             const etag = await putPart(await urlFor(i), blob, b => { sent[i] = b; report() })
             mp.etags[i] = etag
             sent[i] = blob.size
-            report()
+            report(true)
             break
           } catch (e) {
             const info = e as { aborted?: boolean; userFacing?: boolean }
@@ -188,7 +248,15 @@ export function useVideoUpload(onDone: (videoId: string) => void, { asset = fals
         }
       }
     }
-    await Promise.all(Array.from({ length: Math.min(PARALLEL_PARTS, todo.length) }, worker))
+    try {
+      await Promise.all(Array.from({ length: Math.min(PARALLEL_PARTS, todo.length) }, worker))
+    } finally {
+      if (pending) clearTimeout(pending)
+    }
+    // How it went, for checking the connection (the browser's console)
+    const secs = (performance.now() - began) / 1000
+    const bytes = file.size - before
+    if (bytes > 0 && secs > 0) console.info(`[upload] ${formatBytes(bytes)} in ${Math.round(secs)} s — ${(bytes / (1024 * 1024) / secs).toFixed(1)} MB/s (${((bytes * 8) / 1e6 / secs).toFixed(0)} Mbit/s)`)
   }
 
   /** All parts are in: R2 joins them into the file */
@@ -201,7 +269,7 @@ export function useVideoUpload(onDone: (videoId: string) => void, { asset = fals
   }
 
   async function finish(file: File, key: string) {
-    setState(s => ({ ...s, phase: 'finishing', progress: 100 }))
+    setState(s => ({ ...s, phase: 'finishing', progress: 100, loaded: file.size, bytesPerSec: null, secondsLeft: null }))
     const durationMs = await readDurationMs(file)
     const res = await fetch('/api/ingest/complete', {
       method: 'POST',
@@ -250,13 +318,14 @@ export function useVideoUpload(onDone: (videoId: string) => void, { asset = fals
     fileRef.current = file
     mpRef.current = null
     uploadedKeyRef.current = null
-    setState({ phase: 'uploading', fileName: file.name, progress: 0, error: null, canRetry: false })
+    setState({ ...IDLE, phase: 'uploading', fileName: file.name, total: file.size })
     run()
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   const retry = useCallback(() => {
     if (!fileRef.current) return
-    setState(s => ({ ...s, phase: 'uploading', error: null, canRetry: false }))
+    // (the speed is measured again from here)
+    setState(s => ({ ...s, phase: 'uploading', error: null, canRetry: false, bytesPerSec: null, secondsLeft: null }))
     run()
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 

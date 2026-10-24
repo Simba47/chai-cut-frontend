@@ -1,6 +1,9 @@
 'use client'
 
 import { TEMPLATE_FONTS, templateFontFamily, templateOf, isLatinText } from '@/modules/captions/templates'
+import { drawCreatorCaptions } from '@/modules/captions/creator'
+import { personMask } from '@/modules/captions/personMask'
+import { useCaptionStore } from '@/modules/captions/store'
 import { useRef, useEffect, useCallback, useState, useMemo, useId, createContext, useContext } from 'react'
 import { emojiFamily, captionEmojiFamily } from '@/modules/editor/emojiFont'
 import type { RefObject } from 'react'
@@ -1455,8 +1458,17 @@ function drawCaptionsCentred(
   const W = ctx.canvas.width, H = ctx.canvas.height
   const chunk = findCaptionChunk(chunks, tMs)
   if (!chunk) return
+  // A Creator style (a template with a look) is laid out its own way: modules/captions/creator.ts
+  // (Latin text only, as its fonts; other scripts get its base preset, as the export does)
+  const tpl = templateOf(style)
+  if (tpl?.look && (style.language === 'roman' || isLatinText(chunk.map(w => w.word).join(' ')))) {
+    const person = tpl.look === 'behind' ? personMask(ctx.canvas, tMs) : null
+    const rect = drawCreatorCaptions(ctx, chunk, chunks.indexOf(chunk), chunk[chunk.length - 1].end_ms, tMs, style, tpl, person)
+    if (out) out.rect = rect
+    return
+  }
   // (a caption style — style.template — is a preset in its own look)
-  if (isPreset(style.animation) || templateOf(style)) { drawPresetCaptions(ctx, chunk, tMs, style, band, out); return }
+  if (isPreset(style.animation) || tpl) { drawPresetCaptions(ctx, chunk, tMs, style, band, out); return }
 
   const color     = style.color    ?? '#FFFFFF'
   const animation = style.animation ?? 'karaoke'
@@ -1933,6 +1945,7 @@ export function OutputCanvas({
   // Pre-build caption chunks so the RAF loop doesn't re-sort on every frame.
   // Rebuild only when the words array identity changes.
   const captionChunksRef  = useRef<FlatWord[][]>([])
+  const liveLineRef       = useRef<FlatWord[] | null>(null)
   const prevWordsRef      = useRef<typeof words>(undefined)
   // Presets change how many words a line holds
   const wordsPerLine = captionWordsPerLine(captionStyle ?? {})
@@ -2306,6 +2319,12 @@ export function OutputCanvas({
             const captionLookupMs = liveMs - (captionStyleRef.current?.timing_offset_ms ?? 0)
             capOut.current.rect = null
             drawCaptions(ctx, captionChunksRef.current, captionLookupMs, captionStyleRef.current ?? {}, captionCaseRef.current, captionBandAt(seg, clipRelativeMs), capOut.current)
+            // The line on screen, for the Captions panel's key words (only when it changes)
+            const onScreen = findCaptionChunk(captionChunksRef.current, captionLookupMs)
+            if (onScreen !== liveLineRef.current) {
+              liveLineRef.current = onScreen
+              useCaptionStore.getState().setLiveLine(onScreen ? onScreen.map(w => ({ word: w.word, start_ms: w.start_ms, end_ms: w.end_ms })) : null)
+            }
             const r = capOut.current.rect as CaptionRect | null, last = capSent.current, now = performance.now()
             if (r && now - last.at > 100 && (!last.rect || Math.abs(r.x - last.rect.x) + Math.abs(r.y - last.rect.y) + Math.abs(r.w - last.rect.w) + Math.abs(r.h - last.rect.h) > 0.006)) {
               capSent.current = { rect: r, at: now }

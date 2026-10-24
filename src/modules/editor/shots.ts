@@ -59,6 +59,9 @@ function part(of: SegmentLocal, a: number, b: number): SegmentLocal {
   }
 }
 
+/** The empty stretch after the main video, for what's on top to run on: a video put in at the end, hidden and muted (EditorShell's tail) */
+const isTailSection = (s: SegmentLocal) => s.video_offset_ms != null && !!s.hidden && !!s.crop_boxes[0]?.hidden && !!s.crop_boxes[0]?.source_video_id
+
 /** How much of [a, b) lies in sections for which `is` holds */
 function shareUnder(sections: SegmentLocal[], a: number, b: number, is: (s: SegmentLocal) => boolean): number {
   if (!(b > a)) return 0
@@ -81,25 +84,36 @@ function shareUnder(sections: SegmentLocal[], a: number, b: number, is: (s: Segm
  *
  * "Mute the main video" and "hide the main video" on a section still count under a video on top:
  * the video's row carries them (the export reads them from the row that plays).
+ *
+ * Stacked as the timeline shows them, as in Premiere / Resolve: a row higher up covers the ones under
+ * it. `below` rows of videos sit under the main video (tracks 0 … below-1): the main video covers
+ * them, and they show where it isn't — after its end, from the moment they've reached there. The
+ * empty stretch after the main video (the editor's "tail") is under everything.
  */
-export function flattenShots(segments: SegmentLocal[], mainVideoId: Main, forSave = false): SegmentLocal[] {
+export function flattenShots(segments: SegmentLocal[], mainVideoId: Main, forSave = false, below = 0): SegmentLocal[] {
   // Placed lowest first: each one placed cuts the ones before it (so the last placed is on top)
   const shown = (s: SegmentLocal) => (s.crop_boxes[0]?.hidden ? 0 : 1)
   const shots = segments.filter(s => isShot(s, mainVideoId) && s.end_ms > s.start_ms)
     .sort((a, b) => shown(a) - shown(b) || (a.track ?? 0) - (b.track ?? 0) || byStart(a, b))
   if (!shots.length) return segments
   const sections = segments.filter(s => !isShot(s, mainVideoId))
-  let parts: { seg: SegmentLocal; of: SegmentLocal }[] = sections.map(seg => ({ seg, of: seg }))
-  for (const shot of shots) {
+  const under = shots.filter(s => (s.track ?? 0) < below), over = shots.filter(s => (s.track ?? 0) >= below)
+  let parts: { seg: SegmentLocal; of: SegmentLocal }[] = []
+  const lay = (item: SegmentLocal) => {
     parts = parts.flatMap(p => {
-      if (p.seg.end_ms <= shot.start_ms || p.seg.start_ms >= shot.end_ms) return [p]
+      if (p.seg.end_ms <= item.start_ms || p.seg.start_ms >= item.end_ms) return [p]
       const out: typeof parts = []
-      if (p.seg.start_ms < shot.start_ms) out.push({ of: p.of, seg: part(p.of, p.seg.start_ms, shot.start_ms) })
-      if (p.seg.end_ms > shot.end_ms) out.push({ of: p.of, seg: part(p.of, shot.end_ms, p.seg.end_ms) })
+      if (p.seg.start_ms < item.start_ms) out.push({ of: p.of, seg: part(p.of, p.seg.start_ms, item.start_ms) })
+      if (p.seg.end_ms > item.end_ms) out.push({ of: p.of, seg: part(p.of, item.end_ms, p.seg.end_ms) })
       return out
     })
-    parts.push({ seg: shot, of: shot })
+    parts.push({ seg: item, of: item })
   }
+  // Bottom up: the empty stretch after the main video, the videos under it, the main video, the videos over it
+  for (const sec of sections.filter(isTailSection)) lay(sec)
+  for (const shot of under) lay(shot)
+  for (const sec of sections.filter(x => !isTailSection(x))) lay(sec)
+  for (const shot of over) lay(shot)
 
   const groups = new Map<string, typeof parts>()
   for (const p of parts) groups.set(p.of.id, [...(groups.get(p.of.id) ?? []), p])
@@ -110,7 +124,8 @@ export function flattenShots(segments: SegmentLocal[], mainVideoId: Main, forSav
       let seg = p.seg
       if (isShot(p.of, mainVideoId)) {
         const muted = shareUnder(sections, seg.start_ms, seg.end_ms, s => !!s.muted) > 0.5
-        const hidden = shareUnder(sections, seg.start_ms, seg.end_ms, s => !!s.hidden && !isFrameLayout(s.layout)) > 0.5
+        // (not the empty stretch after the main video: what runs on there isn't hidden by it)
+        const hidden = shareUnder(sections, seg.start_ms, seg.end_ms, s => !!s.hidden && !isFrameLayout(s.layout) && !isTailSection(s)) > 0.5
         seg = { ...seg, muted, hidden }
       }
       if (forSave) {
@@ -163,10 +178,10 @@ const rowKeys = (rows: SegmentLocal[]) => rows.map(r => `${r.id}:${Math.round(r.
  * layers back. `segments` in the times the clip is saved in, each crop box with its keyframes.
  * No video on top = nothing to note (null).
  */
-export function toSaved(segments: SegmentLocal[], mainVideoId: Main): { rows: SegmentLocal[]; layers: SavedLayers | null } {
+export function toSaved(segments: SegmentLocal[], mainVideoId: Main, below = 0): { rows: SegmentLocal[]; layers: SavedLayers | null } {
   const whole = segments.map(s => ({ ...s, start_ms: Math.round(s.start_ms), end_ms: Math.round(s.end_ms) })).filter(s => s.end_ms > s.start_ms)
   if (!whole.some(s => isShot(s, mainVideoId))) return { rows: whole, layers: null }
-  const rows = flattenShots(whole, mainVideoId, true)
+  const rows = flattenShots(whole, mainVideoId, true, below)
   const kept = new Map(rows.map(r => [r.id, r]))
   // Saved whole: its own row has its own times (a video's row may differ in the flags it carries)
   const isWhole = (s: SegmentLocal) => { const r = kept.get(s.id); return !!r && r.start_ms === s.start_ms && r.end_ms === s.end_ms }

@@ -23,6 +23,9 @@ import catalogue from './caption_templates.json'
  *   stroke     outline thickness; shadow: drop shadow distance (px at 1080 wide)
  *   perLine    words per caption line
  *   size       % of the caption size it is drawn at (narrow fonts read small at the same size)
+ *   look       a Creator style: laid out and animated its own way (creator.ts; `base` is then only
+ *              what something that doesn't know looks draws)
+ *   keyFont    look: the line's key word in this font, keyScale % of the size
  */
 export interface CaptionTemplate {
   id: string
@@ -42,14 +45,20 @@ export interface CaptionTemplate {
   size: number
   color: string
   hl: string
+  look?: CreatorLook
+  keyFont?: string
+  keyScale?: number
 }
+
+export type CreatorLook = 'behind' | 'difference' | 'build' | 'multi' | 'scroll' | 'split' | 'subtitle' | 'scribble'
 
 /**
  * A bundled font file (public/caption-fonts, and the backend's src/python/fonts): `family` / `bold`
  * / `italic` are how the export asks for it; the editor draws the same file at the weight and
- * slant it already is. `em` sizes it as the export does (unitsPerEm / (winAscent + winDescent)).
+ * slant it already is. `em` sizes it as the export does (unitsPerEm / (winAscent + winDescent)),
+ * `asc` is where its baseline is (winAscent / (winAscent + winDescent)).
  */
-export interface TemplateFont { family: string; bold: number; italic: number; file: string; em: number; weight: number }
+export interface TemplateFont { family: string; bold: number; italic: number; file: string; em: number; weight: number; asc: number }
 
 export const CAPTION_TEMPLATE_LIST = catalogue.templates as CaptionTemplate[]
 export const CAPTION_TEMPLATES: Record<string, CaptionTemplate | undefined> = Object.fromEntries(CAPTION_TEMPLATE_LIST.map(t => [t.id, t]))
@@ -71,5 +80,9 @@ export const baseAnimation = (t: CaptionTemplate): AnimationType => (t.base === 
 
 /** What picking a template sets on the caption style */
 export function applyTemplate(t: CaptionTemplate): Partial<CaptionStyle> {
-  return { template: t.id, animation: baseAnimation(t), color: t.color, highlight_color: t.hl, uppercase: !!t.upper, words_per_line: null }
+  return {
+    template: t.id, animation: baseAnimation(t), color: t.color, highlight_color: t.hl, uppercase: !!t.upper, words_per_line: null,
+    // A Creator style starts where its look sits (over the head, the middle, the bottom…)
+    ...(t.look ? { position_y: null } : {}),
+  }
 }

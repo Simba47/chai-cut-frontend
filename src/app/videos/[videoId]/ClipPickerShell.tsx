@@ -9,6 +9,7 @@ import { useState, useRef, useEffect, useCallback, useSyncExternalStore } from '
 import { useRouter } from 'next/navigation'
 import { Breadcrumbs } from '@/components/ui/breadcrumbs'
 import { AccountMenu } from '@/components/ui/account-menu'
+import ThemeSwitch from '@/components/ui/cinematic-theme-switcher'
 import { BrandLoader, BrandLoaderScreen } from '@/components/ui/brand-loader'
 import { ClipPlayer } from '@/components/clips/ClipPlayer'
 import type { ClipPreviewData } from '@/server/services/clipPreview'
@@ -58,7 +59,7 @@ const CLIP_TABS: Array<{ id: ClipTab; label: string; empty: string }> = [
 /** Ask AI: one-tap searches */
 const ASK_CHIPS = ['emotional', 'funny', 'aesthetic', 'action']
 const ORIGIN_BADGE: Record<ClipOrigin, { label: string; color: string }> = {
-  yours: { label: 'Yours', color: 'rgba(255,255,255,0.6)' },
+  yours: { label: 'Yours', color: 'rgb(var(--cb-fg) / 0.6)' },
   ask: { label: 'Ask AI', color: '#38bdf8' },
   auto: { label: 'Make my clips', color: '#c8ff00' },
   best: { label: 'Best moments', color: '#fbbf24' },
@@ -156,14 +157,9 @@ interface Props {
 
 const ACCENT = '#c8ff00'
 // Card look shared by the AI tools and the new-clip bar
-const CARD: React.CSSProperties = { background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)' }
-const PANEL_BG = '#111'
-const PANEL_LINE = '1px solid rgba(255,255,255,0.07)'
-// The page's three panels (AI tools · video/preview · Clipboard): separate rounded cards with space between
-const PANEL_CARD: React.CSSProperties = {
-  background: PANEL_BG, border: '1px solid rgba(255,255,255,0.08)', borderRadius: 16,
-  boxShadow: '0 8px 24px -12px rgba(0,0,0,0.7)',
-}
+const CARD: React.CSSProperties = { background: 'rgb(var(--cb-fg) / 0.03)', border: '1px solid rgb(var(--cb-fg) / 0.08)' }
+const PANEL_BG = '#000'
+const PANEL_LINE = '1px solid rgb(var(--cb-fg) / 0.07)'
 
 // Wide screens get three columns (AI tools · video · clips); narrower ones stack the AI tools under the video
 const WIDE_QUERY = '(min-width: 1280px)'
@@ -393,14 +389,20 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
   const [clipTab, setClipTab] = useState<ClipTab>(manualOnly ? 'yours' : 'all')
   // The clipboard badge: Manual edit counts only the user's own clips, as that board lists only those
   // Clips on this board: Start with AI never lists the clips cut by hand (they belong to Pick my moments)
-  const boardClips = manualOnly ? clips : clips.filter(c => c.origin !== 'yours')
-  const badgeCount = manualOnly ? clips.filter(c => c.origin === 'yours').length : boardClips.length
+  // Numbered in the order they were made (Clip 1 is the first one, and keeps its number), listed newest first
+  // (created_at comes from the database as a Date, from a new clip as text: compared as times)
+  const madeAt = (c: { created_at: string | Date }) => new Date(c.created_at).getTime() || 0
+  const byTime = [...clips].sort((a, b) => madeAt(a) - madeAt(b))
+    .map((c, i) => (c.index === i + 1 ? c : { ...c, index: i + 1 }))
+    .reverse()
+  const boardClips = manualOnly ? byTime : byTime.filter(c => c.origin !== 'yours')
+  const badgeCount = manualOnly ? byTime.filter(c => c.origin === 'yours').length : boardClips.length
   // Edited = opened in the editor at least once (the editor creates a clip's formats on first open)
   // (Manual edit lists only the user's own clips, so an AI-made clip never counts, even though it has formats)
   const isEdited = (c: { layout: string | null; origin: ClipOrigin }) => c.layout != null && (!manualOnly || c.origin === 'yours')
-  const shownClips = clipTab === 'all' ? boardClips : clipTab === 'fav' ? boardClips.filter(c => c.favorite) : clipTab === 'edited' ? clips.filter(isEdited) : clips.filter(c => c.origin === clipTab)
+  const shownClips = clipTab === 'all' ? boardClips : clipTab === 'fav' ? boardClips.filter(c => c.favorite) : clipTab === 'edited' ? byTime.filter(isEdited) : byTime.filter(c => c.origin === clipTab)
   // Clip preview plays 9:16 clips as edited: in Manual edit only the edited ones
-  const previewable = manualOnly ? clips.filter(isEdited) : boardClips
+  const previewable = manualOnly ? byTime.filter(isEdited) : boardClips
   // A clip to bring into view and flash in the list (e.g. the clip a Best moment was saved as)
   const [focusClipId, setFocusClipId] = useState<string | null>(null)
   function focusClip(id: string, origin: ClipOrigin | 'all') {
@@ -884,17 +886,13 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
   }, [needsProxy, initialVideo.id])
 
   // Arrived from the dashboard's "AI edit / Manual edit" choice: that part of the clip board (the
-  // Make my clips card, or New clip under the video) is scrolled into view and glows for a moment.
+  // Make my clips card, or New clip under the video) is scrolled into view (no glow).
   // The choice then leaves the address, so a refresh doesn't point again.
   useEffect(() => {
     if (!startWith) return
     const t = setTimeout(() => {
       const el = document.querySelector<HTMLElement>(`[data-start-target="${startWith}"]`)
-      if (el) {
-        el.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
-        el.setAttribute('data-start-glow', '')
-        setTimeout(() => el.removeAttribute('data-start-glow'), 2600)
-      }
+      if (el) el.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
       // (Manual edit keeps its choice in the address, so a refresh stays on the manual board)
       if (startWith !== 'manual') window.history.replaceState(window.history.state, '', window.location.pathname)
     }, 350)
@@ -943,14 +941,14 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
       {video.status === 'failed' ? (
         <>
           <p className="text-sm font-medium text-white">We couldn&apos;t process this video</p>
-          <p className="text-xs" style={{ color: 'rgba(255,255,255,0.45)' }}>Delete it from your videos and upload it again.</p>
+          <p className="text-xs" style={{ color: 'rgb(var(--cb-fg) / 0.45)' }}>Delete it from your videos and upload it again.</p>
         </>
       ) : (
         <>
           <BrandLoader size={40} />
           <p className="text-sm font-medium text-white">{isProcessing ? stageLabel(video.download_progress ?? 0) : 'Loading video…'}</p>
           {isProcessing && (
-            <div className="w-48 h-1.5 rounded-full overflow-hidden" style={{ background: 'rgba(255,255,255,0.1)' }}>
+            <div className="w-48 h-1.5 rounded-full overflow-hidden" style={{ background: 'rgb(var(--cb-fg) / 0.1)' }}>
               <div className="h-full rounded-full transition-all duration-500" style={{ width: `${Math.max(4, video.download_progress ?? 0)}%`, background: ACCENT }} />
             </div>
           )}
@@ -960,7 +958,7 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
   )
 
   // ── Clip preview (in place of the video): the clip played in 9:16 as edited ──
-  const previewed = clips.find(c => c.id === previewId) ?? null
+  const previewed = byTime.find(c => c.id === previewId) ?? null
   const previewData = previewId ? previews[previewId] : undefined
   const previewList = shownClips.some(c => c.id === previewId) ? shownClips.filter(c => previewable.includes(c)) : previewable
   const previewIdx = previewList.findIndex(c => c.id === previewId)
@@ -972,7 +970,7 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
           segments={previewSegments([], momentPreview.s.end_ms - momentPreview.s.start_ms, ratio)}
           words={[]} captionStyle={null} textOverlays={[]} />
       ) : !previewed ? (
-        <p className="text-sm px-6 text-center" style={{ color: 'rgba(255,255,255,0.5)' }}>No clips yet. Make a clip, then preview it here.</p>
+        <p className="text-sm px-6 text-center" style={{ color: 'rgb(var(--cb-fg) / 0.5)' }}>No clips yet. Make a clip, then preview it here.</p>
       ) : previewData === 'loading' || previewData === undefined ? (
         <BrandLoader size={36} label="Loading preview…" />
       ) : 'error' in previewData ? (
@@ -1010,16 +1008,16 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
           <div className="w-full max-w-xl mx-auto flex items-center gap-2">
             <button type="button" aria-label="Previous result" disabled={i <= 0}
               onClick={() => previewMoment(list[i - 1], momentPreview.source)}
-              className="w-7 h-7 rounded-md flex items-center justify-center text-sm transition-colors hover:bg-white/10 disabled:opacity-30" style={{ color: '#fff' }}>‹</button>
+              className="w-7 h-7 rounded-md flex items-center justify-center text-sm transition-colors hover:bg-white/10 disabled:opacity-30" style={{ color: 'var(--cb-text)' }}>‹</button>
             <p className="min-w-0 flex-1 text-sm font-medium text-white truncate text-center" title={momentPreview.s.title}>
               {momentPreview.s.title}
-              <span className="ml-2 text-xs font-normal" style={{ color: 'rgba(255,255,255,0.45)' }}>
+              <span className="ml-2 text-xs font-normal" style={{ color: 'rgb(var(--cb-fg) / 0.45)' }}>
                 {momentPreview.source === 'clip_search' ? 'Ask AI' : 'Best moments'}{i >= 0 ? ` · ${i + 1} of ${list.length}` : ''}
               </span>
             </p>
             <button type="button" aria-label="Next result" disabled={i < 0 || i >= list.length - 1}
               onClick={() => previewMoment(list[i + 1], momentPreview.source)}
-              className="w-7 h-7 rounded-md flex items-center justify-center text-sm transition-colors hover:bg-white/10 disabled:opacity-30" style={{ color: '#fff' }}>›</button>
+              className="w-7 h-7 rounded-md flex items-center justify-center text-sm transition-colors hover:bg-white/10 disabled:opacity-30" style={{ color: 'var(--cb-text)' }}>›</button>
           </div>
         )
       })()}
@@ -1027,14 +1025,14 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
         <div className="w-full max-w-xl mx-auto flex items-center gap-2">
           <button type="button" aria-label="Previous clip" disabled={previewIdx <= 0}
             onClick={() => previewClip(previewList[previewIdx - 1].id)}
-            className="w-7 h-7 rounded-md flex items-center justify-center text-sm transition-colors hover:bg-white/10 disabled:opacity-30" style={{ color: '#fff' }}>‹</button>
+            className="w-7 h-7 rounded-md flex items-center justify-center text-sm transition-colors hover:bg-white/10 disabled:opacity-30" style={{ color: 'var(--cb-text)' }}>‹</button>
           <p className="min-w-0 flex-1 text-sm font-medium text-white truncate text-center" title={previewed.title ?? undefined}>
             {previewed.title ?? `Clip ${previewed.index}`}
-            <span className="ml-2 text-xs font-normal" style={{ color: 'rgba(255,255,255,0.45)' }}>{previewIdx + 1} of {previewList.length}</span>
+            <span className="ml-2 text-xs font-normal" style={{ color: 'rgb(var(--cb-fg) / 0.45)' }}>{previewIdx + 1} of {previewList.length}</span>
           </p>
           <button type="button" aria-label="Next clip" disabled={previewIdx < 0 || previewIdx >= previewList.length - 1}
             onClick={() => previewClip(previewList[previewIdx + 1].id)}
-            className="w-7 h-7 rounded-md flex items-center justify-center text-sm transition-colors hover:bg-white/10 disabled:opacity-30" style={{ color: '#fff' }}>›</button>
+            className="w-7 h-7 rounded-md flex items-center justify-center text-sm transition-colors hover:bg-white/10 disabled:opacity-30" style={{ color: 'var(--cb-text)' }}>›</button>
         </div>
       )}
     </div>
@@ -1048,11 +1046,11 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
   // Manual edit: the form is always there, except while a clip is previewed (then only Edit this clip)
   const formOpen = manualOnly ? !(editingPreviewed || editingMoment) : showForm
   const newClipBar = formOpen ? (
-    <form className="shrink-0 rounded-2xl p-4 flex flex-col gap-3" style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.14)' }}
+    <form className="cb-form shrink-0 p-4 flex flex-col gap-3"
       onSubmit={e => { e.preventDefault(); submitForm(true) }}>
       <div className="flex flex-wrap items-end gap-3">
         <div className="flex flex-col gap-1 flex-1" style={{ minWidth: 200 }}>
-          <label htmlFor="clip-title" className="text-[11px] font-medium" style={{ color: 'rgba(255,255,255,0.5)' }}>New clip · title (optional)</label>
+          <label htmlFor="clip-title" className="cb-label">New clip <span style={{ color: 'rgb(var(--cb-fg) / 0.3)', letterSpacing: '0.04em', textTransform: 'none', fontWeight: 500 }}>· title (optional)</span></label>
           <input
             id="clip-title"
             type="text"
@@ -1060,8 +1058,7 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
             value={formTitle}
             onChange={e => setFormTitle(e.target.value)}
             autoFocus={!manualOnly}
-            className="w-full px-3 py-2 rounded-lg text-sm text-white outline-none focus:border-[#c8ff00]"
-            style={{ background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.12)' }}
+            className="cb-input w-full h-[52px] px-3.5 rounded-xl text-sm text-white outline-none placeholder:text-white/30"
           />
         </div>
         {/* Start → how long → End */}
@@ -1077,29 +1074,28 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
                 aria-label="Go to the end time"
                 onClick={() => { const el = document.getElementById(`clip-end-${withHours ? 'h' : 'm'}`) as HTMLInputElement | null; el?.focus(); requestAnimationFrame(() => el?.select()) }}>
                 <span className="px-2 py-0.5 rounded-full text-[11px] font-bold tabular-nums"
-                  style={ok ? { color: ACCENT, background: 'rgba(200,255,0,0.1)' } : { color: 'rgba(255,255,255,0.35)', background: 'rgba(255,255,255,0.05)' }}>
+                  style={ok ? { color: ACCENT, background: 'rgba(200,255,0,0.1)' } : { color: 'rgb(var(--cb-fg) / 0.35)', background: 'rgb(var(--cb-fg) / 0.05)' }}>
                   {ok ? msToDisplay(z! - a!) : '–'}
                 </span>
                 <svg width="34" height="6" viewBox="0 0 34 6" fill="none" aria-hidden="true">
-                  <path d="M1 3h31M29 1l3 2-3 2" stroke={ok ? ACCENT : 'rgba(255,255,255,0.3)'} strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+                  <path d="M1 3h31M29 1l3 2-3 2" stroke={ok ? ACCENT : 'rgb(var(--cb-fg) / 0.3)'} strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
                 </svg>
               </button>
             )
           })()}
           <div style={{ width: withHours ? 140 : 100 }}>
-            <TimeField id="clip-end" label="End" value={formEnd} onChange={setFormEnd} showHours={withHours} />
+            <TimeField id="clip-end" label="End" value={formEnd} onChange={setFormEnd} showHours={withHours} prevId="clip-start" />
           </div>
         </div>
         <div className="flex gap-2">
           <button type="submit" disabled={!!busy}
-            className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-bold disabled:opacity-50" style={{ background: ACCENT, color: '#000' }}>
+            className="cb-cta h-[52px] flex items-center gap-2 px-5 rounded-xl text-sm font-bold disabled:opacity-50">
             {busy === 'form' && <Spinner />} Create &amp; edit
           </button>
           {/* Save it to the clip board only (edit it later) */}
           <button type="button" onClick={() => submitForm(false)} disabled={!!busy}
             title="Save this clip to your clip board without opening the editor"
-            className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition-colors hover:bg-white/10 disabled:opacity-50"
-            style={{ color: '#fff', border: '1px solid rgba(255,255,255,0.22)' }}>
+            className="cb-ghost h-[52px] flex items-center gap-2 px-4 rounded-xl text-sm font-semibold disabled:opacity-50">
             {busy === 'board' ? <Spinner /> : (
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                 <rect x="3" y="4" width="18" height="16" rx="2.5" /><path d="M12 9v6M9 12h6" />
@@ -1108,12 +1104,12 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
             Add to board
           </button>
           {!manualOnly && <button type="button" onClick={() => setShowForm(false)}
-            className="px-3.5 py-2 rounded-lg text-sm font-medium transition-colors hover:bg-white/10" style={{ color: 'rgba(255,255,255,0.6)' }}>
+            className="px-3.5 py-2 rounded-lg text-sm font-medium transition-colors hover:bg-white/10" style={{ color: 'rgb(var(--cb-fg) / 0.6)' }}>
             Cancel
           </button>}
         </div>
       </div>
-      <p className="text-xs" style={{ color: formError ? '#f87171' : 'rgba(255,255,255,0.45)' }}>
+      <p className="text-xs" style={{ color: formError ? '#f87171' : 'rgb(var(--cb-fg) / 0.45)' }}>
         {formError ?? (formRangeValid ? `Length: ${durLabel(formStartMs!, formEndMs!)}` : 'Type hours, minutes and seconds: two digits move you on')}
       </p>
     </form>
@@ -1125,7 +1121,7 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
         <button onClick={editingMoment ? () => editMoment(editingMoment.s, editingMoment.source) : () => { setBusy('open'); router.push(editorHref(previewId!)) }} disabled={!!busy}
           title={editingMoment ? 'Open the moment you’re previewing in the editor' : 'Open the clip you’re previewing in the editor'}
           className="h-12 flex items-center justify-center gap-2 px-5 rounded-xl text-sm font-semibold transition-colors hover:bg-white/10 disabled:opacity-40"
-          style={{ color: 'rgba(255,255,255,0.9)', border: '1px solid rgba(255,255,255,0.16)', background: 'rgba(255,255,255,0.03)' }}>
+          style={{ color: 'rgb(var(--cb-fg) / 0.9)', border: '1px solid rgb(var(--cb-fg) / 0.16)', background: 'rgb(var(--cb-fg) / 0.03)' }}>
           {busy === 'open' || busy === editingMoment?.s.id ? <Spinner /> : (
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
               <path d="M12 20h9" /><path d="M16.5 3.5a2.1 2.1 0 013 3L7 19l-4 1 1-4z" />
@@ -1145,7 +1141,7 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
         {/* Header: a spark badge (glass, the spark lime), the title and its ⓘ; on the right, the way to the clips already made */}
         <div className="flex items-center gap-2.5">
           <span aria-hidden="true" className="shrink-0 w-8 h-8 rounded-[10px] grid place-items-center"
-            style={{ background: 'rgba(255,255,255,0.06)', color: ACCENT, boxShadow: 'inset 0 0 0 1px rgba(255,255,255,0.1)' }}>
+            style={{ background: 'rgb(var(--cb-fg) / 0.06)', color: ACCENT, boxShadow: 'inset 0 0 0 1px rgb(var(--cb-fg) / 0.1)' }}>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
               <path d="M12 2l1.9 5.6L19.5 9.5l-5.6 1.9L12 17l-1.9-5.6L4.5 9.5l5.6-1.9z" />
               <path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z" opacity=".7" />
@@ -1173,11 +1169,11 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
                   <Spinner /> Reading your video for AI{reading.progress ? ` · ${reading.progress}%` : '…'}
                 </span>
                 {reading.progress !== null && (
-                  <span className="h-1 rounded-full overflow-hidden" style={{ background: 'rgba(255,255,255,0.1)' }} aria-hidden="true">
+                  <span className="h-1 rounded-full overflow-hidden" style={{ background: 'rgb(var(--cb-fg) / 0.1)' }} aria-hidden="true">
                     <span className="block h-full rounded-full transition-[width] duration-700" style={{ width: `${Math.max(3, reading.progress)}%`, background: ACCENT }} />
                   </span>
                 )}
-                <span className="text-[11px]" style={{ color: 'rgba(255,255,255,0.55)' }}>
+                <span className="text-[11px]" style={{ color: 'rgb(var(--cb-fg) / 0.55)' }}>
                   {waitingFor ? `${waitingFor} runs by itself when it's done. ` : ''}Best moments, Ask AI and Make my clips need all its words. You can make clips by hand meanwhile.
                 </span>
               </>
@@ -1185,7 +1181,7 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
               <span className="flex items-center justify-between gap-2">
                 <span className="text-xs" style={{ color: '#f87171' }}>{reading.error ?? 'Reading your video failed.'}</span>
                 <button type="button" onClick={() => checkReading(true)} className="shrink-0 px-2.5 py-1 rounded-md text-[11px] font-semibold"
-                  style={{ background: 'rgba(255,255,255,0.08)', color: '#fff' }}>Try again</button>
+                  style={{ background: 'rgb(var(--cb-fg) / 0.08)', color: 'var(--cb-text)' }}>Try again</button>
               </span>
             )}
           </div>
@@ -1194,8 +1190,8 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
         {/* How many clips: type a number or step it with − / + */}
         <div className="mmc-block flex items-center justify-between gap-3 pl-3 pr-1.5 py-1.5">
           <label htmlFor={`clip-count-${video.id}`} className="flex flex-col leading-tight">
-            <span className="text-xs font-medium" style={{ color: 'rgba(255,255,255,0.8)' }}>How many clips?</span>
-            <span className="text-[10px]" style={{ color: countOver ? '#fbbf24' : 'rgba(255,255,255,0.5)' }}>
+            <span className="text-xs font-medium" style={{ color: 'rgb(var(--cb-fg) / 0.8)' }}>How many clips?</span>
+            <span className="text-[10px]" style={{ color: countOver ? '#fbbf24' : 'rgb(var(--cb-fg) / 0.5)' }}>
               {countOver ? `Up to ${AUTO_MAX} at a time` : `1 to ${AUTO_MAX}`}
             </span>
           </label>
@@ -1254,7 +1250,7 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
           ]).map(row => {
             const off = autoRunning || !row.on
             return (
-              <label key={row.name} className="mmc-row flex items-center gap-2 text-[11px]" data-off={off || undefined} style={{ color: 'rgba(255,255,255,0.6)' }}>
+              <label key={row.name} className="mmc-row flex items-center gap-2 text-[11px]" data-off={off || undefined} style={{ color: 'rgb(var(--cb-fg) / 0.6)' }}>
                 <span className="shrink-0 w-[52px]">{row.name}</span>
                 <select value={row.value} disabled={off} onChange={e => row.pick(e.target.value)}
                   aria-label={`What the ${row.what} written in`}
@@ -1268,7 +1264,7 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
           {brandKits.length > 0 && (() => {
             const def = brandKits.find(k => k.isDefault)
             return (
-              <label className="mmc-row flex items-center gap-2 text-[11px]" data-off={autoRunning || undefined} style={{ color: 'rgba(255,255,255,0.6)' }}>
+              <label className="mmc-row flex items-center gap-2 text-[11px]" data-off={autoRunning || undefined} style={{ color: 'rgb(var(--cb-fg) / 0.6)' }}>
                 <span className="shrink-0 w-[52px]">Brand</span>
                 <select value={brandPick} disabled={autoRunning} onChange={e => setBrandPick(e.target.value)}
                   aria-label="The brand kit the clips get"
@@ -1289,7 +1285,7 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
             <p className="text-xs font-semibold" style={{ color: '#fcd34d' }}>
               Only {autoJob.found_count} good clip{autoJob.found_count === 1 ? '' : 's'} can be made from this video
             </p>
-            <p className="text-[11px]" style={{ color: 'rgba(255,255,255,0.6)' }}>
+            <p className="text-[11px]" style={{ color: 'rgb(var(--cb-fg) / 0.6)' }}>
               You asked for {autoJob.clip_count}. Nothing has been made yet.
             </p>
             <div className="flex items-center gap-2">
@@ -1300,7 +1296,7 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
               </button>
               <button type="button" onClick={stopMakingClips} disabled={autoStopping || autoStarting}
                 className="px-3 py-1.5 rounded-md text-[11px] font-semibold transition-colors hover:bg-white/10 disabled:opacity-50"
-                style={{ color: 'rgba(255,255,255,0.75)', border: '1px solid rgba(255,255,255,0.2)' }}>
+                style={{ color: 'rgb(var(--cb-fg) / 0.75)', border: '1px solid rgb(var(--cb-fg) / 0.2)' }}>
                 {autoStopping ? 'Cancelling…' : 'Cancel'}
               </button>
             </div>
@@ -1309,16 +1305,16 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
         {autoRunning && autoJob && (
           <div className="flex flex-col gap-1.5 px-3 py-2.5 rounded-xl" style={{ background: 'rgba(200,255,0,0.04)', border: '1px solid rgba(200,255,0,0.12)' }}>
             <div className="flex items-center justify-between gap-2 text-xs">
-              <span style={{ color: 'rgba(255,255,255,0.7)' }}>
+              <span style={{ color: 'rgb(var(--cb-fg) / 0.7)' }}>
                 {autoJob.status === 'queued' ? 'Waiting to start…' : autoJob.progress < 20 ? 'Reading the video…' : autoJob.progress < 35 ? 'Finding the best moments…' : 'Framing clips…'}
               </span>
               <span className="font-semibold tabular-nums" style={{ color: ACCENT }}>{autoJob.progress}%</span>
             </div>
-            <div className="h-1.5 rounded-full overflow-hidden" style={{ background: 'rgba(255,255,255,0.08)' }}>
+            <div className="h-1.5 rounded-full overflow-hidden" style={{ background: 'rgb(var(--cb-fg) / 0.08)' }}>
               <div className="h-full rounded-full transition-all" style={{ width: `${Math.max(3, autoJob.progress)}%`, background: ACCENT }} />
             </div>
             <div className="flex items-center gap-2">
-              <p className="flex-1 text-[11px]" style={{ color: 'rgba(255,255,255,0.4)' }}>
+              <p className="flex-1 text-[11px]" style={{ color: 'rgb(var(--cb-fg) / 0.4)' }}>
                 {autoJob.clip_count ? `${autoJob.clip_count} clip${autoJob.clip_count === 1 ? '' : 's'}` : ''}
                 {/* Reading comes first and is the slow part of a long video */}
                 {autoJob.status === 'running' && autoJob.progress < 20 ? ' · a long video takes a while to read; you can leave this page, it carries on' : ''}
@@ -1334,7 +1330,7 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
           </div>
         )}
         {autoJob?.status === 'failed' && autoJob.error === 'Cancelled by you' && (
-          <p className="text-xs" style={{ color: 'rgba(255,255,255,0.55)' }}>
+          <p className="text-xs" style={{ color: 'rgb(var(--cb-fg) / 0.55)' }}>
             Stopped.{autoClips.length ? ' Clips made before you stopped are kept.' : ''} Press Make my clips to start again.
           </p>
         )}
@@ -1408,7 +1404,7 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
               value={aiCriteria}
               onChange={e => setAiCriteria(e.target.value)}
               className="w-full px-3 py-2 rounded-lg text-sm text-white outline-none focus:border-[#c8ff00]"
-              style={{ background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.12)' }}
+              style={{ background: 'rgb(var(--cb-fg) / 0.07)', border: '1px solid rgb(var(--cb-fg) / 0.12)' }}
             />
             {!aiCriteria && (
               <span className="ai-hint" aria-hidden="true">
@@ -1433,7 +1429,7 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
             <button key={q} type="button" disabled={loadingAi}
               onClick={() => { setAiCriteria(q); setFindPulse(n => n + 1); findByCriteria(q) }}
               className="px-2.5 py-1 rounded-full text-[11px] font-medium transition-colors hover:bg-white/10 disabled:opacity-40"
-              style={{ color: 'rgba(255,255,255,0.7)', border: '1px solid rgba(255,255,255,0.14)' }}>
+              style={{ color: 'rgb(var(--cb-fg) / 0.7)', border: '1px solid rgb(var(--cb-fg) / 0.14)' }}>
               {q}
             </button>
           ))}
@@ -1442,7 +1438,7 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
         <div className="flex-1 min-h-0 overflow-y-auto flex flex-col gap-2 -mr-2 pr-2">
         {aiError && <p className="text-xs" style={{ color: '#f87171' }}>{aiError}</p>}
         {!loadingAi && askFrom && aiSuggestions && (
-          <div className="shrink-0 flex items-center gap-2 text-[11px]" style={{ color: 'rgba(255,255,255,0.45)' }}>
+          <div className="shrink-0 flex items-center gap-2 text-[11px]" style={{ color: 'rgb(var(--cb-fg) / 0.45)' }}>
             <span className="flex-1 min-w-0 truncate">Saved results for “{askFrom}”</span>
             <button type="button" onClick={() => { setFindPulse(n => n + 1); findByCriteria(askFrom, true) }}
               title="Ask AI again for fresh results"
@@ -1459,7 +1455,7 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
           </div>
         )}
         {!loadingAi && aiSuggestions && aiSuggestions.length === 0 && (
-          <p className="text-xs" style={{ color: 'rgba(255,255,255,0.45)' }}>Nothing matched that. Try a different description.</p>
+          <p className="text-xs" style={{ color: 'rgb(var(--cb-fg) / 0.45)' }}>Nothing matched that. Try a different description.</p>
         )}
         {!loadingAi && aiSuggestions?.map((s, i) => (
           <ResultCard key={s.id} s={s} rank={i + 1} videoUrl={videoUrl} busy={busy} inClips={!!clipFor(s)}
@@ -1477,7 +1473,7 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
                 on click a lime spotlight flashes out of the stars (styles: .ai-best in globals.css) */}
             <button onClick={() => { setBestPulse(n => n + 1); findMoments() }}
               className="ai-btn ai-best shrink-0 flex items-center justify-center gap-2 h-9 rounded-lg text-xs font-medium"
-              style={{ color: 'rgba(255,255,255,0.85)' }}>
+              style={{ color: 'rgb(var(--cb-fg) / 0.85)' }}>
               <span key={bestPulse} className={`ai-spot${bestPulse ? ' is-on' : ''}`} aria-hidden="true" />
               <svg className="ai-stars" width="13" height="13" viewBox="0 0 24 24" fill="none" aria-hidden="true" style={{ overflow: 'visible' }}>
                 <path className="ai-star-big" d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8L12 3z" fill="currentColor"/>
@@ -1498,7 +1494,7 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
         {momentsAdded && <p className="text-xs font-semibold" style={{ color: ACCENT }}>{momentsAdded}</p>}
         {momentsNote && <p className="text-xs" style={{ color: '#fbbf24' }}>{momentsNote}</p>}
         {suggestions && !loadingSuggestions && suggestions.length === 0 && (
-          <p className="text-xs" style={{ color: 'rgba(255,255,255,0.45)' }}>
+          <p className="text-xs" style={{ color: 'rgb(var(--cb-fg) / 0.45)' }}>
             {clips.length ? 'No new moments — the strongest ones are already in your clips.' : 'No suggestions for this video.'}
           </p>
         )}
@@ -1542,7 +1538,7 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
       {/* The lock */}
       <div className="absolute inset-0 flex items-start justify-center px-3 pt-16">
         <div role="status" aria-live="polite" className="w-full max-w-[320px] flex flex-col gap-3 rounded-2xl p-4"
-          style={{ background: 'rgba(14,14,14,0.94)', boxShadow: '0 0 0 1px rgba(255,255,255,0.1), 0 18px 40px -12px rgba(0,0,0,0.8)', backdropFilter: 'blur(6px)' }}>
+          style={{ background: 'rgba(14,14,14,0.94)', boxShadow: '0 0 0 1px rgb(var(--cb-fg) / 0.1), 0 18px 40px -12px rgba(0,0,0,0.8)', backdropFilter: 'blur(6px)' }}>
           <div className="flex items-center gap-2.5">
             <span aria-hidden="true" className="shrink-0 w-9 h-9 rounded-xl grid place-items-center"
               style={{ background: 'rgba(200,255,0,0.1)', color: ACCENT, boxShadow: 'inset 0 0 0 1px rgba(200,255,0,0.25)' }}>
@@ -1552,20 +1548,20 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
             </span>
             <span className="flex flex-col">
               <span className="text-[13.5px] font-semibold text-white">Edit tools are locked</span>
-              <span className="text-[11px]" style={{ color: 'rgba(255,255,255,0.5)' }}>Make my clips · Best moments · Ask AI</span>
+              <span className="text-[11px]" style={{ color: 'rgb(var(--cb-fg) / 0.5)' }}>Make my clips · Best moments · Ask AI</span>
             </span>
           </div>
           {!reading ? (
-            <p className="flex items-center gap-2 text-xs" style={{ color: 'rgba(255,255,255,0.6)' }}><Spinner /> Checking your video…</p>
+            <p className="flex items-center gap-2 text-xs" style={{ color: 'rgb(var(--cb-fg) / 0.6)' }}><Spinner /> Checking your video…</p>
           ) : reading.status === 'running' ? (
             <div className="flex flex-col gap-2">
               <span className="flex items-center gap-2 text-[12.5px] font-semibold text-white">
                 <Spinner /> Getting the transcript{reading.progress ? ` · ${reading.progress}%` : '…'}
               </span>
-              <span className="h-1.5 rounded-full overflow-hidden" style={{ background: 'rgba(255,255,255,0.1)' }} aria-hidden="true">
+              <span className="h-1.5 rounded-full overflow-hidden" style={{ background: 'rgb(var(--cb-fg) / 0.1)' }} aria-hidden="true">
                 <span className="block h-full rounded-full transition-[width] duration-700" style={{ width: `${Math.max(3, reading.progress ?? 3)}%`, background: ACCENT }} />
               </span>
-              <span className="text-[11.5px] leading-relaxed" style={{ color: 'rgba(255,255,255,0.6)' }}>
+              <span className="text-[11.5px] leading-relaxed" style={{ color: 'rgb(var(--cb-fg) / 0.6)' }}>
                 {waitingFor ? `${waitingFor} runs by itself when it's done. ` : ''}{minutesLeft(readLeftMs)} — the tools unlock by themselves.
                 You can keep making clips by hand, or leave this page: it carries on.
               </span>
@@ -1584,7 +1580,7 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
           ) : (
             // Never read (Manual edit, or an older video): unlocking reads it
             <div className="flex flex-col gap-2.5">
-              <p className="text-[11.5px] leading-relaxed" style={{ color: 'rgba(255,255,255,0.6)' }}>
+              <p className="text-[11.5px] leading-relaxed" style={{ color: 'rgb(var(--cb-fg) / 0.6)' }}>
                 {reading.stopped
                   ? <>Stopped{reading.progress ? ` at ${reading.progress}%` : ''}. Unlocking carries on from there — {aboutMinutes(readTotalMs * (1 - (reading.progress ?? 0) / 100))} left.</>
                   : <>These tools need your video&apos;s transcript. Getting it takes {aboutMinutes(readTotalMs)} for this video, once — then each tool answers in seconds.</>}
@@ -1605,43 +1601,43 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
   const aiTools = aiLocked ? aiToolsLocked : aiToolsOpen
 
   return (
-    <div className="h-screen flex flex-col overflow-hidden" style={{ background: '#0d0d0d' }}>
+    <div className="cb-page h-screen flex flex-col overflow-hidden">
       {/* Opening a clip: covers the page while the clip is created and the editor loads */}
       {busy && <BrandLoaderScreen mascot overlay label="Getting your clip ready, please wait…" />}
       {/* Nav */}
-      <nav className="flex items-center gap-3 px-4 shrink-0"
-        style={{ height: 56, background: '#111', borderBottom: '1px solid rgba(255,255,255,0.07)' }}>
+      <nav className="cb-nav app-nav relative z-10 flex items-center gap-3 px-4 shrink-0" style={{ height: 56 }}>
         {/* Where am I: Shortcut | Dashboard › Clip board */}
         <Breadcrumbs shine items={[{ label: 'Dashboard', href: '/dashboard' }, { label: 'Clip board' }]} />
         <div className="flex-1" />
+        <ThemeSwitch />
         <AccountMenu />
       </nav>
 
-      <div className="flex-1 flex gap-3 p-3 min-h-0 overflow-hidden" style={{ background: '#090909' }}>
+      <div className="flex-1 flex gap-4 p-4 min-h-0 overflow-hidden">
 
         {/* ── Left: AI tools (wide screens) ─────────────────────── */}
         {wide && isReady && !manualOnly && (
-          <aside className="shrink-0 flex flex-col gap-3 p-3 min-h-0 overflow-y-auto" style={{ ...PANEL_CARD, width: 340 }}>
+          <aside className="cb-panel shrink-0 flex flex-col gap-3 p-3 min-h-0 overflow-y-auto" style={{ width: 340 }}>
             {aiTools}
           </aside>
         )}
 
         {/* ── Centre: the video, as large as fits, with the new-clip bar right under it ── */}
-        <main className="flex-1 min-w-0 flex flex-col gap-3 p-3 overflow-y-auto" style={PANEL_CARD}>
+        <main className="cb-panel flex-1 min-w-0 flex flex-col gap-4 p-4 overflow-y-auto">
           {viewBar}
           {wide ? (
             // Container-query box: the player takes the biggest size (in the video's own shape) that fits both ways
             <div className="flex-1 min-h-0 flex items-center justify-center" style={{ containerType: 'size' }}>
-              <div className="rounded-2xl overflow-hidden flex items-center justify-center bg-black"
-                style={{ width: `min(100cqw, calc(100cqh * ${frameRatio}))`, aspectRatio: `${frameRatio}`, border: '1px solid rgba(255,255,255,0.08)' }}>
+              <div className="cb-player rounded-2xl overflow-hidden flex items-center justify-center bg-black"
+                style={{ width: `min(100cqw, calc(100cqh * ${frameRatio}))`, aspectRatio: `${frameRatio}` }}>
                 {/* The video stays mounted (hidden) while a clip previews, so it keeps its place */}
                 <div className="w-full h-full flex items-center justify-center" style={{ display: viewMode === 'video' ? 'flex' : 'none' }}>{player}</div>
                 {viewMode === 'preview' && previewPane}
               </div>
             </div>
           ) : (
-            <div className="w-full rounded-2xl overflow-hidden flex items-center justify-center bg-black shrink-0"
-              style={{ aspectRatio: `${frameRatio}`, maxHeight: '70vh', margin: '0 auto', width: `min(100%, calc(70vh * ${frameRatio}))`, border: '1px solid rgba(255,255,255,0.08)' }}>
+            <div className="cb-player w-full rounded-2xl overflow-hidden flex items-center justify-center bg-black shrink-0"
+              style={{ aspectRatio: `${frameRatio}`, maxHeight: '70vh', margin: '0 auto', width: `min(100%, calc(70vh * ${frameRatio}))` }}>
               <div className="w-full h-full flex items-center justify-center" style={{ display: viewMode === 'video' ? 'flex' : 'none' }}>{player}</div>
               {viewMode === 'preview' && previewPane}
             </div>
@@ -1653,12 +1649,12 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
         </main>
 
         {/* ── Right: your clips ─────────────────────────────────── */}
-        <aside className="shrink-0 flex flex-col min-h-0 overflow-hidden" style={{ ...PANEL_CARD, width: manualOnly ? 420 : 340 }}>
+        <aside className="cb-panel shrink-0 flex flex-col min-h-0 overflow-hidden" style={{ width: manualOnly ? 420 : 340 }}>
           <div className="px-4 pt-4 pb-3 flex items-center gap-2 shrink-0">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={ACCENT} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
               <rect x="5" y="4" width="14" height="17" rx="2" /><path d="M9 4V3h6v1M9 10h6M9 14h4" />
             </svg>
-            <h2 className="text-sm font-semibold text-white">Clipboard</h2>
+            <h2 className="text-[15px] font-semibold text-white tracking-tight">Clipboard</h2>
             {(
               <span className="text-[11px] font-bold px-2 py-0.5 rounded-full" style={{ color: ACCENT, background: 'rgba(200,255,0,0.1)', border: '1px solid rgba(200,255,0,0.25)' }}>
                 {badgeCount} clip{badgeCount === 1 ? '' : 's'}
@@ -1668,7 +1664,7 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
             {(selecting || shownClips.length > 0) && (() => {
               const all = shownClips.length > 0 && shownClips.every(c => selected.has(c.id))
               return (
-                <label className="flex items-center gap-1.5 text-xs font-medium cursor-pointer select-none" style={{ color: 'rgba(255,255,255,0.75)' }}>
+                <label className="flex items-center gap-1.5 text-xs font-medium cursor-pointer select-none" style={{ color: 'rgb(var(--cb-fg) / 0.75)' }}>
                   <input type="checkbox" checked={all}
                     onChange={() => {
                       if (all) { stopSelecting(); return }
@@ -1690,10 +1686,8 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
                 return (
                   <button key={t.id} type="button" role="tab" aria-selected={on}
                     onClick={() => { setClipTab(t.id); setSelected(new Set()) }}
-                    className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold transition-colors hover:bg-white/10"
-                    style={on
-                      ? { background: 'rgba(255,255,255,0.14)', color: '#fff', border: '1px solid rgba(255,255,255,0.25)' }
-                      : { color: n ? 'rgba(255,255,255,0.65)' : 'rgba(255,255,255,0.35)', border: '1px solid rgba(255,255,255,0.1)' }}>
+                    className="cb-tab flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] font-semibold"
+                    style={on ? undefined : { color: n ? 'rgb(var(--cb-fg) / 0.7)' : 'rgb(var(--cb-fg) / 0.35)' }}>
                     {dot && <span aria-hidden="true" className="w-1.5 h-1.5 rounded-full" style={{ background: dot }} />}
                     {t.id === 'fav' && <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 21s-7.5-4.6-9.5-9.2C1 8 3.4 4.5 7 4.5c2 0 3.6 1.1 5 3 1.4-1.9 3-3 5-3 3.6 0 6 3.5 4.5 7.3C19.5 16.4 12 21 12 21z" /></svg>}
                     {t.label}
@@ -1711,21 +1705,21 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
           )}
           <div className="flex-1 min-h-0 overflow-y-auto px-4 pb-4 flex flex-col gap-2">
             {boardClips.length === 0 && !isReady && (
-              <p className="text-xs leading-relaxed" style={{ color: 'rgba(255,255,255,0.45)' }}>
+              <p className="text-xs leading-relaxed" style={{ color: 'rgb(var(--cb-fg) / 0.45)' }}>
                 You can start clipping once the video has finished processing.
               </p>
             )}
             {boardClips.length > 0 && shownClips.length === 0 && (
-              <p className="text-xs leading-relaxed" style={{ color: 'rgba(255,255,255,0.45)' }}>
+              <p className="text-xs leading-relaxed" style={{ color: 'rgb(var(--cb-fg) / 0.45)' }}>
                 {CLIP_TABS.find(t => t.id === clipTab)?.empty}
               </p>
             )}
-            {shownClips.map((clip, idx) => (
+            {shownClips.map(clip => (
               <ClipCard
                 key={clip.id}
                 id={clip.id}
                 focused={focusClipId === clip.id}
-                number={idx + 1}
+                number={clip.index}
                 origin={clipTab === 'all' || clipTab === 'fav' || clipTab === 'edited' ? clip.origin : undefined}
                 videoUrl={videoUrl}
                 favorite={!!clip.favorite}
@@ -1761,7 +1755,7 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
                 <svg className="shrink-0 mt-0.5" width="14" height="14" viewBox="0 0 24 24" fill={ACCENT} aria-hidden="true"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8L12 3z" /></svg>
                 <span className="flex flex-col">
                   <span className="text-xs font-semibold" style={{ color: ACCENT }}>Tip</span>
-                  <span className="text-[11px] leading-relaxed" style={{ color: 'rgba(255,255,255,0.55)' }}>Tap a clip to open it. You can preview, edit or download your clips anytime.</span>
+                  <span className="text-[11px] leading-relaxed" style={{ color: 'rgb(var(--cb-fg) / 0.55)' }}>Tap a clip to open it. You can preview, edit or download your clips anytime.</span>
                 </span>
               </div>
             )}
@@ -1778,7 +1772,7 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
                     {selected.size === 0 ? 'Tap clips to select them' : `${selected.size} selected`}
                   </span>
                   <button type="button" onClick={() => setSelected(allOn ? new Set() : new Set(shownClips.map(c => c.id)))}
-                    className="px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors hover:bg-white/10" style={{ color: 'rgba(255,255,255,0.75)' }}>
+                    className="px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors hover:bg-white/10" style={{ color: 'rgb(var(--cb-fg) / 0.75)' }}>
                     {allOn ? 'Clear' : 'Select all'}
                   </button>
                   <button type="button" disabled={selected.size === 0} onClick={() => { setDeleteError(null); setConfirmDelete(true) }}
@@ -1800,9 +1794,9 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
           <div className="fixed inset-0 z-[80] flex items-center justify-center p-4" style={{ background: 'rgba(0,0,0,0.65)', backdropFilter: 'blur(4px)' }}
             onClick={() => { if (!deleting) setConfirmDelete(false) }}>
             <div role="alertdialog" aria-modal="true" aria-labelledby="clip-delete-title" onClick={e => e.stopPropagation()}
-              className="w-full max-w-[400px] rounded-2xl p-6" style={{ background: '#161616', border: '1px solid rgba(255,255,255,0.12)', boxShadow: '0 40px 100px -30px rgba(0,0,0,0.8)' }}>
+              className="w-full max-w-[400px] rounded-2xl p-6" style={{ background: 'var(--cb-pop)', border: '1px solid rgb(var(--cb-fg) / 0.12)', boxShadow: '0 40px 100px -30px rgba(0,0,0,0.8)' }}>
               <h2 id="clip-delete-title" className="text-lg font-black text-white">Delete {n === 1 ? 'this clip' : `${n} clips`}?</h2>
-              <p className="text-sm mt-2 leading-relaxed" style={{ color: 'rgba(255,255,255,0.6)' }}>
+              <p className="text-sm mt-2 leading-relaxed" style={{ color: 'rgb(var(--cb-fg) / 0.6)' }}>
                 {n === 1 ? 'The clip and its edits are' : `The clips and their edits are`} removed permanently
                 {exported > 0 ? `, including ${exported === 1 ? 'an exported video' : `${exported} exported videos`}` : ''}.
                 The original video stays. This can&apos;t be undone.
@@ -1810,7 +1804,7 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
               {deleteError && <p role="alert" className="text-xs mt-3" style={{ color: '#f87171' }}>{deleteError}</p>}
               <div className="flex justify-end gap-2 mt-5">
                 <button type="button" autoFocus disabled={deleting} onClick={() => setConfirmDelete(false)}
-                  className="px-4 py-2 rounded-lg text-sm font-medium transition-colors hover:bg-white/10 disabled:opacity-50" style={{ color: 'rgba(255,255,255,0.8)' }}>
+                  className="px-4 py-2 rounded-lg text-sm font-medium transition-colors hover:bg-white/10 disabled:opacity-50" style={{ color: 'rgb(var(--cb-fg) / 0.8)' }}>
                   Cancel
                 </button>
                 <button type="button" disabled={deleting} onClick={deleteSelected}
@@ -1836,7 +1830,7 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
  * Under an hour of video (`showHours` false) the hours part isn't shown: the box reads 4:05.
  * `nextId`: the time field to go on to once the seconds are typed (Start → End).
  */
-function TimeField({ id, label, value, onChange, showHours = true, nextId }: { id: string; label: string; value: string; onChange: (v: string) => void; showHours?: boolean; nextId?: string }) {
+function TimeField({ id, label, value, onChange, showHours = true, nextId, prevId }: { id: string; label: string; value: string; onChange: (v: string) => void; showHours?: boolean; nextId?: string; /** ← from the first part goes back to this field's seconds */ prevId?: string }) {
   type Parts = [string, string, string]
   const pad = (n: number) => String(n).padStart(2, '0')
   const split = (v: string): Parts => {
@@ -1921,7 +1915,6 @@ function TimeField({ id, label, value, onChange, showHours = true, nextId }: { i
   function key(i: number, e: React.KeyboardEvent<HTMLInputElement>) {
     const el = e.currentTarget
     const atStart = el.selectionStart === 0 && el.selectionEnd === 0
-    const atEnd = el.selectionStart === el.value.length && el.selectionEnd === el.value.length
     // Digits are taken here (two make the part), not left to the browser's cursor
     if (/^[0-9]$/.test(e.key) && !e.ctrlKey && !e.metaKey && !e.altKey) { e.preventDefault(); digit(i, e.key); return }
     if (e.key === 'Backspace' && typing.current?.i === i) {
@@ -1934,12 +1927,24 @@ function TimeField({ id, label, value, onChange, showHours = true, nextId }: { i
     }
     if (e.key === ':' || e.key === '.' || e.key === ' ') { e.preventDefault(); if (i < 2) go(i + 1); return }
     if (e.key === 'Backspace' && (!el.value || atStart) && i > first) { e.preventDefault(); go(i - 1, 'end'); return }
-    if (e.key === 'ArrowLeft' && atStart && i > first) { e.preventDefault(); go(i - 1, 'end'); return }
-    if (e.key === 'ArrowRight' && atEnd && i < 2) { e.preventDefault(); go(i + 1); return }
-    // Next: → from the seconds (or Enter anywhere in Start) goes on to the End time
-    if (nextId && ((e.key === 'ArrowRight' && i === 2 && (atEnd || el.selectionEnd === el.value.length)) || e.key === 'Enter')) {
-      e.preventDefault(); finish(el); return
+    // ← → step from part to part, wherever the cursor is (a part is only two digits) — and across:
+    // → from Start's seconds goes on to End, ← from End's first part back to Start's seconds
+    if (e.key === 'ArrowLeft' && !e.shiftKey) {
+      e.preventDefault()
+      if (i > first) go(i - 1)
+      else {
+        const prev = prevId ? document.getElementById(`${prevId}-s`) as HTMLInputElement | null : null
+        if (prev) { prev.focus(); requestAnimationFrame(() => prev.select()) }
+      }
+      return
     }
+    if (e.key === 'ArrowRight' && !e.shiftKey) {
+      e.preventDefault()
+      if (i < 2) go(i + 1); else finish(el)
+      return
+    }
+    // Enter anywhere in Start goes on to the End time
+    if (nextId && e.key === 'Enter') { e.preventDefault(); finish(el); return }
     if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
       e.preventDefault()
       const n = (Number(live.current[i] || 0) + (e.key === 'ArrowUp' ? 1 : -1) + max(i) + 1) % (max(i) + 1)
@@ -1957,17 +1962,21 @@ function TimeField({ id, label, value, onChange, showHours = true, nextId }: { i
   }
   const names = ['hours', 'minutes', 'seconds']
   return (
-    <div className="flex items-center justify-center h-[52px] px-3 rounded-xl transition-[border-color,background-color] focus-within:border-white/30 focus-within:bg-white/[0.07]"
-      style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)' }}>
+    <div className="cb-input flex items-center justify-center h-[52px] px-3 rounded-xl">
       <div className="min-w-0 flex flex-col items-center justify-center">
-        <label htmlFor={`${id}-${'hms'[first]}`} className="text-[10px] font-semibold uppercase leading-none" style={{ color: 'rgba(255,255,255,0.45)', letterSpacing: '0.08em' }}>{label}</label>
-        <div className="flex items-center mt-1.5 text-[18px] font-semibold tabular-nums leading-none text-white">
-          {parts.map((p, i) => i < first ? null : (
+        <label htmlFor={`${id}-${'hms'[first]}`} className="text-[10px] font-semibold uppercase leading-none" style={{ color: 'rgb(var(--cb-fg) / 0.45)', letterSpacing: '0.08em' }}>{label}</label>
+        <div className="flex items-center mt-[5px] text-[18px] font-semibold tabular-nums leading-none text-white">
+          {parts.map((p, i) => {
+            if (i < first) return null
+            // Read as one time, as on a clock: the parts close in on the ":" (the first one only as wide
+            // as its digits, so the time sits in the middle under the label)
+            const shown = i === first && !showHours && p.startsWith('0') && p.length === 2 ? p.slice(1) : p
+            const lone = i === first && !showHours
+            return (
             <span key={i} className="flex items-center">
-              {/* (a clear gap round the ":" between the parts) */}
-              {i > first && <span aria-hidden="true" className="select-none mx-1.5 -translate-y-px" style={{ color: 'rgba(255,255,255,0.55)' }}>:</span>}
+              {i > first && <span aria-hidden="true" className="select-none mx-[3px] -translate-y-px" style={{ color: 'rgb(var(--cb-fg) / 0.55)' }}>:</span>}
               <input ref={refs[i]} id={`${id}-${'hms'[i]}`} type="text" inputMode="numeric" autoComplete="off"
-                aria-label={`${label} ${names[i]}`} placeholder={i === first && !showHours ? '0' : '00'} value={i === first && !showHours && p.startsWith('0') && p.length === 2 ? p.slice(1) : p}
+                aria-label={`${label} ${names[i]}`} placeholder={lone ? '0' : '00'} value={shown}
                 onChange={e => type(i, e.target.value)} onKeyDown={e => key(i, e)} onPaste={paste}
                 // (a phone keyboard's action key: "next" moves on, as Enter does here)
                 enterKeyHint={nextId ? 'next' : 'done'}
@@ -1976,10 +1985,11 @@ function TimeField({ id, label, value, onChange, showHours = true, nextId }: { i
                 onMouseUp={e => e.preventDefault()}
                 onBlur={() => { const cur = live.current; if (cur[i].length === 1) { const next = [...cur] as Parts; next[i] = pad(Number(cur[i])); put(next) } }}
                 // The part being typed in: a plain light pill, instead of the browser's blue selection
-                className="bg-transparent outline-none text-center rounded-md py-1 placeholder:text-white/30 focus:bg-white/15 selection:bg-transparent selection:text-white transition-colors"
-                style={{ width: i === first && !showHours ? '2ch' : '2.6ch' }} />
+                className="bg-transparent outline-none rounded-md py-0.5 placeholder:text-white/30 focus:bg-white/15 selection:bg-transparent selection:text-white transition-colors"
+                style={{ width: lone ? `${Math.max(1, shown.length) + 0.4}ch` : '2.4ch', textAlign: i === first ? 'right' : i === 2 ? 'left' : 'center' }} />
             </span>
-          ))}
+            )
+          })}
         </div>
       </div>
     </div>
@@ -1991,7 +2001,7 @@ function CancelButton({ onClick, title }: { onClick: () => void; title: string }
   return (
     <button type="button" onClick={onClick} title={title}
       className="shrink-0 flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-semibold transition-colors hover:bg-white/10 hover:text-white"
-      style={{ color: 'rgba(255,255,255,0.7)', border: '1px solid rgba(255,255,255,0.16)' }}>
+      style={{ color: 'rgb(var(--cb-fg) / 0.7)', border: '1px solid rgb(var(--cb-fg) / 0.16)' }}>
       <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" aria-hidden><path d="M6 6l12 12M18 6L6 18" /></svg>
       Cancel
     </button>
@@ -2006,7 +2016,7 @@ function Spinner() {
 function ClipThumb({ videoUrl, atMs, number, w, h }: { videoUrl: string; atMs: number; number?: number; w: number; h: number }) {
   const src = useFrameAt(videoUrl, atMs)
   return (
-    <span className="relative shrink-0 block rounded-lg overflow-hidden" style={{ width: w, height: h, background: 'rgba(255,255,255,0.06)' }}>
+    <span className="cb-thumb relative shrink-0 block rounded-[10px] overflow-hidden" style={{ width: w, height: h, background: 'rgb(var(--cb-fg) / 0.06)' }}>
       {/* eslint-disable-next-line @next/next/no-img-element */}
       {src && <img src={src} alt="" className="w-full h-full object-cover" />}
       {number != null && (
@@ -2059,11 +2069,11 @@ function ResultCard({ s, rank, videoUrl, busy, inClips, open, onOpen, onClose, o
     return (
       <div role="button" tabIndex={0} onClick={click} onKeyDown={keys} title={`${s.title} · click to preview`}
         className="shrink-0 flex items-center gap-3 rounded-xl p-2 min-h-[68px] cursor-pointer transition-colors hover:bg-white/[0.05] focus-visible:outline focus-visible:outline-2"
-        style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)', outlineColor: ACCENT }}>
+        style={{ background: 'rgb(var(--cb-fg) / 0.03)', border: '1px solid rgb(var(--cb-fg) / 0.07)', outlineColor: ACCENT }}>
         <ClipThumb videoUrl={videoUrl} atMs={s.start_ms} number={rank} w={84} h={48} />
         <span className="flex-1 min-w-0 flex flex-col gap-1">
           <span className="text-sm font-semibold text-white leading-snug line-clamp-2 break-words">{s.title}</span>
-          <span className="flex items-center gap-1.5 text-[11px] tabular-nums" style={{ color: 'rgba(255,255,255,0.5)' }}>
+          <span className="flex items-center gap-1.5 text-[11px] tabular-nums" style={{ color: 'rgb(var(--cb-fg) / 0.5)' }}>
             <ClockIcon />{durLabel(s.start_ms, s.end_ms)}
             {score}
           </span>
@@ -2086,9 +2096,9 @@ function ResultCard({ s, rank, videoUrl, busy, inClips, open, onOpen, onClose, o
         <ClipThumb videoUrl={videoUrl} atMs={s.start_ms} number={rank} w={112} h={64} />
         <div className="flex-1 min-w-0 flex flex-col gap-1">
           <p className="text-sm font-semibold text-white leading-snug line-clamp-2" title={s.title}>{s.title}</p>
-          <span className="flex items-center gap-1.5 text-xs tabular-nums" style={{ color: 'rgba(255,255,255,0.65)' }}>
+          <span className="flex items-center gap-1.5 text-xs tabular-nums" style={{ color: 'rgb(var(--cb-fg) / 0.65)' }}>
             <ClockIcon />{msToDisplay(s.start_ms)} – {msToDisplay(s.end_ms)}
-            <span style={{ color: 'rgba(255,255,255,0.35)' }}>· {durLabel(s.start_ms, s.end_ms)}</span>
+            <span style={{ color: 'rgb(var(--cb-fg) / 0.35)' }}>· {durLabel(s.start_ms, s.end_ms)}</span>
           </span>
           <span className="flex items-center gap-1.5">
             {score}
@@ -2097,7 +2107,7 @@ function ResultCard({ s, rank, videoUrl, busy, inClips, open, onOpen, onClose, o
         </div>
       </div>
       {(s.summary || s.reason) && (
-        <p className="mt-2 text-[11px] leading-relaxed line-clamp-3" style={{ color: 'rgba(255,255,255,0.5)' }}>{s.summary || s.reason}</p>
+        <p className="mt-2 text-[11px] leading-relaxed line-clamp-3" style={{ color: 'rgb(var(--cb-fg) / 0.5)' }}>{s.summary || s.reason}</p>
       )}
       {/* Preview (playing now) · Edit · Add */}
       <div className="mt-2.5 grid grid-cols-3 gap-1.5">
@@ -2108,7 +2118,7 @@ function ResultCard({ s, rank, videoUrl, busy, inClips, open, onOpen, onClose, o
         </span>
         <button type="button" onClick={onEdit} disabled={!!busy} title={inClips ? 'Open this clip in the editor' : 'Make it a clip and open it in the editor'}
           className="h-8 flex items-center justify-center gap-1.5 rounded-lg text-xs font-semibold transition-colors hover:bg-white/10 disabled:opacity-40"
-          style={{ color: 'rgba(255,255,255,0.85)', border: '1px solid rgba(255,255,255,0.14)' }}>
+          style={{ color: 'rgb(var(--cb-fg) / 0.85)', border: '1px solid rgb(var(--cb-fg) / 0.14)' }}>
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 20h9" /><path d="M16.5 3.5a2.1 2.1 0 013 3L7 19l-4 1 1-4z" /></svg>
           Edit
         </button>
@@ -2252,11 +2262,11 @@ function SubEditOverlay({ startedAt, estimate, ahead, onStop }: { startedAt: num
       <div className="flex items-center gap-2 text-sm font-bold" style={{ color: ACCENT }}>
         <Spinner /> Sub-editing
       </div>
-      <p className="text-[11.5px]" style={{ color: 'rgba(255,255,255,0.75)' }}>{step}…</p>
-      <div className="w-full max-w-[220px] h-1.5 rounded-full overflow-hidden" style={{ background: 'rgba(255,255,255,0.12)' }}>
+      <p className="text-[11.5px]" style={{ color: 'rgb(var(--cb-fg) / 0.75)' }}>{step}…</p>
+      <div className="w-full max-w-[220px] h-1.5 rounded-full overflow-hidden" style={{ background: 'rgb(var(--cb-fg) / 0.12)' }}>
         <div className="h-full rounded-full transition-[width] duration-1000 ease-linear" style={{ width: `${Math.round(share * 100)}%`, background: ACCENT }} />
       </div>
-      <p className="text-[11px] tabular-nums" style={{ color: 'rgba(255,255,255,0.55)' }}>
+      <p className="text-[11px] tabular-nums" style={{ color: 'rgb(var(--cb-fg) / 0.55)' }}>
         {waiting ? `Then about ${aboutLabel(total)}` : left > 3000 ? `About ${aboutLabel(left)} left` : 'Almost done…'} · you can keep working
       </p>
       <button type="button" onClick={e => { e.stopPropagation(); onStop() }}
@@ -2311,35 +2321,62 @@ function ClipCard({ id, focused, number, origin, title, startMs, endMs, status, 
   selected?: boolean
   onToggle?: () => void
 }) {
-  const [menu, setMenu] = useState<false | 'open' | 'confirm'>(false)
+  // The delete button's "Delete this clip?" (no ⋯ menu: Edit and the time line cover the rest)
+  const [menu, setMenu] = useState<false | 'confirm'>(false)
   const sub = useSubEdit(id, onSubEdited)
+  // Opened: a click anywhere outside the card closes it again (not while picking clips, nor in its own pop-ups)
+  useEffect(() => {
+    if (!open || selecting) return
+    const away = (e: PointerEvent) => {
+      const t = e.target as HTMLElement | null
+      if (!t || t.closest(`#clip-${CSS.escape(id)}`) || t.closest('[role="dialog"], [role="alertdialog"], [role="menu"]')) return
+      onClose?.()
+    }
+    document.addEventListener('pointerdown', away)
+    return () => document.removeEventListener('pointerdown', away)
+  }, [open, selecting, id, onClose])
   const chip =
     status === 'rendering' ? { label: 'Rendering', color: ACCENT } :
     status === 'done' ? { label: 'Exported', color: '#4ade80' } :
     status === 'failed' ? { label: 'Render failed', color: '#f87171' } :
-    { label: 'Draft', color: 'rgba(255,255,255,0.45)' }
-  const border = selected || focused || previewing ? ACCENT : playing ? 'rgba(255,255,255,0.3)' : 'rgba(255,255,255,0.07)'
+    { label: 'Draft', color: 'rgb(var(--cb-fg) / 0.45)' }
   const heart = (
     <button type="button" onClick={e => { e.stopPropagation(); onFavorite() }} aria-pressed={favorite}
       aria-label={favorite ? 'Remove from favorites' : 'Add to favorites'} title={favorite ? 'Remove from favorites' : 'Add to favorites'}
-      className="shrink-0 w-7 h-7 flex items-center justify-center rounded-lg transition-colors hover:bg-white/10" style={{ color: 'rgba(255,255,255,0.6)' }}>
+      className="shrink-0 w-7 h-7 flex items-center justify-center rounded-lg transition-colors hover:bg-white/10" style={{ color: 'rgb(var(--cb-fg) / 0.6)' }}>
       <Heart on={favorite} />
     </button>
   )
 
-  // Slim: picture, title, length and the heart; clicking it opens it (and its preview)
+  // Slim: picture, title, length and the heart; clicking it opens it (and its preview). Pointed at
+  // (or tabbed into), Edit · Download · Delete slide open under it, in CSS: the card itself stays
+  // as it is (it used to be swapped for the full card, which rebuilt its picture and jumped)
   if (!open && !focused && !selecting) {
     return (
       <div id={`clip-${id}`} role="button" tabIndex={0}
         onClick={e => { if (!disabled && !(e.target as HTMLElement).closest('button')) onPreview() }}
         onKeyDown={e => { if ((e.key === 'Enter' || e.key === ' ') && !disabled && e.target === e.currentTarget) { e.preventDefault(); onPreview() } }}
         title={`${title} · click to open and preview`}
-        className="group shrink-0 flex items-center gap-3 rounded-xl p-2 min-h-[68px] cursor-pointer transition-colors hover:bg-white/[0.05] focus-visible:outline focus-visible:outline-2"
-        style={{ background: 'rgba(255,255,255,0.03)', border: `1px solid ${playing ? 'rgba(255,255,255,0.3)' : 'rgba(255,255,255,0.07)'}`, outlineColor: ACCENT }}>
+        data-playing={playing || undefined}
+        className="cb-card cb-sheen group shrink-0 flex items-center gap-3 p-2.5 min-h-[72px] cursor-pointer focus-visible:outline focus-visible:outline-2"
+        style={{ outlineColor: ACCENT }}>
         <ClipThumb videoUrl={videoUrl} atMs={startMs} number={number} w={84} h={48} />
         <span className="flex-1 min-w-0 flex flex-col gap-1">
-          <span className="text-sm font-semibold text-white leading-snug line-clamp-2 break-words">{title}</span>
-          <span className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-[11px] tabular-nums" style={{ color: 'rgba(255,255,255,0.5)' }}>
+          <span className="flex items-start gap-2">
+            <span className="flex-1 min-w-0 text-sm font-semibold text-white leading-snug line-clamp-2 break-words">{title}</span>
+            {/* ♡ and 🗑, a pair at the top right; the bin slides in beside the heart while the card is pointed at */}
+            <span className="cb-tools -mt-1 -mr-1">
+              <button type="button" onClick={e => { e.stopPropagation(); setMenu(m => (m ? false : 'confirm')) }} aria-expanded={!!menu}
+                className="cb-tool cb-tool-hide" data-tone="danger" data-on={menu ? '' : undefined} aria-label="Delete clip" title="Delete clip">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v6M14 11v6" /></svg>
+              </button>
+              <button type="button" onClick={e => { e.stopPropagation(); onFavorite() }} aria-pressed={favorite} className="cb-tool" data-on={favorite ? '' : undefined}
+                aria-label={favorite ? 'Remove from favorites' : 'Add to favorites'} title={favorite ? 'Remove from favorites' : 'Add to favorites'}>
+                <Heart on={favorite} />
+              </button>
+            </span>
+          </span>
+          <span className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-[11px] tabular-nums" style={{ color: 'rgb(var(--cb-fg) / 0.5)' }}>
             <ClockIcon />{manual ? <><span style={{ color: ACCENT }}>{msToDisplay(startMs)} – {msToDisplay(endMs)}</span> · {durLabel(startMs, endMs)}</> : durLabel(startMs, endMs)}
             {edited && (
               <span className="px-1.5 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wide" style={{ color: ACCENT, background: 'rgba(200,255,0,0.12)' }}>Edited</span>
@@ -2347,28 +2384,41 @@ function ClipCard({ id, focused, number, origin, title, startMs, endMs, status, 
             {status === 'rendering' && <span className="flex items-center gap-1" style={{ color: ACCENT }}>· <Spinner /> Exporting</span>}
             {sub.busy && <SubEditInline startedAt={sub.startedAt} estimate={sub.estimate} ahead={sub.ahead} onStop={sub.stop} />}
           </span>
-          {manual && (
-            <span className="flex gap-1.5 mt-0.5 transition-opacity [@media(hover:hover)]:opacity-0 group-hover:opacity-100 group-focus-within:opacity-100">
-              <button type="button" onClick={e => { e.stopPropagation(); onEdit() }} disabled={disabled}
-                className="h-7 px-2.5 rounded-md text-[11px] font-semibold transition-colors hover:bg-white/10 disabled:opacity-40" style={{ color: 'rgba(255,255,255,0.85)', border: '1px solid rgba(255,255,255,0.18)' }}>
-                Edit
-              </button>
-              <button type="button" onClick={e => { e.stopPropagation(); onDownload() }} disabled={download === 'preparing'}
-                className="h-7 px-2.5 rounded-md text-[11px] font-semibold transition-colors hover:bg-white/10 disabled:opacity-70"
-                style={{ color: download === 'failed' ? '#f87171' : 'rgba(255,255,255,0.85)', border: `1px solid ${download === 'failed' ? 'rgba(239,68,68,0.45)' : 'rgba(255,255,255,0.18)'}` }}>
-                {download === 'preparing' ? 'Preparing…' : download === 'failed' ? 'Retry' : 'Download'}
-              </button>
+          <span className="cb-reveal" data-open={menu ? '' : undefined}>
+            <span className="cb-reveal-in">
+              {menu ? (
+                <span className="flex items-center gap-1.5 pt-2" onClick={e => e.stopPropagation()}>
+                  <span className="text-[11px] text-white mr-auto">Delete this clip?</span>
+                  <button type="button" onClick={() => setMenu(false)} autoFocus className="cb-act">Cancel</button>
+                  <button type="button" onClick={() => { setMenu(false); onDelete() }} className="cb-act" data-tone="danger">Delete</button>
+                </span>
+              ) : (
+                <span className="flex items-center gap-1.5 pt-2">
+                  <button type="button" onClick={e => { e.stopPropagation(); onEdit() }} disabled={disabled} className="cb-act" title="Open in the editor">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 20h9" /><path d="M16.5 3.5a2.1 2.1 0 013 3L7 19l-4 1 1-4z" /></svg>
+                    Edit
+                  </button>
+                  <button type="button" onClick={e => { e.stopPropagation(); onDownload() }} disabled={download === 'preparing'} className="cb-act"
+                    data-tone={download === 'failed' ? 'danger' : undefined}
+                    title={download === 'preparing' ? 'Exporting — it downloads by itself when ready' : download === 'failed' ? 'The export failed — try again' : 'Download this clip'}>
+                    {download === 'preparing' ? <Spinner /> : (
+                      <svg width="12" height="12" viewBox="0 0 14 14" fill="none" aria-hidden="true"><path d="M7 2v7M4 7l3 3 3-3M2 11.5h10" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /></svg>
+                    )}
+                    {download === 'preparing' ? 'Preparing' : download === 'failed' ? 'Retry' : 'Download'}
+                  </button>
+                </span>
+              )}
             </span>
-          )}
+          </span>
         </span>
-        {heart}
       </div>
     )
   }
 
   return (
-    <div id={`clip-${id}`} className={`relative rounded-xl p-2.5 transition-all duration-300 ${focused ? 'shadow-[0_0_0_3px_rgba(200,255,0,0.25)]' : ''} ${selecting ? 'cursor-pointer select-none hover:bg-white/[0.06] focus-visible:outline focus-visible:outline-2' : 'cursor-pointer hover:bg-white/[0.04]'}`}
-      style={{ background: selected ? 'rgba(200,255,0,0.06)' : 'rgba(255,255,255,0.03)', border: `1px solid ${border}`, outlineColor: ACCENT }}
+    <div id={`clip-${id}`} data-playing={playing || undefined} data-on={selected || focused || previewing || undefined}
+      className={`cb-card relative p-2.5 ${focused ? 'shadow-[0_0_0_3px_rgba(200,255,0,0.25)]' : ''} ${selecting ? 'cursor-pointer select-none focus-visible:outline focus-visible:outline-2' : 'cursor-pointer'}`}
+      style={{ ...(selected ? { background: 'rgba(200,255,0,0.06)' } : {}), outlineColor: ACCENT }}
       {...(selecting ? {
         role: 'checkbox',
         'aria-checked': !!selected,
@@ -2390,7 +2440,7 @@ function ClipCard({ id, focused, number, origin, title, startMs, endMs, status, 
           <span aria-hidden="true" className="shrink-0 mt-1 w-6 h-6 rounded-full flex items-center justify-center transition-colors"
             style={selected
               ? { background: ACCENT, border: `2px solid ${ACCENT}`, color: '#000' }
-              : { background: 'transparent', border: '2px solid rgba(255,255,255,0.45)' }}>
+              : { background: 'transparent', border: '2px solid rgb(var(--cb-fg) / 0.45)' }}>
             {selected && <svg width="12" height="12" viewBox="0 0 24 24" fill="none"><path d="M5 12.5l4.5 4.5L19 7.5" stroke="currentColor" strokeWidth="3.2" strokeLinecap="round" strokeLinejoin="round" /></svg>}
           </span>
         ) : null}
@@ -2401,42 +2451,33 @@ function ClipCard({ id, focused, number, origin, title, startMs, endMs, status, 
             {!selecting && heart}
             {!selecting && (
               <span className="relative shrink-0">
-                <button type="button" onClick={e => { e.stopPropagation(); setMenu(m => m ? false : 'open') }} aria-label="More" title="More"
-                  className="w-7 h-7 flex items-center justify-center rounded-lg transition-colors hover:bg-white/10" style={{ color: 'rgba(255,255,255,0.6)' }}>
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="12" cy="5" r="1.8" /><circle cx="12" cy="12" r="1.8" /><circle cx="12" cy="19" r="1.8" /></svg>
+                <button type="button" onClick={e => { e.stopPropagation(); setMenu(m => m ? false : 'confirm') }} aria-label="Delete clip" title="Delete clip"
+                  aria-expanded={!!menu}
+                  className="w-7 h-7 flex items-center justify-center rounded-lg transition-colors hover:bg-red-500/15 hover:text-red-400" style={{ color: menu ? '#f87171' : 'rgb(var(--cb-fg) / 0.6)' }}>
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v6M14 11v6" /></svg>
                 </button>
                 {menu && (
                   <span className="absolute right-0 top-8 z-20 flex flex-col p-1 rounded-lg min-w-[150px]" onClick={e => e.stopPropagation()}
-                    style={{ background: '#1a1a1a', border: '1px solid rgba(255,255,255,0.12)', boxShadow: '0 12px 30px -8px rgba(0,0,0,0.8)' }}>
-                    {menu === 'open' ? (
-                      <>
-                        <button type="button" onClick={() => { setMenu(false); onEdit() }} className="px-2.5 py-1.5 rounded-md text-left text-xs text-white hover:bg-white/10">Open in editor</button>
-                        <button type="button" onClick={() => { setMenu(false); onSeek() }} className="px-2.5 py-1.5 rounded-md text-left text-xs text-white hover:bg-white/10">Play in the video</button>
-                        <button type="button" onClick={() => setMenu('confirm')} className="px-2.5 py-1.5 rounded-md text-left text-xs hover:bg-white/10" style={{ color: '#f87171' }}>Delete clip</button>
-                      </>
-                    ) : (
-                      <>
-                        <span className="px-2.5 py-1.5 text-xs text-white">Delete this clip?</span>
-                        <span className="flex gap-1 px-1 pb-1">
-                          <button type="button" onClick={() => setMenu(false)} className="flex-1 px-2 py-1 rounded-md text-xs hover:bg-white/10" style={{ color: 'rgba(255,255,255,0.7)' }}>Cancel</button>
-                          <button type="button" onClick={() => { setMenu(false); onDelete() }} className="flex-1 px-2 py-1 rounded-md text-xs font-semibold" style={{ background: 'rgba(239,68,68,0.15)', color: '#f87171' }}>Delete</button>
-                        </span>
-                      </>
-                    )}
+                    style={{ background: 'var(--cb-pop)', border: '1px solid rgb(var(--cb-fg) / 0.12)', boxShadow: '0 12px 30px -8px rgba(0,0,0,0.8)' }}>
+                    <span className="px-2.5 py-1.5 text-xs text-white">Delete this clip?</span>
+                    <span className="flex gap-1 px-1 pb-1">
+                      <button type="button" onClick={() => setMenu(false)} autoFocus className="flex-1 px-2 py-1 rounded-md text-xs hover:bg-white/10" style={{ color: 'rgb(var(--cb-fg) / 0.7)' }}>Cancel</button>
+                      <button type="button" onClick={() => { setMenu(false); onDelete() }} className="flex-1 px-2 py-1 rounded-md text-xs font-semibold" style={{ background: 'rgba(239,68,68,0.15)', color: '#f87171' }}>Delete</button>
+                    </span>
                   </span>
                 )}
               </span>
             )}
           </div>
           <button type="button" onClick={e => { e.stopPropagation(); onSeek() }} title="Play this clip in the video"
-            className="self-start flex items-center gap-1.5 text-xs tabular-nums transition-colors hover:text-white" style={{ color: 'rgba(255,255,255,0.65)' }}>
+            className="self-start flex items-center gap-1.5 text-xs tabular-nums transition-colors hover:text-white" style={{ color: 'rgb(var(--cb-fg) / 0.65)' }}>
             <ClockIcon />{msToDisplay(startMs)} – {msToDisplay(endMs)}
-            <span style={{ color: 'rgba(255,255,255,0.35)' }}>· {durLabel(startMs, endMs)}</span>
+            <span style={{ color: 'rgb(var(--cb-fg) / 0.35)' }}>· {durLabel(startMs, endMs)}</span>
           </button>
           <div className="flex items-center gap-1.5 flex-wrap">
             {origin && (
               <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-semibold"
-                style={{ color: ORIGIN_BADGE[origin].color, background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.08)' }}>
+                style={{ color: ORIGIN_BADGE[origin].color, background: 'rgb(var(--cb-fg) / 0.05)', border: '1px solid rgb(var(--cb-fg) / 0.08)' }}>
                 <span aria-hidden="true" className="w-1.5 h-1.5 rounded-full" style={{ background: ORIGIN_BADGE[origin].color }} />
                 {ORIGIN_BADGE[origin].label}
               </span>
@@ -2448,36 +2489,14 @@ function ClipCard({ id, focused, number, origin, title, startMs, endMs, status, 
           </div>
         </div>
       </div>
-      {reason && !selecting && <p className="mt-2 text-[11px] leading-relaxed line-clamp-2" style={{ color: 'rgba(255,255,255,0.5)' }}>{reason}</p>}
-      {/* Sub-edit · Edit · Download (a click on the card itself previews it) */}
+      {reason && !selecting && <p className="mt-2 text-[11px] leading-relaxed line-clamp-2" style={{ color: 'rgb(var(--cb-fg) / 0.5)' }}>{reason}</p>}
+      {/* Edit · Download (a click on the card itself previews it); a Sub-edit already running still shows its overlay */}
       {!selecting && sub.error && <p role="alert" className="mt-2 text-[11px]" style={{ color: '#f87171' }}>{sub.error}</p>}
       {!selecting && (
-        <div className="mt-2.5 grid grid-cols-3 gap-1.5">
-          <button onClick={e => { e.stopPropagation(); if (sub.state === 'done') onEdit(); else sub.start() }} disabled={sub.busy || disabled}
-            title={sub.busy ? 'Finding the people and framing the clip on whoever is talking — you can keep working'
-              : sub.state === 'done' ? 'Sub-edited: framed on whoever is talking. Open it in the editor'
-              : `Sub-edit: finds everyone in this clip and frames it on whoever is talking, by itself${sub.estimate ? ` — takes about ${aboutLabel(sub.estimate)}` : ''}`}
-            className="h-8 flex items-center justify-center gap-1.5 rounded-lg text-xs font-semibold transition-colors hover:bg-white/10 disabled:cursor-default"
-            style={{
-              color: sub.state === 'done' ? '#4ade80' : sub.busy ? ACCENT : 'rgba(255,255,255,0.9)',
-              border: `1px solid ${sub.busy ? 'rgba(200,255,0,0.5)' : sub.state === 'done' ? 'rgba(74,222,128,0.45)' : 'rgba(255,255,255,0.14)'}`,
-            }}>
-            {sub.busy ? <Spinner /> : sub.state === 'done' ? (
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5" /></svg>
-            ) : (
-              // People with a frame round them
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                <path d="M3 7V4h3M21 7V4h-3M3 17v3h3M21 17v3h-3" /><circle cx="12" cy="10" r="2.6" /><path d="M7.5 17c.7-2.2 2.4-3.4 4.5-3.4s3.8 1.2 4.5 3.4" />
-              </svg>
-            )}
-            {sub.busy ? 'Sub-editing' : sub.state === 'done' ? 'Sub-edited' : 'Sub-edit'}
-            {!sub.busy && sub.state !== 'done' && sub.estimate && (
-              <span className="font-medium tabular-nums" style={{ color: 'rgba(255,255,255,0.45)' }}>~{aboutLabel(sub.estimate)}</span>
-            )}
-          </button>
+        <div className="mt-2.5 grid grid-cols-2 gap-1.5">
           <button onClick={e => { e.stopPropagation(); onEdit() }} disabled={disabled} title="Open in the editor"
             className="h-8 flex items-center justify-center gap-1.5 rounded-lg text-xs font-semibold transition-colors hover:bg-white/10 disabled:opacity-40"
-            style={{ color: 'rgba(255,255,255,0.85)', border: '1px solid rgba(255,255,255,0.14)' }}>
+            style={{ color: 'rgb(var(--cb-fg) / 0.85)', border: '1px solid rgb(var(--cb-fg) / 0.14)' }}>
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 20h9" /><path d="M16.5 3.5a2.1 2.1 0 013 3L7 19l-4 1 1-4z" /></svg>
             Edit
           </button>
