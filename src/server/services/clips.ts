@@ -158,6 +158,8 @@ export async function saveClip(userId: string, clipId: string, body: SaveClipInp
   const hasPresetFields = await captionPresetFields()
   // The caption style (template): saved once the backend has added its field
   const hasTemplateField = await hasColumn('caption_styles', 'template')
+  // The key words (emphasis): the backend adds that field too
+  const hasEmphasisField = await hasColumn('caption_styles', 'emphasis')
   // Captions moved left or right, once the worker has added the field
   const hasCaptionX = await hasColumn('caption_styles', 'position_x')
   // The newer kinds of transition: saved as they are once the backend allows them (else the nearest older kind)
@@ -257,13 +259,19 @@ export async function saveClip(userId: string, clipId: string, body: SaveClipInp
       q.push(tx`DELETE FROM caption_styles WHERE clip_id = ${clipId}`)
     } else if (Object.keys(captionStyle).length > 0) {
       const styleFields = ['font', 'size', 'color', 'position', 'position_y', 'animation', 'language', 'translated_from_language', 'timing_offset_ms',
-        // Animated presets. Not emphasis: the export fills that in, and the editor's copy may be stale.
+        // Animated presets. Not emphasis here: it goes below, only when the editor has some.
         ...(hasPresetFields ? PRESET_STYLE_FIELDS : []),
         ...(hasTemplateField ? ['template'] : []),
         ...(hasCaptionX ? ['position_x'] : [])]
       const onOff = hasEnabledField ? { enabled: captionEnabled } : {}
       const entries = Object.entries(captionStyle).filter(([k, v]) => styleFields.includes(k) && v !== undefined)
       const fields: Record<string, unknown> = Object.fromEntries(entries)
+      // Key words: saved once the editor has them (picked by AI there, or changed in the Captions
+      // panel) — never an empty copy over the ones the export picked
+      const emphasis = (captionStyle as Partial<CaptionStyle>).emphasis
+      if (hasEmphasisField && emphasis && typeof emphasis === 'object') {
+        fields.emphasis = sql.json(emphasis as never)
+      }
       // A database the backend hasn't updated yet only accepts the original animations
       if (!hasPresetFields && typeof fields.animation === 'string' && !['karaoke', 'fade', 'none'].includes(fields.animation)) {
         fields.animation = 'karaoke'

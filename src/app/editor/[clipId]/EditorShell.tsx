@@ -8,7 +8,7 @@ import { VideoPreview, OutputCanvas } from '@/components/editor/VideoPreview'
 import { withoutRanges } from '@/lib/cuts'
 import { cleanTrims, trimMap, addTrim, wordsOnTimeline, MAX_CLIP_MS, MIN_CLIP_MS } from '@/lib/trims'
 import { toTimelineState, toSourceState, rippleDelete, rippleStretch, lockedInRange, insertAtStart, extendEnd, type TimedState } from '@/modules/editor/trimState'
-import { insertsOf, insertedMs, rippleInsert, isInsert, piecesOf, piecesLength, videoAtPieces, timelineAtPieces, rippleCut, pieceAt, speedOf, pieceVideoMs } from '@/modules/editor/inserts'
+import { insertsOf, insertedMs, rippleInsert, isInsert, piecesOf, piecesLength, videoAtPieces, timelineAtPieces, rippleCut, pieceAt, speedOf, pieceVideoMs, mainFrom } from '@/modules/editor/inserts'
 import { PostText, type PostTextValue } from '@/components/clips/PostText'
 import { BrollPanel, type StockResult } from '@/components/editor/BrollPanel'
 import { VideoPanel, type PanelVideo } from '@/components/editor/VideoPanel'
@@ -18,7 +18,7 @@ import { useBrollSources, useBorrowedSlots } from '@/modules/editor/brollSources
 import { SOUND_DEFAULTS, type SoundItem, type SoundKind } from '@/modules/editor/soundCatalog'
 import { Timeline } from '@/components/editor/timeline/Timeline'
 import { useFreeWatermark } from '@/components/editor/watermark'
-import { LAYOUT_COLORS, MAX_ZOOM, ZOOM_STEPS, zoomStep, zoomLabel, STOCK_DRAG_TYPE, type LaneCtl, type LaneCtlKey } from '@/components/editor/SegmentTimeline'
+import { LAYOUT_COLORS, MAX_ZOOM, zoomStep, zoomLabel, STOCK_DRAG_TYPE, type LaneCtl, type LaneCtlKey } from '@/components/editor/SegmentTimeline'
 import { useVideoUpload } from '@/modules/upload/useVideoUpload'
 import { TranscriptPanel } from '@/components/editor/TranscriptPanel'
 import { CaptionStyler } from '@/components/editor/CaptionStyler'
@@ -27,6 +27,7 @@ import { AudioMixerPanel } from '@/components/editor/AudioMixerPanel'
 import { MediaPickerModal } from '@/components/editor/MediaPickerModal'
 import { shownSegment, addedVideoBox, STAND_IN_SUFFIX } from '@/modules/editor/visibility'
 import { AccountMenu } from '@/components/ui/account-menu'
+import ThemeSwitch from '@/components/ui/cinematic-theme-switcher'
 import { BrandLogo } from '@/components/ui/brand-logo'
 import { BrandLoader } from '@/components/ui/brand-loader'
 import { SpinningBorderButton } from '@/components/ui/spinning-border-button'
@@ -243,7 +244,7 @@ export function EditorShell({
 
   // ── Video player ─────────────────────────────────────────────────────────────
   // (an inserted video drives the clock while it plays: it is asked how far it has got — brollSource, below)
-  const heldPlayedRef = useRef<(id: string) => number | null>(() => null)
+  const heldPlayedRef = useRef<(id: string) => number | null | undefined>(() => null)
   const { videoRef, seekToMs, togglePlay, pause } = useVideoSync(rawClip.start_ms, rawClip.end_ms, pieces, trimmed ? trim.kept : undefined,
     piecesOn ? p => (p.id ? heldPlayedRef.current(p.id) : null) : undefined)
   const { currentTimeMs, durationMs, playing } = usePlayerStore()
@@ -550,7 +551,18 @@ export function EditorShell({
   // section cut where a video plays over it — what the preview draws and what is saved.
   const sections = useMemo(() => segments.filter(s => !isShot(s, mainVideoId)), [segments, mainVideoId])
   const shots = useMemo(() => segments.filter(s => isShot(s, mainVideoId)).sort((a, b) => a.start_ms - b.start_ms), [segments, mainVideoId])
-  const playParts = useMemo(() => flattenShots(segments, mainVideoId), [segments, mainVideoId])
+  /**
+   * How many rows of videos, photos and text sit under the main video on the timeline (tracks
+   * 0 … n-1; the rest are above it). Saved with the clip (layers.below). Stacked as shown: the rows
+   * above cover the main video, the main video covers the rows under it (flattenShots).
+   */
+  const [belowRows, setBelowRows] = useState(() => {
+    const n = ((savedClip as unknown as { layers?: { below?: unknown } | null }).layers)?.below
+    return typeof n === 'number' && Number.isInteger(n) && n > 0 ? n : 0
+  })
+  const belowRowsRef = useRef(belowRows)
+  belowRowsRef.current = belowRows
+  const playParts = useMemo(() => flattenShots(segments, mainVideoId, false, belowRows), [segments, mainVideoId, belowRows])
 
   // ── Transitions: where one section of the main strip ends exactly where the next begins ──
   const transitionJoins = useMemo<TransitionJoin[]>(() => {
@@ -651,6 +663,9 @@ export function EditorShell({
     hasInserts ? () => ({ ms: liveTime.get(), playing: usePlayerStore.getState().playing }) : undefined)
   heldPlayedRef.current = id => {
     const seg = useEditorStore.getState().segments.find(s => s.id === id)
+    // The empty stretch after the main video has no video of its own to follow (its box only names
+    // one of the videos running on there — following that one ran the clock away): real time runs it
+    if (seg && isInsert(seg, mainVideoId) && seg.hidden && seg.crop_boxes[0]?.hidden) return undefined
     return seg ? brollSource.playedMs(seg) : null
   }
   // Borrowed reaction slots (Make my clips): the clip's own video from another moment, per slot
@@ -678,13 +693,8 @@ export function EditorShell({
   /** The last save had to keep newer transitions as a Dissolve (the database doesn't take them yet) */
   const [trAsDissolve, setTrAsDissolve] = useState(false)
   const [motionMode, setMotionMode] = useState(false)
-  // A long clip opens zoomed in to about a minute across the timeline: at 1x a 4-minute clip is ~8 px a
-  // second, and pulling the playhead jumped seconds at a time (zoom out with − or a pinch)
-  const [timelineZoom, setTimelineZoom] = useState(() => {
-    const minutes = (savedClip.end_ms - savedClip.start_ms) / 60_000
-    if (minutes <= 1.25) return 1
-    return [...ZOOM_STEPS].reverse().find(z => z <= minutes) ?? 1
-  })
+  // The timeline always opens at 1x, the whole clip across it (zoom in with + or a pinch)
+  const [timelineZoom, setTimelineZoom] = useState(1)
   const [timelineHidden, setTimelineHidden] = useState(false)
   // Cleanup: the list of cuts can be folded away
   const [cutsOpen, setCutsOpen] = useState(true)
@@ -973,16 +983,21 @@ export function EditorShell({
   // frame 2.5 s ahead, so it plays at once at the join instead of stalling there
   const preparePartsRef = useRef(playParts)
   preparePartsRef.current = playParts
+  // …and, while playing, started (muted) just before its turn so it's already running in step at the join
   useEffect(() => {
     let last: string | null = null
+    let rolled: SegmentLocal | null = null
     return liveTime.subscribe(() => {
       const t = liveTime.get()
+      const playing = usePlayerStore.getState().playing
       const next = preparePartsRef.current
         .filter(s => s.start_ms > t && s.start_ms - t <= 2500 && addedVideoBox(s, mainVideoId))
         .sort((a, b) => a.start_ms - b.start_ms)[0]
-      if (!next || next.id === last) return
-      last = next.id
-      brollSource.prepare(next)
+      // (stopped just before the join: back to parked on its first frame)
+      if (rolled && (!playing || rolled.id !== next?.id)) { if (!playing) brollSource.prepare(rolled); rolled = null }
+      if (!next) return
+      if (next.id !== last) { last = next.id; brollSource.prepare(next) }
+      if (playing && !rolled && next.start_ms - t <= 400) { rolled = next; brollSource.preroll(next, next.start_ms - t) }
     })
   }, [brollSource, mainVideoId])
   // What plays here: a video on top, else the section (default framing where no format is set)
@@ -1284,14 +1299,14 @@ export function EditorShell({
     const saved = toSaved(segments.map(s => ({
       ...s,
       crop_boxes: s.crop_boxes.map(b => ({ ...b, keyframes: (keyframes[b.id] ?? b.keyframes ?? []).map(({ t_ms, x, y, w, h }) => ({ t_ms, x, y, w, h })) })),
-    })), mainVideoId)
+    })), mainVideoId, belowRowsRef.current)
     try {
       const res = await fetch(`/api/clips/${clip.id}/save`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           segments: saved.rows,
-          layers: withLanes(saved.layers, [...overlays, ...textOverlays, ...audioTracks]),
+          layers: withLanes(saved.layers, [...overlays, ...textOverlays, ...audioTracks], belowRowsRef.current),
           captionStyle, textOverlays, audioTracks, transitions, filters,
           // A photo on a higher track is drawn over one on a lower track (the export orders photos by z_index)
           overlays: overlays.map(o => (o.type === 'image' && o.track != null ? { ...o, z_index: o.track + 1 } : o)),
@@ -2134,13 +2149,12 @@ export function EditorShell({
     if (wasBusyRef.current && !busy) frameClipOnSubjects(subjects)
     wasBusyRef.current = busy
   }, [subjects]) // eslint-disable-line react-hooks/exhaustive-deps
-  // The clip grew past what was tracked: track everyone again (the view is framed again after)
-  const restaleRef = useRef(false)
-  useEffect(() => {
-    if (restaleRef.current || subjectsBusy) return
-    const old = subjects.some(s => s.status === 'done' && (s.cuts === undefined || s.cuts === null) && s.path?.length && s.path[0].length < 6)
-    if (old || subjectItems.some(s => s.status === 'done' && s.stale)) { restaleRef.current = true; trackSubjectsNow(true) }
-  }, [subjectItems, subjectsBusy]) // eslint-disable-line react-hooks/exhaustive-deps
+  // The clip grew past what was tracked, or they were tracked by an older worker (no camera cuts, no
+  // talking): they need following again. Never started by itself (user, 2026-10-24: nothing calls the
+  // worker unless pressed) — the panel says so and Follow them again does it
+  const needsRetrack = !subjectsBusy && (
+    subjects.some(s => s.status === 'done' && (s.cuts === undefined || s.cuts === null) && s.path?.length && s.path[0].length < 6)
+    || subjectItems.some(s => s.status === 'done' && s.stale))
   // The tracked people on the video, at a clip time (while the Subjects tool is open)
   const subjectsAt = useMemo(() => {
     const tracked = subjects.filter(s => s.status === 'done' && s.path?.length)
@@ -2154,8 +2168,8 @@ export function EditorShell({
 
   // ── Camera angles (modules/editor/angles.ts) ──
   // Every angle of the clip, listed in the Subjects tool so each gets its subject or its group. The
-  // worker looks for them when the tool first opens (Raj's Subjects panel has no Detect angles
-  // button), and again when the clip grew past what it read.
+  // worker looks for them only when Detect subjects (or Detect again) is pressed (user, 2026-10-24:
+  // opening the tool started a scan by itself); a list found before is read when the editor opens.
   type AnglesData = { status: 'none' | 'queued' | 'running' | 'done' | 'failed' | 'unavailable'; progress: number; error: string | null; angles: Angle[]; scan_start_ms: number | null; scan_end_ms: number | null }
   const [anglesData, setAnglesData] = useState<AnglesData | null>(null)
   const loadAngles = useCallback(async (scan = false) => {
@@ -2172,19 +2186,7 @@ export function EditorShell({
   }, [subjectsUrl, rawClip.start_ms, rawClip.end_ms])
   // (read when the editor opens — no scan — so a format picked anywhere can snap to the camera cuts)
   useEffect(() => { if (!anglesData) loadAngles() }, [anglesData, loadAngles])
-  // Never looked for, or the clip grew past what was read: look (once for each start and end of the clip)
-  const anglesAskedRef = useRef('')
-  useEffect(() => {
-    if (tool !== 'subjects' || !anglesData) return
-    const grown = anglesData.status === 'done' && anglesData.scan_start_ms !== null && anglesData.scan_end_ms !== null
-      && (rawClip.start_ms < anglesData.scan_start_ms - 500 || rawClip.end_ms > anglesData.scan_end_ms + 500)
-    if (anglesData.status !== 'none' && !grown) return
-    const range = `${rawClip.start_ms}-${rawClip.end_ms}`
-    if (anglesAskedRef.current === range) return
-    anglesAskedRef.current = range
-    loadAngles(true)
-  }, [tool, anglesData, rawClip.start_ms, rawClip.end_ms, loadAngles])
-  // The clip grew past what was read: the list misses the new part (Detect angles again)
+  // The clip grew past what was read: the list misses the new part (Detect again)
   const anglesStale = anglesData?.status === 'done' && anglesData.scan_start_ms !== null && anglesData.scan_end_ms !== null
     && (rawClip.start_ms < anglesData.scan_start_ms - 500 || rawClip.end_ms > anglesData.scan_end_ms + 500)
   const anglesBusy = anglesData?.status === 'queued' || anglesData?.status === 'running'
@@ -2199,7 +2201,7 @@ export function EditorShell({
   )
   const angleNow = useMemo(() => (tool === 'subjects' && angleItems.length ? angleAt(angleItems, currentTimeMs) : null), [tool, angleItems, currentTimeMs])
   const anglesView = useMemo<AnglesView>(() => ({
-    status: !anglesData ? 'loading' : anglesData.status === 'none' || anglesData.status === 'queued' || anglesData.status === 'running' ? 'scanning' : anglesData.status,
+    status: !anglesData ? 'loading' : anglesData.status === 'queued' || anglesData.status === 'running' ? 'scanning' : anglesData.status,
     progress: anglesData?.progress ?? 0, error: anglesData?.error ?? null, items: angleItems, now: angleNow, stale: !!anglesStale,
   }), [anglesData, angleItems, angleNow, anglesStale])
   // The camera cuts on the timeline (ms): where one scene meets another, from the scenes list
@@ -2246,10 +2248,15 @@ export function EditorShell({
     if (tool !== 'subjects' || !angleItems.length || soloScenesRef.current === anglesData) return
     soloScenesRef.current = anglesData
     const sectionsNow = () => useEditorStore.getState().segments.filter(x => !isShot(x, mainVideoId))
+    // Where a group was found (Follow): its format, whatever the scenes list says (user, 2026-10-24: a
+    // wide shot listed in a close-up's scene had its group's Trio turned back to Vertical here)
+    const groupPlaces = subjects.filter(s => s.shot && s.status === 'done' && s.spans?.length)
+      .flatMap(s => s.spans!.map(([a, b]) => [trim.toTimeline(a), trim.toTimeline(b)] as const))
     let fixed = 0
     for (const row of angleItems) {
       if (row.people !== 1 || row.group) continue
       const spans = row.shown.filter(([a, b]) => {
+        if (groupPlaces.some(([x, y]) => Math.min(b, y) - Math.max(a, x) >= 300)) return false
         const over = sectionsNow().filter(x => x.end_ms > a + 50 && x.start_ms < b - 50)
         if (!over.some(x => !x.locked && !isFrameLayout(x.layout) && (LAYOUT_SLOT_COUNT[x.layout] ?? 1) > 1)) return false
         return !(over.length === 1 && Math.abs(over[0].start_ms - a) <= 150 && Math.abs(over[0].end_ms - b) <= 150)
@@ -2267,10 +2274,14 @@ export function EditorShell({
     seekToMs(a.jumpMs)
   }
   /** A click on a face of an angle: that person, marked at the angle's own moment */
-  function markAngleFace(i: number, k: number) {
+  const [savingFace, setSavingFace] = useState<{ index: number; face: number } | null>(null)
+  async function markAngleFace(i: number, k: number) {
     const a = angleItems[i], f = a?.faces[k]
-    if (!f || f.subject) return
-    markSubject(f.box.x + f.box.w / 2, f.box.y + f.box.h / 2, a.at)
+    if (!f || f.subject || markingSubjectRef.current) return
+    // (the face shows it is being saved until it turns into their letter)
+    setSavingFace({ index: i, face: k })
+    try { await markSubject(f.box.x + f.box.w / 2, f.box.y + f.box.h / 2, a.at) }
+    finally { setSavingFace(null) }
   }
   function markByClick() {
     setSubjectNotice(null)
@@ -2509,6 +2520,9 @@ export function EditorShell({
       clipRange: origStart === savedClip.start_ms && origEnd === savedClip.end_ms ? null : [origStart, origEnd],
     })
     seekAfterTrimRef.current = 0
+    // The playhead goes back to the start of the clip, once the reset clip is in place (the
+    // removed-parts effect does it only when those changed; this always does, and clears its ask)
+    setTimeout(() => { seekAfterTrimRef.current = null; seekToMs(0) }, 0)
     addFormat(0, origEnd - origStart, 'vertical', getVideoAR())
     if (removeFillers) setRemoveFillers(false)
     useMediaStore.setState({
@@ -3008,14 +3022,14 @@ export function EditorShell({
    * after moves later (rippleInsert). A part of the clip running across the spot is cut in two.
    * Close to a join, it goes in at the join. One undo step.
    */
-  function insertVideo(videoId: string, atMs: number, ownMs: number | null, snapMs = 60) {
+  function insertVideo(videoId: string, atMs: number, ownMs: number | null, snapMs = 60, from?: { offsetMs: number; muted?: boolean; volume?: number }) {
     setInsertAtMs(null)
     if (trimmed) {
       // Parts cut out the older way (removed parts of the source): first the clip becomes pieces —
       // each part keeps its own moment of the video, so nothing it plays changes — then the video
       // goes in (once the editor has redrawn with the pieces). (A kit's intro and outro wait together.)
       const first = !pendingInsertRef.current.length
-      pendingInsertRef.current.push({ videoId, atMs, ownMs, snapMs })
+      pendingInsertRef.current.push({ videoId, atMs, ownMs, snapMs, from })
       if (first) trimsToPieces()
       return
     }
@@ -3038,8 +3052,8 @@ export function EditorShell({
     const id = crypto.randomUUID(), boxId = crypto.randomUUID()
     const view = { x: 0, y: 0, w: 1, h: 1 }
     const box = {
-      id: boxId, slot_index: 0, source_video_id: videoId, source_offset_ms: 0,
-      image_path: null, image_motion: null, volume: 1, muted: false,
+      id: boxId, slot_index: 0, source_video_id: videoId, source_offset_ms: Math.max(0, Math.round(from?.offsetMs ?? 0)),
+      image_path: null, image_motion: null, volume: from?.volume ?? 1, muted: from?.muted ?? false,
       keyframes: [{ t_ms: at, ...view }],
     } as CropBoxLocal
     const seg: SegmentLocal = { id, start_ms: at, end_ms: at + len, layout: 'vertical', sort_order: 0, crop_boxes: [box], video_offset_ms: hold }
@@ -3050,13 +3064,61 @@ export function EditorShell({
     useMediaStore.setState({ overlays: next.overlays, textOverlays: next.textOverlays, audioTracks: next.audioTracks, transitions: next.transitions })
     setActiveSegmentId(id)
   }
+  // ── After the main video: room for what's on top to run on ──────────────────────
+  // Videos on top keep their whole length wherever they go, as in Premiere / Resolve / CapCut: the
+  // timeline is as long as whatever reaches furthest. Past the main video's end the main row is
+  // empty (nothing drawn on the timeline): underneath there's a hidden, muted stretch ("the tail") —
+  // a video put in at the end, so the player and the export go on there, black (render.ts
+  // blankRanges, as the preview) and silent, with what's on top over it. One effect makes it, sizes
+  // it and takes it away, from how far the things on top reach; it's added at the end directly
+  // (never rippled in, so nothing on top is cut or moved by it).
+  const isTail = (s: SegmentLocal) => isInsert(s, mainVideoId) && !!s.hidden && !!s.crop_boxes[0]?.hidden
+  const tailOf = (segs = useEditorStore.getState().segments) => segs.find(isTail) ?? null
+  useEffect(() => {
+    if (!mainVideoId) return
+    const editor = useEditorStore.getState(), m = useMediaStore.getState()
+    const segs = editor.segments
+    const tail = tailOf(segs)
+    const mainEnd = tail ? tail.start_ms : clipLengthMs
+    // How far the things on top reach: videos on top, photos and videos in a window, text
+    const shotsOn = segs.filter(x => isShot(x, mainVideoId))
+    const reach = Math.max(0, ...shotsOn.map(x => x.end_ms), ...m.overlays.map(o => o.end_ms), ...m.textOverlays.map(o => o.end_ms))
+    const want = Math.min(Math.round(reach - mainEnd), Math.max(0, MAX_CLIP_MS - mainEnd))
+    if (want <= 100) {
+      if (!tail) return
+      // Nothing past the main video any more: the room after it goes
+      editor.applyTrim(segs.filter(x => x.id !== tail.id), editor.keyframes, editor.trims)
+      useMediaStore.setState(st => ({ transitions: st.transitions.filter(t => t.after_segment_id !== tail.id) }))
+      return
+    }
+    if (tail) {
+      if (Math.abs((tail.end_ms - tail.start_ms) - want) > 30) updateSegment(tail.id, { end_ms: tail.start_ms + want })
+      return
+    }
+    // (removed parts the older way: first the clip becomes pieces, then this runs again)
+    if (trimmed) { trimsToPieces(); return }
+    // Its box names one of the videos running on there (a video put in shows another video; hidden, it shows none)
+    const vid = shotsOn.find(x => x.end_ms > mainEnd)?.crop_boxes[0]?.source_video_id
+      ?? m.overlays.find(o => o.end_ms > mainEnd && o.source_video_id)?.source_video_id
+      ?? shotsOn[0]?.crop_boxes[0]?.source_video_id
+    if (!vid) return
+    const id = crypto.randomUUID(), boxId = crypto.randomUUID()
+    const view = { x: 0, y: 0, w: 1, h: 1 }
+    const hold = Math.round(videoAtPieces(piecesOf(segs, mainVideoId, x => isShot(x, mainVideoId)), Math.max(0, mainEnd - 1)))
+    const box = {
+      id: boxId, slot_index: 0, source_video_id: vid, source_offset_ms: 0, image_path: null, image_motion: null,
+      volume: 1, muted: true, hidden: true, keyframes: [{ t_ms: mainEnd, ...view }],
+    } as CropBoxLocal
+    const seg: SegmentLocal = { id, start_ms: mainEnd, end_ms: mainEnd + want, layout: 'vertical', sort_order: segs.length, crop_boxes: [box], video_offset_ms: hold, hidden: true }
+    editor.applyTrim([...segs, seg], { ...editor.keyframes, [boxId]: [{ id: crypto.randomUUID(), box_id: boxId, t_ms: mainEnd, ...view }] }, editor.trims)
+  }, [storeSegments, overlays, textOverlays, trimmed]) // eslint-disable-line react-hooks/exhaustive-deps
   /** Videos waiting to go in until a clip with removed parts has become pieces (insertVideo), in order */
-  const pendingInsertRef = useRef<Array<{ videoId: string; atMs: number; ownMs: number | null; snapMs: number }>>([])
+  const pendingInsertRef = useRef<Array<{ videoId: string; atMs: number; ownMs: number | null; snapMs: number; from?: { offsetMs: number; muted?: boolean; volume?: number } }>>([])
   useEffect(() => {
     const list = pendingInsertRef.current
     if (!list.length || trimmed) return
     pendingInsertRef.current = []
-    list.forEach(p => insertVideo(p.videoId, p.atMs, p.ownMs, p.snapMs))
+    list.forEach(p => insertVideo(p.videoId, p.atMs, p.ownMs, p.snapMs, p.from))
   }, [trimmed]) // eslint-disable-line react-hooks/exhaustive-deps
   /**
    * The removed parts (trims) made into pieces: each part of the main row is cut where a removed
@@ -3240,6 +3302,121 @@ export function EditorShell({
     // The part before it and the part after it are one stretch of the video again
     const before = next.segments.find(s => !isShot(s, mainVideoId) && Math.abs(s.end_ms - ins.start_ms) <= 1)
     if (before) joinSameLayoutNeighbours(before.id, new Set(next.transitions.map(t => t.after_segment_id)))
+  }
+  /**
+   * A block of the main row dragged along it and let go at `toMs` (where it goes in, in the timeline
+   * as it was): a part of the main video, or a video put in between. It's taken out where it was and
+   * put in there, playing just what it played (each part keeps its own moment of the video: the clip
+   * becomes pieces). The clip keeps its length; photos, text, music and videos on top stay where they
+   * are (as in Resolve); the main video's own sound goes with its parts. One step.
+   */
+  const pendingMoveRef = useRef<{ segId: string; toMs: number } | null>(null)
+  function movePart(segId: string, toMs: number) {
+    if (trimmed) {
+      // Parts cut out the older way: first the clip becomes pieces, then the move (once redrawn)
+      pendingMoveRef.current = { segId, toMs }
+      trimsToPieces()
+      return
+    }
+    const editor = useEditorStore.getState(), media = useMediaStore.getState()
+    const seg = editor.segments.find(x => x.id === segId)
+    if (!seg || isShot(seg, mainVideoId)) return
+    if (seg.locked) { notifyLocked('This part is locked — unlock it to move it'); return }
+    const ins = isInsert(seg, mainVideoId)
+    if (isTail(seg)) return
+    const tailNow = tailOf()
+    if (tailNow && toMs > tailNow.start_ms) toMs = tailNow.start_ms
+    const a = seg.start_ms, len = seg.end_ms - seg.start_ms
+    // (where it goes, in the clip without it)
+    const at = Math.round(toMs >= seg.end_ms ? toMs - len : toMs > a ? a : Math.max(0, toMs))
+    if (Math.abs(at - a) < 30) return
+    // Every part of the main video says which moment of it it starts at (as it plays now), so moved
+    // parts keep playing their own stretch of the video
+    const main = (b: { source_video_id?: string | null; image_path?: string | null }) => !b.source_video_id && !b.image_path
+    const pinned = editor.segments.map(x => {
+      if (isShot(x, mainVideoId) || isInsert(x, mainVideoId)) return x
+      const was = mainFrom(x)
+      const d = (piecesOn ? was ?? x.start_ms : x.start_ms) - (was ?? 0)
+      return d ? { ...x, crop_boxes: x.crop_boxes.map(box => (main(box) ? { ...box, source_offset_ms: Math.max(0, (box.source_offset_ms ?? 0) + d) } : box)) } : x
+    })
+    const me = pinned.find(x => x.id === segId)!
+    const state: TimedState = {
+      segments: pinned, keyframes: editor.keyframes,
+      overlays: media.overlays, textOverlays: media.textOverlays, audioTracks: media.audioTracks, transitions: media.transitions,
+    }
+    const out = rippleCut(state, a, seg.end_ms, rippleDelete)
+    if (out.segments.some(x => x.locked && x.start_ms < at && x.end_ms > at)) { notifyLocked('The part of the clip there is locked — unlock it first'); return }
+    pause()
+    const next = rippleInsert(out, at, len)
+    const d = at - a
+    const moved: SegmentLocal = {
+      ...me, start_ms: at, end_ms: at + len,
+      ...(ins ? { video_offset_ms: Math.round(videoAtPieces(piecesOf(out.segments, mainVideoId, x => isShot(x, mainVideoId)), at)) } : {}),
+      frame: me.frame?.items ? { ...me.frame, items: me.frame.items.map(it => ({ ...it, start_ms: it.start_ms + d, end_ms: it.end_ms + d })) } : me.frame,
+    }
+    // (videos on top stay where they were too, as they are)
+    const onTop = editor.segments.filter(x => isShot(x, mainVideoId))
+    const segs = [...next.segments.filter(x => x.id !== segId && !isShot(x, mainVideoId)), ...onTop, moved]
+      .sort((x, y) => x.start_ms - y.start_ms || x.sort_order - y.sort_order).map((x, i) => ({ ...x, sort_order: i }))
+    const kfs = { ...next.keyframes }
+    for (const x of onTop) for (const box of x.crop_boxes) kfs[box.id] = editor.keyframes[box.id] ?? []
+    for (const box of seg.crop_boxes) kfs[box.id] = (editor.keyframes[box.id] ?? []).map(k => ({ ...k, t_ms: k.t_ms + d }))
+    skipCanvasTransitionRef.current = true
+    seekAfterInsertRef.current = at
+    editor.applyTrim(segs, kfs, editor.trims, rangeAfterPieces(segs))
+    useMediaStore.setState({
+      audioTracks: [...next.audioTracks.filter(isMainAudio), ...media.audioTracks.filter(t => !isMainAudio(t))],
+      transitions: next.transitions.filter(t => segs.some(x => x.id === t.after_segment_id)),
+    })
+    // Parts that now play on without a jump are one part again: where it was, and where it went
+    const gap = at < a ? a + len : a
+    const left = segs.find(x => !isShot(x, mainVideoId) && !isInsert(x, mainVideoId) && Math.abs(x.end_ms - gap) <= 1)
+    if (left) joinSameLayoutNeighbours(left.id, transitionAfter())
+    const kept = ins ? segId : joinSameLayoutNeighbours(segId, transitionAfter())
+    setActiveSegmentId(kept ?? segId)
+  }
+  useEffect(() => {
+    const p = pendingMoveRef.current
+    if (!p || trimmed) return
+    pendingMoveRef.current = null
+    movePart(p.segId, p.toMs)
+  }, [trimmed]) // eslint-disable-line react-hooks/exhaustive-deps
+  /**
+   * A video put in the main row dragged off it, onto a row above or below the main video: it comes
+   * out of the main row (which closes up: removeInsert) and goes on that row from `atMs` — the same
+   * part of the same video, with its own sound as it was. The main video's own parts stay in the
+   * main row (only a video put in can move off it).
+   */
+  function partToTrack(segId: string, target: number | 'new' | 'new-below', atMs: number) {
+    const seg = useEditorStore.getState().segments.find(x => x.id === segId)
+    if (!seg) return
+    if (!isInsert(seg, mainVideoId)) { notifyLocked('This is the main video itself: only a video you put in can move to a row above or below'); return }
+    if (seg.locked) { notifyLocked('This video is locked — unlock it to move it'); return }
+    const box = seg.crop_boxes[0]
+    if (!box?.source_video_id) return
+    const len = seg.end_ms - seg.start_ms
+    const clipLen = clipLengthMs - len
+    removeInsert(segId)
+    const at = Math.round(Math.max(0, Math.min(atMs, clipLen - 200)))
+    const end = Math.min(clipLen, at + len)
+    if (end - at < 200) return
+    const items = visualItems()
+    const track = target === 'new-below' ? openRowBelow()
+      : target === 'new' ? newTopTrack(items)
+      : fitsOn(items, target, at, end) ? target : freeTrackIn(items, at, end, undefined, target)
+    const id = placeBroll(box.source_video_id, at, end, undefined, track)
+    const nb = useEditorStore.getState().segments.find(x => x.id === id)?.crop_boxes[0]
+    if (nb) updateSegment(id, { crop_boxes: [{ ...nb, source_offset_ms: box.source_offset_ms ?? 0, muted: box.muted, volume: box.volume }] })
+    pickShot(id)
+  }
+  /** A video on a row dragged onto the main row: it goes in there (insertVideo), showing the same part of it, with its sound on */
+  function shotToMain(segId: string, atMs: number) {
+    const seg = useEditorStore.getState().segments.find(x => x.id === segId)
+    const box = seg?.crop_boxes[0]
+    if (!seg || !box?.source_video_id || blocked({ kind: 'broll', id: segId })) return
+    removeBrollShot(segId)
+    tidyRowsBelow()
+    insertVideo(box.source_video_id, atMs, seg.end_ms - seg.start_ms, 60, { offsetMs: box.source_offset_ms ?? 0, muted: false, volume: box.volume ?? 1 })
   }
 
   /**
@@ -3665,9 +3842,9 @@ export function EditorShell({
     setPickerAtMs(null); setPendingBrollMs(null); setPickerOnly(null)
     // 5 s from here, across section edges if it gets there (it isn't cut off at the section's end)
     const at = Math.max(0, Math.min(atMs, clipLengthMs - 500))
-    // The whole video goes in, up to the clip's end (its handles trim it)
+    // The whole video goes in (its handles trim it), past the main video's end too
     const own = await videoLengthMs(videoId)
-    const end = Math.min(clipLengthMs, at + (own ?? clipLengthMs))
+    const end = Math.min(MAX_CLIP_MS, at + (own ?? clipLengthMs - at))
     if (rangeBlocked(at, end)) return
     const newId = placeBroll(videoId, at, end, undefined, freeTrack(at, end))
     // Its settings open straight away: where it plays, which part of it, its sound
@@ -3736,7 +3913,37 @@ export function EditorShell({
   }
   /** A track asked for by dropping something on that track's row: the next thing put in takes it (when it has room there) */
   const preferTrackRef = useRef<{ audio: boolean; track: number; at: number } | null>(null)
+  /** A new row above all the others: higher than every track, and above the rows under the main video */
+  const newTopTrack = (items: TrackItem[]) => Math.max(Math.max(-1, ...items.map(i => i.track ?? 0)) + 1, belowRowsRef.current)
+  /** Rows under the main video left empty (the last thing moved off one) go: the rows above close up */
+  function tidyRowsBelow() {
+    let below = belowRowsRef.current
+    for (let t = below - 1; t >= 0; t--) {
+      const items = visualItems()
+      if (items.some(i => (i.track ?? 0) === t)) continue
+      for (const i of items) if ((i.track ?? 0) > t) setTrackOf(i.ref, (i.track ?? 0) - 1)
+      below -= 1
+    }
+    if (below !== belowRowsRef.current) { belowRowsRef.current = below; setBelowRows(below) }
+  }
+  /** A new row under the main video, at the bottom: everything else moves up a track. Its track (0). */
+  function openRowBelow(except?: string): number {
+    for (const it of visualItems()) if (it.id !== except) setTrackOf(it.ref, (it.track ?? 0) + 1)
+    setBelowRows(n => n + 1)
+    belowRowsRef.current += 1
+    return 0
+  }
   function preferTrack(lane: string | null) {
+    // Dropped on "below the main video": a new row at the bottom
+    if (lane === 'track-below') {
+      preferTrackRef.current = { audio: false, track: openRowBelow(), at: Date.now() }
+      return
+    }
+    // Dropped on "above the main video" (the timeline's top): a new row over all the others
+    if (lane === 'track-new') {
+      preferTrackRef.current = { audio: false, track: newTopTrack(visualItems()), at: Date.now() }
+      return
+    }
     const m = lane ? /^(track|audio)-(\d+)$/.exec(lane) : null
     preferTrackRef.current = m ? { audio: m[1] === 'audio', track: Number(m[2]), at: Date.now() } : null
   }
@@ -3787,59 +3994,84 @@ export function EditorShell({
    * new track opens just above that one (the tracks above move up one); music takes the next audio
    * track with room.
    */
-  function dropOnTrack(ref: TrackRef, target: number | 'new') {
+  function dropOnTrack(ref: TrackRef, target: number | 'new' | 'new-below') {
     const audio = ref.kind === 'music'
     const items = audio ? audioItems() : visualItems()
     const me = items.find(i => i.id === ref.id)
     if (!me) return
+    if (target === 'new-below') {
+      if (audio) return
+      const ctl0: CtlTarget = ref.kind === 'shot' ? { kind: 'broll', id: ref.id } : { kind: ref.kind, id: ref.id }
+      if (blocked(ctl0)) return
+      // (it was the only thing on the lowest row under the main video: it stays there)
+      if ((me.track ?? 0) === 0 && belowRowsRef.current > 0 && !items.some(i => i.id !== me.id && (i.track ?? 0) === 0)) return
+      setTrackOf(ref, openRowBelow(ref.id))
+      tidyRowsBelow()
+      return
+    }
     const cur = me.track ?? 0
     const ctl: CtlTarget = ref.kind === 'shot' ? { kind: 'broll', id: ref.id } : { kind: ref.kind, id: ref.id }
     if (target !== cur && blocked(ctl)) return
     const others = items.filter(i => i.id !== me.id)
     let t: number
     const lift: TrackRef[] = []
-    if (target === 'new') t = Math.max(-1, ...others.map(i => i.track ?? 0)) + 1
+    if (target === 'new') t = audio ? Math.max(-1, ...others.map(i => i.track ?? 0)) + 1 : newTopTrack(others)
     else if (fitsOn(others, target, me.start_ms, me.end_ms)) t = target
     else if (audio) t = freeTrackIn(others, me.start_ms, me.end_ms, undefined, target)
     else {
       for (const i of others) if ((i.track ?? 0) > target) lift.push(i.ref)
       t = target + 1
+      // (the new row opens next to one under the main video: it's under the main video too)
+      if (target < belowRowsRef.current) { setBelowRows(n => n + 1); belowRowsRef.current += 1 }
     }
     if (t === cur && !lift.length) return
     for (const r of lift) setTrackOf(r, (items.find(i => i.id === r.id)!.track ?? 0) + 1)
     setTrackOf(ref, t)
+    if (!audio) tidyRowsBelow()
   }
   /** B-roll uploaded from the device (B-roll panel, Upload): at the playhead, 5 s or the video's own length if shorter */
   async function addUploadedBroll(videoId: string) { await addUploadedVideo(videoId, currentTimeMs, 'broll') }
   /** An uploaded video put in at `atMs`: as B-roll, or as one of the user's videos (its panel opens) */
-  async function addUploadedVideo(videoId: string, atMs: number, lane: 'broll' | 'video') {
+  async function addUploadedVideo(videoId: string, atMs: number, lane: 'broll' | 'video'): Promise<number | null> {
     const at = Math.max(0, Math.min(atMs, clipLengthMs - 500))
-    // The whole video goes in, up to the clip's end (its handles trim it)
+    // The whole video goes in (its handles trim it), past the main video's end too: the timeline
+    // goes on for it, the main video staying as long as it is
     const own = await videoLengthMs(videoId)
-    const len = Math.min(own ?? clipLengthMs, clipLengthMs - at)
-    if (rangeBlocked(at, at + len)) return
+    const len = Math.min(own ?? clipLengthMs - at, MAX_CLIP_MS - at)
+    if (rangeBlocked(at, at + len)) return null
     const id = placeBroll(videoId, at, at + len, lane === 'broll' ? 'broll' : undefined, freeTrack(at, at + len))
     pickShot(id, lane === 'video')
     seekToMs(at)
+    seekAfterInsertRef.current = at
+    // (where it ends: the next of several files dropped together goes in there)
+    return at + len
   }
 
   // ── Drag and drop: files from the computer (on the timeline or the sidebar), stock footage
   //    from the B-roll search (on the timeline) ──
   const dropTargetRef = useRef<{ atMs: number; lane: 'broll' | 'video' | 'insert'; frame?: { segId: string; slot: number } } | null>(null)
+  /** Several files dropped together (dropSeveral): told where the video just uploaded ends (null: it didn't go in) */
+  const dropNextRef = useRef<((endMs: number | null) => void) | null>(null)
+  const dropNext = (endMs: number | null) => { const go = dropNextRef.current; dropNextRef.current = null; go?.(endMs) }
   const dropUpload = useVideoUpload(videoId => {
     const t = dropTargetRef.current
     dropTargetRef.current = null
     // Dropped on a frame's lane: into that slot once it's uploaded
-    if (t?.frame && segments.some(x => x.id === t.frame!.segId)) { loadVideoLibrary(); videoIntoSlot(t.frame, videoId, t.atMs) }
+    if (t?.frame && segments.some(x => x.id === t.frame!.segId)) { loadVideoLibrary(); videoIntoSlot(t.frame, videoId, t.atMs); dropNext(null) }
     else if (t?.lane === 'insert') {
       // Into the main strip, in between (inserts.ts)
-      loadVideoLibrary().then(() => videoLengthMs(videoId)).then(len => insertVideo(videoId, t.atMs, len))
-        .catch(e => notifyLocked(e instanceof Error ? e.message : 'Could not put the video in'))
-    } else if (t) addUploadedVideo(videoId, t.atMs, t.lane).catch(e => notifyLocked(e instanceof Error ? e.message : 'Could not add the video'))
+      loadVideoLibrary().then(() => videoLengthMs(videoId)).then(len => { insertVideo(videoId, t.atMs, len); dropNext(len != null ? t.atMs + len : null) })
+        .catch(e => { notifyLocked(e instanceof Error ? e.message : 'Could not put the video in'); dropNext(null) })
+    } else if (t) addUploadedVideo(videoId, t.atMs, t.lane).then(dropNext, e => { notifyLocked(e instanceof Error ? e.message : 'Could not add the video'); dropNext(null) })
+    else dropNext(null)
     loadLibrary()
   }, { asset: true })
   const dropUploading = dropUpload.state.phase === 'uploading' || dropUpload.state.phase === 'finishing'
-  useEffect(() => { if (dropUpload.state.phase === 'failed' && dropUpload.state.error) notifyLocked(`Upload failed: ${dropUpload.state.error}`) }, [dropUpload.state.phase]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (dropUpload.state.phase !== 'failed') return
+    if (dropUpload.state.error) notifyLocked(`Upload failed: ${dropUpload.state.error}`)
+    dropNext(null)
+  }, [dropUpload.state.phase]) // eslint-disable-line react-hooks/exhaustive-deps
   const [sidebarDrop, setSidebarDrop] = useState(false)
   const kindOfFile = (f: File): 'video' | 'photo' | 'music' | null => {
     const ext = f.name.split('.').pop()?.toLowerCase() ?? ''
@@ -4030,6 +4262,7 @@ export function EditorShell({
    * Music lane gives its sound. Photos and music go on their own lanes.
    */
   function dropFiles(files: File[], atMs: number, lane: string | null) {
+    if (files.length > 1 && !lane?.startsWith('frame:')) { dropSeveral(files, atMs, lane); return }
     const f = files[0]
     if (!f) return
     const kind = (lane === 'music' || lane?.startsWith('audio-')) && kindOfFile(f) === 'video' ? 'music' : kindOfFile(f)
@@ -4056,6 +4289,61 @@ export function EditorShell({
       return
     }
     notifyLocked('That kind of file can\u2019t be added: drop a video, a photo or music')
+  }
+  /** How long a song (or a video's sound) is, from the file (null: unknown) */
+  function audioFileMs(f: File): Promise<number | null> {
+    return new Promise(resolve => {
+      const a = new Audio(), url = URL.createObjectURL(f)
+      const done = (ms: number | null) => { URL.revokeObjectURL(url); resolve(ms) }
+      a.preload = 'metadata'
+      a.onloadedmetadata = () => done(isFinite(a.duration) ? Math.round(a.duration * 1000) : null)
+      a.onerror = () => done(null)
+      a.src = url
+    })
+  }
+  /**
+   * Several files dropped together (as in Resolve): each goes in where the one before ends, in the
+   * order they were picked, on the row they were dropped on — a photo for 5 s, music and videos
+   * their own length. Videos upload one at a time; what no longer fits before the clip's end, or
+   * isn't a photo, video or music, is left out (and said so).
+   */
+  async function dropSeveral(files: File[], atMs: number, dropLane: string | null) {
+    if (dropUploading) { notifyLocked('Wait for the upload in progress to finish'); return }
+    pause()
+    // (dropped on "above" / "below the main video": one new row there, all of them on it)
+    const lane = dropLane === 'track-new' ? `track-${newTopTrack(visualItems())}`
+      : dropLane === 'track-below' ? `track-${openRowBelow()}` : dropLane
+    let at = Math.round(atMs), left = 0, opened = false
+    for (const [i, f] of files.entries()) {
+      const kind = (lane === 'music' || lane?.startsWith('audio-')) && kindOfFile(f) === 'video' ? 'music' : kindOfFile(f)
+      if (!kind) { left++; continue }
+      if (at > clipLengthMs - 500) { left += files.length - i; break }
+      preferTrack(lane)
+      let end: number | null = null
+      try {
+        if (kind === 'photo') {
+          await addPhotoFileAt(f, at)
+          end = Math.min(clipLengthMs, at + 5000)
+        } else if (kind === 'music') {
+          if (musicTooBig(f)) { left++; continue }
+          const len = await audioFileMs(f)
+          addMusicTrack(f, at)
+          end = Math.min(clipLengthMs, at + (len ?? 5000))
+        } else {
+          if (!opened) { opened = true; openMedia(lane === 'broll' ? 'library' : 'media') }
+          end = await new Promise<number | null>(resolve => {
+            dropNextRef.current = resolve
+            dropTargetRef.current = { atMs: at, lane: lane === 'main' ? 'insert' : lane === 'broll' ? 'broll' : 'video' }
+            dropUpload.start(f)
+          })
+        }
+      } catch (e) {
+        notifyLocked(e instanceof Error ? e.message : 'Could not add that file')
+      }
+      if (end == null) { left++; continue }
+      at = end
+    }
+    if (left) notifyLocked(`${left} of the ${files.length} files couldn\u2019t go in: no room before the clip\u2019s end, or not a photo, video or music`, 3500)
   }
   /** Stock footage dragged from the B-roll search onto the timeline: in at that spot, its whole length (up to the clip's end) */
   function dropStock(json: string, atMs: number, lane?: string | null) {
@@ -4105,7 +4393,7 @@ export function EditorShell({
   }
   function panelRetime(id: string, startMs: number, endMs: number, moved: boolean) {
     if (blocked({ kind: 'broll', id })) return
-    const start = Math.round(Math.max(0, startMs)), end = Math.round(Math.min(clipLengthMs, endMs))
+    const start = Math.round(Math.max(0, startMs)), end = Math.round(Math.min(MAX_CLIP_MS, endMs))
     if (end - start < 300 || rangeBlocked(start, end, id)) return
     retimeShot(id, start, end, moved)
   }
@@ -4131,12 +4419,13 @@ export function EditorShell({
   }
   async function addStockBroll(item: StockResult, lengthMs: number, atMs?: number) {
     const at = Math.max(0, Math.min(atMs ?? currentTimeMs, clipLengthMs - 500))
-    if (rangeBlocked(at, Math.min(clipLengthMs, at + lengthMs))) return
+    if (rangeBlocked(at, Math.min(MAX_CLIP_MS, at + lengthMs))) return
     const videoId = await importStock(item)
-    const end = Math.min(clipLengthMs, at + lengthMs)
+    const end = Math.min(MAX_CLIP_MS, at + lengthMs)
     const segId = placeBroll(videoId, at, end, undefined, freeTrack(at, end))
     pickShot(segId)
     seekToMs(at)
+    seekAfterInsertRef.current = at
   }
 
   /**
@@ -4154,8 +4443,10 @@ export function EditorShell({
     const box = shot.crop_boxes[0]
     const anchor = shot.start_ms - (box?.source_offset_ms ?? 0)
     const full = videoLengths[box?.source_video_id ?? '']
-    const start = moved ? Math.max(0, Math.min(clipLengthMs - len, startMs)) : Math.max(0, anchor, Math.min(clipLengthMs - 500, startMs))
-    const end = moved ? start + len : Math.min(clipLengthMs, full ? anchor + full : Infinity, Math.max(start + 500, endMs))
+    // (past the main video's end too: the timeline goes on for it; only its own video and the longest clip limit it)
+    let start = moved ? Math.max(0, Math.min(MAX_CLIP_MS - len, startMs)) : Math.max(0, anchor, startMs)
+    let end = moved ? start + len : Math.min(MAX_CLIP_MS, full ? anchor + full : Infinity, Math.max(start + 500, endMs))
+    if (!moved) start = Math.min(start, end - 500)
     if (rangeBlocked(start, end, id)) return
     retimeShot(id, Math.round(start), Math.round(end), moved)
     // Moved or stretched onto something else on its track: a new track opens above it (once let go)
@@ -4252,7 +4543,37 @@ export function EditorShell({
       if (activeSegment) askDeleteFormat(activeSegment.id)
     },
   }
+  // Holding ← / → skips through the video, faster the longer it's held (a tap still moves a frame)
+  const [skipRate, setSkipRate] = useState<number | null>(null)
   useEffect(() => {
+    // ── Hold to skip ─────────────────────────────────────────────────────────────
+    // A press moves one frame (Shift: 5 s). Held, the key's auto-repeat starts a skip run on the
+    // screen's own clock (smooth whatever the keyboard's repeat rate): 2× real time, doubling every
+    // second held up to 16× (Shift: from 4×). Playing when it began: it pauses meanwhile and plays
+    // on from where it stopped once the key is let go.
+    let hold: { key: string; dir: number; shift: boolean; start: number; pos: number; last: number; raf: number; resume: boolean; rate: number } | null = null
+    const rateAt = (heldSec: number, shift: boolean) => Math.min(16, (shift ? 4 : 2) * Math.pow(2, Math.max(0, Math.floor(heldSec))))
+    function skipFrame(now: number) {
+      const h = hold
+      if (!h) return
+      const s = shortcutsRef.current
+      const rate = rateAt((now - h.start) / 1000, h.shift)
+      if (rate !== h.rate) { h.rate = rate; setSkipRate(h.dir * rate) }
+      h.pos = Math.max(0, Math.min(s.clipDurationMs - 1, h.pos + h.dir * rate * Math.min(now - h.last, 50)))
+      h.last = now
+      s.seekToMs(h.pos)
+      if ((h.dir < 0 && h.pos <= 0) || (h.dir > 0 && h.pos >= s.clipDurationMs - 1)) return   // at an end: wait there
+      h.raf = requestAnimationFrame(skipFrame)
+    }
+    function endSkip() {
+      const h = hold
+      hold = null
+      if (!h) return
+      cancelAnimationFrame(h.raf)
+      setSkipRate(null)
+      if (h.resume && !usePlayerStore.getState().playing) shortcutsRef.current.togglePlay()
+    }
+    function onKeyUp(e: KeyboardEvent) { if (hold && e.key === hold.key) endSkip() }
     function onKey(e: KeyboardEvent) {
       const target = e.target as HTMLElement | null
       // Ctrl/⌘+Z undo · Ctrl/⌘+Shift+Z or Ctrl+Y redo. While typing in a text box the browser's own
@@ -4281,12 +4602,27 @@ export function EditorShell({
         e.preventDefault(); s.deleteSelected()
       } else if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
         e.preventDefault()
+        const dir = e.key === 'ArrowLeft' ? -1 : 1
+        if (e.repeat) {
+          // Held: skip (the run starts on the first repeat; later repeats just keep it going)
+          if (!hold || hold.key !== e.key) {
+            endSkip()
+            const now = performance.now()
+            const playing = usePlayerStore.getState().playing
+            if (playing) s.togglePlay()
+            hold = { key: e.key, dir, shift: e.shiftKey, start: now, pos: usePlayerStore.getState().currentTimeMs, last: now, raf: 0, resume: playing, rate: 0 }
+            hold.raf = requestAnimationFrame(skipFrame)
+          }
+          return
+        }
         // One frame per press (Shift: 5 s)
-        const step = (e.shiftKey ? 5000 : FRAME_MS) * (e.key === 'ArrowLeft' ? -1 : 1)
+        const step = (e.shiftKey ? 5000 : FRAME_MS) * dir
         s.seekToMs(Math.max(0, Math.min(s.clipDurationMs, s.currentTimeMs + step)))
       }
     }
     window.addEventListener('keydown', onKey)
+    window.addEventListener('keyup', onKeyUp)
+    window.addEventListener('blur', endSkip)
     // Pressing anywhere outside a text box ends typing in it. The timeline's handles stop the
     // browser from moving focus, so without this a text box stays focused through a drag and
     // takes the next Ctrl+Z (or Delete) for itself.
@@ -4296,7 +4632,11 @@ export function EditorShell({
       el!.blur()
     }
     window.addEventListener('pointerdown', onPointerDown, true)
-    return () => { window.removeEventListener('keydown', onKey); window.removeEventListener('pointerdown', onPointerDown, true) }
+    return () => {
+      endSkip()
+      window.removeEventListener('keydown', onKey); window.removeEventListener('keyup', onKeyUp); window.removeEventListener('blur', endSkip)
+      window.removeEventListener('pointerdown', onPointerDown, true)
+    }
   }, [])
 
   // ── Render ────────────────────────────────────────────────────────────────────
@@ -4496,6 +4836,9 @@ export function EditorShell({
       // The main video's sound here: off when this section is muted, or the whole clip's sound is
       // (the same on the timeline, in the section list, by Trim and Delete, and in the Music panel)
       const seg = segments.find(x => x.id === t.id)
+      // A video put in between plays its own sound (the main video waits meanwhile): its mute is
+      // that video's own (the box's, as the preview and the export read it)
+      if (seg && isInsert(seg, mainVideoId)) return { hidden: seg.hidden, locked: seg.locked, muted: seg.crop_boxes[0]?.muted !== false }
       return seg && { hidden: seg.hidden, locked: seg.locked, muted: originalMuted || !!seg.muted }
     }
     if (t.kind === 'broll') {
@@ -4563,7 +4906,12 @@ export function EditorShell({
   }
   function toggleCtl(t: CtlTarget, k: CtlKey) {
     const patch = { [k]: !ctlState(t)?.[k] } as Partial<Record<CtlKey, boolean>>
-    if (t.kind === 'section' && k === 'muted' && originalMuted) {
+    const insertSeg = t.kind === 'section' && k === 'muted' ? segments.find(x => x.id === t.id && isInsert(x, mainVideoId)) : undefined
+    if (insertSeg) {
+      // A video put in between: switch its own sound (the main video's mute doesn't reach it)
+      updateSegment(insertSeg.id, { crop_boxes: insertSeg.crop_boxes.map((b, i) => i === 0 ? { ...b, muted: !!patch.muted } : b) })
+    }
+    else if (t.kind === 'section' && k === 'muted' && originalMuted) {
       // The whole clip's sound was off: this section's comes on, the others stay silent
       setOriginalMuted(false)
       for (const s of sections) if (s.id !== t.id && !s.muted) updateSegment(s.id, { muted: true })
@@ -4695,12 +5043,19 @@ export function EditorShell({
     toggleCtl(t, k)
   }
   /** The main video is silent everywhere: the whole clip's switch is off, or every section is muted */
-  const mainAllMuted = originalMuted || (sections.length > 0 && sections.every(s => s.muted))
-  const someSectionsMuted = !mainAllMuted && sections.some(s => s.muted)
-  /** The Music panel's switch: every section's sound off (or all back on) */
+  // A section's sound is off: the main video's here, or (a video put in between) that video's own
+  const insertMuted = (s: SegmentLocal) => s.crop_boxes[0]?.muted !== false
+  const sectionSilent = (s: SegmentLocal) => isInsert(s, mainVideoId) ? insertMuted(s) : originalMuted || !!s.muted
+  const mainAllMuted = sections.length > 0 ? sections.every(sectionSilent) : originalMuted
+  const someSectionsMuted = !mainAllMuted && sections.some(sectionSilent)
+  /** The Music panel's switch (and "Mute clip audio"): every part of the main row silent, inserted videos too (or all back on) */
   function setMainAllMuted(on: boolean) {
     setOriginalMuted(false)
-    for (const s of sections) if (!!s.muted !== on) updateSegment(s.id, { muted: on })
+    for (const s of sections) {
+      if (isInsert(s, mainVideoId)) {
+        if (insertMuted(s) !== on) updateSegment(s.id, { crop_boxes: s.crop_boxes.map((b, i) => i === 0 ? { ...b, muted: on } : b) })
+      } else if (!!s.muted !== on) updateSegment(s.id, { muted: on })
+    }
   }
   function laneCtl(kind: string): LaneCtl | null {
     if (kind === 'main') return mainCtl()
@@ -4797,7 +5152,7 @@ export function EditorShell({
 
       {/* ── Header: logo · where am I · is it saved · export ───────────────────── */}
       {/* Above everything in the body (preview overlays use z-index 10–20), so the account menu isn't drawn underneath them */}
-      <header className="relative shrink-0 flex items-center gap-3 px-4"
+      <header className="app-nav relative shrink-0 flex items-center gap-3 px-4"
         style={{ height: 56, background: 'var(--ed-panel)', borderBottom: '1px solid rgb(var(--ed-fg) / 0.07)', zIndex: 60 }}>
         {/* Same vector logo (with its intro) as the landing page, dashboard and clip board */}
         <a href="/dashboard" onClick={e => leaveTo(e, '/dashboard')} title="Go to the dashboard" aria-label="Shortcut dashboard"
@@ -4833,6 +5188,7 @@ export function EditorShell({
               <circle cx="12" cy="12" r="9" /><path d="M9.5 9a2.5 2.5 0 015 .5c0 1.5-2.5 2-2.5 3.5M12 17h.01" />
             </svg>
           </button>
+          <ThemeSwitch />
           {/* Shared profile button; saves pending edits before leaving the editor */}
           <AccountMenu
             onNavigate={href => leave(() => { window.location.href = href })}
@@ -4902,10 +5258,10 @@ export function EditorShell({
               </div>
             )}
             </div>
+            {/* one chevron: tucks the options panel away to the left (styles: .ed-fold) */}
             <button onClick={() => toggleOptions(false)} aria-label="Close options sidebar" title="Close options sidebar"
-              className="shrink-0 w-8 h-8 flex items-center justify-center rounded-lg transition-colors hover:bg-[rgb(var(--ed-fg)/0.1)]"
-              style={{ color: 'rgb(var(--ed-fg) / 0.55)' }}>
-              <SidebarIcon open />
+              className="ed-fold" data-dir="left">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path className="fold-arrow" d="M14.5 6.5L9 12l5.5 5.5" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" /></svg>
             </button>
           </div>
 
@@ -5138,10 +5494,10 @@ export function EditorShell({
 
             {tool === 'subjects' && (
               <SubjectsPanel
-                angles={anglesView} onOpenAngle={openAngle} onMarkFace={markAngleFace} onClickMark={markByClick}
+                angles={anglesView} onOpenAngle={openAngle} onMarkFace={markAngleFace} savingFace={savingFace} onClickMark={markByClick}
                 onScanAngles={() => loadAngles(true)}
                 subjects={subjectItems} loading={subjectsLoading} error={subjectsError}
-                marking={marking} onToggleMarking={markFromView} onMarkShot={markShot} onMarkInClip={markInWholeClip}
+                marking={marking} onToggleMarking={markFromView} onMarkShot={markShot} onMarkInClip={markInWholeClip} retrack={needsRetrack}
                 onRemove={removeSubject} onRename={renameSubject}
                 videoUrl={videoUrl}
                 showOnVideo={showSubjects} onShowOnVideo={setShowSubjects} notice={subjectNotice}
@@ -5524,11 +5880,15 @@ export function EditorShell({
                 marking={marking} onMark={markSubject} subjectsAt={subjectsAt}
               />
               {playingAdded && !playingAdded.hidden && (playingSegment && isInsert(playingSegment, mainVideoId)
-                // (a video put in between: lime, as on the film strip)
-                ? <div className="absolute top-3 left-3 flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-bold pointer-events-none"
-                    style={{ background: '#c8ff00', color: '#0a0a0a' }}>Inserted video</div>
-                : <div className="absolute top-3 left-3 flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold pointer-events-none"
-                    style={{ background: 'rgba(249,115,22,0.85)', color: '#fff' }}>B-roll</div>
+                // (a quiet see-through tag; its dot says which: lime = a video put in between, as on the film strip; orange = B-roll)
+                ? <div className="ed-pv-tag absolute top-3 left-3 pointer-events-none"><i style={{ background: '#c8ff00' }} />Inserted video</div>
+                : <div className="ed-pv-tag absolute top-3 left-3 pointer-events-none"><i style={{ background: '#f97316' }} />B-roll</div>
+              )}
+              {/* Holding ← / →: how fast it's skipping */}
+              {skipRate !== null && (
+                <div className="ed-pv-tag ed-skip absolute top-3 left-1/2 -translate-x-1/2 pointer-events-none" role="status">
+                  {skipRate < 0 ? '⏪' : '⏩'} {Math.abs(skipRate)}×
+                </div>
               )}
             </div>
           </div>
@@ -5550,11 +5910,11 @@ export function EditorShell({
               {/* Film-reel play button (styles: .ed-play in globals.css) */}
               <button onClick={togglePlay} aria-label={playing ? 'Pause' : 'Play'} title={`${playing ? 'Pause' : 'Play'} (Space)`}
                 data-playing={playing || undefined}
-                className="ed-play w-10 h-10 flex items-center justify-center rounded-full shrink-0 transition-opacity hover:opacity-90" style={{ background: ACCENT }}>
+                className="ed-play w-10 h-10 flex items-center justify-center rounded-full shrink-0">
                 <span key={playing ? 'pause' : 'play'} className="ed-play-icon flex">
                   {playing
-                    ? <svg width="12" height="12" viewBox="0 0 12 12" fill="black"><rect x="2" y="1.5" width="3" height="9" rx="1"/><rect x="7" y="1.5" width="3" height="9" rx="1"/></svg>
-                    : <svg width="12" height="12" viewBox="0 0 12 12" fill="black"><path d="M3 1.5l7.5 4.5L3 10.5V1.5z"/></svg>
+                    ? <svg width="13" height="13" viewBox="0 0 12 12" fill={ACCENT}><rect x="2" y="1.5" width="3" height="9" rx="1"/><rect x="7" y="1.5" width="3" height="9" rx="1"/></svg>
+                    : <svg width="13" height="13" viewBox="0 0 12 12" fill={ACCENT}><path d="M3.5 1.5l7.5 4.5L3.5 10.5V1.5z"/></svg>
                   }
                 </span>
               </button>
@@ -5572,10 +5932,10 @@ export function EditorShell({
         {/* Closed: a slim rail to bring the Preview back */}
         {!previewOpen && (
           <div className="ed-preview-rail shrink-0 flex flex-col items-center gap-2 py-3" style={{ width: 52, background: 'var(--ed-panel)', borderLeft: '1px solid rgb(var(--ed-fg) / 0.07)' }}>
+            {/* one chevron, pointing where the preview comes back from (styles: .ed-fold) */}
             <button onClick={() => togglePreview(true)} aria-label="Open the preview" title="Open the preview"
-              className="w-9 h-9 flex items-center justify-center rounded-lg transition-colors hover:bg-[rgb(var(--ed-fg)/0.1)]"
-              style={{ color: 'rgb(var(--ed-fg) / 0.7)' }}>
-              <span style={{ display: 'inline-flex', transform: 'scaleX(-1)' }}><SidebarIcon open={false} /></span>
+              className="ed-fold" data-dir="left" data-active>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path className="fold-arrow" d="M14.5 6.5L9 12l5.5 5.5" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" /></svg>
             </button>
             <button onClick={() => togglePreview(true)} title="Open the preview to watch and export"
               className="text-[11px] font-semibold tracking-wide transition-colors hover:text-[var(--ed-text)]"
@@ -5596,10 +5956,10 @@ export function EditorShell({
           <div className="ed-preview-inner flex flex-col min-h-0 h-full" style={{ width: previewW }}>
           <div className="shrink-0 px-4 flex items-center justify-between" style={{ height: 48, borderBottom: '1px solid rgb(var(--ed-fg) / 0.06)' }}>
             <span className="flex items-center gap-1">
+              {/* one chevron: sends the preview off to the right (styles: .ed-fold) */}
               <button onClick={() => togglePreview(false)} aria-label="Close the preview" title="Close the preview (more room to edit)"
-                className="-ml-1.5 w-8 h-8 flex items-center justify-center rounded-lg transition-colors hover:bg-[rgb(var(--ed-fg)/0.1)]"
-                style={{ color: 'rgb(var(--ed-fg) / 0.55)' }}>
-                <span style={{ display: 'inline-flex', transform: 'scaleX(-1)' }}><SidebarIcon open /></span>
+                className="ed-fold -ml-1 mr-1" data-dir="right">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path className="fold-arrow" d="M9.5 6.5L15 12l-5.5 5.5" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" /></svg>
               </button>
               <span className="text-sm font-semibold text-[var(--ed-text)]">Preview</span>
             </span>
@@ -5783,12 +6143,10 @@ export function EditorShell({
           <button onClick={() => setTimelineHidden(h => !h)} aria-expanded={!timelineHidden}
             aria-label={timelineHidden ? 'Show the timeline' : 'Hide the timeline'}
             data-tip={timelineHidden ? 'Show timeline' : 'Hide timeline'}
-            className="ed-tl-btn ed-tip" data-active={timelineHidden || undefined}>
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <rect x="3" y="3" width="18" height="18" rx="3" />
-              <path d="M3 15h18" />
-              <path d="M3.9 15h16.2v4.1a1.9 1.9 0 01-1.9 1.9H5.8a1.9 1.9 0 01-1.9-1.9z" fill="#c8ff00" fillOpacity={timelineHidden ? 0.15 : 0.45} stroke="none" />
-              <path d={timelineHidden ? 'M9 10.5l3-3 3 3' : 'M9 7.5l3 3 3-3'} />
+            className="ed-tl-btn ed-tip ed-tl-fold" data-active={timelineHidden || undefined}>
+            {/* one chevron: down = put the timeline away, up = bring it back (styles: .ed-tl-fold) */}
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path className="fold-arrow" d={timelineHidden ? 'M6.5 14.5L12 9l5.5 5.5' : 'M6.5 9.5L12 15l5.5-5.5'} stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" />
             </svg>
           </button>
           <span className="ed-tl-sep" aria-hidden="true" />
@@ -5876,42 +6234,42 @@ export function EditorShell({
           })()}
         </div>
         <span className="ed-tl-sep" aria-hidden="true" />
-        <div className="relative">
-          <button onClick={() => setConfirmResetAll(v => !v)} aria-expanded={confirmResetAll}
-            title="Reset all edits" data-tip="Reset all edits"
-            className="ed-tl-btn ed-tip" data-active={confirmResetAll || undefined}>
-            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <path d="M3 12a9 9 0 109-9 9.75 9.75 0 00-6.74 2.74L3 8" /><path d="M3 3v5h5" />
-            </svg>
-          </button>
-          {confirmResetAll && (
-            <>
-              <div className="fixed inset-0" style={{ zIndex: 70 }} onClick={() => setConfirmResetAll(false)} aria-hidden="true" />
-              <div role="alertdialog" aria-labelledby="reset-all-title" aria-describedby="reset-all-desc"
-                className="absolute left-0 bottom-full mb-2 flex flex-col gap-3 p-4 rounded-xl"
-                style={{ width: 280, zIndex: 71, background: 'var(--ed-panel)', border: '1px solid rgb(var(--ed-fg) / 0.12)', boxShadow: '0 12px 32px rgba(0,0,0,0.55)' }}>
-                <p id="reset-all-title" className="text-sm font-semibold text-[var(--ed-text)]">Reset all edits?</p>
-                <p id="reset-all-desc" className="text-xs leading-relaxed" style={{ color: 'rgb(var(--ed-fg) / 0.55)' }}>
-                  The clip goes back to how it was made: its original start and end, nothing cut out. Formats, frames, text, media, music, the video’s sound and the caption look go back to the start, and the people marked in Subjects are removed. Your captions stay. Undo brings back everything except the marked people.
-                </p>
-                <div className="flex justify-end gap-2">
-                  <button onClick={() => setConfirmResetAll(false)} autoFocus
-                    className="h-8 px-3 rounded-lg text-xs font-medium transition-colors hover:bg-[rgb(var(--ed-fg)/0.08)]"
-                    style={{ color: 'rgb(var(--ed-fg) / 0.75)' }}>Cancel</button>
-                  <button onClick={handleResetAll}
-                    className="h-8 px-3 rounded-lg text-xs font-semibold transition-opacity hover:opacity-90"
-                    style={{ background: '#ef4444', color: '#fff' }}>Reset everything</button>
-                </div>
-              </div>
-            </>
-          )}
-        </div>
+        <UndoRedo />
         <div className="flex-1" />
         {/* Where the playhead is, and how long the clip is (as in CapCut) */}
         <ClipClock lengthMs={clipLengthMs} />
         <div className="flex-1" />
         <div className="ml-auto shrink-0 flex items-center gap-1">
-          <UndoRedo />
+          <div className="relative">
+            <button onClick={() => setConfirmResetAll(v => !v)} aria-expanded={confirmResetAll}
+              title="Reset all edits" data-tip="Reset all edits"
+              className="ed-tl-btn ed-tip" data-active={confirmResetAll || undefined}>
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M3 12a9 9 0 109-9 9.75 9.75 0 00-6.74 2.74L3 8" /><path d="M3 3v5h5" />
+              </svg>
+            </button>
+            {confirmResetAll && (
+              <>
+                <div className="fixed inset-0" style={{ zIndex: 70 }} onClick={() => setConfirmResetAll(false)} aria-hidden="true" />
+                <div role="alertdialog" aria-labelledby="reset-all-title" aria-describedby="reset-all-desc"
+                  className="absolute right-0 bottom-full mb-2 flex flex-col gap-3 p-4 rounded-xl"
+                  style={{ width: 280, zIndex: 71, background: 'var(--ed-panel)', border: '1px solid rgb(var(--ed-fg) / 0.12)', boxShadow: '0 12px 32px rgba(0,0,0,0.55)' }}>
+                  <p id="reset-all-title" className="text-sm font-semibold text-[var(--ed-text)]">Reset all edits?</p>
+                  <p id="reset-all-desc" className="text-xs leading-relaxed" style={{ color: 'rgb(var(--ed-fg) / 0.55)' }}>
+                    The clip goes back to how it was made: its original start and end, nothing cut out. Formats, frames, text, media, music, the video’s sound and the caption look go back to the start, and the people marked in Subjects are removed. Your captions stay. Undo brings back everything except the marked people.
+                  </p>
+                  <div className="flex justify-end gap-2">
+                    <button onClick={() => setConfirmResetAll(false)} autoFocus
+                      className="h-8 px-3 rounded-lg text-xs font-medium transition-colors hover:bg-[rgb(var(--ed-fg)/0.08)]"
+                      style={{ color: 'rgb(var(--ed-fg) / 0.75)' }}>Cancel</button>
+                    <button onClick={handleResetAll}
+                      className="h-8 px-3 rounded-lg text-xs font-semibold transition-opacity hover:opacity-90"
+                      style={{ background: '#ef4444', color: '#fff' }}>Reset everything</button>
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
           <span className="ed-tl-sep" aria-hidden="true" />
           <ZoomSlider zoom={timelineZoom} onZoom={setTimelineZoom} />
         </div>
@@ -5927,7 +6285,7 @@ export function EditorShell({
             id: o.id, start_ms: o.start_ms, end_ms: o.end_ms, url: o.preview_url, hidden: o.hidden, locked: isLocked({ kind: 'photo', id: o.id }), track: o.track, full: o.x <= 0.001 && o.y <= 0.001 && o.w >= 0.999 && o.h >= 0.999,
             ...(o.type === 'video' ? { video: { url: videoUrls[o.source_video_id!] ?? o.preview_url, offset: o.source_offset_ms ?? 0, muted: !!o.muted } } : {}),
           }))}
-          onTrackDrop={dropOnTrack}
+          onTrackDrop={dropOnTrack} belowRows={belowRows} onMovePart={movePart} onPartToTrack={partToTrack} onShotToMain={shotToMain} maxMs={MAX_CLIP_MS}
           activePhotoId={activeOverlayId} onSelectPhoto={id => pickPhoto(id, doubleTap(`p${id}`))}
           onPhotoTimeChange={(id, t) => {
             if (blocked({ kind: 'photo', id })) return
@@ -6197,11 +6555,12 @@ function LiveTime() {
 }
 
 /** The tracks of photos, text and music, saved beside the clip's rows (read back by savedLanes, tracks.ts) */
-function withLanes<L extends object>(layers: L | null, items: Array<{ id: string; track?: number }>): L | { v: 1; rows: string[]; cut: never[]; parts: string[]; lanes: Record<string, number> } | null {
+function withLanes<L extends object>(layers: L | null, items: Array<{ id: string; track?: number }>, below = 0): L | { v: 1; rows: string[]; cut: never[]; parts: string[]; lanes: Record<string, number>; below?: number } | null {
   const lanes: Record<string, number> = {}
   for (const x of items) if (x.track != null) lanes[x.id] = x.track
   if (!Object.keys(lanes).length) return layers
-  return { ...(layers ?? { v: 1 as const, rows: [], cut: [], parts: [] }), lanes } as L & { lanes: Record<string, number> }
+  // (`below`: how many of the rows sit under the main video on the timeline)
+  return { ...(layers ?? { v: 1 as const, rows: [], cut: [], parts: [] }), lanes, ...(below > 0 ? { below } : {}) } as L & { lanes: Record<string, number>; below?: number }
 }
 
 // ── What's in a section (Format panel) ─────────────────────────────────────────
@@ -6448,16 +6807,6 @@ function StatusChip({ color, children }: { color: string; children: React.ReactN
       <span className="w-1.5 h-1.5 rounded-full" style={{ background: color }} />
       {children}
     </span>
-  )
-}
-
-function SidebarIcon({ open }: { open: boolean }) {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-      <rect x="3" y="4" width="18" height="16" rx="3" stroke="currentColor" strokeWidth="1.8" />
-      <path d="M9 4v16" stroke="currentColor" strokeWidth="1.8" />
-      <path d={open ? 'M16 10l-2 2 2 2' : 'M14 10l2 2-2 2'} stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
   )
 }
 

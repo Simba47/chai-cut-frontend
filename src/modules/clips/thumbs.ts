@@ -13,7 +13,43 @@ const cache = new Map<string, string>()
 const waiters = new Map<string, Array<(url: string | null) => void>>()
 /** A face to cut out: its box (fractions of the frame); the picture is a square around it, `px` wide */
 type FaceCrop = { x: number; y: number; w: number; h: number; px: number }
-type Job = { key: string; atSec: number; face?: FaceCrop }
+type Job = { key: string; atSec: number; face?: FaceCrop; tries?: number }
+
+/** The frame now on screen is drawn (a paused video's new frame after a seek), or a short wait where that can't be told */
+function framePresented(video: HTMLVideoElement): Promise<void> {
+  return new Promise(resolve => {
+    const t = setTimeout(resolve, 600)
+    const done = () => { clearTimeout(t); resolve() }
+    const v = video as HTMLVideoElement & { requestVideoFrameCallback?: (cb: () => void) => number }
+    if (typeof v.requestVideoFrameCallback === 'function') v.requestVideoFrameCallback(done)
+    else requestAnimationFrame(() => requestAnimationFrame(done))
+  })
+}
+
+/**
+ * Go to `at` (seconds) and wait until its picture is the one shown. A picture was drawn on 'seeked'
+ * alone, and that came before the new frame was decoded — or from the seek before (a 4 s wait ran
+ * out, its listener stayed, and fired for the next job): the Subjects tool showed scene 1's picture
+ * as scene 2's (user, 2026-10-24). False when it didn't get there.
+ */
+async function seekTo(video: HTMLVideoElement, at: number): Promise<boolean> {
+  if (Math.abs(video.currentTime - at) > 0.001 || video.readyState < 2) {
+    video.currentTime = at
+    const arrived = await new Promise<boolean>(resolve => {
+      const t = setTimeout(() => { video.removeEventListener('seeked', on); resolve(false) }, 10000)
+      function on() {
+        if (video.seeking) return
+        clearTimeout(t)
+        video.removeEventListener('seeked', on)
+        resolve(true)
+      }
+      video.addEventListener('seeked', on)
+    })
+    if (!arrived) return false
+  }
+  await framePresented(video)
+  return Math.abs(video.currentTime - at) < 0.05 && video.readyState >= 2
+}
 const queues = new Map<string, { video: HTMLVideoElement; jobs: Job[]; busy: boolean }>()
 
 function keyOf(src: string, ms: number) { return `${src}#${Math.round(ms / 100)}` }
@@ -43,11 +79,12 @@ async function run(src: string) {
       if (cache.has(job.key)) { settle(job.key, cache.get(job.key)!); continue }
       const dur = video.duration
       const at = isFinite(dur) && dur > 0 ? Math.min(job.atSec, Math.max(0, dur - 0.1)) : job.atSec
-      video.currentTime = at
-      await new Promise<void>(r => {
-        const t = setTimeout(r, 4000)
-        video.addEventListener('seeked', () => { clearTimeout(t); r() }, { once: true })
-      })
+      if (!(await seekTo(video, at))) {
+        // Not there (a slow read): once more at the back of the line, else no picture — never another moment's
+        if ((job.tries ?? 0) < 1) q.jobs.push({ ...job, tries: (job.tries ?? 0) + 1 })
+        else settle(job.key, null)
+        continue
+      }
       let url: string | null = null
       try {
         if (ctx && video.videoWidth && job.face) {
@@ -89,6 +126,10 @@ function request(src: string, ms: number, face?: FaceCrop): Promise<string | nul
       video.preload = 'auto'
       video.muted = true
       video.playsInline = true
+      // On the page (2 px, invisible): a video that isn't shown may never present its new frame after a seek
+      video.setAttribute('aria-hidden', 'true')
+      video.style.cssText = 'position:fixed;right:0;bottom:0;width:2px;height:2px;opacity:0.01;pointer-events:none;z-index:-1'
+      document.body.appendChild(video)
       video.src = src
       q = { video, jobs: [], busy: false }
       queues.set(src, q)

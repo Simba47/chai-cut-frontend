@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useFaceAt, useFrameAt } from '@/modules/clips/thumbs'
 
 // ── Subjects: mark the people, and the view follows them through the clip ─────
@@ -50,8 +50,9 @@ export interface AngleItem {
 }
 
 export interface AnglesView {
-  /** scanning: the worker is looking for them; unavailable: this worker can't yet (the buttons alone are shown) */
-  status: 'loading' | 'scanning' | 'done' | 'failed' | 'unavailable'
+  /** none: never looked for (Detect subjects starts it); scanning: the worker is looking for them;
+   *  unavailable: this worker can't yet (the buttons alone are shown) */
+  status: 'loading' | 'none' | 'scanning' | 'done' | 'failed' | 'unavailable'
   progress: number
   error: string | null
   items: AngleItem[]
@@ -67,9 +68,11 @@ interface Props {
   onOpenAngle: (index: number) => void
   /** Mark the person whose face this is, in that angle */
   onMarkFace: (index: number, face: number) => void
+  /** The face being marked right now (saving): it shows so until it turns into their letter */
+  savingFace?: { index: number; face: number } | null
   /** Mark someone by a click on the video (a face the list doesn't show) */
   onClickMark: () => void
-  /** Look for the people and scenes again (Try again, Detect again) */
+  /** Look for the people and scenes (Detect subjects, Detect again, Try again) — only when pressed */
   onScanAngles: () => void
   subjects: SubjectItem[]
   loading: boolean
@@ -80,6 +83,8 @@ interface Props {
   onMarkShot: () => void
   /** Everyone and every group is marked: look for them through the whole clip, then lay it out */
   onMarkInClip: () => void
+  /** The ones followed need following again (the clip changed since): Follow them again does it */
+  retrack: boolean
   onRemove: (id: string) => void
   onRename: (id: string, label: string) => void
   /** The video the faces are cut from (for the pictures on the cards) */
@@ -113,220 +118,282 @@ export function SubjectsPanel(p: Props) {
   const curAt = cur ? p.angles.items.indexOf(cur) : -1
   const curNo = cur ? withPeople.indexOf(cur) + 1 : 0
   const scanPct = Math.max(5, p.angles.progress)
+  const canFollow = !busy && (waiting > 0 || p.retrack)
+  // Following them (user, 2026-10-24: "add a processing bar so we understand it is going on"): how far
+  // the ones being followed are, and — while none has started — how long they have waited for the worker
+  const following = p.subjects.filter(s => s.status === 'queued' || s.status === 'running')
+  const started = following.some(s => s.status === 'running')
+  const followPct = following.length ? Math.round(following.reduce((n, s) => n + (s.status === 'running' ? Math.max(5, s.progress) : 0), 0) / following.length) : 0
+  const followPeople = following.filter(s => !s.group).length, followGroups = following.length - followPeople
+  const [waitSince, setWaitSince] = useState<number | null>(null)
+  const [now, setNow] = useState(() => Date.now())
+  const waitingToStart = following.length > 0 && !started
+  useEffect(() => {
+    if (!waitingToStart) { setWaitSince(null); return }
+    setWaitSince(t => t ?? Date.now())
+    const id = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(id)
+  }, [waitingToStart])
+  const waitedMs = waitSince ? Math.max(0, now - waitSince) : 0
   const skeleton = (
-    <div className="flex flex-wrap gap-3" aria-hidden="true">
-      {[0, 1, 2, 3].map(i => <span key={i} className="w-11 h-11 rounded-full animate-pulse motion-reduce:animate-none" style={{ background: 'rgb(var(--ed-fg) / 0.07)' }} />)}
+    <div className="flex gap-3" aria-hidden="true">
+      {[0, 1, 2].map(i => <span key={i} className="w-14 h-14 rounded-full animate-pulse motion-reduce:animate-none" style={{ background: 'rgb(var(--ed-fg) / 0.07)' }} />)}
     </div>
   )
-  /** The small link under the faces: someone the list doesn't show */
-  const missing = (label: string, onClick: () => void) => (
-    <button type="button" onClick={onClick} aria-pressed={p.marking} className="self-start text-left text-[11.5px] underline underline-offset-2 hover:text-[var(--ed-text)]"
-      style={{ color: p.marking ? 'var(--ed-accent-text)' : muted }}>
-      {p.marking ? 'Click a person on the video… (Esc to stop)' : label}
-    </button>
+  /** A small section title ("Marked · 3") */
+  const heading = (text: string) => <span className="text-[10.5px] font-semibold uppercase tracking-[0.06em]" style={{ color: 'rgb(var(--ed-fg) / 0.42)' }}>{text}</span>
+  const groupIcon = (size: number) => (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <circle cx="8" cy="9" r="3" /><circle cx="16" cy="9" r="3" /><path d="M2.5 20a5.5 5.5 0 0111 0M10.5 20a5.5 5.5 0 0111 0" />
+    </svg>
   )
 
   return (
-    <div className="flex flex-col gap-3 p-4">
-      <div className="flex items-start gap-2">
-        <div className="flex-1 min-w-0 flex flex-col gap-0.5">
-          <span className="text-[14px] font-bold text-[var(--ed-text)]">Who is in this clip?</span>
-          <span className="text-[11.5px]" style={{ color: muted }}>
-            {p.angles.status === 'scanning' ? `Looking for people… ${scanPct}%`
-              : listed ? 'Tap everyone the view should follow. Tap each person once.'
-              : 'Pick the people the view should follow.'}
-          </span>
+    <div className="flex flex-col min-h-full">
+      <div className="flex-1 flex flex-col gap-4 p-4">
+        {/* Title, how many scenes are set, and look again */}
+        <div className="flex items-center gap-2">
+          <h3 className="flex-1 min-w-0 text-[15px] font-bold text-[var(--ed-text)]">Who is in this clip?</h3>
+          {listed && (
+            <span className="shrink-0 h-6 px-2 flex items-center rounded-full text-[11px] font-semibold tabular-nums"
+              title={`${set} of ${withPeople.length} scenes have their person or group`}
+              style={set === withPeople.length
+                ? { background: 'rgba(200,255,0,0.14)', color: 'var(--ed-accent-text)' }
+                : { background: 'rgb(var(--ed-fg) / 0.07)', color: 'rgb(var(--ed-fg) / 0.7)' }}>
+              {set}/{withPeople.length} set
+            </span>
+          )}
+          {/* Look for the people and scenes again (someone missed, a scene wrong, or the clip changed);
+              the people marked stay marked */}
+          {p.angles.status === 'done' && (
+            <button type="button" onClick={p.onScanAngles} aria-label="Detect again"
+              title="Detect again: look for the people and scenes in this clip again. The people you marked stay marked."
+              className="shrink-0 w-7 h-7 flex items-center justify-center rounded-md transition-colors hover:bg-[rgb(var(--ed-fg)/0.12)]"
+              style={p.angles.stale
+                ? { background: 'rgba(200,255,0,0.14)', color: 'var(--ed-accent-text)', boxShadow: 'inset 0 0 0 1px rgba(200,255,0,0.5)' }
+                : { color: 'rgb(var(--ed-fg) / 0.7)' }}>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M21 12a9 9 0 11-2.64-6.36" /><path d="M21 4v5h-5" />
+              </svg>
+            </button>
+          )}
         </div>
-        {/* Look for the people and scenes again (someone missed, a scene wrong, or the clip changed);
-            the people marked stay marked */}
-        {p.angles.status === 'done' && (
-          <button type="button" onClick={p.onScanAngles} title="Look for the people and scenes in this clip again. The people you marked stay marked."
-            className="shrink-0 h-7 px-2.5 flex items-center gap-1.5 rounded-md text-[11.5px] font-semibold transition-colors hover:bg-[rgb(var(--ed-fg)/0.12)]"
-            style={p.angles.stale
-              ? { background: 'rgba(200,255,0,0.14)', color: 'var(--ed-accent-text)', boxShadow: 'inset 0 0 0 1px rgba(200,255,0,0.5)' }
-              : { background: 'rgb(var(--ed-fg) / 0.07)', color: 'var(--ed-text)' }}>
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <path d="M21 12a9 9 0 11-2.64-6.36" /><path d="M21 4v5h-5" />
+        {p.angles.status === 'done' && p.angles.stale && (
+          <p className="-mt-2 text-[11px]" style={{ color: 'var(--ed-accent-text)' }}>The clip got longer — press ↻ to look in the new part too.</p>
+        )}
+
+        {/* Never looked for: nothing runs until this is pressed */}
+        {p.angles.status === 'none' && (
+          <button type="button" onClick={p.onScanAngles}
+            className="h-11 flex items-center justify-center gap-2 rounded-xl text-[13px] font-bold transition-opacity hover:opacity-90"
+            style={{ background: '#c8ff00', color: '#000' }}>
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <circle cx="9" cy="8" r="3.5" /><path d="M2.5 20a6.5 6.5 0 0113 0" /><circle cx="18" cy="15" r="3" /><path d="M20.2 17.2L22 19" />
             </svg>
-            Detect again
+            Detect subjects
           </button>
         )}
-      </div>
-      {p.angles.status === 'done' && p.angles.stale && (
-        <p className="-mt-1.5 text-[11px]" style={{ color: 'var(--ed-accent-text)' }}>
-          The clip got longer since people were found: Detect again to look in the new part too.
-        </p>
-      )}
+        {p.angles.status === 'scanning' && (
+          <div className="flex flex-col gap-3" role="status" aria-label={`Looking for people ${scanPct}%`}>
+            <div className="flex items-center gap-2.5">
+              <span className="flex-1 h-1 rounded-full overflow-hidden" style={{ background: 'rgb(var(--ed-fg) / 0.08)' }}>
+                <span className="block h-full rounded-full transition-[width] duration-500" style={{ width: `${scanPct}%`, background: '#c8ff00' }} />
+              </span>
+              <span className="text-[11px] tabular-nums" style={{ color: muted }}>{scanPct}%</span>
+            </div>
+            {skeleton}
+          </div>
+        )}
+        {p.angles.status === 'failed' && (
+          <div className="flex items-center justify-between gap-2 rounded-xl px-3 py-2.5" style={{ background: 'rgb(var(--ed-fg) / 0.035)', boxShadow: 'inset 0 0 0 1px rgb(var(--ed-fg) / 0.06)' }}>
+            <span className="text-[11.5px]" style={{ color: muted }}>{p.angles.error ?? 'The people could not be found.'}</span>
+            <button type="button" onClick={p.onScanAngles} className="shrink-0 h-7 px-2.5 rounded-md text-[11.5px] font-semibold transition-colors hover:bg-[rgb(var(--ed-fg)/0.12)]"
+              style={{ background: 'rgb(var(--ed-fg) / 0.07)', color: 'var(--ed-text)' }}>Try again</button>
+          </div>
+        )}
+        {p.angles.status === 'done' && !listed && (
+          <p className="text-[11.5px]" style={{ color: muted }}>No one was found in this clip.</p>
+        )}
 
-      {p.angles.status === 'scanning' && (
-        <>
-          <span className="h-1 rounded-full overflow-hidden" style={{ background: 'rgb(var(--ed-fg) / 0.08)' }} role="status" aria-label={`Looking for people ${scanPct}%`}>
-            <span className="block h-full rounded-full transition-[width] duration-500" style={{ width: `${scanPct}%`, background: '#c8ff00' }} />
-          </span>
-          {skeleton}
-        </>
-      )}
-      {p.angles.status === 'failed' && (
-        <div className="flex items-center justify-between gap-2 rounded-xl px-3 py-2.5" style={{ background: 'rgb(var(--ed-fg) / 0.035)', boxShadow: 'inset 0 0 0 1px rgb(var(--ed-fg) / 0.06)' }}>
-          <span className="text-[11.5px]" style={{ color: muted }}>{p.angles.error ?? 'The people could not be found.'}</span>
-          <button type="button" onClick={p.onScanAngles} className="shrink-0 h-7 px-2.5 rounded-md text-[11.5px] font-semibold transition-colors hover:bg-[rgb(var(--ed-fg)/0.12)]"
-            style={{ background: 'rgb(var(--ed-fg) / 0.07)', color: 'var(--ed-text)' }}>Try again</button>
-        </div>
-      )}
-      {p.angles.status === 'done' && !listed && (
-        <p className="text-[11.5px]" style={{ color: muted }}>No one was found in this clip. You can still pick people yourself.</p>
-      )}
-
-      {listed && cur && (
-        <div className="flex flex-col gap-2.5">
-          {withPeople.length > 1 && (
-            <div className="flex flex-col gap-1.5">
-              <div className="flex gap-1.5 overflow-x-auto pb-1 no-scrollbar" role="group" aria-label="Scenes">
+        {/* The scenes, and the one at the playhead */}
+        {listed && cur && (
+          <div className="flex flex-col gap-2.5">
+            {withPeople.length > 1 && (
+              <div className="flex gap-1.5 overflow-x-auto pb-1 -mx-1 px-1 no-scrollbar" role="group" aria-label="Scenes">
                 {withPeople.map((a, n) => (
                   <SceneThumb key={n} angle={a} no={n + 1} current={a === cur} videoUrl={p.videoUrl} onOpen={() => p.onOpenAngle(p.angles.items.indexOf(a))} />
                 ))}
               </div>
-              <span className="text-[11px] tabular-nums" style={{ color: set === withPeople.length ? 'var(--ed-accent-text)' : muted }}>
-                Scene {curNo} of {withPeople.length} · {cur.people === 1 ? '1 person' : `${cur.people} people`} · {set} of {withPeople.length} done
-              </span>
-            </div>
-          )}
-          {cur.people >= 2 ? (
-            // Several people together are one group: one card, one button (the layout and views are the ones on screen)
-            <div className="flex flex-col gap-2.5 rounded-xl p-3" style={{ background: 'rgb(var(--ed-fg) / 0.035)', boxShadow: cur.group ? 'inset 0 0 0 1.5px rgba(200,255,0,0.5)' : 'inset 0 0 0 1px rgb(var(--ed-fg) / 0.08)' }}>
-              <div className="flex items-center">
-                {cur.faces.map((f, k) => <FaceDot key={`${curAt}-${k}`} videoUrl={p.videoUrl} at={cur.at} box={f.box} first={k === 0} />)}
-              </div>
-              <span className="text-[13px] font-semibold text-[var(--ed-text)]">Group of {cur.people} people</span>
-              {cur.group ? (
-                <p className="text-[11.5px]" style={{ color: 'var(--ed-accent-text)' }}>Group set: {cur.group.label} · {LAYOUT_NAMES[cur.group.layout] ?? cur.group.layout}</p>
-              ) : (
+            )}
+            {heading(`Scene ${curNo} · ${cur.people === 1 ? '1 person' : `${cur.people} people`}`)}
+            <div className="flex flex-col gap-3 rounded-xl p-3.5"
+              style={{ background: 'rgb(var(--ed-fg) / 0.035)', boxShadow: cur.set ? 'inset 0 0 0 1.5px rgba(200,255,0,0.45)' : 'inset 0 0 0 1px rgb(var(--ed-fg) / 0.07)' }}>
+              {cur.people >= 2 ? (
+                // Several people together are one group: one card, one button (the layout and views are the ones on screen)
                 <>
-                  <button type="button" onClick={p.onMarkShot}
-                    className="h-9 flex items-center justify-center gap-2 rounded-lg text-[12.5px] font-bold transition-colors hover:bg-[rgba(200,255,0,0.2)]"
-                    style={{ background: 'rgba(200,255,0,0.12)', color: 'var(--ed-accent-text)', boxShadow: 'inset 0 0 0 1.5px rgba(200,255,0,0.55)' }}>
-                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                      <circle cx="8" cy="9" r="3" /><circle cx="16" cy="9" r="3" /><path d="M2.5 20a5.5 5.5 0 0111 0M10.5 20a5.5 5.5 0 0111 0" />
-                    </svg>
-                    Mark as group
-                  </button>
-                  <p className="text-[11px]" style={{ color: 'rgb(var(--ed-fg) / 0.4)' }}>
-                    Set the layout and views for this scene first (say Split), then press Mark as group. Every time the clip shows this shot again, it gets the same.
-                  </p>
+                  <div className="flex items-center gap-3">
+                    <div className="flex items-center">
+                      {cur.faces.map((f, k) => <FaceDot key={`${curAt}-${k}`} videoUrl={p.videoUrl} at={cur.at} box={f.box} first={k === 0} />)}
+                    </div>
+                    <span className="text-[13px] font-semibold text-[var(--ed-text)]">Group of {cur.people}</span>
+                  </div>
+                  {cur.group ? (
+                    <span className="flex items-center gap-1.5 text-[12px] font-semibold" style={{ color: 'var(--ed-accent-text)' }}>
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5" /></svg>
+                      {cur.group.label} · {LAYOUT_NAMES[cur.group.layout] ?? cur.group.layout}
+                    </span>
+                  ) : (
+                    <button type="button" onClick={p.onMarkShot}
+                      title="Set this scene's layout and views first (say Split), then mark it. Every time the clip shows this shot again, it gets the same."
+                      className="h-9 flex items-center justify-center gap-2 rounded-lg text-[12.5px] font-bold transition-colors hover:bg-[rgba(200,255,0,0.2)]"
+                      style={{ background: 'rgba(200,255,0,0.12)', color: 'var(--ed-accent-text)', boxShadow: 'inset 0 0 0 1.5px rgba(200,255,0,0.55)' }}>
+                      {groupIcon(15)}
+                      Mark as group
+                    </button>
+                  )}
                 </>
+              ) : (
+                <div className="flex flex-wrap gap-4">
+                  {cur.faces.map((f, k) => <AngleFace key={`${curAt}-${k}`} videoUrl={p.videoUrl} at={cur.at} face={f} onMark={() => p.onMarkFace(curAt, k)}
+                    saving={p.savingFace?.index === curAt && p.savingFace.face === k} />)}
+                  <AddFace marking={p.marking} onClick={p.onClickMark} />
+                </div>
               )}
             </div>
-          ) : (
-            <div className="flex flex-wrap gap-3">
-              {cur.faces.map((f, k) => <AngleFace key={`${curAt}-${k}`} videoUrl={p.videoUrl} at={cur.at} face={f} onMark={() => p.onMarkFace(curAt, k)} />)}
+          </div>
+        )}
+        {/* No scenes listed: mark whoever the view is on */}
+        {!listed && p.angles.status !== 'loading' && p.angles.status !== 'scanning' && (
+          <button type="button" onClick={p.onToggleMarking} aria-pressed={p.marking}
+            className="self-start text-left text-[11.5px] underline underline-offset-2 hover:text-[var(--ed-text)]"
+            style={{ color: p.marking ? 'var(--ed-accent-text)' : muted }}>
+            {p.marking ? 'Click a person on the video… (Esc to stop)' : 'Or mark the person in the 9:16 view'}
+          </button>
+        )}
+
+        {p.error && <p role="alert" className="text-xs" style={{ color: '#f87171' }}>{p.error}</p>}
+
+        {/* The people and groups marked */}
+        {p.loading && !p.subjects.length ? (
+          <p className="text-xs" style={{ color: muted }}>Loading…</p>
+        ) : p.subjects.length > 0 && (
+          <div className="flex flex-col gap-1">
+            <div className="flex items-center justify-between h-6">
+              {heading(`Marked · ${p.subjects.length}`)}
+              {tracked.length > 0 && (
+                <button type="button" onClick={() => p.onShowOnVideo(!p.showOnVideo)} aria-pressed={p.showOnVideo}
+                  aria-label="Show them on the video" title={p.showOnVideo ? 'Hide them on the video' : 'Show them on the video'}
+                  className="w-6 h-6 flex items-center justify-center rounded transition-colors hover:bg-[rgb(var(--ed-fg)/0.1)]"
+                  style={{ color: p.showOnVideo ? 'var(--ed-accent-text)' : muted }}>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    {p.showOnVideo
+                      ? <><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z" /><circle cx="12" cy="12" r="3" /></>
+                      : <><path d="M3 3l18 18" /><path d="M10.6 5.1A10.4 10.4 0 0112 5c6.5 0 10 7 10 7a17 17 0 01-2.9 3.9M6.6 6.6C3.8 8.4 2 12 2 12s3.5 7 10 7c1.7 0 3.2-.5 4.5-1.2" /></>}
+                  </svg>
+                </button>
+              )}
             </div>
-          )}
-          {cur.people < 2 && missing('Someone missing? Click them on the video', p.onClickMark)}
-          {withPeople.length > 1 && <p className="text-[11px]" style={{ color: 'rgb(var(--ed-fg) / 0.4)' }}>Someone you marked in another scene stays marked. A scene you skip follows whoever is talking.</p>}
-        </div>
-      )}
-      {!listed && p.angles.status !== 'loading' && (
-        <div className="flex flex-col gap-1.5">
-          {missing('Or put the 9:16 view on a person and mark them', p.onToggleMarking)}
-        </div>
-      )}
-
-      {p.error && <p role="alert" className="text-xs" style={{ color: '#f87171' }}>{p.error}</p>}
-
-      {/* The people marked */}
-      {p.loading && !p.subjects.length ? (
-        <p className="text-xs" style={{ color: muted }}>Loading…</p>
-      ) : p.subjects.length > 0 && (
-        <div className="flex flex-col gap-1.5">
-          {p.subjects.map(s => (
-            <div key={s.id} className="group flex items-center gap-3 rounded-xl px-3 py-3"
-              style={{ background: 'rgb(var(--ed-fg) / 0.035)', boxShadow: `inset 3px 0 0 ${s.color}, inset 0 0 0 1px rgb(var(--ed-fg) / 0.06)` }}>
-              <Avatar subject={s} videoUrl={p.videoUrl} />
-              <div className="flex-1 min-w-0 flex flex-col gap-1">
-              <div className="flex items-center gap-2 min-w-0">
-                {renaming === s.id ? (
-                  <input autoFocus value={name} maxLength={24} onChange={e => setName(e.target.value)}
-                    onBlur={() => { if (name.trim() && name.trim() !== s.label) p.onRename(s.id, name.trim()); setRenaming(null) }}
-                    onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); if (e.key === 'Escape') setRenaming(null) }}
-                    className="flex-1 min-w-0 h-7 px-1.5 rounded text-[14px] outline-none text-[var(--ed-text)]"
-                    style={{ background: 'rgb(var(--ed-fg) / 0.08)' }} aria-label="Subject name" />
-                ) : (
-                  <button type="button" onClick={() => { setRenaming(s.id); setName(s.label) }} title="Rename"
-                    className="flex-1 min-w-0 truncate text-left text-[14px] font-semibold text-[var(--ed-text)]">{s.label}</button>
-                )}
+            {p.subjects.map(s => (
+              <div key={s.id} className="group flex items-center gap-2.5 rounded-lg pl-2 pr-1.5 py-1.5 transition-colors hover:bg-[rgb(var(--ed-fg)/0.04)]">
+                <Avatar subject={s} videoUrl={p.videoUrl} />
+                <div className="flex-1 min-w-0 flex flex-col gap-0.5">
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    {renaming === s.id ? (
+                      <input autoFocus value={name} maxLength={24} onChange={e => setName(e.target.value)}
+                        onBlur={() => { if (name.trim() && name.trim() !== s.label) p.onRename(s.id, name.trim()); setRenaming(null) }}
+                        onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); if (e.key === 'Escape') setRenaming(null) }}
+                        className="flex-1 min-w-0 h-6 px-1.5 rounded text-[13px] outline-none text-[var(--ed-text)]"
+                        style={{ background: 'rgb(var(--ed-fg) / 0.08)' }} aria-label="Subject name" />
+                    ) : (
+                      <button type="button" onClick={() => { setRenaming(s.id); setName(s.label) }} title="Rename"
+                        className="min-w-0 truncate text-left text-[13px] font-semibold text-[var(--ed-text)]">{s.label}</button>
+                    )}
+                    {s.group && <span className="shrink-0" title="Group" style={{ color: muted }}>{groupIcon(12)}</span>}
+                  </div>
+                  <span className="truncate text-[11px]" title={s.status === 'failed' ? s.error ?? undefined : undefined}
+                    style={{ color: s.status === 'failed' ? '#f87171' : muted }}>
+                    {s.status === 'new' && 'Ready'}
+                    {s.status === 'queued' && 'Getting ready…'}
+                    {s.status === 'running' && `${s.group ? 'Finding this shot' : 'Following'}… ${Math.max(5, s.progress)}%`}
+                    {s.status === 'failed' && (s.error ?? (s.group ? 'Shot not found — remove and mark again' : 'Not found — remove and mark again'))}
+                    {s.status === 'done' && (s.group
+                      ? `${LAYOUT_NAMES[s.group.layout] ?? s.group.layout} · ${s.group.places === 0 ? 'not in this clip' : s.group.places === 1 ? 'once' : `${s.group.places} places`}`
+                      : s.seen === null ? 'Ready' : s.seen < 0.02 ? 'Not seen in this clip' : `Seen in ${Math.round(s.seen * 100)}%`)}
+                  </span>
+                  {s.status === 'running' && (
+                    <span className="h-0.5 rounded-full overflow-hidden" style={{ background: 'rgb(var(--ed-fg) / 0.08)' }}>
+                      <span className="block h-full rounded-full transition-[width] duration-500" style={{ width: `${Math.max(5, s.progress)}%`, background: s.color }} />
+                    </span>
+                  )}
+                </div>
                 <button type="button" onClick={() => p.onRemove(s.id)} aria-label={`Remove ${s.label}`} title="Remove (the view keeps the framing it has now)"
-                  className="shrink-0 w-6 h-6 flex items-center justify-center rounded transition-colors hover:bg-[rgba(239,68,68,0.12)] hover:text-[#f87171]" style={{ color: muted }}>
-                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
+                  className="shrink-0 w-6 h-6 flex items-center justify-center rounded opacity-50 transition group-hover:opacity-100 focus-visible:opacity-100 hover:bg-[rgba(239,68,68,0.12)] hover:text-[#f87171]" style={{ color: muted }}>
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
                 </button>
               </div>
-              <span className="text-[11.5px]" style={{ color: s.status === 'failed' ? '#f87171' : muted }}>
-                {s.status === 'new' && 'Ready to follow'}
-                {s.status === 'queued' && (s.group ? 'Getting ready to find this shot…' : 'Getting ready to follow them…')}
-                {s.status === 'running' && `${s.group ? 'Finding this shot in the clip' : 'Following them through the clip'}… ${Math.max(5, s.progress)}%`}
-                {s.status === 'failed' && (s.error ?? (s.group ? 'Could not find the shot — remove it and mark it again' : 'Could not follow them — remove them and mark them again'))}
-                {s.status === 'done' && (s.group
-                  ? `${LAYOUT_NAMES[s.group.layout] ?? s.group.layout} · ${s.group.places === 0 ? 'not found in this clip' : s.group.places === 1 ? 'this shot, once' : `this shot, ${s.group.places} times`}`
-                  : s.seen === null ? 'Ready' : s.seen < 0.02 ? 'Not seen in this clip' : `Seen in ${Math.round(s.seen * 100)}% of the clip`)}
-              </span>
-              {s.status === 'running' && (
-                <span className="h-1 rounded-full overflow-hidden" style={{ background: 'rgb(var(--ed-fg) / 0.08)' }}>
-                  <span className="block h-full rounded-full transition-[width] duration-500" style={{ width: `${Math.max(5, s.progress)}%`, background: s.color }} />
-                </span>
-              )}
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
+            ))}
+          </div>
+        )}
 
-      {/* A group shot: this shot keeps the format given here, wherever it comes back.
-          While scenes are listed the group card of each scene does this; this box is for when none were found */}
-      {!listed && <div className="flex flex-col rounded-xl" style={{ background: 'rgb(var(--ed-fg) / 0.035)', boxShadow: 'inset 0 0 0 1px rgb(var(--ed-fg) / 0.06)' }}>
-        <button type="button" onClick={() => setGroupOpen(o => !o)} aria-expanded={groupOpen} className="flex items-center gap-2 px-3 py-2.5 text-left">
-          <span className="text-[12.5px] font-semibold text-[var(--ed-text)]">Group shots</span>
-          <span className="text-[11px]" style={{ color: 'rgb(var(--ed-fg) / 0.4)' }}>optional</span>
-          <svg className="ml-auto shrink-0" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"
-            style={{ color: muted, transform: groupOpen ? 'rotate(180deg)' : 'none', transition: 'transform .2s' }}><path d="M6 9l6 6 6-6" /></svg>
-        </button>
-        {!groupOpen && <span className="px-3 pb-2.5 -mt-1.5 text-[11px]" style={{ color: 'rgb(var(--ed-fg) / 0.4)' }}>Give a shot with several people its own layout.</span>}
-        {groupOpen && (
-          <div className="flex flex-col gap-2 px-3 pb-3">
-            <p className="text-[11px]" style={{ color: 'rgb(var(--ed-fg) / 0.4)' }}>
-              Set the format and place the views (say Split: two people on top, one below), then press the button. Every time the clip shows this shot again, it gets the same.
-            </p>
-            {listed && cur?.group ? (
-              <p className="text-[11.5px]" style={{ color: 'var(--ed-accent-text)' }}>This scene is set: {cur.group.label} · {LAYOUT_NAMES[cur.group.layout] ?? cur.group.layout}</p>
-            ) : (
-              <button type="button" onClick={p.onMarkShot}
-                className="h-9 flex items-center justify-center gap-2 rounded-lg text-[12.5px] font-semibold transition-colors hover:bg-[rgb(var(--ed-fg)/0.1)]"
-                style={{ background: 'rgb(var(--ed-fg) / 0.06)', color: 'var(--ed-text)', boxShadow: 'inset 0 0 0 1px rgb(var(--ed-fg) / 0.1)' }}>
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                  <circle cx="8" cy="9" r="3" /><circle cx="16" cy="9" r="3" /><path d="M2.5 20a5.5 5.5 0 0111 0M10.5 20a5.5 5.5 0 0111 0" />
-                </svg>
-                {listed ? 'Mark this scene as a group' : 'Mark this shot as a group'}
-              </button>
+        {/* A group shot when no scenes were listed (with scenes, each group scene's card does this) */}
+        {!listed && p.angles.status !== 'none' && p.angles.status !== 'scanning' && p.angles.status !== 'loading' && (
+          <div className="flex flex-col rounded-xl" style={{ background: 'rgb(var(--ed-fg) / 0.035)', boxShadow: 'inset 0 0 0 1px rgb(var(--ed-fg) / 0.06)' }}>
+            <button type="button" onClick={() => setGroupOpen(o => !o)} aria-expanded={groupOpen} className="flex items-center gap-2 px-3 py-2.5 text-left">
+              <span className="text-[12.5px] font-semibold text-[var(--ed-text)]">Group shot</span>
+              <span className="text-[11px]" style={{ color: 'rgb(var(--ed-fg) / 0.4)' }}>optional</span>
+              <svg className="ml-auto shrink-0" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"
+                style={{ color: muted, transform: groupOpen ? 'rotate(180deg)' : 'none', transition: 'transform .2s' }}><path d="M6 9l6 6 6-6" /></svg>
+            </button>
+            {groupOpen && (
+              <div className="px-3 pb-3">
+                <button type="button" onClick={p.onMarkShot}
+                  title="Set the format and place the views first (say Split), then mark it. Every time the clip shows this shot again, it gets the same."
+                  className="w-full h-9 flex items-center justify-center gap-2 rounded-lg text-[12.5px] font-semibold transition-colors hover:bg-[rgb(var(--ed-fg)/0.1)]"
+                  style={{ background: 'rgb(var(--ed-fg) / 0.06)', color: 'var(--ed-text)', boxShadow: 'inset 0 0 0 1px rgb(var(--ed-fg) / 0.1)' }}>
+                  {groupIcon(15)}
+                  Mark this shot as a group
+                </button>
+              </div>
             )}
           </div>
         )}
+
+        {p.notice && <p role="status" className="text-[11.5px]" style={{ color: 'var(--ed-accent-text)' }}>{p.notice}</p>}
+      </div>
+
+      {/* Follow them: always in reach at the bottom of the panel, once someone is marked */}
+      {p.subjects.length > 0 && <div className="sticky bottom-0 flex flex-col gap-1.5 px-4 pt-3 pb-4" style={{ background: 'var(--ed-panel)', borderTop: '1px solid rgb(var(--ed-fg) / 0.06)' }}>
+        {busy && (
+          <div className="flex flex-col gap-1.5 pb-1" role="status" aria-live="polite">
+            <div className="flex items-center justify-between gap-2 text-[11.5px]">
+              <span className="font-semibold text-[var(--ed-text)]">
+                {started
+                  ? `Following ${followPeople ? `${followPeople} ${followPeople === 1 ? 'person' : 'people'}` : ''}${followPeople && followGroups ? ' and ' : ''}${followGroups ? `${followGroups} ${followGroups === 1 ? 'group' : 'groups'}` : ''}…`
+                  : 'Waiting to start…'}
+              </span>
+              <span className="tabular-nums" style={{ color: muted }}>{started ? `${followPct}%` : clock(waitedMs)}</span>
+            </div>
+            <span className="relative block h-1.5 rounded-full overflow-hidden" style={{ background: 'rgb(var(--ed-fg) / 0.08)' }}>
+              {started
+                ? <span className="block h-full rounded-full transition-[width] duration-700" style={{ width: `${followPct}%`, background: '#c8ff00' }} />
+                // (not started: a light sliding across — it is waiting, not stuck at 0%)
+                : <span className="absolute top-0 bottom-0 w-[30%] rounded-full animate-[ai-scan_1.4s_ease-in-out_infinite] motion-reduce:animate-none" style={{ left: '-30%', background: 'linear-gradient(90deg, transparent, #c8ff00, transparent)' }} />}
+            </span>
+            <span className="text-[11px]" style={{ color: !started && waitedMs > 60_000 ? '#fbbf24' : muted }}>
+              {!started && waitedMs > 60_000
+                ? 'The worker hasn’t picked this up yet — it starts as soon as one is free.'
+                : 'Runs in the background — keep editing. The view changes when it’s done.'}
+            </span>
+          </div>
+        )}
+        {!busy && p.retrack && waiting === 0 && <p className="text-[11px]" style={{ color: 'var(--ed-accent-text)' }}>The clip changed since they were followed.</p>}
+        <button type="button" onClick={p.onMarkInClip} disabled={!canFollow}
+          className="h-10 flex items-center justify-center gap-2 rounded-lg text-[13px] font-bold transition-opacity disabled:opacity-50"
+          style={canFollow ? { background: '#c8ff00', color: '#000' } : { background: 'rgba(200,255,0,0.14)', color: 'var(--ed-accent-text)' }}>
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5" /></svg>
+          {waiting > 0 ? `Follow them in the clip (${waiting})` : p.retrack ? 'Follow them again' : 'Follow them in the clip'}
+        </button>
       </div>}
-
-      {/* Everyone is marked: look for them all through the whole clip */}
-      <button type="button" onClick={p.onMarkInClip} disabled={busy || waiting === 0}
-        className="h-10 flex items-center justify-center gap-2 rounded-lg text-[13px] font-bold transition-opacity disabled:opacity-50"
-        style={waiting === 0 ? { background: 'rgba(200,255,0,0.14)', color: 'var(--ed-accent-text)' } : { background: '#c8ff00', color: '#000' }}>
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5" /></svg>
-        {waiting > 0 ? `Follow them in the clip (${waiting})` : 'Follow them in the clip'}
-      </button>
-      {waiting === 0 && !busy && p.subjects.length === 0 && <p className="-mt-1.5 text-[11px]" style={{ color: 'rgb(var(--ed-fg) / 0.4)' }}>Pick at least one person first.</p>}
-      {busy && <p className="-mt-1 text-[11px]" style={{ color: muted }}>This runs in the background — you can keep editing. The view changes when it's done.</p>}
-
-      {tracked.length > 0 && (
-        <label className="flex items-center gap-2 pt-2 text-[11.5px] cursor-pointer select-none" style={{ color: 'var(--ed-text)', borderTop: '1px solid rgb(var(--ed-fg) / 0.07)' }}>
-          <input type="checkbox" checked={p.showOnVideo} onChange={e => p.onShowOnVideo(e.target.checked)} className="accent-[#c8ff00]" />
-          Show them on the video
-        </label>
-      )}
-      {p.notice && <p role="status" className="text-[11.5px]" style={{ color: 'var(--ed-accent-text)' }}>{p.notice}</p>}
     </div>
   )
 }
@@ -337,14 +404,16 @@ function SceneThumb({ angle: a, no, current, videoUrl, onOpen }: { angle: AngleI
   const picture = useFrameAt(videoUrl, Math.max(0, a.at - 600))
   return (
     <button type="button" onClick={onOpen} aria-pressed={current} aria-label={`Scene ${no}, ${a.people === 1 ? '1 person' : `${a.people} people`}${a.set ? ', done' : ''}`}
-      className="relative shrink-0 w-[60px] h-[34px] rounded-md overflow-hidden"
-      style={{ background: 'rgb(var(--ed-fg) / 0.08)', boxShadow: current ? 'inset 0 0 0 2px #c8ff00' : 'inset 0 0 0 1px rgb(var(--ed-fg) / 0.12)', opacity: current ? 1 : 0.8 }}>
+      className={`relative shrink-0 w-[72px] h-[41px] rounded-lg overflow-hidden transition-opacity ${current ? 'opacity-100' : 'opacity-70 hover:opacity-100'}`}
+      style={{ background: 'rgb(var(--ed-fg) / 0.08)' }}>
       {picture
         // eslint-disable-next-line @next/next/no-img-element
         && <img src={picture} alt="" className="w-full h-full object-cover" />}
-      <span className="absolute left-0.5 top-0.5 min-w-[14px] h-[14px] px-1 rounded text-[9.5px] font-bold leading-[14px] text-center" style={{ background: 'rgba(0,0,0,0.65)', color: '#fff' }}>{no}</span>
+      {/* (the ring over the picture) */}
+      <span className="absolute inset-0 rounded-lg pointer-events-none" style={{ boxShadow: current ? 'inset 0 0 0 2px #c8ff00' : 'inset 0 0 0 1px rgb(var(--ed-fg) / 0.14)' }} />
+      <span className="absolute left-1 top-1 min-w-[15px] h-[15px] px-1 rounded text-[9.5px] font-bold leading-[15px] text-center" style={{ background: 'rgba(0,0,0,0.7)', color: '#fff' }}>{no}</span>
       {a.set && (
-        <span className="absolute right-0.5 bottom-0.5 w-[14px] h-[14px] rounded-full flex items-center justify-center" style={{ background: '#c8ff00' }}>
+        <span className="absolute right-1 bottom-1 w-[15px] h-[15px] rounded-full flex items-center justify-center" style={{ background: '#c8ff00' }}>
           <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="#000" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5" /></svg>
         </span>
       )}
@@ -368,17 +437,17 @@ function FaceDot({ videoUrl, at, box: b, first }: { videoUrl: string | null; at:
 }
 
 /** A face of an angle: marked — in that person's colour, with their name; not yet — a click marks them */
-function AngleFace({ videoUrl, at, face: f, onMark }: { videoUrl: string | null; at: number; face: AngleItem['faces'][number]; onMark: () => void }) {
+function AngleFace({ videoUrl, at, face: f, onMark, saving }: { videoUrl: string | null; at: number; face: AngleItem['faces'][number]; onMark: () => void; saving?: boolean }) {
   // A little room around the face
   const b = f.box
   const x = Math.max(0, b.x - b.w * 0.25), y = Math.max(0, b.y - b.h * 0.3)
   const box = { x, y, w: Math.min(1 - x, b.w * 1.5), h: Math.min(1 - y, b.h * 1.5) }
   const url = useFaceAt(videoUrl, at, box)
   const picture = (
-    <span className="w-11 h-11 rounded-full overflow-hidden flex items-center justify-center text-[15px] font-bold"
+    <span className="relative w-14 h-14 rounded-full overflow-hidden flex items-center justify-center text-[17px] font-bold"
       style={f.subject
-        ? { background: f.subject.color, color: '#111', boxShadow: `0 0 0 2px ${f.subject.color}` }
-        : { background: 'rgb(var(--ed-fg) / 0.08)', color: muted, boxShadow: '0 0 0 1.5px rgb(var(--ed-fg) / 0.25)' }}>
+        ? { background: f.subject.color, color: '#111', boxShadow: `0 0 0 2.5px ${f.subject.color}, 0 0 0 5px rgb(var(--ed-fg) / 0.06)` }
+        : { background: 'rgb(var(--ed-fg) / 0.08)', color: muted, boxShadow: '0 0 0 1.5px rgb(var(--ed-fg) / 0.22)' }}>
       {url
         // eslint-disable-next-line @next/next/no-img-element
         ? <img src={url} alt="" className="w-full h-full object-cover" />
@@ -387,16 +456,37 @@ function AngleFace({ videoUrl, at, face: f, onMark }: { videoUrl: string | null;
   )
   if (f.subject) {
     return (
-      <span className="flex flex-col items-center gap-1 w-12" title={`${f.subject.label} is marked`}>
+      <span className="flex flex-col items-center gap-1.5 w-14" title={`${f.subject.label} is marked`}>
         {picture}
-        <span className="max-w-full truncate text-[10.5px] font-semibold" style={{ color: f.subject.color }}>{f.subject.label}</span>
+        <span className="max-w-full truncate text-[11px] font-bold" style={{ color: f.subject.color }}>{f.subject.label}</span>
       </span>
     )
   }
   return (
-    <button type="button" onClick={onMark} title="Mark this person" className="group/face flex flex-col items-center gap-1 w-12">
-      <span className="rounded-full transition-shadow group-hover/face:shadow-[0_0_0_3px_rgba(200,255,0,0.55)]">{picture}</span>
-      <span className="text-[10.5px] font-semibold" style={{ color: 'var(--ed-accent-text)' }}>Mark</span>
+    <button type="button" onClick={onMark} disabled={saving} aria-busy={saving} title={saving ? 'Marking…' : 'Mark this person'} className="group/face flex flex-col items-center gap-1.5 w-14">
+      <span className="relative rounded-full transition-shadow group-hover/face:shadow-[0_0_0_3px_rgba(200,255,0,0.6)]">
+        {picture}
+        {/* Being saved: a lime ring turning round the face */}
+        {saving && <span className="absolute -inset-[3px] rounded-full animate-spin motion-reduce:animate-none" style={{ border: '2.5px solid rgba(200,255,0,0.18)', borderTopColor: '#c8ff00' }} />}
+      </span>
+      <span className="text-[11px] font-semibold" style={{ color: 'var(--ed-accent-text)' }}>{saving ? 'Marking…' : 'Mark'}</span>
+    </button>
+  )
+}
+
+/** Someone the scene's faces don't show: a click here, then a click on them in the video */
+function AddFace({ marking, onClick }: { marking: boolean; onClick: () => void }) {
+  return (
+    <button type="button" onClick={onClick} aria-pressed={marking}
+      title={marking ? 'Click the person on the video (Esc to stop)' : 'Someone missing? Click here, then click them on the video'}
+      className="group/add flex flex-col items-center gap-1.5 w-14">
+      <span className={`w-14 h-14 rounded-full flex items-center justify-center transition-colors ${marking ? 'animate-pulse motion-reduce:animate-none' : ''}`}
+        style={{ border: `1.5px dashed ${marking ? '#c8ff00' : 'rgb(var(--ed-fg) / 0.28)'}`, color: marking ? 'var(--ed-accent-text)' : muted }}>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+      </span>
+      <span className="text-[11px] font-semibold group-hover/add:text-[var(--ed-text)]" style={{ color: marking ? 'var(--ed-accent-text)' : muted }}>
+        {marking ? 'Click video' : 'Add'}
+      </span>
     </button>
   )
 }
@@ -405,8 +495,8 @@ function AngleFace({ videoUrl, at, face: f, onMark }: { videoUrl: string | null;
 function Avatar({ subject: s, videoUrl }: { subject: SubjectItem; videoUrl: string | null }) {
   const url = useFaceAt(videoUrl, s.face?.ms ?? null, s.face?.box ?? null)
   return (
-    <span className="shrink-0 w-12 h-12 rounded-full overflow-hidden flex items-center justify-center text-[15px] font-bold"
-      style={{ background: s.color, color: '#111', boxShadow: `0 0 0 2px ${s.color}, 0 0 0 4px rgb(var(--ed-fg) / 0.06)` }}>
+    <span className="shrink-0 w-8 h-8 rounded-full overflow-hidden flex items-center justify-center text-[12px] font-bold"
+      style={{ background: s.color, color: '#111', boxShadow: `0 0 0 2px ${s.color}` }}>
       {url
         // eslint-disable-next-line @next/next/no-img-element
         ? <img src={url} alt={s.label} className="w-full h-full object-cover" />

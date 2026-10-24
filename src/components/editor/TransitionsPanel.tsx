@@ -21,7 +21,7 @@ export interface TransitionJoin {
 
 /**
  * The kinds of transition, most used in short-form editing first. Each tile plays a little loop
- * of what it does: the Shortcut panda buried in film gives way to the panda cutting it into reels.
+ * of what it does: one plain black frame gives way to another (drawn in CSS, no photos).
  * Styles: .tr-* in globals.css. The export draws them with ffmpeg's xfade (render.py); the preview
  * the same way (VideoPreview drawTransition).
  *

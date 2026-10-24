@@ -8,9 +8,10 @@ import type { Video } from '@chai-cut/shared'
 import { ACCEPTED_VIDEO_EXTENSIONS } from '@chai-cut/shared'
 import { Breadcrumbs } from '@/components/ui/breadcrumbs'
 import { AccountMenu } from '@/components/ui/account-menu'
+import ThemeSwitch from '@/components/ui/cinematic-theme-switcher'
 import { BrandLoaderScreen } from '@/components/ui/brand-loader'
 import { FillButtonContent } from '@/components/ui/fill-button'
-import { useVideoUpload } from '@/modules/upload/useVideoUpload'
+import { useVideoUpload, formatBytes, uploadPace } from '@/modules/upload/useVideoUpload'
 
 type DashVideo = Video & { video_url?: string | null; clip_count?: number; error?: string | null }
 type SortKey = 'newest' | 'oldest' | 'name'
@@ -65,9 +66,10 @@ export default function DashboardPage() {
   const dragDepth = useRef(0)
   // Resumable upload straight to storage (see useVideoUpload); problems before it starts
   // (wrong type, too big, plan full) show in uploadError
-  // "Make clips" (and an upload that has finished) first asks how: AI edit or manual edit
+  // "Make clips" first asks how: AI edit or manual edit. A finished upload doesn't ask: the new
+  // video just appears in the list (the user picks Make clips when they want)
   const [choosing, setChoosing] = useState<{ id: string; title: string; videoUrl?: string | null; durationMs?: number | null } | null>(null)
-  const upload = useVideoUpload(videoId => setChoosing({ id: videoId, title: 'your video' }))
+  const upload = useVideoUpload(() => { fetchVideos(); fetchPlan() })
   const uploading = upload.state.phase === 'uploading' || upload.state.phase === 'finishing'
   const [uploadError, setUploadError] = useState<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -204,7 +206,7 @@ export default function DashboardPage() {
       onDragLeave={onDragLeave}
       onDrop={onDrop}
     >
-      <nav className="dash-nav">
+      <nav className="dash-nav app-nav">
         <Breadcrumbs shine items={[{ label: 'Dashboard' }]} />
         <div className="dash-nav-right">
           {planInfo && (
@@ -219,6 +221,7 @@ export default function DashboardPage() {
           {planInfo?.plan === 'free' && (
             <a href="/pricing" className="dash-btn-fill fill-btn fill-btn-sm"><FillButtonContent>Upgrade</FillButtonContent></a>
           )}
+          <ThemeSwitch />
           <AccountMenu planInfo={planInfo} />
         </div>
       </nav>
@@ -284,10 +287,21 @@ export default function DashboardPage() {
             ) : uploading ? (
               <>
                 <p>
-                  {upload.state.phase === 'finishing' ? `Finishing ${upload.state.fileName}…` : `Uploading ${upload.state.fileName}… ${upload.state.progress}%`}
+                  {upload.state.phase === 'finishing' ? `Finishing ${upload.state.fileName}…` : `Uploading ${upload.state.fileName}`}
                 </p>
-                <p>Keep this tab open. If the connection drops, the upload continues where it stopped.</p>
-                <div className="dash-progress"><div style={{ width: `${upload.state.progress}%` }} /></div>
+                {/* How much is up, the measured speed and the time left (once it has been measured) */}
+                {upload.state.phase === 'uploading' && upload.state.total > 0 && (
+                  <p className="dash-upload-pace">
+                    {formatBytes(upload.state.loaded)} of {formatBytes(upload.state.total)}
+                    {uploadPace(upload.state) ? ` · ${uploadPace(upload.state)}` : ' · measuring speed…'}
+                  </p>
+                )}
+                {/* the bar with its percentage beside it, then what to keep in mind */}
+                <div className="dash-progress-row">
+                  <div className="dash-progress"><div style={{ width: `${upload.state.progress}%` }} /></div>
+                  <span className="dash-progress-pct">{upload.state.progress}%</span>
+                </div>
+                <p className="dash-upload-hint">Keep this tab open. If the connection drops, the upload continues where it stopped.</p>
               </>
             ) : atLimit ? (
               <>

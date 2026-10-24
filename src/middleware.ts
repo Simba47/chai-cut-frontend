@@ -6,6 +6,6 @@ const { auth } = NextAuth(authConfig)
 export default auth
 
 export const config = {
-  // Skip Next internals and static files from /public (logo, favicon, etc.)
-  matcher: ['/((?!_next/static|_next/image|favicon.ico|.*\\.(?:png|jpg|jpeg|gif|svg|webp|ico|ttf|woff2?)$).*)'],
+  // Skip Next internals and static files from /public (logo, favicon, fonts, the captions' person-finding model)
+  matcher: ['/((?!_next/static|_next/image|favicon.ico|.*\\.(?:png|jpg|jpeg|gif|svg|webp|ico|ttf|woff2?|tflite)$).*)'],
 }
