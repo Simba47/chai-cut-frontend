@@ -32,15 +32,47 @@ export const CREATOR_DEFAULT_Y: Record<CreatorLook, number> = {
 const MULTI_SPOTS: Array<['left' | 'right', number]> = [['left', 0.10], ['right', 0.10], ['right', 0.40], ['left', 0.40]]
 
 const loaded = new Set<string>()
-/** A template font, loaded from the file the export uses (registered as it is: its weight and slant) */
-function font(key: string) {
-  const f = TEMPLATE_FONTS[key] ?? TEMPLATE_FONTS.poppins
-  const family = templateFontFamily(TEMPLATE_FONTS[key] ? key : 'poppins')
-  if (!loaded.has(family) && typeof FontFace !== 'undefined') {
+function load(key: string) {
+  const f = TEMPLATE_FONTS[key]
+  const family = templateFontFamily(key)
+  if (f && !loaded.has(family) && typeof FontFace !== 'undefined') {
     loaded.add(family)
     new FontFace(family, `url(/caption-fonts/${f.file})`, { weight: String(f.weight), style: f.italic ? 'italic' : 'normal' }).load()
       .then(face => document.fonts.add(face))
       .catch(() => loaded.delete(family))
+  }
+  return family
+}
+
+/**
+ * Lines in another script are drawn in its Noto font, with the style's own weight and slant put on
+ * it (the browser thickens / slants it, as libass does); Latin letters in such a line come from the
+ * style's own font (fallback). The export's creator_captions.py has the same list.
+ */
+const SCRIPTS: Array<[number, number, string]> = [[0x0c00, 0x0c7f, 'noto-telugu'], [0x0900, 0x097f, 'noto-devanagari'], [0x0b80, 0x0bff, 'noto-tamil'],
+  [0x0c80, 0x0cff, 'noto-kannada'], [0x0d00, 0x0d7f, 'noto-malayalam'], [0x0980, 0x09ff, 'noto-bengali']]
+/** Display fonts that are one heavy weight though their files say regular (400) */
+const HEAVY = new Set(['anton', 'bangers', 'bebas', 'lilita', 'luckiest'])
+/** The Noto font for the first non-Latin script in the text, null for Latin text (creator_captions.script_font) */
+export function scriptFont(text: string): string | null {
+  for (const ch of text) {
+    const o = ch.codePointAt(0)!
+    const s = SCRIPTS.find(([lo, hi]) => o >= lo && o <= hi)
+    if (s) return s[2]
+  }
+  return null
+}
+
+/** A template font, loaded from the file the export uses (registered as it is: its weight and slant); in a script's Noto font when `script` */
+function font(key: string, script: string | null = null) {
+  const own = TEMPLATE_FONTS[key] ? key : 'poppins'
+  const f = TEMPLATE_FONTS[own]
+  const family = load(own)
+  const s = script ? TEMPLATE_FONTS[script] : undefined
+  if (s) {
+    const sFamily = load(script!)
+    const weight = f.weight >= 600 || HEAVY.has(own) ? 700 : 400
+    return { css: (n: number) => `${f.italic ? 'italic ' : ''}${weight} ${n * s.em}px "${sFamily}", "${family}", sans-serif`, asc: s.asc ?? 0.7 }
   }
   return { css: (n: number) => `${f.italic ? 'italic ' : ''}${f.weight} ${n * f.em}px "${family}", sans-serif`, asc: f.asc ?? 0.8 }
 }
@@ -102,7 +134,9 @@ export function drawCreatorCaptions(
   const hl = style.highlight_color ?? tpl.hl
   const S = (style.size ?? 52) * (tpl.size / 100) * k
   const keyN = S * (tpl.keyScale ?? 100) / 100
-  const base = font(tpl.font), key = font(tpl.keyFont ?? tpl.font)
+  // (a line in another script: its Noto font, in the style's weight and slant)
+  const script = scriptFont(line.map(w => w.word).join(' '))
+  const base = font(tpl.font, script), key = font(tpl.keyFont ?? tpl.font, script)
   const shadow = (tpl.shadow ?? 0) * k
   const cx = W / 2                                    // (drawCaptions moves it where it was dragged)
   const cy = (style.position_y ?? CREATOR_DEFAULT_Y[look]) * H
