@@ -66,9 +66,10 @@ export default function DashboardPage() {
   const dragDepth = useRef(0)
   // Resumable upload straight to storage (see useVideoUpload); problems before it starts
   // (wrong type, too big, plan full) show in uploadError
-  // "Make clips" (and an upload that has finished) first asks how: AI edit or manual edit
+  // "Make clips" first asks how: AI edit or manual edit. A finished upload doesn't ask: the new
+  // video just appears in the list (the user picks Make clips when they want)
   const [choosing, setChoosing] = useState<{ id: string; title: string; videoUrl?: string | null; durationMs?: number | null } | null>(null)
-  const upload = useVideoUpload(videoId => setChoosing({ id: videoId, title: 'your video' }))
+  const upload = useVideoUpload(() => { fetchVideos(); fetchPlan() })
   const uploading = upload.state.phase === 'uploading' || upload.state.phase === 'finishing'
   const [uploadError, setUploadError] = useState<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
