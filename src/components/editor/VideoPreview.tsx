@@ -1459,9 +1459,9 @@ function drawCaptionsCentred(
   const chunk = findCaptionChunk(chunks, tMs)
   if (!chunk) return
   // A Creator style (a template with a look) is laid out its own way: modules/captions/creator.ts
-  // (Latin text only, as its fonts; other scripts get its base preset, as the export does)
+  // (any script: a line in Telugu, Hindi… in its Noto font, as the export does)
   const tpl = templateOf(style)
-  if (tpl?.look && (style.language === 'roman' || isLatinText(chunk.map(w => w.word).join(' ')))) {
+  if (tpl?.look) {
     const person = tpl.look === 'behind' ? personMask(ctx.canvas, tMs) : null
     const rect = drawCreatorCaptions(ctx, chunk, chunks.indexOf(chunk), chunk[chunk.length - 1].end_ms, tMs, style, tpl, person)
     if (out) out.rect = rect

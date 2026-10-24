@@ -18,6 +18,8 @@ export interface Angle {
   faces: Array<{ x: number; y: number; w: number; h: number; person?: number }>
   /** Wherever the clip shows it: [start, end] source ms */
   spans: Array<[number, number]>
+  /** Who talks in each of `spans`: talk[i][k] is how long faces[k] talks in spans[i] (ms); none without a transcript */
+  talk?: number[][]
 }
 
 /** What a row needs to know of a marked subject */
@@ -37,9 +39,17 @@ export interface AngleRow {
   faces: Array<{ box: { x: number; y: number; w: number; h: number; person?: number }; subject: { label: string; color: string } | null }>
   /** Where the clip shows it now: [start, end] ms of the timeline (removed parts left out) */
   shown: Array<[number, number]>
+  /** The same stretches, each with who talks there (ms per face, as `faces`; null: not known) — Auto format decides each on its own */
+  places: Array<{ shown: [number, number]; talk: number[] | null }>
   totalMs: number
   /** The group marked on this angle */
   group: { label: string; layout: string; color: string } | null
+  /**
+   * Its format, when each of its stretches is exactly one section (Auto format or a format picked in
+   * the Subjects tool leaves it so): the layout, or 'mixed' when they differ (the speaker at the bottom
+   * of a Split can change between them). Null: not formatted as a scene
+   */
+  formatted: string | null
   /** It has a group, or (one person) they are marked — someone marked elsewhere doesn't set a group scene */
   set: boolean
   /** Where the playhead goes to show it (timeline ms) */
@@ -59,6 +69,8 @@ const MIN_SHOWN_MS = 200
 export function angleRows(
   angles: readonly Angle[], subjects: readonly AngleSubject[], cuts: readonly number[],
   toTimeline: (sourceMs: number) => number, lengthMs: number,
+  /** The layout of the one section covering exactly [a, b] of the timeline, or null (several, or not exactly) */
+  formatOf?: (a: number, b: number) => string | null,
 ): AngleRow[] {
   // (a mark that failed — no face there — doesn't hold a face: it can be marked again)
   const people = subjects.filter(s => !s.shot && s.status !== 'failed')
@@ -77,9 +89,10 @@ export function angleRows(
     if (best !== undefined && ![...personOf.values()].includes(best)) personOf.set(s.id, best)
   }
   return angles.flatMap((a): AngleRow[] => {
-    const shown = a.spans
-      .map(([s, e]): [number, number] => [Math.max(0, Math.round(toTimeline(s))), Math.min(lengthMs, Math.round(toTimeline(e)))])
-      .filter(([s, e]) => e - s >= MIN_SHOWN_MS)
+    const places = a.spans
+      .map(([s, e], i) => ({ shown: [Math.max(0, Math.round(toTimeline(s))), Math.min(lengthMs, Math.round(toTimeline(e)))] as [number, number], talk: a.talk?.[i] ?? null }))
+      .filter(({ shown: [s, e] }) => e - s >= MIN_SHOWN_MS)
+    const shown = places.map(p => p.shown)
     if (!shown.length) return []
     const inAngle = (sourceMs: number) => a.spans.some(([s, e]) => sourceMs >= s && sourceMs < e)
 
@@ -120,13 +133,16 @@ export function angleRows(
     const atT = Math.round(toTimeline(a.at))
     const first = shown[0]
     const jumpMs = shown.some(([s, e]) => atT >= s && atT < e - 50) ? atT : Math.round(first[0] + Math.min(600, (first[1] - first[0]) / 2))
+    const layouts = formatOf ? shown.map(([s, e]) => formatOf(s, e)) : []
+    const formatted = layouts.length && layouts.every(Boolean) ? (new Set(layouts).size === 1 ? layouts[0] : 'mixed') : null
     return [{
-      people: a.people, at: a.at, faces, shown, jumpMs,
+      people: a.people, at: a.at, faces, shown, places, jumpMs, formatted,
       totalMs: shown.reduce((n, [s, e]) => n + e - s, 0),
       group: g ? { label: g.label, layout: g.shot!.layout, color: g.color } : null,
-      // A scene of two or more is a group scene: set only by a group marked on it (user, 2026-10-24:
-      // marking the man in his close-up ticked every group scene he sits in) — each scene is its own
-      set: !!g || (a.people < 2 && faces.some(f => f.subject)),
+      // A scene of two or more is a group scene: set by a group marked on it, or by its format (Auto
+      // format) — never by someone marked elsewhere (user, 2026-10-24: marking the man in his close-up
+      // ticked every group scene he sits in) — each scene is its own
+      set: !!g || (a.people < 2 ? faces.some(f => f.subject) : !!formatted),
     }]
   })
 }
