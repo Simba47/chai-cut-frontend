@@ -280,13 +280,13 @@ export default function DashboardPage() {
           <div className="dash-drop-text">
             {upload.state.phase === 'failed' ? (
               <>
-                <p>{upload.state.canRetry ? 'Upload paused' : 'Upload stopped'} · {upload.state.fileName}{upload.state.canRetry ? ` · ${upload.state.progress}%` : ''}</p>
+                <p className="dash-upload-title" title={upload.state.fileName}>{upload.state.canRetry ? 'Upload paused' : 'Upload stopped'} · {upload.state.fileName}{upload.state.canRetry ? ` · ${upload.state.progress}%` : ''}</p>
                 <p className="dash-drop-error" role="alert">{upload.state.error}</p>
                 <div className="dash-progress"><div style={{ width: `${upload.state.progress}%` }} /></div>
               </>
             ) : uploading ? (
               <>
-                <p>
+                <p className="dash-upload-title" title={upload.state.fileName}>
                   {upload.state.phase === 'finishing' ? `Finishing ${upload.state.fileName}…` : `Uploading ${upload.state.fileName}`}
                 </p>
                 {/* How much is up, the measured speed and the time left (once it has been measured) */}
