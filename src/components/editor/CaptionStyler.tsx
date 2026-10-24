@@ -3,6 +3,7 @@
 import { useBrandPalette, useBrandLock } from './brandPalette'
 import { useBrandFonts, ensureBrandFont } from './brandFonts'
 import { CAPTION_TEMPLATE_LIST, TEMPLATE_FONTS, TEMPLATE_GROUPS, applyTemplate, templateFontFamily, templateOf, type CaptionTemplate } from '@/modules/captions/templates'
+import { CaptionKeyWords } from './CaptionKeyWords'
 import { useEffect, useRef, useState } from 'react'
 import type { AnimationType, CaptionStyle } from '@chai-cut/shared'
 import { SARVAM_LANGUAGES, DEFAULT_CAPTION_STYLE } from '@chai-cut/shared'
@@ -248,6 +249,87 @@ function TemplateDemo({ t }: { t: CaptionTemplate }) {
       })}
     </span>
   )
+}
+
+/**
+ * A Creator style's tile (a template with a look: modules/captions/creator.ts): a still of how it
+ * lays a line out — its fonts and starting colours
+ */
+function CreatorDemo({ t }: { t: CaptionTemplate }) {
+  const face = (key: string, px: number): React.CSSProperties => {
+    const f = TEMPLATE_FONTS[key]
+    return { fontFamily: `"${templateFontFamily(key)}", sans-serif`, fontWeight: f.weight, fontStyle: f.italic ? 'italic' : 'normal', fontSize: px * f.em / 0.6, lineHeight: 1 }
+  }
+  const key = t.keyFont ?? t.font
+  const shadow = t.shadow ? '1px 1px 0 rgba(0,0,0,0.5)' : undefined
+  const box: React.CSSProperties = { position: 'relative', width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden', textShadow: shadow }
+  switch (t.look) {
+    case 'behind':
+      // The word with a head and shoulders in front of it
+      return (
+        <span style={box}>
+          <span style={{ ...face(t.font, 30), color: t.color, textTransform: 'uppercase', transform: 'translateY(-6px)' }}>Focus</span>
+          <svg width="40" height="40" viewBox="0 0 40 40" aria-hidden="true" style={{ position: 'absolute', bottom: -6 }}>
+            <circle cx="20" cy="14" r="8" fill="#2a2a2e" /><path d="M4 40c0-10 7-16 16-16s16 6 16 16z" fill="#2a2a2e" />
+          </svg>
+        </span>
+      )
+    case 'difference':
+      return (
+        <span style={{ ...box, flexDirection: 'column', background: 'linear-gradient(135deg,#3b3f8f,#c76b2f)' }}>
+          <span style={{ ...face(t.font, 8), color: t.color }}>make it</span>
+          <span style={{ ...face(key, 18), color: '#fff', mixBlendMode: 'difference' }}>pop.</span>
+        </span>
+      )
+    case 'build':
+      return (
+        <span style={{ ...box, flexDirection: 'column', gap: 1 }}>
+          {['Not', 'many', 'know'].map((w, i) => <span key={w} style={{ ...face(t.font, 11), color: i === 1 ? t.hl : t.color, textTransform: 'uppercase' }}>{w}</span>)}
+        </span>
+      )
+    case 'multi':
+      return (
+        <span style={{ ...box, alignItems: 'flex-start', justifyContent: 'flex-start', flexDirection: 'column', padding: '6px 8px' }}>
+          <span style={{ ...face(t.font, 8), color: t.color }}>you&apos;ve done</span>
+          <span style={{ ...face(key, 15), color: t.color }}>absolutely</span>
+        </span>
+      )
+    case 'scroll':
+      return (
+        <span style={{ ...box, flexDirection: 'column' }}>
+          <span style={{ ...face(t.font, 8), color: t.hl, opacity: 0.28 }}>FOR</span>
+          <span style={{ ...face(t.font, 12), color: t.hl }}>YOU.</span>
+          <span style={{ ...face(t.font, 8), color: t.hl, opacity: 0.28 }}>ALL</span>
+        </span>
+      )
+    case 'split':
+      return (
+        <span style={{ ...box, alignItems: 'baseline', gap: 3, paddingTop: 18 }}>
+          <span style={{ ...face(t.font, 9), color: t.color }}>and</span>
+          <span style={{ ...face(key, 17), color: t.hl }}>radiant.</span>
+        </span>
+      )
+    case 'subtitle':
+      return (
+        <span style={{ ...box, gap: 3 }}>
+          {['let', 'me', 'show', 'you'].map((w, i) => <span key={w} style={{ ...face(t.font, 8), color: t.color, opacity: i < 3 ? 0.65 : 1 }}>{w}</span>)}
+        </span>
+      )
+    case 'scribble':
+      return (
+        <span style={{ ...box, gap: 3 }}>
+          <span style={{ ...face(t.font, 11), color: t.color }}>right</span>
+          <span style={{ position: 'relative' }}>
+            <span style={{ ...face(t.font, 11), color: t.color }}>tools</span>
+            <svg width="100%" height="5" viewBox="0 0 30 5" preserveAspectRatio="none" aria-hidden="true" style={{ position: 'absolute', left: 0, bottom: -4 }}>
+              <path d="M0 2.5 Q3.75 0 7.5 2.5 T15 2.5 T22.5 2.5 T30 2.5" fill="none" stroke={t.hl} strokeWidth="1.6" />
+            </svg>
+          </span>
+        </span>
+      )
+    default:
+      return <TemplateDemo t={t} />
+  }
 }
 
 function formatElapsed(sec: number) {
@@ -528,7 +610,7 @@ export function CaptionStyler({
                 <button key={t.id} aria-pressed={on} className="cap-tile" data-on={on || undefined} title={t.label}
                   onClick={() => { onChange(applyTemplate(t)); onTextCaseChange(t.upper ? 'upper' : 'title') }}>
                   <span className="cap-tile-screen" style={{ height: 56, overflow: 'hidden' }}>
-                    <TemplateDemo t={t} />
+                    {t.look ? <CreatorDemo t={t} /> : <TemplateDemo t={t} />}
                   </span>
                   <span className="cap-tile-name">{t.label}</span>
                 </button>
@@ -537,6 +619,9 @@ export function CaptionStyler({
           </div>
         )}
       </section>
+
+      {/* ── Key words: what a Creator style makes stand out (AI picks them; tap to change) ── */}
+      {tpl?.look && <CaptionKeyWords style={style} tpl={tpl} onChange={onChange} />}
 
       {/* ── Look: colours, font, size and capitals ── */}
       <section className="flex flex-col gap-4">
