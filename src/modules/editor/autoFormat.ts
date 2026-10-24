@@ -6,9 +6,10 @@ import { defaultCropForSlot, normalizedSlotAspect } from './utils'
 // The user's decision table (2026-10-24), checked in this order, for one place of a scene (one of the
 // stretches where its shot comes back — who talks can differ between them):
 //   1. Short pieces: nothing special for now (every piece gets its own format).
-//   2. Faces too small to blow up sharply (a wide shot): Split / Trio anyway — 2 people: Split; 3:
-//      Trio, one person a view; 4: Trio, the middle two together in the middle view; 5 or more: Split,
-//      each view framing all of its side.
+//   2. Faces too small to blow up sharply (a wide shot): Vertical — on everyone seen when they fit one
+//      view, else on whoever talks most, else on the middle of them (user, 2026-10-24: a wide shot of
+//      four, two with their backs turned, read as two tiny faces and became a Split of those two at
+//      7×; a wide shot can't be counted, nor blown up, so it isn't split).
 //   3. Everyone fits in one 9:16 view: Vertical framing them all.
 //   4. One person: Vertical on them.
 //   5. Two: Split — the speaker at the bottom, the listener (reactions) on top.
@@ -128,17 +129,15 @@ export function decideFormat(faces: readonly Face[], talk: readonly number[] | n
 
   // 1 person
   if (n === 1) return vertical(midX(byX[0]), 'one')
-  // 2. Faces too small to blow up sharply: Split / Trio anyway
-  if (Math.min(...byX.map(f => f.w)) < SMALL_FACE) {
-    if (n === 2) return two('small')
-    if (n === 3) return trio(byX.map(f => [f]), 'small')
-    if (n === 4) return four('small')
-    return many('small')
-  }
-  // 3. Everyone fits one Vertical view
   const vw = defaultCropForSlot('vertical', 0, videoAR).w
   const left = Math.min(...byX.map(f => f.x)), right = Math.max(...byX.map(f => f.x + f.w))
-  if (right - left <= FITS_SHARE * vw) return vertical((left + right) / 2, 'fits')
+  const fits = right - left <= FITS_SHARE * vw
+  // 2. Faces too small to blow up sharply: Vertical — on all of them, else the talker, else their middle
+  if (Math.min(...byX.map(f => f.w)) < SMALL_FACE) {
+    return vertical(fits || speaker === null ? (left + right) / 2 : midX(byX[speaker]), 'small')
+  }
+  // 3. Everyone fits one Vertical view
+  if (fits) return vertical((left + right) / 2, 'fits')
   // 5. Two
   if (n === 2) return two('two')
   // 6. Three
