@@ -306,6 +306,29 @@ export async function scanAngles(userId: string, clipId: string, body: { start_m
   return getAngles(userId, clipId)
 }
 
+/**
+ * Stop (the Subjects tool, user 2026-10-24): the clip's scan and following stop. Their jobs are marked
+ * stopped (a waiting one is never taken; a running one is stopped by the worker within 2 s, which then
+ * writes nothing — track_subjects.ts stopWatch), and the clip's rows are put back here at once, so it
+ * holds even when no worker is running: the people being followed are marked again, ready to follow;
+ * a scan goes back to the scenes found before it (none: not detected yet).
+ */
+export async function stopSubjects(userId: string, clipId: string): Promise<{ subjects: Subject[]; angles: AnglesState }> {
+  await ownClip(userId, clipId)
+  try {
+    await sql.begin(async tx => {
+      await tx`
+        UPDATE jobs SET status = 'failed', error = ${STOPPED}
+        WHERE type = 'track_subjects' AND payload->>'clip_id' = ${clipId} AND payload->>'auto' IS NULL AND status IN ('queued', 'processing')
+      `
+      await tx`UPDATE clip_subjects SET status = 'new', progress = 0, error = NULL WHERE clip_id = ${clipId} AND status IN ('queued', 'running')`
+      await tx`DELETE FROM clip_angles WHERE clip_id = ${clipId} AND status IN ('queued', 'running') AND angles IS NULL`
+      await tx`UPDATE clip_angles SET status = 'done', progress = 100, error = NULL, updated_at = now() WHERE clip_id = ${clipId} AND status IN ('queued', 'running')`
+    })
+  } catch (e) { return notReady(e) }
+  return { subjects: await listSubjects(userId, clipId), angles: await getAngles(userId, clipId) }
+}
+
 // ── Sub-edit (the clip board's button) ─────────────────────────────────────────
 // One press: the worker finds the people in the clip by itself, marks and tracks them, and frames
 // the clip on whoever is talking — written into the clip (jobs/track_subjects.ts, payload auto).

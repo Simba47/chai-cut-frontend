@@ -85,6 +85,12 @@ interface Props {
   onMarkInClip: () => void
   /** The ones followed need following again (the clip changed since): Follow them again does it */
   retrack: boolean
+  /** Auto format: detects if needed, then every scene not formatted yet gets its format and views, everyone is marked, Follow starts */
+  onAutoFormat: () => void
+  /** Where Auto format is: waiting for its scan, or laying the formats out */
+  autoPhase: 'idle' | 'detecting' | 'formatting'
+  /** Stop whatever runs: Auto format, the scan, the following */
+  onStop: () => void
   onRemove: (id: string) => void
   onRename: (id: string, label: string) => void
   /** The video the faces are cut from (for the pictures on the cards) */
@@ -119,6 +125,13 @@ export function SubjectsPanel(p: Props) {
   const curNo = cur ? withPeople.indexOf(cur) + 1 : 0
   const scanPct = Math.max(5, p.angles.progress)
   const canFollow = !busy && (waiting > 0 || p.retrack)
+  const scanning = p.angles.status === 'scanning'
+  const detected = p.angles.status === 'done'
+  /** Something runs (a scan, Auto format, the following): Stop shows, Detect and Auto format wait */
+  const working = scanning || busy || p.autoPhase !== 'idle'
+  // Detect again is the next thing to do: the clip grew past what was found
+  const detectHot = detected && !!p.angles.stale && !working
+  const canAct = p.angles.status !== 'loading' && p.angles.status !== 'unavailable'
   // Following them (user, 2026-10-24: "add a processing bar so we understand it is going on"): how far
   // the ones being followed are, and — while none has started — how long they have waited for the worker
   const following = p.subjects.filter(s => s.status === 'queued' || s.status === 'running')
@@ -151,7 +164,7 @@ export function SubjectsPanel(p: Props) {
   return (
     <div className="flex flex-col min-h-full">
       <div className="flex-1 flex flex-col gap-4 p-4">
-        {/* Title, how many scenes are set, and look again */}
+        {/* Title, and how many scenes are set */}
         <div className="flex items-center gap-2">
           <h3 className="flex-1 min-w-0 text-[15px] font-bold text-[var(--ed-text)]">Who is in this clip?</h3>
           {listed && (
@@ -163,37 +176,49 @@ export function SubjectsPanel(p: Props) {
               {set}/{withPeople.length} set
             </span>
           )}
-          {/* Look for the people and scenes again (someone missed, a scene wrong, or the clip changed);
-              the people marked stay marked */}
-          {p.angles.status === 'done' && (
-            <button type="button" onClick={p.onScanAngles} aria-label="Detect again"
-              title="Detect again: look for the people and scenes in this clip again. The people you marked stay marked."
-              className="shrink-0 w-7 h-7 flex items-center justify-center rounded-md transition-colors hover:bg-[rgb(var(--ed-fg)/0.12)]"
-              style={p.angles.stale
-                ? { background: 'rgba(200,255,0,0.14)', color: 'var(--ed-accent-text)', boxShadow: 'inset 0 0 0 1px rgba(200,255,0,0.5)' }
-                : { color: 'rgb(var(--ed-fg) / 0.7)' }}>
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                <path d="M21 12a9 9 0 11-2.64-6.36" /><path d="M21 4v5h-5" />
-              </svg>
-            </button>
-          )}
         </div>
-        {p.angles.status === 'done' && p.angles.stale && (
-          <p className="-mt-2 text-[11px]" style={{ color: 'var(--ed-accent-text)' }}>The clip got longer — press ↻ to look in the new part too.</p>
-        )}
 
-        {/* Never looked for: nothing runs until this is pressed */}
-        {p.angles.status === 'none' && (
-          <button type="button" onClick={p.onScanAngles}
-            className="h-11 flex items-center justify-center gap-2 rounded-xl text-[13px] font-bold transition-opacity hover:opacity-90"
-            style={{ background: '#c8ff00', color: '#000' }}>
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <circle cx="9" cy="8" r="3.5" /><path d="M2.5 20a6.5 6.5 0 0113 0" /><circle cx="18" cy="15" r="3" /><path d="M20.2 17.2L22 19" />
-            </svg>
-            Detect subjects
-          </button>
+        {/* Detect (the scenes and people only) and Auto format (detects if needed, then formats it all),
+            with Stop beside them while either — or the following — runs (user, 2026-10-24) */}
+        {canAct && (
+          <div className="flex items-stretch gap-2">
+            <button type="button" onClick={p.onScanAngles} disabled={working}
+              title={detected ? 'Look for the scenes and people again (someone missed, a scene wrong, or the clip changed). The people you marked stay marked.' : 'Find the scenes, people and groups in this clip. Nothing is formatted.'}
+              className="flex-1 min-w-0 h-11 flex items-center justify-center gap-2 rounded-xl text-[12.5px] font-bold transition-colors hover:bg-[rgb(var(--ed-fg)/0.12)] disabled:cursor-default"
+              style={detectHot
+                ? { background: 'rgba(200,255,0,0.14)', color: 'var(--ed-accent-text)', boxShadow: 'inset 0 0 0 1.5px rgba(200,255,0,0.55)' }
+                : { background: 'rgb(var(--ed-fg) / 0.07)', color: 'var(--ed-text)', boxShadow: 'inset 0 0 0 1px rgb(var(--ed-fg) / 0.1)', opacity: working && !scanning ? 0.5 : 1 }}>
+              {scanning
+                ? <span className="w-3.5 h-3.5 shrink-0 rounded-full animate-spin motion-reduce:animate-none" style={{ border: '2px solid rgb(var(--ed-fg) / 0.2)', borderTopColor: 'currentColor' }} aria-hidden="true" />
+                : detected
+                  ? <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 11-2.64-6.36" /><path d="M21 4v5h-5" /></svg>
+                  : <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="9" cy="8" r="3.5" /><path d="M2.5 20a6.5 6.5 0 0113 0" /><circle cx="18" cy="15" r="3" /><path d="M20.2 17.2L22 19" /></svg>}
+              <span className="truncate">{scanning ? 'Detecting…' : detected ? 'Detect again' : 'Detect'}</span>
+            </button>
+            <button type="button" onClick={p.onAutoFormat} disabled={working}
+              title="Detects the scenes if needed, then gives every scene its format from who is in it (1 person: Vertical, 2: Split, 3: Trio, more: Split by halves), marks everyone and follows them. Scenes you formatted yourself stay as they are."
+              className="flex-1 min-w-0 h-11 flex items-center justify-center gap-2 rounded-xl text-[12.5px] font-bold transition-opacity hover:opacity-90 disabled:cursor-default"
+              style={{ background: '#c8ff00', color: '#000', opacity: working && p.autoPhase === 'idle' ? 0.5 : 1 }}>
+              {p.autoPhase !== 'idle'
+                ? <span className="w-3.5 h-3.5 shrink-0 rounded-full animate-spin motion-reduce:animate-none" style={{ border: '2px solid rgba(0,0,0,0.25)', borderTopColor: '#000' }} aria-hidden="true" />
+                : <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 3l1.9 4.6L18.5 9.5l-4.6 1.9L12 16l-1.9-4.6L5.5 9.5l4.6-1.9z" /><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z" /></svg>}
+              <span className="truncate">{p.autoPhase === 'formatting' ? 'Formatting…' : 'Auto format'}</span>
+            </button>
+            {working && (
+              <button type="button" onClick={p.onStop} aria-label="Stop"
+                title={busy ? 'Stop following (the people stay marked, ready to follow again)' : 'Stop'}
+                className="shrink-0 h-11 px-3 flex items-center justify-center gap-1.5 rounded-xl text-[12.5px] font-bold transition-colors hover:bg-[rgba(239,68,68,0.2)]"
+                style={{ background: 'rgba(239,68,68,0.12)', color: '#f87171', boxShadow: 'inset 0 0 0 1px rgba(239,68,68,0.35)' }}>
+                <svg width="10" height="10" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="3" fill="currentColor" /></svg>
+                Stop
+              </button>
+            )}
+          </div>
         )}
-        {p.angles.status === 'scanning' && (
+        {p.angles.status === 'done' && p.angles.stale && !working && (
+          <p className="-mt-2 text-[11px]" style={{ color: 'var(--ed-accent-text)' }}>The clip got longer — Detect again to look in the new part too.</p>
+        )}
+        {scanning && (
           <div className="flex flex-col gap-3" role="status" aria-label={`Looking for people ${scanPct}%`}>
             <div className="flex items-center gap-2.5">
               <span className="flex-1 h-1 rounded-full overflow-hidden" style={{ background: 'rgb(var(--ed-fg) / 0.08)' }}>
@@ -205,11 +230,7 @@ export function SubjectsPanel(p: Props) {
           </div>
         )}
         {p.angles.status === 'failed' && (
-          <div className="flex items-center justify-between gap-2 rounded-xl px-3 py-2.5" style={{ background: 'rgb(var(--ed-fg) / 0.035)', boxShadow: 'inset 0 0 0 1px rgb(var(--ed-fg) / 0.06)' }}>
-            <span className="text-[11.5px]" style={{ color: muted }}>{p.angles.error ?? 'The people could not be found.'}</span>
-            <button type="button" onClick={p.onScanAngles} className="shrink-0 h-7 px-2.5 rounded-md text-[11.5px] font-semibold transition-colors hover:bg-[rgb(var(--ed-fg)/0.12)]"
-              style={{ background: 'rgb(var(--ed-fg) / 0.07)', color: 'var(--ed-text)' }}>Try again</button>
-          </div>
+          <p className="text-[11.5px]" style={{ color: muted }}>{p.angles.error ?? 'The people could not be found.'} Press Detect to try again.</p>
         )}
         {p.angles.status === 'done' && !listed && (
           <p className="text-[11.5px]" style={{ color: muted }}>No one was found in this clip.</p>

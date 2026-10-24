@@ -33,7 +33,8 @@ export interface AngleSubject {
 export interface AngleRow {
   people: number
   at: number
-  faces: Array<{ box: { x: number; y: number; w: number; h: number }; subject: { label: string; color: string } | null }>
+  /** `box.person`: who it is (as Angle's faces) — Auto format marks each person once */
+  faces: Array<{ box: { x: number; y: number; w: number; h: number; person?: number }; subject: { label: string; color: string } | null }>
   /** Where the clip shows it now: [start, end] ms of the timeline (removed parts left out) */
   shown: Array<[number, number]>
   totalMs: number

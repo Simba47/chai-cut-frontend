@@ -67,6 +67,7 @@ import { frameSlotSize } from '@/modules/editor/frames'
 import { getBoxPositionAtLerp, type BoxPosition } from '@/lib/interpolation'
 import { SubjectsPanel, type SubjectItem, type AnglesView } from '@/components/editor/SubjectsPanel'
 import { angleRows, angleAt, type Angle, type AngleRow } from '@/modules/editor/angles'
+import { autoLayoutFor } from '@/modules/editor/autoFormat'
 import type { SegmentLocal, CropBoxLocal, FrameLayout, FrameLane, FrameItem, FrameSettings, TransitionType } from '@chai-cut/shared'
 import { SPEED_MIN, SPEED_MAX } from '@chai-cut/shared'
 import { TransitionsPanel, TRANSITION_DEFAULT_MS, TRANSITION_KINDS, playedTransitionMs, type TransitionJoin } from '@/components/editor/TransitionsPanel'
@@ -2287,6 +2288,135 @@ export function EditorShell({
     setSubjectNotice(null)
     pause()
     setMarking(m => !m)
+  }
+
+  /**
+   * Auto format (user, 2026-10-24: "after Detect, the format should be made automatically"): every
+   * scene not formatted yet gets the format its people call for, views on them (autoLayoutFor); the
+   * people of the one-person scenes are marked (each once — who they are), each scene of two or more
+   * becomes a group with its format (so it has it wherever its shot comes back), and Follow starts.
+   * A scene formatted by hand — each of its stretches exactly one section, as a format picked in this
+   * tool leaves it — or with a group marked stays as it is. The formats are one undo step.
+   * Not detected yet (or the clip grew since): it detects first (runAutoFormat).
+   */
+  const [autoPhase, setAutoPhase] = useState<'idle' | 'detecting' | 'formatting'>('idle')
+  /** Stop was pressed: Auto format goes no further */
+  const stopAskedRef = useRef(false)
+  /** Auto format is waiting for its scan: when the scenes are in, it formats */
+  const autoAfterScanRef = useRef(false)
+  /** This Auto format laid formats (Stop says they stay) */
+  const formatsLaidRef = useRef(false)
+  function runAutoFormat() {
+    if (autoPhase !== 'idle') return
+    stopAskedRef.current = false
+    formatsLaidRef.current = false
+    if (anglesData?.status === 'done' && !anglesStale) { void autoFormat(); return }
+    setSubjectNotice(null)
+    setSubjectsError(null)
+    setAutoPhase('detecting')
+    autoAfterScanRef.current = true
+    void loadAngles(true)
+  }
+  // Auto format's scan is done: format (or it failed: Auto format ends there, the panel says why)
+  useEffect(() => {
+    if (!autoAfterScanRef.current || !anglesData || anglesData.status === 'queued' || anglesData.status === 'running') return
+    autoAfterScanRef.current = false
+    setAutoPhase('idle')
+    if (anglesData.status === 'done' && !stopAskedRef.current) void autoFormat()
+  }, [anglesData, angleItems]) // eslint-disable-line react-hooks/exhaustive-deps
+  async function autoFormat() {
+    if (autoPhase === 'formatting' || markingSubjectRef.current || anglesData?.status !== 'done') return
+    pause()
+    setMarking(false)
+    setSubjectNotice(null)
+    setSubjectsError(null)
+    setAutoPhase('formatting')
+    markingSubjectRef.current = true
+    try {
+      const ar = getVideoAR()
+      const sectionsNow = () => useEditorStore.getState().segments.filter(x => !isShot(x, mainVideoId))
+      const byHand = (row: AngleRow) => !!row.group || row.shown.every(([a, b]) => {
+        const over = sectionsNow().filter(x => x.end_ms > a + 50 && x.start_ms < b - 50)
+        return over.length === 1 && Math.abs(over[0].start_ms - a) <= 150 && Math.abs(over[0].end_ms - b) <= 150
+      })
+      const rows = angleItems.filter(r => r.people > 0)
+      // The formats, all at once (one undo step)
+      const laid = { vertical: 0, split: 0, trio: 0, halves: 0 }
+      const groups: Array<{ at: number; layout: string; boxes: Array<{ slot_index: number; x: number; y: number; w: number; h: number }> }> = []
+      for (const row of rows.filter(r => !byHand(r))) {
+        const plan = autoLayoutFor(row.faces.map(f => f.box), ar)
+        if (!plan) continue
+        if (!formatSpans(row.shown, plan.layout, plan.framing).length) continue
+        formatsLaidRef.current = true
+        if (plan.halves) laid.halves++
+        else if (plan.layout === 'vertical' || plan.layout === 'split' || plan.layout === 'trio') laid[plan.layout]++
+        if (row.people >= 2) groups.push({ at: row.at, layout: plan.layout, boxes: plan.framing.map((b, i) => ({ slot_index: i, x: b.x, y: b.y, w: b.w, h: b.h })) })
+      }
+      // Who to follow: the person of each one-person scene, once each (where their face is biggest)
+      const people = new Map<string, { at: number; x: number; y: number; size: number }>()
+      for (const row of rows) {
+        if (row.people !== 1) continue
+        const f = row.faces[0]
+        if (!f || f.subject) continue
+        const key = f.box.person !== undefined ? `p${f.box.person}` : `s${row.at}`
+        const size = f.box.w * f.box.h, best = people.get(key)
+        if (!best || size > best.size) people.set(key, { at: row.at, x: f.box.x + f.box.w / 2, y: f.box.y + f.box.h / 2, size })
+      }
+      // (a person already marked elsewhere is theirs: not marked again)
+      const markedPersons = new Set(rows.flatMap(r => r.faces.filter(f => f.subject && f.box.person !== undefined).map(f => `p${f.box.person}`)))
+      const added: SubjectRow[] = []
+      for (const [key, m] of people) {
+        if (stopAskedRef.current) break
+        if (markedPersons.has(key)) continue
+        try {
+          const { subject } = await subjectsCall(subjectsUrl, { method: 'POST', body: JSON.stringify({ mark_ms: m.at, x: m.x, y: m.y }) })
+          added.push({ ...subject, seen: null, stale: false })
+        } catch { /* already marked, or the list is full: the rest go on */ }
+      }
+      for (const g of groups) {
+        if (stopAskedRef.current) break
+        try {
+          const { subject } = await subjectsCall(subjectsUrl, { method: 'POST', body: JSON.stringify({ mark_ms: g.at, x: 0.5, y: 0.5, shot: { layout: g.layout, boxes: g.boxes } }) })
+          added.push({ ...subject, seen: null, stale: false })
+        } catch { /* as above */ }
+      }
+      if (added.length) setSubjects(list => [...list, ...added])
+      const scenes = laid.vertical + laid.split + laid.trio + laid.halves
+      const what = [
+        laid.vertical && `${laid.vertical} Vertical`, laid.split && `${laid.split} Split`,
+        laid.trio && `${laid.trio} Trio`, laid.halves && `${laid.halves} Split by halves`,
+      ].filter(Boolean).join(', ')
+      if (stopAskedRef.current) return
+      if (!scenes && !added.length) {
+        setSubjectNotice('Every scene already has its format — nothing to do.')
+        return
+      }
+      // Follow them (it runs in the background; the bar at the bottom shows it)
+      await trackSubjectsNow(true)
+      setSubjectNotice(`${scenes ? `${scenes} ${scenes === 1 ? 'scene' : 'scenes'} formatted (${what}). ` : ''}Following them now — the views keep on the people as they move. Undo takes the formats back.`)
+    } catch (e) {
+      setSubjectsError(e instanceof Error ? e.message : 'Auto format didn’t finish')
+    } finally {
+      markingSubjectRef.current = false
+      setAutoPhase('idle')
+    }
+  }
+  /**
+   * Stop (next to Detect and Auto format): whatever is running stops — Auto format at the step it is
+   * on, the scan (back to the scenes found before it), the following (the people stay marked, ready to
+   * follow again). Formats Auto format already laid stay; Undo takes them back.
+   */
+  async function stopSubjectsWork() {
+    stopAskedRef.current = true
+    autoAfterScanRef.current = false
+    setAutoPhase('idle')
+    try {
+      const data = await subjectsCall(`${subjectsUrl}/stop`, { method: 'POST' })
+      takeSubjects(data.subjects)
+      if (data.angles) setAnglesData(data.angles)
+      setSubjectsError(null)
+      setSubjectNotice(`Stopped.${formatsLaidRef.current ? ' The formats already laid stay — Undo takes them back.' : ''}`)
+    } catch (e) { setSubjectsError(e instanceof Error ? e.message : 'Could not stop') }
   }
 
   // The frame on screen: its own time in the video (see frameStartAt)
@@ -5498,6 +5628,7 @@ export function EditorShell({
                 onScanAngles={() => loadAngles(true)}
                 subjects={subjectItems} loading={subjectsLoading} error={subjectsError}
                 marking={marking} onToggleMarking={markFromView} onMarkShot={markShot} onMarkInClip={markInWholeClip} retrack={needsRetrack}
+                onAutoFormat={runAutoFormat} autoPhase={autoPhase} onStop={stopSubjectsWork}
                 onRemove={removeSubject} onRename={renameSubject}
                 videoUrl={videoUrl}
                 showOnVideo={showSubjects} onShowOnVideo={setShowSubjects} notice={subjectNotice}
