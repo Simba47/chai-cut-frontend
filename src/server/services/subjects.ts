@@ -119,30 +119,38 @@ export async function addSubject(userId: string, clipId: string, body: { mark_ms
     if (shot && cols !== 'shots') {
       throw Object.assign(new Error('Group subjects need the latest worker. They start working once the backend is updated.'), { status: 503 })
     }
-    const existing = cols === 'shots'
-      ? await sql<{ label: string; color: string; group: boolean }[]>`SELECT label, color, shot IS NOT NULL AS "group" FROM clip_subjects WHERE clip_id = ${clipId}`
-      : (await sql<{ label: string; color: string }[]>`SELECT label, color FROM clip_subjects WHERE clip_id = ${clipId}`).map(r => ({ ...r, group: false }))
-    const same = existing.filter(s => s.group === !!shot)
-    if (shot && same.length >= MAX_SHOTS) throw Object.assign(new Error(`Up to ${MAX_SHOTS} group subjects per clip`), { status: 400 })
-    if (!shot && same.length >= MAX_SUBJECTS) throw Object.assign(new Error(`Up to ${MAX_SUBJECTS} subjects per clip`), { status: 400 })
-    // The first free name (a letter for a person, "Group 1" for a shot) and colour
-    const labels = new Set(existing.map(s => s.label)), colors = new Set(existing.map(s => s.color))
-    const label = shot
-      ? `Group ${Array.from({ length: MAX_SHOTS + 1 }, (_, i) => i + 1).find(i => !labels.has(`Group ${i}`))}`
-      : [...'ABCDEFGHIJKLMNOPQRSTUVWXYZ'].find(l => !labels.has(l)) ?? `S${existing.length + 1}`
-    const color = COLORS.find(c => !colors.has(c)) ?? COLORS[existing.length % COLORS.length]
-    const [row] = shot
-      ? await sql<Subject[]>`
-          INSERT INTO clip_subjects (clip_id, label, color, mark_ms, mark_x, mark_y, shot)
-          VALUES (${clipId}, ${label}, ${color}, ${Math.round(t)}, ${x}, ${y}, ${sql.json(shot as never)})
-          RETURNING ${pick(cols)}
-        `
-      : await sql<Subject[]>`
-          INSERT INTO clip_subjects (clip_id, label, color, mark_ms, mark_x, mark_y)
-          VALUES (${clipId}, ${label}, ${color}, ${Math.round(t)}, ${x}, ${y})
-          RETURNING ${pick(cols)}
-        `
-    return row
+    // One mark at a time per clip: two taps saved at once both read "C" as the free name and made two
+    // C's (user, 2026-10-24) — the lock holds the second until the first is in
+    return await sql.begin(async tx => {
+      await tx`SELECT pg_advisory_xact_lock(hashtext(${`clip_subjects:${clipId}`}))`
+      const existing = cols === 'shots'
+        ? await tx<{ label: string; color: string; group: boolean; mark_ms: number; mark_x: number; mark_y: number; status: string }[]>`SELECT label, color, shot IS NOT NULL AS "group", mark_ms, mark_x, mark_y, status FROM clip_subjects WHERE clip_id = ${clipId}`
+        : (await tx<{ label: string; color: string; mark_ms: number; mark_x: number; mark_y: number; status: string }[]>`SELECT label, color, mark_ms, mark_x, mark_y, status FROM clip_subjects WHERE clip_id = ${clipId}`).map(r => ({ ...r, group: false }))
+      const same = existing.filter(s => s.group === !!shot)
+      // The same person marked again at the same moment and place (a second tap; a mark that failed can be made again)
+      const twice = !shot && same.find(s => s.status !== 'failed' && Math.abs(Number(s.mark_ms) - t) <= 300 && Math.abs(Number(s.mark_x) - x) <= 0.02 && Math.abs(Number(s.mark_y) - y) <= 0.02)
+      if (twice) throw Object.assign(new Error(`They are marked already, as ${twice.label}.`), { status: 409 })
+      if (shot && same.length >= MAX_SHOTS) throw Object.assign(new Error(`Up to ${MAX_SHOTS} group subjects per clip`), { status: 400 })
+      if (!shot && same.length >= MAX_SUBJECTS) throw Object.assign(new Error(`Up to ${MAX_SUBJECTS} subjects per clip`), { status: 400 })
+      // The first free name (a letter for a person, "Group 1" for a shot) and colour
+      const labels = new Set(existing.map(s => s.label)), colors = new Set(existing.map(s => s.color))
+      const label = shot
+        ? `Group ${Array.from({ length: MAX_SHOTS + 1 }, (_, i) => i + 1).find(i => !labels.has(`Group ${i}`))}`
+        : [...'ABCDEFGHIJKLMNOPQRSTUVWXYZ'].find(l => !labels.has(l)) ?? `S${existing.length + 1}`
+      const color = COLORS.find(c => !colors.has(c)) ?? COLORS[existing.length % COLORS.length]
+      const [row] = shot
+        ? await tx<Subject[]>`
+            INSERT INTO clip_subjects (clip_id, label, color, mark_ms, mark_x, mark_y, shot)
+            VALUES (${clipId}, ${label}, ${color}, ${Math.round(t)}, ${x}, ${y}, ${tx.json(shot as never)})
+            RETURNING ${pick(cols)}
+          `
+        : await tx<Subject[]>`
+            INSERT INTO clip_subjects (clip_id, label, color, mark_ms, mark_x, mark_y)
+            VALUES (${clipId}, ${label}, ${color}, ${Math.round(t)}, ${x}, ${y})
+            RETURNING ${pick(cols)}
+          `
+      return row
+    })
   } catch (e) { return notReady(e) }
 }
 
@@ -223,9 +231,10 @@ export async function trackSubjects(userId: string, clipId: string, body: { star
 export interface Angle {
   /** How many people it shows; 0: the other shots (no faces, or too short to be an angle) */
   people: number
-  /** A moment that shows it (source ms), and the faces there, left to right (fractions of the frame) */
+  /** A moment that shows it (source ms), and the faces there, left to right (fractions of the frame);
+   *  `person`: who it is, the same number in every angle (none: too small to tell, or an older list) */
   at: number
-  faces: Array<{ x: number; y: number; w: number; h: number }>
+  faces: Array<{ x: number; y: number; w: number; h: number; person?: number }>
   /** Wherever the clip shows it: [start, end] source ms */
   spans: Array<[number, number]>
 }
