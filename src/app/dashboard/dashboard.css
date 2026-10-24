@@ -185,6 +185,11 @@
 .dash-drop-text a { color: var(--accent); }
 .dash-progress { height: 6px; border-radius: 999px; background: var(--border-strong); overflow: hidden; margin-top: 10px; max-width: 360px; }
 .dash-progress > div { height: 100%; border-radius: 999px; background: var(--accent); transition: width 0.3s; }
+/* uploading: the bar with its percentage just after it */
+.dash-progress-row { display: flex; align-items: center; gap: 10px; margin-top: 10px; max-width: 410px; }
+.dash-progress-row .dash-progress { flex: 1; margin-top: 0; }
+.dash-progress-pct { flex-shrink: 0; min-width: 38px; font-size: 13px; font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; }
+.dash-drop-text p.dash-upload-hint { margin-top: 8px; font-size: 12px; }
 
 /* First-run: no videos yet — give the drop zone the stage, with a soft lime glow */
 .dash-drop.is-empty {
@@ -201,6 +206,8 @@
 
 /* Upload interrupted: the reason, and Cancel / Retry */
 .dash-drop-text p.dash-drop-error { color: var(--danger); }
+/* uploading: "280 MB of 924 MB · 6.2 MB/s · about 2 min left" */
+.dash-drop-text p.dash-upload-pace { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; margin-bottom: 2px; }
 .dash-drop-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
 .dash-upload-btn--plain { padding: 0 22px; height: 44px; }
 /* Quiet pill button (Cancel, Import) */

@@ -11,7 +11,7 @@ import { AccountMenu } from '@/components/ui/account-menu'
 import ThemeSwitch from '@/components/ui/cinematic-theme-switcher'
 import { BrandLoaderScreen } from '@/components/ui/brand-loader'
 import { FillButtonContent } from '@/components/ui/fill-button'
-import { useVideoUpload } from '@/modules/upload/useVideoUpload'
+import { useVideoUpload, formatBytes, uploadPace } from '@/modules/upload/useVideoUpload'
 
 type DashVideo = Video & { video_url?: string | null; clip_count?: number; error?: string | null }
 type SortKey = 'newest' | 'oldest' | 'name'
@@ -287,10 +287,21 @@ export default function DashboardPage() {
             ) : uploading ? (
               <>
                 <p>
-                  {upload.state.phase === 'finishing' ? `Finishing ${upload.state.fileName}…` : `Uploading ${upload.state.fileName}… ${upload.state.progress}%`}
+                  {upload.state.phase === 'finishing' ? `Finishing ${upload.state.fileName}…` : `Uploading ${upload.state.fileName}`}
                 </p>
-                <p>Keep this tab open. If the connection drops, the upload continues where it stopped.</p>
-                <div className="dash-progress"><div style={{ width: `${upload.state.progress}%` }} /></div>
+                {/* How much is up, the measured speed and the time left (once it has been measured) */}
+                {upload.state.phase === 'uploading' && upload.state.total > 0 && (
+                  <p className="dash-upload-pace">
+                    {formatBytes(upload.state.loaded)} of {formatBytes(upload.state.total)}
+                    {uploadPace(upload.state) ? ` · ${uploadPace(upload.state)}` : ' · measuring speed…'}
+                  </p>
+                )}
+                {/* the bar with its percentage beside it, then what to keep in mind */}
+                <div className="dash-progress-row">
+                  <div className="dash-progress"><div style={{ width: `${upload.state.progress}%` }} /></div>
+                  <span className="dash-progress-pct">{upload.state.progress}%</span>
+                </div>
+                <p className="dash-upload-hint">Keep this tab open. If the connection drops, the upload continues where it stopped.</p>
               </>
             ) : atLimit ? (
               <>
