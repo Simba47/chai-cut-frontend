@@ -2976,70 +2976,6 @@ export function EditorShell({
     pickPhoto(id)
     seekToMs(at)
   }
-  // ── An overlay's size: full screen (a layer over the whole frame: B-roll, a video on top) or a
-  //    window (picture in picture; a photo in its own box). One switch for both, as in CapCut ──
-  function overlayShape(t: CtlTarget | null): 'full' | 'window' | null {
-    if (!t) return null
-    if (t.kind === 'broll') return 'full'
-    if (t.kind !== 'photo') return null
-    const o = overlays.find(x => x.id === t.id)
-    if (!o) return null
-    if (o.type === 'video') return 'window'
-    return o.x <= 0.001 && o.y <= 0.001 && o.w >= 0.999 && o.h >= 0.999 ? 'full' : 'window'
-  }
-  function setOverlayShape(t: CtlTarget, shape: 'full' | 'window') {
-    if (blocked(t)) return
-    pause()
-    if (t.kind === 'broll' && shape === 'window') {
-      // A video on top becomes picture in picture: same time, same moment of its video, same sound
-      const sh = segments.find(x => x.id === t.id)
-      const box = sh?.crop_boxes[0]
-      if (!sh || !box?.source_video_id) return
-      const vid = box.source_video_id
-      const id = crypto.randomUUID()
-      const w = 0.45, h = Math.min(0.8, (w * (9 / 16)) / (16 / 9))
-      removeBrollShot(sh.id)
-      setOverlays(prev => [...prev, {
-        id, clip_id: clip.id, type: 'video' as const, storage_path: null, preview_url: videoLibraryRef.current[vid]?.url ?? videoUrls[vid],
-        source_video_id: vid, source_offset_ms: box.source_offset_ms ?? 0, x: 1 - w - 0.04, y: 0.05, w, h,
-        start_ms: sh.start_ms, end_ms: sh.end_ms, z_index: prev.length + 1, created_at: new Date().toISOString(),
-        muted: box.muted !== false, ...(box.hidden ? { hidden: true } : {}), ...(sh.track != null ? { track: sh.track } : {}),
-      }])
-      pickPhoto(id)
-      // (its own shape once the video's size is known, as a new picture in picture gets)
-      const url = videoLibraryRef.current[vid]?.url ?? videoUrls[vid]
-      if (url) {
-        const v = document.createElement('video')
-        v.preload = 'metadata'
-        v.onloadedmetadata = () => {
-          const ar = v.videoWidth / v.videoHeight
-          if (!(ar > 0) || !isFinite(ar)) return
-          const hh = Math.min(0.8, (w * (9 / 16)) / Math.max(0.2, ar))
-          setOverlays(prev => prev.map(o => (o.id === id && o.w === w && o.h === h ? { ...o, h: hh } : o)))
-        }
-        v.src = url
-      }
-      return
-    }
-    const o = overlays.find(x => x.id === t.id)
-    if (!o) return
-    if (o.type === 'video' && shape === 'full' && o.source_video_id) {
-      // Picture in picture becomes a video over the whole frame
-      const segId = placeBroll(o.source_video_id, o.start_ms, o.end_ms, undefined, o.track ?? freeTrack(o.start_ms, o.end_ms))
-      useEditorStore.setState(s => ({
-        segments: s.segments.map(x => (x.id !== segId ? x : {
-          ...x, crop_boxes: x.crop_boxes.map((b, i) => (i ? b : { ...b, source_offset_ms: o.source_offset_ms ?? 0, muted: !!o.muted, ...(o.hidden ? { hidden: true } : {}) })),
-        })),
-      }))
-      setOverlays(prev => prev.filter(x => x.id !== o.id))
-      pickShot(segId, false)
-      return
-    }
-    if (o.type === 'image') {
-      if (shape === 'full') updateOverlay(o.id, { x: 0, y: 0, w: 1, h: 1 })
-      else { updateOverlay(o.id, { ...PHOTO_FIRST_BOX }); fitPhotoBox(o.id, o.preview_url) }
-    }
-  }
   // (the playhead goes to a video just put in, once the player knows about it)
   const seekAfterInsertRef = useRef<number | null>(null)
   useEffect(() => {
@@ -6371,28 +6307,6 @@ export function EditorShell({
                     <CtlButtons size="md" state={ctlState(selTarget)} can={canCtl(selTarget)} onToggle={k => toggleCtl(selTarget, k)} what={selName} />
                   </>
                 )}
-                {/* An overlay (a video or photo on top): full screen, or a window moved and resized on the preview */}
-                {(() => {
-                  const shape = overlayShape(selTarget)
-                  if (!shape || !selTarget) return null
-                  return (
-                    <>
-                      <span className="ed-tl-sep" aria-hidden="true" />
-                      <div className="ov-shape" role="radiogroup" aria-label="Overlay size">
-                        {(['full', 'window'] as const).map(k => (
-                          <button key={k} type="button" role="radio" aria-checked={shape === k} data-on={shape === k || undefined}
-                            onClick={() => { if (shape !== k) setOverlayShape(selTarget, k) }}
-                            title={k === 'full' ? 'Cover the whole frame' : 'A small window: move and resize it on the preview'}>
-                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                              {k === 'full' ? <><rect x="3" y="4" width="18" height="16" rx="2" fill="currentColor" fillOpacity=".25" /></> : <><rect x="3" y="4" width="18" height="16" rx="2" /><rect x="11" y="10" width="7" height="6" rx="1" fill="currentColor" fillOpacity=".35" /></>}
-                            </svg>
-                            {k === 'full' ? 'Full screen' : 'Window'}
-                          </button>
-                        ))}
-                      </div>
-                    </>
-                  )
-                })()}
               </>
             )
           })()}

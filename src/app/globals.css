@@ -2160,11 +2160,6 @@ body {
 .tl2-menu button { padding: 7px 12px; }
 .tl2-menu-ico { flex-shrink: 0; width: 30px; height: 30px; display: grid; place-items: center; border-radius: 8px; background: rgb(var(--ed-fg) / 0.07); }
 .tl2-menu-hint { font-size: 11px; font-weight: 500; color: rgb(var(--ed-fg) / 0.5); white-space: nowrap; }
-/* an overlay's size on the toolbar: Full screen | Window */
-.ov-shape { display: flex; gap: 2px; padding: 2px; border-radius: 9px; background: rgb(var(--ed-fg) / 0.06); }
-.ov-shape button { display: flex; align-items: center; gap: 5px; height: 26px; padding: 0 9px; border-radius: 7px; font-size: 11.5px; font-weight: 600; color: rgb(var(--ed-fg) / 0.6); white-space: nowrap; transition: background .15s, color .15s; }
-.ov-shape button:hover { color: var(--ed-text); }
-.ov-shape button[data-on] { background: rgb(var(--ed-fg) / 0.14); color: #c8ff00; }
 /* The Text tool's animation kinds (TextOverlayPanel AnimationPicker): chips as the caption styles' */
 .tx-an-kind { display: inline-flex; align-items: center; gap: 5px; height: 28px; padding: 0 11px; border-radius: 999px; font-size: 11.5px; font-weight: 600;
   color: rgb(var(--ed-fg) / 0.7); background: rgb(var(--ed-fg) / 0.05); box-shadow: inset 0 0 0 1px rgb(var(--ed-fg) / 0.08); transition: background-color .15s, color .15s; }
