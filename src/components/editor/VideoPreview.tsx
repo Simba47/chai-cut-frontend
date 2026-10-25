@@ -1176,14 +1176,22 @@ function buildCaptionChunks(words: TranscriptWord[], maxWords = CAPTION_MAX_WORD
       if (nextStart - last.end_ms < 500) end = nextStart
       end = Math.min(end, nextStart)
     }
-    if (end > last.end_ms) chunks[i][chunks[i].length - 1] = { ...last, end_ms: end }
+    // (cut short too: a word whose end runs on past the next line — a leftover from an earlier
+    // reading — would hold its line on screen over the next ones)
+    if (end !== last.end_ms) chunks[i][chunks[i].length - 1] = { ...last, end_ms: Math.max(last.start_ms, end) }
   }
 
   return chunks
 }
 
+/** The line on screen at `tMs`: of the lines covering it, the one that started last */
 function findCaptionChunk(chunks: FlatWord[][], tMs: number) {
-  return chunks.find(c => tMs >= c[0].start_ms && tMs <= c[c.length - 1].end_ms) ?? null
+  let found: FlatWord[] | null = null
+  for (const c of chunks) {
+    if (c[0].start_ms > tMs) break
+    if (tMs <= c[c.length - 1].end_ms) found = c
+  }
+  return found
 }
 
 // ── Animated caption presets ──────────────────────────────────────────────────
