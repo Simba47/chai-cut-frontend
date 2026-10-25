@@ -8,6 +8,18 @@ export function addedVideoBox(seg: SegmentLocal, mainVideoId: string | null | un
   return !isFrameLayout(seg.layout) && box?.source_video_id && box.source_video_id !== mainVideoId ? box : null
 }
 
+/**
+ * A gap in the main row: a part of the main video deleted in the editor. It keeps its place and
+ * time and nothing after it moves; nothing of the main video is in it (black and silent: what's
+ * on top or below plays there). Saved as the part hidden and muted with its picture box hidden
+ * too — a main-video box is never hidden otherwise (the eye switches the part), so the switches
+ * can't bring it back. The timeline draws it empty; it closes when the part after it is dragged
+ * into it, or when it is deleted again (EditorShell askDeleteFormat / movePart).
+ */
+export function isGapPart(seg: SegmentLocal, mainVideoId: string | null | undefined): boolean {
+  return !!seg.hidden && !!seg.muted && !!seg.crop_boxes[0]?.hidden && !isFrameLayout(seg.layout) && !addedVideoBox(seg, mainVideoId)
+}
+
 /** Crop box id of the main video standing in for a hidden added video (default framing) */
 export const STAND_IN_SUFFIX = ':main'
 

@@ -17,7 +17,7 @@ import { backgroundPixels, frameBackgroundOf, type FrameBackground } from '@/lib
 import { isFrameLayout, frameSlotLabels, frameLanesFor, frameBandShown, frameOf, itemAt, captionBandAt, cornerGeometry, MIN_ROW_H, mainRect, boxRect, MIN_BOX as MIN_MAIN_BOX, frameAreas, frameBase, areaRadius, frameSlotSize, isTextLane, frameRows, validRowOrder, slotOffers, BLUR_SOURCE_SLOT, FRAME_TEMPLATES, barAt, barFlipped, MIN_MOVABLE_W } from '@/modules/editor/frames'
 import type { FrameMediaPool } from '@/modules/editor/frameMedia'
 import { useLiveTimeMs, liveTime, usePlayerStore, LIVE_REDRAW_MS } from '@/modules/player/store'
-import { addedVideoBox } from '@/modules/editor/visibility'
+import { addedVideoBox, isGapPart } from '@/modules/editor/visibility'
 import { trackPresentedFrame } from '@/modules/player/presentedFrame'
 import { drawWatermark } from './watermark'
 import type { ProgressBar } from '@/lib/shared/brandKit'
@@ -109,6 +109,8 @@ export function VideoPreview({
     raf = requestAnimationFrame(draw)
     return () => cancelAnimationFrame(raf)
   }, [showsOverlay])
+  // A gap left by a deleted part, with nothing on top: nothing to show or frame here (black)
+  const gapHere = !!activeSegment && !showsOverlay && isGapPart(activeSegment, mainVideoId)
   // The shape of what this view shows: the overlay video's while it shows, else the main video's
   const videoAR = showsOverlay ? overlayAR ?? mainAR : mainAR
 
@@ -135,7 +137,7 @@ export function VideoPreview({
           crossOrigin="anonymous"
           preload="auto"
           // (still playing under a video on top: it keeps the time for everything)
-          style={{ width: '100%', height: '100%', display: 'block', ...(showsOverlay ? { opacity: 0 } : {}) }}
+          style={{ width: '100%', height: '100%', display: 'block', ...(showsOverlay || gapHere ? { opacity: 0 } : {}) }}
           onLoadedMetadata={e => {
             const v = e.currentTarget
             if (v.videoWidth && v.videoHeight) setVideoAR(v.videoWidth / v.videoHeight)
@@ -147,7 +149,7 @@ export function VideoPreview({
 
         {/* Crop boxes — each is locked to the shape of its slot in the output, so what's
             inside the box is exactly what gets exported */}
-        {activeSegment && (() => {
+        {activeSegment && !gapHere && (() => {
           const layout = activeSegment.layout
           const aspect = normalizedSlotAspect(layout, videoAR ?? undefined, frameBandShown(activeSegment))
           const frame = isFrameLayout(layout)
@@ -196,7 +198,7 @@ export function VideoPreview({
         })()}
 
         {/* Subjects: each tracked person's face at this moment (on the main video only) */}
-        {subjectsAt && !showsOverlay && subjectsAt(currentTimeMs).map(s => (
+        {subjectsAt && !showsOverlay && !gapHere && subjectsAt(currentTimeMs).map(s => (
           <div key={s.id} aria-hidden="true" className="absolute pointer-events-none" style={{
             zIndex: 15, left: `${s.box.x * 100}%`, top: `${s.box.y * 100}%`, width: `${s.box.w * 100}%`, height: `${s.box.h * 100}%`,
             border: `2px solid ${s.color}`, borderRadius: 6, boxShadow: '0 0 0 1px rgba(0,0,0,0.45)',
@@ -1827,6 +1829,8 @@ interface OutputCanvasProps {
    */
   transitionCuts?: TransitionCut[]
   /** The Free plan's watermark: drawn last, over everything, where the export puts it (watermark.ts) */
+  /** No captions at this clip time (a gap left by a deleted part: its words aren't shown) */
+  captionsOffAt?: (clipMs: number) => boolean
   watermark?: boolean
   /** The clip's progress bar (a brand kit's) and the clip's length it fills over; null = none */
   progressBar?: (ProgressBar & { lengthMs: number }) | null
@@ -1867,7 +1871,7 @@ export function OutputCanvas({
   videoRef, currentTimeMs: timeProp, live = false, clipStartMs = 0, videoToTimeline, activeSegment: segmentProp, getPositionAt, segmentAt, hardCuts = false, sourceFor, slotSourceFor,
   overlays = [], activeOverlayId, onOverlayChange, onSelectOverlay, onDeleteOverlay,
   className, style, skipTransitionRef,
-  words, captionStyle, captionTextCase = 'title', showCaptions = false,
+  words, captionStyle, captionTextCase = 'title', showCaptions = false, captionsOffAt,
   textOverlays = [], activeTextOverlayId, onTextOverlayChange, onSelectTextOverlay, onDeleteTextOverlay, editTextOverlayId, onEditTextDone,
   onCaptionPositionChange, onCaptionSizeChange, transitionCuts, watermark, progressBar, timelineToVideo, clock, frameMedia, onFrameLaneClick, onFrameItemClick, activeFrameItemId, onFrameItemChange, onDeleteFrameItem, onFrameRowsChange, onFrameRowsSwap, onFrameBarChange, onFrameFaceChange, onFrameMainRectChange,
 }: OutputCanvasProps) {
@@ -1947,6 +1951,8 @@ export function OutputCanvas({
   const captionChunksRef  = useRef<FlatWord[][]>([])
   const liveLineRef       = useRef<FlatWord[] | null>(null)
   const prevWordsRef      = useRef<typeof words>(undefined)
+  const captionsOffAtRef = useRef(captionsOffAt)
+  captionsOffAtRef.current = captionsOffAt
   // Presets change how many words a line holds
   const wordsPerLine = captionWordsPerLine(captionStyle ?? {})
   const prevPerLineRef    = useRef(wordsPerLine)
@@ -2315,7 +2321,7 @@ export function OutputCanvas({
           }
 
           // Draw captions on top of the video frame
-          if (showCaptionsRef.current && captionChunksRef.current.length > 0) {
+          if (showCaptionsRef.current && captionChunksRef.current.length > 0 && !captionsOffAtRef.current?.(clipRelativeMs)) {
             const captionLookupMs = liveMs - (captionStyleRef.current?.timing_offset_ms ?? 0)
             capOut.current.rect = null
             drawCaptions(ctx, captionChunksRef.current, captionLookupMs, captionStyleRef.current ?? {}, captionCaseRef.current, captionBandAt(seg, clipRelativeMs), capOut.current)

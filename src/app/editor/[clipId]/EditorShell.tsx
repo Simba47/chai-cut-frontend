@@ -25,7 +25,7 @@ import { CaptionStyler } from '@/components/editor/CaptionStyler'
 import { TextOverlayPanel } from '@/components/editor/TextOverlayPanel'
 import { AudioMixerPanel } from '@/components/editor/AudioMixerPanel'
 import { MediaPickerModal } from '@/components/editor/MediaPickerModal'
-import { shownSegment, addedVideoBox, STAND_IN_SUFFIX } from '@/modules/editor/visibility'
+import { shownSegment, addedVideoBox, isGapPart, STAND_IN_SUFFIX } from '@/modules/editor/visibility'
 import { AccountMenu } from '@/components/ui/account-menu'
 import ThemeSwitch from '@/components/ui/cinematic-theme-switcher'
 import { BrandLogo } from '@/components/ui/brand-logo'
@@ -563,6 +563,8 @@ export function EditorShell({
   const belowRowsRef = useRef(belowRows)
   belowRowsRef.current = belowRows
   const playParts = useMemo(() => flattenShots(segments, mainVideoId, false, belowRows), [segments, mainVideoId, belowRows])
+  /** The gaps deleted parts left in the main row (timeline ms): no captions there */
+  const gapRanges = useMemo(() => segments.filter(s => isGapPart(s, mainVideoId)).map(s => [s.start_ms, s.end_ms] as const), [segments, mainVideoId])
 
   // ── Transitions: where one section of the main strip ends exactly where the next begins ──
   const transitionJoins = useMemo<TransitionJoin[]>(() => {
@@ -1031,7 +1033,9 @@ export function EditorShell({
   )
   // Selection follows the playhead: selecting a format seeks to it, so the crop boxes,
   // layout buttons, timeline highlight and preview always talk about the same format.
-  const activeSegment = playingSection ?? undefined
+  // (the empty space a deleted part left is no part: no layout, nothing to frame or change there)
+  const inGap = !!playingSection && isGapPart(playingSection, mainVideoId)
+  const activeSegment = (inGap ? null : playingSection) ?? undefined
   useEffect(() => {
     if (playingSection && playingSection.id !== activeSegmentId) setActiveSegmentId(playingSection.id)
   }, [playingSection, activeSegmentId, setActiveSegmentId])
@@ -3323,7 +3327,15 @@ export function EditorShell({
     if (!seg || isShot(seg, mainVideoId)) return
     if (seg.locked) { notifyLocked('This part is locked — unlock it to move it'); return }
     const ins = isInsert(seg, mainVideoId)
-    if (isTail(seg)) return
+    if (isTail(seg) || isGapPart(seg, mainVideoId)) return
+    // Dragged into the empty space a deleted part left next to it: the two sides join — the space
+    // closes (what comes after moves up), as in other editors
+    const gapNext = editor.segments.find(x => isGapPart(x, mainVideoId) && (Math.abs(x.end_ms - seg.start_ms) <= 1 || Math.abs(x.start_ms - seg.end_ms) <= 1))
+    if (gapNext) {
+      const before = gapNext.end_ms <= seg.start_ms + 1
+      const into = before ? toMs < seg.start_ms - 30 : toMs > seg.end_ms + 30
+      if (into) { removePart(gapNext.start_ms, gapNext.end_ms); return }
+    }
     const tailNow = tailOf()
     if (tailNow && toMs > tailNow.start_ms) toMs = tailNow.start_ms
     const a = seg.start_ms, len = seg.end_ms - seg.start_ms
@@ -3724,8 +3736,21 @@ export function EditorShell({
     if (ins && isInsert(ins, mainVideoId)) { removeInsert(segId); return }
     const seg = cropPositions.find(x => x.id === segId)
     if (!seg) return
-    // Deleting a section cuts that part of the video out — unless it is (nearly) the whole clip,
-    // or parts can't be cut out now: then only its look is reset
+    // Deleting a part of the main row takes it out and leaves an empty space where it was: the clip
+    // keeps its length and nothing after it moves (visibility.ts isGapPart: nothing of the main
+    // video is in it — no switch brings it back; Ctrl+Z does). A video on top or below plays there,
+    // silent; with nothing there it is black. Dragging the part after it in closes it (movePart),
+    // as does deleting it again (below). Frames: theirs is cut out as before.
+    const stored = segments.find(x => x.id === segId)
+    if (stored && !isGapPart(stored, mainVideoId) && !isFrameLayout(stored.layout)) {
+      if (stored.locked) { notifyLocked('This part is locked — unlock it first'); return }
+      pause()
+      updateSegment(segId, { hidden: true, muted: true, crop_boxes: stored.crop_boxes.map((b, i) => (i === 0 ? { ...b, hidden: true } : b)) })
+      setActiveSegmentId(null)
+      return
+    }
+    // Deleting a gap (or a frame) cuts that part of the video out — unless it is (nearly) the
+    // whole clip, or parts can't be cut out now: then only its look is reset
     const length = seg.end_ms - seg.start_ms
     if (!cutOk || clipLengthMs - length < MIN_CLIP_LEFT_MS) handleDeleteFormat(segId)
     else removePart(seg.start_ms, seg.end_ms)
@@ -4894,7 +4919,12 @@ export function EditorShell({
   }
   /** Which controls a thing has: the main video mutes and locks, an added video hides, mutes and locks, photos and text hide and lock, music mutes and locks */
   function canCtl(t: CtlTarget): CtlKey[] {
-    if (t.kind === 'section') return isFrameLayout(segments.find(x => x.id === t.id)?.layout ?? 'vertical') ? ['muted', 'locked'] : ['hidden', 'muted', 'locked']
+    if (t.kind === 'section') {
+      const s = segments.find(x => x.id === t.id)
+      // (an empty space left by a deleted part has nothing to show, sound or lock)
+      if (s && isGapPart(s, mainVideoId)) return []
+      return isFrameLayout(s?.layout ?? 'vertical') ? ['muted', 'locked'] : ['hidden', 'muted', 'locked']
+    }
     if (t.kind === 'broll') return ['hidden', 'muted', 'locked']
     if (t.kind === 'frameItem') {
       if (mainSlotOf(t.id) !== null) return ['hidden', 'muted', 'locked']
@@ -5837,6 +5867,8 @@ export function EditorShell({
           {/* Canvas toolbar: two docks, centred — Layout (a segmented switch with a sliding lime
               highlight) and Tools (Split · Motion · Delete). Styles: .ed-dock* in globals.css */}
           <div className="ed-canvas-bar shrink-0 flex items-center justify-center gap-3 px-4" style={{ minHeight: 60, borderBottom: '1px solid rgb(var(--ed-fg) / 0.06)' }}>
+            {/* (in the empty space a deleted part left: nothing here — no layout to pick) */}
+            {!inGap && <>
             <FormatSwitcher
               activeId={activeSegment ? formatLayoutOf(activeSegment.layout) : null}
               play={formatPlay}
@@ -5850,6 +5882,7 @@ export function EditorShell({
                 {frameTarget}
               </span>
             )}
+            </>}
 
             <div className="ed-dock" role="toolbar" aria-label="Tools">
               <button
@@ -6061,6 +6094,8 @@ export function EditorShell({
                   activeSegment={viewSegment} getPositionAt={viewGetPositionAt} sourceFor={brollSource} slotSourceFor={borrowed.slotSourceFor}
                   skipTransitionRef={skipCanvasTransitionRef} words={displayWords}
                   captionStyle={captionStyle} captionTextCase={captionTextCase} showCaptions={showCaptions}
+                  // (no captions in a gap left by a deleted part: its words went with it)
+                  captionsOffAt={t => gapRanges.some(([a, b]) => t >= a && t < b)}
                   // (a picture-in-picture video plays from its library link)
                   overlays={overlays.filter(o => !o.hidden).map(o => (o.type === 'video' && o.source_video_id ? { ...o, preview_url: videoUrls[o.source_video_id] ?? o.preview_url } : o))} activeOverlayId={activeOverlayId}
                   onOverlayChange={(id, u) => { if (!blocked({ kind: 'photo', id })) updateOverlay(id, u) }} onSelectOverlay={id => { const o = overlays.find(x => x.id === id); if (o?.type === 'image') pickPhoto(id); else { setActiveOverlayId(id); setLastPick('overlay') } }} onDeleteOverlay={askDeleteOverlay}

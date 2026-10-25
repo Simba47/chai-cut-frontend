@@ -7,6 +7,7 @@ import { Waveform } from '../Waveform'
 import { liveTime, usePlayerStore } from '@/modules/player/store'
 import { isFrameLayout, FRAME_TEMPLATES, frameOf, laneItems, itemBounds, MIN_ITEM_MS, isTextLane } from '@/modules/editor/frames'
 import { isShot } from '@/modules/editor/shots'
+import { isGapPart } from '@/modules/editor/visibility'
 import { TransitionGlyph, TRANSITION_DRAG_TYPE, TRANSITION_DEFAULT_MS, playedTransitionMs, transitionName, transitionSecs } from '../TransitionsPanel'
 import {
   VideoThumbnails, LAYOUT_COLORS, FRAME_ITEM_COLORS, frameItemColor, visibleLanes, thumbsFor, nearestThumb,
@@ -438,10 +439,10 @@ export function Timeline({
     const hit = blockEl ? mains[Number(blockEl.getAttribute('data-part')) - 1] ?? null : partAt(e.clientX, e.clientY)
     // On the main row: that part is picked. Anywhere else (the ruler, an empty spot): nothing is —
     // a click outside the selected part lets go of it (the playhead still moves there)
-    onPickSegment?.(hit && !isTailPart(hit) ? hit.id : null)
+    onPickSegment?.(hit && !isTailPart(hit) && !isGapPart(hit, mainVideoId) ? hit.id : null)
     // A block of the main row: dragged, it moves (a tap still moves the playhead). With only one
     // part there's nowhere to move it: dragging moves the playhead, as on the ruler
-    if (hit && onMovePart && !hit.locked && mains.filter(m => !isTailPart(m)).length > 1 && !isTailPart(hit)) { handlePartDown(e, hit); return }
+    if (hit && onMovePart && !hit.locked && mains.filter(m => !isTailPart(m)).length > 1 && !isTailPart(hit) && !isGapPart(hit, mainVideoId)) { handlePartDown(e, hit); return }
     const { setScrubbing } = usePlayerStore.getState()
     onScrubStart?.()
     setScrubbing(true)
@@ -1100,6 +1101,9 @@ export function Timeline({
     const url = isInsert ? videoUrls[box?.source_video_id ?? ''] : videoUrl
     const st = mainMuted && !isInsert ? { ...seg, muted: true } : seg
     const comingBack = g && g.edge === 'start' && g.to < g.from
+    // A deleted part: nothing at all in the row there (what's under the main video plays there).
+    // It isn't a part — it can't be picked; dragging the part after it in closes it
+    if (isGapPart(seg, mainVideoId)) return null
     return (
       <div key={seg.id} className="tl2-block absolute" data-part={i + 1} data-selected={sel || undefined}
         title={`${isInsert ? 'Inserted video' : 'Part'} ${i + 1} · ${name} · ${msToLabel(seg.start_ms)}–${msToLabel(seg.end_ms)} · tap to select it${onMovePart && mains.filter(m => !isTailPart(m)).length > 1 ? ', drag to move it' : ''}`}
@@ -1566,7 +1570,7 @@ export function Timeline({
                   </div>
                 )
               })()}
-              {!dragging && junctions.filter(j => !isTailPart(j.right)).map(({ left, right }) => {
+              {!dragging && junctions.filter(j => !isTailPart(j.right) && !isGapPart(j.left, mainVideoId) && !isGapPart(j.right, mainVideoId)).map(({ left, right }) => {
                 // A marker on every cut, as in CapCut: lime with its kind's picture when it has a
                 // transition, a grey "+" when not. Beside the selected part it moves off the cut, onto
                 // the other part, so the selected part's grip stays free to drag

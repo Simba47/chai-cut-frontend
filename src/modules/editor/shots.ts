@@ -1,7 +1,7 @@
 import type { CropBoxLocal, SegmentLocal } from '@chai-cut/shared'
 import { getBoxPositionAtLerp } from '@/lib/interpolation'
 import { isFrameLayout } from './frames'
-import { addedVideoBox } from './visibility'
+import { addedVideoBox, isGapPart } from './visibility'
 
 // ── Videos on top (B-roll) ────────────────────────────────────────────────────
 // In the editor a video put over the clip is a LAYER: it sits on its own lane over the sections,
@@ -109,10 +109,13 @@ export function flattenShots(segments: SegmentLocal[], mainVideoId: Main, forSav
     })
     parts.push({ seg: item, of: item })
   }
-  // Bottom up: the empty stretch after the main video, the videos under it, the main video, the videos over it
-  for (const sec of sections.filter(isTailSection)) lay(sec)
+  // Bottom up: the empty stretch after the main video and the gaps in it (parts deleted in the
+  // editor: what's under the main video shows through them), the videos under it, the main video,
+  // the videos over it
+  const gap = (s: SegmentLocal) => isGapPart(s, mainVideoId)
+  for (const sec of sections.filter(x => isTailSection(x) || gap(x))) lay(sec)
   for (const shot of under) lay(shot)
-  for (const sec of sections.filter(x => !isTailSection(x))) lay(sec)
+  for (const sec of sections.filter(x => !isTailSection(x) && !gap(x))) lay(sec)
   for (const shot of over) lay(shot)
 
   const groups = new Map<string, typeof parts>()
@@ -124,8 +127,8 @@ export function flattenShots(segments: SegmentLocal[], mainVideoId: Main, forSav
       let seg = p.seg
       if (isShot(p.of, mainVideoId)) {
         const muted = shareUnder(sections, seg.start_ms, seg.end_ms, s => !!s.muted) > 0.5
-        // (not the empty stretch after the main video: what runs on there isn't hidden by it)
-        const hidden = shareUnder(sections, seg.start_ms, seg.end_ms, s => !!s.hidden && !isFrameLayout(s.layout) && !isTailSection(s)) > 0.5
+        // (not the empty stretch after the main video, nor a gap: what runs on there isn't hidden by it)
+        const hidden = shareUnder(sections, seg.start_ms, seg.end_ms, s => !!s.hidden && !isFrameLayout(s.layout) && !isTailSection(s) && !gap(s)) > 0.5
         seg = { ...seg, muted, hidden }
       }
       if (forSave) {
