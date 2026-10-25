@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, type RefObject } from 'react'
 import type { CropBoxLocal, SegmentLocal } from '@chai-cut/shared'
 import { isFrameLayout } from './frames'
+import { isMainShot } from './visibility'
 
 /**
  * A split/trio slot showing the clip's own video at another moment (a "borrowed" reaction made
  * by Make my clips): its crop box names the clip's own video, from source_offset_ms on.
  */
 export function isBorrowedSlot(seg: SegmentLocal | null | undefined, box: CropBoxLocal | undefined, mainVideoId: string | null | undefined) {
-  return !!seg && !!box && !!mainVideoId && !isFrameLayout(seg.layout) && box.source_video_id === mainVideoId
+  return !!seg && !!box && !!mainVideoId && !isFrameLayout(seg.layout) && box.source_video_id === mainVideoId && !isMainShot(seg, mainVideoId)
 }
 
 /**

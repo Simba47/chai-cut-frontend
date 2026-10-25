@@ -100,14 +100,16 @@ export interface TimelineProps {
   onTrackDrop?: (ref: TrackRef, target: number | 'new' | 'new-below') => void
   /** How many of the rows of videos, photos and text sit under the main video (tracks 0 … n-1); the rest are above it */
   belowRows?: number
-  /** A video put in the main row dragged off it, onto a row (or a new one above / under the main video), starting at `atMs` */
+  /** A block of the main row (a video put in, a part of the main video) dragged off it, onto a row (or a new one above / under the main video), starting at `atMs` */
   onPartToTrack?: (segId: string, target: number | 'new' | 'new-below', atMs: number) => void
-  /** A video on a row dragged onto the main row: it goes in there, at `atMs` */
-  onShotToMain?: (segId: string, atMs: number) => void
+  /** A video on a row dragged onto the main row: it goes in there, at `atMs` (a part of the main video on a row: starting at `startMs`, where it was let go) */
+  onShotToMain?: (segId: string, atMs: number, startMs: number) => void
   /** How long the timeline can grow for a video on top dragged past its end (ms; the editor makes the room) */
   maxMs?: number
   /** A block of the main row (a part, or a video put in) dragged along it, let go at `toMs` (where it goes in, timeline ms) */
   onMovePart?: (segId: string, toMs: number) => void
+  /** A part of the main row let go over empty room, its start at `startMs`: it goes exactly there (nothing else moves) */
+  onPlacePart?: (segId: string, startMs: number) => void
   activePhotoId?: string | null
   onSelectPhoto?: (id: string) => void
   onPhotoTimeChange?: (id: string, updates: { start_ms: number; end_ms: number }) => void
@@ -192,7 +194,7 @@ export function Timeline({
   onBrollChange, videoUrls = {}, mediaLengths = {}, zoom: zoomProp, onZoomChange,
   onAddKind, cutJoins = [], isStock, onDropFiles, onDropStock, onDropMedia,
   mainMuted = false, onToggleMainMute, transitions = [], onOpenTransition, onRemoveTransition, onApplyTransitionToAll, onDropTransition,
-  onTrackDrop, belowRows = 0, onMovePart, onPartToTrack, onShotToMain, maxMs, pickedSegmentId = null, selectedId, onPickSegment,
+  onTrackDrop, belowRows = 0, onMovePart, onPlacePart, onPartToTrack, onShotToMain, maxMs, pickedSegmentId = null, selectedId, onPickSegment,
 }: TimelineProps) {
   const viewRef = useRef<HTMLDivElement>(null)        // what shows (the playhead sits in its middle)
   const contentRef = useRef<HTMLDivElement>(null)     // the layer that slides under it
@@ -244,7 +246,7 @@ export function Timeline({
   /** A bar being trimmed by a grip: its new length, over the edge being moved */
   const [barTip, setBarTip] = useState<{ id: string; at: number; text: string } | null>(null)
   /** A video put in the main row, carried along it: where it will go in (`to`), how far it's carried */
-  const [insertDrag, setInsertDrag] = useState<{ id: string; to: number; dx: number; dy: number; off?: boolean } | null>(null)
+  const [insertDrag, setInsertDrag] = useState<{ id: string; to: number; dx: number; dy: number; off?: boolean; place?: number } | null>(null)
   /** A video on a row carried over the main row: where it would go in (it goes in there when let go) */
   const [mainDropAt, setMainDropAt] = useState<number | null>(null)
   const [addMenu, setAddMenu] = useState<DOMRect | null>(null)
@@ -442,7 +444,7 @@ export function Timeline({
     onPickSegment?.(hit && !isTailPart(hit) && !isGapPart(hit, mainVideoId) ? hit.id : null)
     // A block of the main row: dragged, it moves (a tap still moves the playhead). With only one
     // part there's nowhere to move it: dragging moves the playhead, as on the ruler
-    if (hit && onMovePart && !hit.locked && mains.filter(m => !isTailPart(m)).length > 1 && !isTailPart(hit) && !isGapPart(hit, mainVideoId)) { handlePartDown(e, hit); return }
+    if (hit && onMovePart && !hit.locked && (mains.filter(m => !isTailPart(m)).length > 1 || !!onPartToTrack) && !isTailPart(hit) && !isGapPart(hit, mainVideoId)) { handlePartDown(e, hit); return }
     const { setScrubbing } = usePlayerStore.getState()
     onScrubStart?.()
     setScrubbing(true)
@@ -472,9 +474,18 @@ export function Timeline({
     // (the joins of the main video's own row: never past its end, into the room after it)
     const own = mains.filter(m => !isTailPart(m))
     const joins = [0, ...own.flatMap(m => [m.start_ms, m.end_ms])]
-    // (a video put in can leave the main row for a row above or below it; the main video's own parts can't)
-    const canLeave = !!onPartToTrack && isInsertPart(seg)
+    // (any block can leave the main row for a row above or below it, as in Resolve: a part of the
+    // main video shows the same stretch of it there)
+    const canLeave = !!onPartToTrack
     let moved = false, to = seg.start_ms, off = false, lastX = sx
+    // Free placement (a part of the main video itself): over empty room — the space deleted parts
+    // left, its own place, past the end of the row — it can go at any time, its edges clicking onto
+    // the parts' edges nearby (Alt: no clicking)
+    const len = seg.end_ms - seg.start_ms
+    const canPlace = !!onPlacePart && !isInsertPart(seg)
+    const solid = own.filter(m => m.id !== seg.id && !isGapPart(m, mainVideoId))
+    const edges = [0, ...solid.flatMap(m => [m.start_ms, m.end_ms])]
+    let place: number | null = null
     setDragging(`insert-${seg.id}`)
     track(ev => {
       if (!moved && Math.abs(ev.clientX - sx) < 4 && Math.abs(ev.clientY - sy) < 4) return
@@ -488,7 +499,19 @@ export function Timeline({
       let best = raw, bestD = ev.altKey ? 0 : 14 * msPerPx()
       for (const j of joins) { const d = Math.abs(j - raw); if (d < bestD) { best = j; bestD = d } }
       to = Math.round(best)
-      setInsertDrag({ id: seg.id, to, dx: ev.clientX - sx, dy: ev.clientY - sy, off })
+      place = null
+      if (canPlace && !off) {
+        // Where its start would be, clicked onto a nearby edge with either of its ends
+        let start = Math.max(0, raw - grab), snapD = ev.altKey ? 0 : 10 * msPerPx(), snapped = start
+        for (const j of edges) {
+          if (Math.abs(j - start) < snapD) { snapped = j; snapD = Math.abs(j - start) }
+          if (Math.abs(j - (start + len)) < snapD && j - len >= 0) { snapped = j - len; snapD = Math.abs(j - (start + len)) }
+        }
+        start = Math.round(snapped)
+        // Only empty room there (no other part of the main video in the way)
+        if (!solid.some(m => m.start_ms < start + len - 1 && m.end_ms > start + 1)) place = start
+      }
+      setInsertDrag({ id: seg.id, to, dx: ev.clientX - sx, dy: ev.clientY - sy, off, ...(place != null ? { place } : {}) })
     }, () => {
       setInsertDrag(null)
       if (!moved) { scrubTo(msFromClientX(sx)); return }
@@ -501,6 +524,8 @@ export function Timeline({
         return
       }
       if (off) return
+      // Over empty room: exactly there
+      if (place != null) { if (Math.abs(place - seg.start_ms) >= 30) onPlacePart?.(seg.id, place); return }
       // (let go over itself: it stays)
       if (to > seg.start_ms && to < seg.end_ms) return
       onMovePart?.(seg.id, to)
@@ -776,7 +801,7 @@ export function Timeline({
       window.removeEventListener('pointerup', up)
       setDragging(null); setBrollGhost(null); setSnapLine(null); setLift(null); setMainDropAt(null)
       if (!moved) return
-      if (overMain != null) { trackHoverRef.current = null; setTrackHover(null); onShotToMain?.(seg.id, overMain); return }
+      if (overMain != null) { trackHoverRef.current = null; setTrackHover(null); onShotToMain?.(seg.id, overMain, Math.round(next.start)); return }
       onBrollChange?.(seg.id, Math.round(next.start), Math.round(next.end), true)
       endTrackDrag({ kind: 'shot', id: seg.id }, seg.track ?? 0)
     }

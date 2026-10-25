@@ -2,10 +2,23 @@ import type { SegmentLocal, CropBoxLocal } from '@chai-cut/shared'
 import { isFrameLayout } from './frames'
 import { defaultCropForSlot } from './utils'
 
-/** The video added over the main video in a section (B-roll / an inserted video), if any: its crop box */
+/**
+ * A part of the main video moved off the main row onto a row above or below it (as in Resolve):
+ * a video on a row like any other, showing the main video itself from its own moment (its box
+ * names the main video, source_offset_ms in the video's own time). One picture, never a frame,
+ * a split or a trio (a borrowed reaction slot is one of those: brollSources.ts). shots.ts makes it
+ * a part of the main video again where it plays, so the main player plays it, sound and all.
+ */
+export function isMainShot(seg: SegmentLocal, mainVideoId: string | null | undefined): boolean {
+  const box = seg.crop_boxes[0]
+  return !!mainVideoId && box?.source_video_id === mainVideoId && seg.crop_boxes.length === 1 && seg.video_offset_ms == null
+    && !isFrameLayout(seg.layout) && seg.layout !== 'split' && seg.layout !== 'trio'
+}
+
+/** The video added over the main video in a section (B-roll / an inserted video / a part of the main video on a row), if any: its crop box */
 export function addedVideoBox(seg: SegmentLocal, mainVideoId: string | null | undefined): CropBoxLocal | null {
   const box = seg.crop_boxes[0]
-  return !isFrameLayout(seg.layout) && box?.source_video_id && box.source_video_id !== mainVideoId ? box : null
+  return !isFrameLayout(seg.layout) && box?.source_video_id && (box.source_video_id !== mainVideoId || isMainShot(seg, mainVideoId)) ? box : null
 }
 
 /**

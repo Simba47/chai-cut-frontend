@@ -25,7 +25,9 @@ import { CaptionStyler } from '@/components/editor/CaptionStyler'
 import { TextOverlayPanel } from '@/components/editor/TextOverlayPanel'
 import { AudioMixerPanel } from '@/components/editor/AudioMixerPanel'
 import { MediaPickerModal } from '@/components/editor/MediaPickerModal'
-import { shownSegment, addedVideoBox, isGapPart, STAND_IN_SUFFIX } from '@/modules/editor/visibility'
+import { shownSegment, addedVideoBox, isGapPart, isMainShot, STAND_IN_SUFFIX } from '@/modules/editor/visibility'
+import { placeInRow, liftToRow, lowerToRow, liftBlock, fillUncovered } from '@/modules/editor/place'
+import { splitTargets } from '@/modules/editor/split'
 import { AccountMenu } from '@/components/ui/account-menu'
 import ThemeSwitch from '@/components/ui/cinematic-theme-switcher'
 import { BrandLogo } from '@/components/ui/brand-logo'
@@ -56,7 +58,7 @@ import { useVideoSync } from '@/modules/player/useSync'
 import { useCaptionStore } from '@/modules/captions/store'
 import { useMediaStore } from '@/modules/media/store'
 import { rowsToLocal, normalizeCoverage, uncoveredRanges, defaultCropForSlot, msToLabel } from '@/modules/editor/utils'
-import { isShot, flattenShots, toSaved, restoreLayers } from '@/modules/editor/shots'
+import { isShot, flattenShots, toSaved, restoreLayers, asMainPart } from '@/modules/editor/shots'
 import { applyGroupShots, applyFormatSpans } from '@/modules/editor/groupShots'
 import { LAYOUT_SLOT_COUNT } from '@chai-cut/shared'
 import { fitsOn, freeTrackIn, settleTracks, savedLanes, type TrackItem, type TrackRef } from '@/modules/editor/tracks'
@@ -214,9 +216,29 @@ export function EditorShell({
   // The clip as pieces (inserts.ts): each part from its own moment of the main video — so a part can
   // skip video (cut from its edge) and an inserted video holds it. Used once the parts don't simply
   // follow the video (a video put in between, or a part cut that way); otherwise the plain clip.
+  /**
+   * How many rows of videos, photos and text sit under the main video on the timeline (tracks
+   * 0 … n-1; the rest are above it). Saved with the clip (layers.below). Stacked as shown: the rows
+   * above cover the main video, the main video covers the rows under it (flattenShots).
+   */
+  const [belowRows, setBelowRows] = useState(() => {
+    const n = ((savedClip as unknown as { layers?: { below?: unknown } | null }).layers)?.below
+    return typeof n === 'number' && Number.isInteger(n) && n > 0 ? n : 0
+  })
+  const belowRowsRef = useRef(belowRows)
+  belowRowsRef.current = belowRows
+  /**
+   * The main row as it plays: a part of the main video moved onto a row plays there as a part of
+   * the main video — the main row with those laid over it, as the rows stack (flattenShots)
+   */
+  const mainRowOf = (segs: SegmentLocal[], below = belowRowsRef.current) => {
+    const id = ownVideoIdForInserts
+    return segs.some(s => isMainShot(s, id)) ? flattenShots(segs.filter(s => !isShot(s, id) || isMainShot(s, id)), id, false, below, rawClip.start_ms) : segs
+  }
+  // (the space a part left holds the video: its moment is seen where the part is now)
   const allPieces = useMemo(
-    () => (trimmed ? [] : piecesOf(storeSegments, ownVideoIdForInserts, s => isShot(s, ownVideoIdForInserts))),
-    [trimmed, storeSegments, ownVideoIdForInserts],
+    () => (trimmed ? [] : piecesOf(mainRowOf(storeSegments, belowRows), ownVideoIdForInserts, s => isShot(s, ownVideoIdForInserts), true)),
+    [trimmed, storeSegments, ownVideoIdForInserts, belowRows, rawClip.start_ms], // eslint-disable-line react-hooks/exhaustive-deps
   )
   const piecesOn = hasInserts || allPieces.some(p => p.from != null && Math.abs(p.from - p.at) > 1) || allPieces.some(p => (p.speed ?? 1) !== 1)
   const pieces = useMemo(() => (piecesOn ? allPieces : []), [piecesOn, allPieces])
@@ -541,7 +563,8 @@ export function EditorShell({
   }
   useEffect(() => { loadVideoLibrary() }, [])
   const videoTitles = useMemo(() => Object.fromEntries(Object.entries(videoLibrary).map(([id, v]) => [id, v.title])), [videoLibrary])
-  const videoUrls = useMemo(() => Object.fromEntries(Object.entries(videoLibrary).map(([id, v]) => [id, v.url])), [videoLibrary])
+  // (the main video too: a part of it moved onto a row shows its pictures there)
+  const videoUrls = useMemo(() => ({ [ownVideoIdForInserts]: videoUrl, ...Object.fromEntries(Object.entries(videoLibrary).map(([id, v]) => [id, v.url])) }), [videoLibrary, ownVideoIdForInserts, videoUrl])
   /** Each video's full length, where known: a video on top can't be trimmed past its own ends */
   const videoLengths = useMemo(() => Object.fromEntries(Object.entries(videoLibrary).flatMap(([id, v]) => (v.duration_ms ? [[id, v.duration_ms]] : []))), [videoLibrary])
   // B-roll shots are drawn from their own videos in the preview (muted; the speaker carries on)
@@ -551,20 +574,18 @@ export function EditorShell({
   // section cut where a video plays over it — what the preview draws and what is saved.
   const sections = useMemo(() => segments.filter(s => !isShot(s, mainVideoId)), [segments, mainVideoId])
   const shots = useMemo(() => segments.filter(s => isShot(s, mainVideoId)).sort((a, b) => a.start_ms - b.start_ms), [segments, mainVideoId])
-  /**
-   * How many rows of videos, photos and text sit under the main video on the timeline (tracks
-   * 0 … n-1; the rest are above it). Saved with the clip (layers.below). Stacked as shown: the rows
-   * above cover the main video, the main video covers the rows under it (flattenShots).
-   */
-  const [belowRows, setBelowRows] = useState(() => {
-    const n = ((savedClip as unknown as { layers?: { below?: unknown } | null }).layers)?.below
-    return typeof n === 'number' && Number.isInteger(n) && n > 0 ? n : 0
-  })
-  const belowRowsRef = useRef(belowRows)
-  belowRowsRef.current = belowRows
-  const playParts = useMemo(() => flattenShots(segments, mainVideoId, false, belowRows), [segments, mainVideoId, belowRows])
+  const playParts = useMemo(() => flattenShots(segments, mainVideoId, false, belowRows, rawClip.start_ms), [segments, mainVideoId, belowRows, rawClip.start_ms])
   /** The gaps deleted parts left in the main row (timeline ms): no captions there */
-  const gapRanges = useMemo(() => segments.filter(s => isGapPart(s, mainVideoId)).map(s => [s.start_ms, s.end_ms] as const), [segments, mainVideoId])
+  // (but where a part of the main video on a row plays there, its words are heard: the room the
+  // main row leaves up to such a part is no gap of its own, flattenShots, and has no words)
+  const gapRanges = useMemo(() => {
+    const over = segments.filter(s => isMainShot(s, mainVideoId) && !s.crop_boxes[0]?.hidden)
+    return segments.filter(s => isGapPart(s, mainVideoId)).flatMap(s => {
+      let left: (readonly [number, number])[] = [[s.start_ms, s.end_ms]]
+      for (const o of over) left = left.flatMap(([a, b]) => (o.end_ms <= a || o.start_ms >= b ? [[a, b] as const] : [[a, o.start_ms] as const, [o.end_ms, b] as const].filter(([x, y]) => y > x)))
+      return left
+    })
+  }, [segments, mainVideoId])
 
   // ── Transitions: where one section of the main strip ends exactly where the next begins ──
   const transitionJoins = useMemo<TransitionJoin[]>(() => {
@@ -662,13 +683,15 @@ export function EditorShell({
   }
   // (with videos put in between, the clip's clock runs the added videos: the main video waits during one)
   const brollSource = useBrollSources(videoRef, clip.start_ms, id => videoLibraryRef.current[id]?.url, mainVideoId, videoToTimeline,
-    hasInserts ? () => ({ ms: liveTime.get(), playing: usePlayerStore.getState().playing }) : undefined)
+    hasInserts || pieces.some(p => p.hold != null) ? () => ({ ms: liveTime.get(), playing: usePlayerStore.getState().playing }) : undefined)
   heldPlayedRef.current = id => {
     const seg = useEditorStore.getState().segments.find(s => s.id === id)
     // The empty stretch after the main video has no video of its own to follow (its box only names
     // one of the videos running on there — following that one ran the clock away): real time runs it
-    if (seg && isInsert(seg, mainVideoId) && seg.hidden && seg.crop_boxes[0]?.hidden) return undefined
-    return seg ? brollSource.playedMs(seg) : null
+    // (nor has the empty space a part left: piecesOf gapsHold)
+    if (seg && ((isInsert(seg, mainVideoId) && seg.hidden && seg.crop_boxes[0]?.hidden) || isGapPart(seg, mainVideoId))) return undefined
+    // (no part of the editor's own: the room up to a part of the main video on a row, flattenShots)
+    return seg ? brollSource.playedMs(seg) : undefined
   }
   // Borrowed reaction slots (Make my clips): the clip's own video from another moment, per slot
   const borrowed = useBorrowedSlots(videoRef, clip.start_ms, mainVideoId, videoUrl, videoToTimeline)
@@ -1303,7 +1326,7 @@ export function EditorShell({
     const saved = toSaved(segments.map(s => ({
       ...s,
       crop_boxes: s.crop_boxes.map(b => ({ ...b, keyframes: (keyframes[b.id] ?? b.keyframes ?? []).map(({ t_ms, x, y, w, h }) => ({ t_ms, x, y, w, h })) })),
-    })), mainVideoId, belowRowsRef.current)
+    })), mainVideoId, belowRowsRef.current, range[0])
     try {
       const res = await fetch(`/api/clips/${clip.id}/save`, {
         method: 'POST',
@@ -1636,15 +1659,20 @@ export function EditorShell({
   // Split: cut the format under the playhead in two. Both halves keep its layout and views, so a
   // different layout can then be picked for one of them.
   // A video on top that is picked, with the playhead inside it, is the one cut; else the section here
+  // (as in Resolve, only clips are cut: where the main row is empty — the room after the main video
+  // for what's on top to run on, or the space a deleted part left — nothing of it is cut, which made
+  // a piece of that hidden room show up as a "Video" part; the videos on top or below under the
+  // playhead are cut there instead)
   const pickedShot = pickedSegId ? shots.find(x => x.id === pickedSegId) : undefined
-  const splitSeg = pickedShot && currentTimeMs > pickedShot.start_ms && currentTimeMs < pickedShot.end_ms ? pickedShot : activeSegment
-  const canSplitHere = !!splitSeg && currentTimeMs > splitSeg.start_ms + 100 && currentTimeMs < splitSeg.end_ms - 100
+  const splitTo = splitTargets(currentTimeMs, playingSection, shots, pickedShot, mainVideoId)
+  const canSplitHere = splitTo.ids.length > 0
   function splitHere() {
-    const seg = splitSeg
-    if (!seg || !canSplitHere || sectionBlocked(seg.id)) return
+    if (!canSplitHere) return
+    const ids = splitTo.main ? splitTo.ids.filter(id => !sectionBlocked(id)) : splitTo.ids.filter(id => !blocked({ kind: 'broll', id }))
+    if (!ids.length) return
     pause()
     skipCanvasTransitionRef.current = true
-    splitAtMs(seg.id, currentTimeMs, getPositionAt)
+    for (const id of ids) splitAtMs(id, currentTimeMs, getPositionAt)
   }
 
   const musicName = (t: { storage_path: string }) => {
@@ -3102,9 +3130,11 @@ export function EditorShell({
     // (removed parts the older way: first the clip becomes pieces, then this runs again)
     if (trimmed) { trimsToPieces(); return }
     // Its box names one of the videos running on there (a video put in shows another video; hidden, it shows none)
-    const vid = shotsOn.find(x => x.end_ms > mainEnd)?.crop_boxes[0]?.source_video_id
+    // (not a part of the main video on a row: past the main row, the room up to it is its own — flattenShots)
+    const others = shotsOn.filter(x => !isMainShot(x, mainVideoId))
+    const vid = others.find(x => x.end_ms > mainEnd)?.crop_boxes[0]?.source_video_id
       ?? m.overlays.find(o => o.end_ms > mainEnd && o.source_video_id)?.source_video_id
-      ?? shotsOn[0]?.crop_boxes[0]?.source_video_id
+      ?? others[0]?.crop_boxes[0]?.source_video_id
     if (!vid) return
     const id = crypto.randomUUID(), boxId = crypto.randomUUID()
     const view = { x: 0, y: 0, w: 1, h: 1 }
@@ -3161,7 +3191,7 @@ export function EditorShell({
    * the clip's own end comes in to where its last part now ends (same undo step). Undefined: no change.
    */
   function rangeAfterPieces(segs: SegmentLocal[]): [number, number] | undefined {
-    const all = piecesOf(segs, mainVideoId, s => isShot(s, mainVideoId))
+    const all = piecesOf(mainRowOf(segs), mainVideoId, s => isShot(s, mainVideoId))
     if (!all.length || insertsOf(segs, mainVideoId).length || all.some(p => (p.from != null && Math.abs(p.from - p.at) > 1) || (p.speed ?? 1) !== 1)) return undefined
     const last = all[all.length - 1]
     const end = rawClip.start_ms + (last.from ?? last.at) + pieceVideoMs(last)
@@ -3314,7 +3344,7 @@ export function EditorShell({
    * becomes pieces). The clip keeps its length; photos, text, music and videos on top stay where they
    * are (as in Resolve); the main video's own sound goes with its parts. One step.
    */
-  const pendingMoveRef = useRef<{ segId: string; toMs: number } | null>(null)
+  const pendingMoveRef = useRef<{ segId: string; toMs: number; place?: boolean; row?: number | 'new' | 'new-below' } | null>(null)
   function movePart(segId: string, toMs: number) {
     if (trimmed) {
       // Parts cut out the older way: first the clip becomes pieces, then the move (once redrawn)
@@ -3391,19 +3421,53 @@ export function EditorShell({
     const p = pendingMoveRef.current
     if (!p || trimmed) return
     pendingMoveRef.current = null
-    movePart(p.segId, p.toMs)
+    if (p.row != null) partToTrack(p.segId, p.row, p.toMs)
+    else if (p.place) placePart(p.segId, p.toMs)
+    else movePart(p.segId, p.toMs)
   }, [trimmed]) // eslint-disable-line react-hooks/exhaustive-deps
   /**
-   * A video put in the main row dragged off it, onto a row above or below the main video: it comes
-   * out of the main row (which closes up: removeInsert) and goes on that row from `atMs` — the same
-   * part of the same video, with its own sound as it was. The main video's own parts stay in the
-   * main row (only a video put in can move off it).
+   * A part of the main row let go over empty room (the space deleted parts left, its own place, or
+   * past the end of the row) with its start at `startMs`: it goes exactly there, as in CapCut —
+   * nothing else moves. Where it was becomes empty space (visibility.ts isGapPart), the space it
+   * lands in is cut round it, empty space left at the end of the row goes. It plays just what it
+   * played (each part keeps its own moment of the video: the clip becomes pieces). One step.
+   * (Dropped onto another part it goes in between instead: movePart.)
+   */
+  function placePart(segId: string, startMs: number) {
+    if (trimmed) {
+      pendingMoveRef.current = { segId, toMs: startMs, place: true }
+      trimsToPieces()
+      return
+    }
+    const editor = useEditorStore.getState(), media = useMediaStore.getState()
+    const seg = editor.segments.find(x => x.id === segId)
+    if (!seg) return
+    if (seg.locked) { notifyLocked('This part is locked — unlock it to move it'); return }
+    // (the main video's own sound, detached, moves with its parts: that is the in-between move's work)
+    if (media.audioTracks.some(isMainAudio)) { movePart(segId, startMs); return }
+    const next = placeInRow(editor.segments, editor.keyframes, segId, startMs, mainVideoId, piecesOn, MAX_CLIP_MS)
+    if (next === 'between') { movePart(segId, startMs); return }
+    if (!next) return
+    pause()
+    skipCanvasTransitionRef.current = true
+    seekAfterInsertRef.current = next.segments.find(x => x.id === segId)?.start_ms ?? startMs
+    editor.applyTrim(next.segments, next.keyframes, editor.trims, rangeAfterPieces(next.segments))
+    // (a transition at a join that isn't there any more goes)
+    useMediaStore.setState({ transitions: media.transitions.filter(t => t.after_segment_id !== segId && next.segments.some(x => x.id === t.after_segment_id)) })
+    setActiveSegmentId(segId)
+  }
+  /**
+   * A block of the main row dragged off it, onto a row above or below the main video, from `atMs`:
+   *  - a video put in: it comes out of the main row (which closes up: removeInsert) and goes on that
+   *    row — the same part of the same video, with its own sound as it was
+   *  - a part of the main video (as in Resolve): it goes on that row showing the same stretch of the
+   *    main video, framed as it was, with its sound; where it was is left empty (place.ts liftToRow)
    */
   function partToTrack(segId: string, target: number | 'new' | 'new-below', atMs: number) {
     const seg = useEditorStore.getState().segments.find(x => x.id === segId)
     if (!seg) return
-    if (!isInsert(seg, mainVideoId)) { notifyLocked('This is the main video itself: only a video you put in can move to a row above or below'); return }
-    if (seg.locked) { notifyLocked('This video is locked — unlock it to move it'); return }
+    if (seg.locked) { notifyLocked(isInsert(seg, mainVideoId) ? 'This video is locked — unlock it to move it' : 'This part is locked — unlock it to move it'); return }
+    if (!isInsert(seg, mainVideoId)) { liftPart(seg, target, atMs); return }
     const box = seg.crop_boxes[0]
     if (!box?.source_video_id) return
     const len = seg.end_ms - seg.start_ms
@@ -3421,14 +3485,93 @@ export function EditorShell({
     if (nb) updateSegment(id, { crop_boxes: [{ ...nb, source_offset_ms: box.source_offset_ms ?? 0, muted: box.muted, volume: box.volume }] })
     pickShot(id)
   }
-  /** A video on a row dragged onto the main row: it goes in there (insertVideo), showing the same part of it, with its sound on */
-  function shotToMain(segId: string, atMs: number) {
+  /** A part of the main video dragged onto a row (partToTrack): it goes there as one step */
+  function liftPart(seg: SegmentLocal, target: number | 'new' | 'new-below', atMs: number) {
+    if (isTail(seg) || isGapPart(seg, mainVideoId)) return
+    const why = liftBlock(seg)
+    if (why) {
+      notifyLocked(why === 'speed' ? 'This part plays faster or slower — set it back to 1× to move it to another row'
+        : 'Only a part showing the video full screen can move to another row — set its format to Full first')
+      return
+    }
+    if (trimmed) {
+      // Parts cut out the older way: first the clip becomes pieces, then the move (once redrawn)
+      pendingMoveRef.current = { segId: seg.id, toMs: atMs, row: target }
+      trimsToPieces()
+      return
+    }
+    const len = seg.end_ms - seg.start_ms
+    const at = Math.round(Math.max(0, Math.min(atMs, MAX_CLIP_MS - len)))
+    const items = visualItems()
+    const track = target === 'new-below' ? openRowBelow()
+      : target === 'new' ? newTopTrack(items)
+      : fitsOn(items, target, at, at + len) ? target : freeTrackIn(items, at, at + len, undefined, target)
+    const editor = useEditorStore.getState(), media = useMediaStore.getState()
+    const next = liftToRow(editor.segments, editor.keyframes, seg.id, at, track, mainVideoId, piecesOn, rawClip.start_ms)
+    if (!next) return
+    pause()
+    skipCanvasTransitionRef.current = true
+    seekAfterInsertRef.current = at
+    editor.applyTrim(next.segments, next.keyframes, editor.trims, rangeAfterPieces(next.segments))
+    // (no transition joins it to the main row any more)
+    useMediaStore.setState({ transitions: media.transitions.filter(t => t.after_segment_id !== seg.id && next.segments.some(x => x.id === t.after_segment_id)) })
+    pickShot(seg.id)
+  }
+  /**
+   * A video on a row dragged onto the main row: it goes in there (insertVideo), showing the same part
+   * of it, with its sound on. A part of the main video on a row goes back to being a part of the main
+   * row, with its start at `startMs` (where it was let go) over empty room there, else in between
+   * the parts at `atMs` (the rest move later).
+   */
+  function shotToMain(segId: string, atMs: number, startMs = atMs) {
     const seg = useEditorStore.getState().segments.find(x => x.id === segId)
     const box = seg?.crop_boxes[0]
     if (!seg || !box?.source_video_id || blocked({ kind: 'broll', id: segId })) return
+    if (isMainShot(seg, mainVideoId)) { lowerPart(seg, atMs, startMs); return }
     removeBrollShot(segId)
     tidyRowsBelow()
     insertVideo(box.source_video_id, atMs, seg.end_ms - seg.start_ms, 60, { offsetMs: box.source_offset_ms ?? 0, muted: false, volume: box.volume ?? 1 })
+  }
+  /** A part of the main video on a row dragged back onto the main row (shotToMain): one step */
+  function lowerPart(seg: SegmentLocal, atMs: number, startMs: number) {
+    const editor = useEditorStore.getState(), media = useMediaStore.getState()
+    const next = lowerToRow(editor.segments, editor.keyframes, seg.id, startMs, mainVideoId, piecesOn, rawClip.start_ms, MAX_CLIP_MS)
+    if (!next) return
+    pause()
+    skipCanvasTransitionRef.current = true
+    if (next !== 'between') {
+      seekAfterInsertRef.current = next.segments.find(x => x.id === seg.id)?.start_ms ?? startMs
+      editor.applyTrim(next.segments, next.keyframes, editor.trims, rangeAfterPieces(next.segments))
+      tidyRowsBelow()
+      setActiveSegmentId(seg.id)
+      return
+    }
+    // A part of the main video in the way: it goes in between there (as movePart puts a part in)
+    const len = seg.end_ms - seg.start_ms
+    const tailNow = tailOf()
+    const at = Math.round(Math.max(0, tailNow ? Math.min(atMs, tailNow.start_ms) : atMs))
+    const state: TimedState = {
+      segments: editor.segments.filter(x => x.id !== seg.id), keyframes: editor.keyframes,
+      overlays: media.overlays, textOverlays: media.textOverlays, audioTracks: media.audioTracks, transitions: media.transitions,
+    }
+    if (state.segments.some(x => x.locked && !isShot(x, mainVideoId) && x.start_ms < at && x.end_ms > at)) { notifyLocked('The part of the clip there is locked — unlock it first'); return }
+    const ripple = rippleInsert(state, at, len)
+    const part = { ...asMainPart(seg, rawClip.start_ms), start_ms: at, end_ms: at + len }
+    // (videos on rows stay where they were, as they are)
+    const onTop = editor.segments.filter(x => isShot(x, mainVideoId) && x.id !== seg.id)
+    const segs = [...ripple.segments.filter(x => !isShot(x, mainVideoId)), ...onTop, part]
+      .sort((x, y) => x.start_ms - y.start_ms || x.sort_order - y.sort_order).map((x, i) => ({ ...x, sort_order: i }))
+    const kfs = { ...ripple.keyframes }
+    for (const x of onTop) for (const b of x.crop_boxes) kfs[b.id] = editor.keyframes[b.id] ?? []
+    for (const b of seg.crop_boxes) kfs[b.id] = (editor.keyframes[b.id] ?? []).map(k => ({ ...k, t_ms: k.t_ms + at - seg.start_ms }))
+    seekAfterInsertRef.current = at
+    editor.applyTrim(segs, kfs, editor.trims, rangeAfterPieces(segs))
+    useMediaStore.setState({
+      audioTracks: [...ripple.audioTracks.filter(isMainAudio), ...media.audioTracks.filter(t => !isMainAudio(t))],
+      transitions: ripple.transitions.filter(t => segs.some(x => x.id === t.after_segment_id)),
+    })
+    tidyRowsBelow()
+    setActiveSegmentId(seg.id)
   }
 
   /**
@@ -6320,7 +6463,7 @@ export function EditorShell({
             id: o.id, start_ms: o.start_ms, end_ms: o.end_ms, url: o.preview_url, hidden: o.hidden, locked: isLocked({ kind: 'photo', id: o.id }), track: o.track, full: o.x <= 0.001 && o.y <= 0.001 && o.w >= 0.999 && o.h >= 0.999,
             ...(o.type === 'video' ? { video: { url: videoUrls[o.source_video_id!] ?? o.preview_url, offset: o.source_offset_ms ?? 0, muted: !!o.muted } } : {}),
           }))}
-          onTrackDrop={dropOnTrack} belowRows={belowRows} onMovePart={movePart} onPartToTrack={partToTrack} onShotToMain={shotToMain} maxMs={MAX_CLIP_MS}
+          onTrackDrop={dropOnTrack} belowRows={belowRows} onMovePart={movePart} onPlacePart={placePart} onPartToTrack={partToTrack} onShotToMain={shotToMain} maxMs={MAX_CLIP_MS}
           activePhotoId={activeOverlayId} onSelectPhoto={id => pickPhoto(id, doubleTap(`p${id}`))}
           onPhotoTimeChange={(id, t) => {
             if (blocked({ kind: 'photo', id })) return

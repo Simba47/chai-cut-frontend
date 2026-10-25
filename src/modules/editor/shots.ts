@@ -1,7 +1,7 @@
 import type { CropBoxLocal, SegmentLocal } from '@chai-cut/shared'
 import { getBoxPositionAtLerp } from '@/lib/interpolation'
 import { isFrameLayout } from './frames'
-import { addedVideoBox, isGapPart } from './visibility'
+import { addedVideoBox, isGapPart, isMainShot } from './visibility'
 
 // ── Videos on top (B-roll) ────────────────────────────────────────────────────
 // In the editor a video put over the clip is a LAYER: it sits on its own lane over the sections,
@@ -89,14 +89,27 @@ function shareUnder(sections: SegmentLocal[], a: number, b: number, is: (s: Segm
  * it. `below` rows of videos sit under the main video (tracks 0 … below-1): the main video covers
  * them, and they show where it isn't — after its end, from the moment they've reached there. The
  * empty stretch after the main video (the editor's "tail") is under everything.
+ *
+ * A part of the main video on a row (visibility.ts isMainShot) is a part of the main video again
+ * where it shows: the main video from its moment (`mainStart`: where the clip starts in the video,
+ * its box is in the video's own time), with its own sound — so the main player, the export and the
+ * clip board play it as any other part. Hidden, it isn't there at all.
  */
-export function flattenShots(segments: SegmentLocal[], mainVideoId: Main, forSave = false, below = 0): SegmentLocal[] {
+export function flattenShots(segments: SegmentLocal[], mainVideoId: Main, forSave = false, below = 0, mainStart = 0): SegmentLocal[] {
+  if (segments.some(s => hiddenMainShot(s, mainVideoId))) segments = segments.filter(s => !hiddenMainShot(s, mainVideoId))
   // Placed lowest first: each one placed cuts the ones before it (so the last placed is on top)
   const shown = (s: SegmentLocal) => (s.crop_boxes[0]?.hidden ? 0 : 1)
   const shots = segments.filter(s => isShot(s, mainVideoId) && s.end_ms > s.start_ms)
     .sort((a, b) => shown(a) - shown(b) || (a.track ?? 0) - (b.track ?? 0) || byStart(a, b))
   if (!shots.length) return segments
   const sections = segments.filter(s => !isShot(s, mainVideoId))
+  // A part of the main video on a row past the end of the main row: the room up to it is empty
+  // space of the main row (else the main video would carry on there, seen)
+  const mainShots = shots.filter(s => isMainShot(s, mainVideoId))
+  if (mainShots.length) {
+    const rowEnd = Math.max(0, ...sections.map(s => s.end_ms)), reach = Math.max(...mainShots.map(s => s.end_ms))
+    if (reach > rowEnd + 1) sections.push(roomFill(derivedId(`${mainShots[0].id}:room`, 0), rowEnd, reach))
+  }
   const under = shots.filter(s => (s.track ?? 0) < below), over = shots.filter(s => (s.track ?? 0) >= below)
   let parts: { seg: SegmentLocal; of: SegmentLocal }[] = []
   const lay = (item: SegmentLocal) => {
@@ -125,7 +138,8 @@ export function flattenShots(segments: SegmentLocal[], mainVideoId: Main, forSav
     group.sort((a, b) => a.seg.start_ms - b.seg.start_ms)
     group.forEach((p, i) => {
       let seg = p.seg
-      if (isShot(p.of, mainVideoId)) {
+      if (isMainShot(p.of, mainVideoId)) seg = asMainPart(seg, mainStart)
+      else if (isShot(p.of, mainVideoId)) {
         const muted = shareUnder(sections, seg.start_ms, seg.end_ms, s => !!s.muted) > 0.5
         // (not the empty stretch after the main video, nor a gap: what runs on there isn't hidden by it)
         const hidden = shareUnder(sections, seg.start_ms, seg.end_ms, s => !!s.hidden && !isFrameLayout(s.layout) && !isTailSection(s) && !gap(s)) > 0.5
@@ -157,6 +171,31 @@ export function flattenShots(segments: SegmentLocal[], mainVideoId: Main, forSav
   return out.sort(byStart).map((s, i) => ({ ...s, sort_order: i }))
 }
 
+const hiddenMainShot = (s: SegmentLocal, mainVideoId: Main) => isMainShot(s, mainVideoId) && !!s.crop_boxes[0]?.hidden
+
+/** Empty space of the main row over [a, b) (visibility.ts isGapPart), made while flattening: never in the editor's own parts, and not brought back from a save (toSaved: a row that is no part) */
+function roomFill(id: string, a: number, b: number): SegmentLocal {
+  const view = { x: 0, y: 0, w: 1, h: 1 }
+  return {
+    id, start_ms: a, end_ms: b, layout: 'vertical', sort_order: 0, hidden: true, muted: true,
+    crop_boxes: [{ id: derivedId(id, 1), slot_index: 0, source_video_id: null, source_offset_ms: a, hidden: true, keyframes: [{ t_ms: a, ...view }] } as CropBoxLocal],
+  }
+}
+
+/**
+ * A part of the main video on a row as the part of the main video it plays there (see flattenShots;
+ * dragged back onto the main row: place.ts lowerToRow): its moment clip-relative again (`mainStart`:
+ * where the clip starts in the video), its switches the part's
+ */
+export function asMainPart(seg: SegmentLocal, mainStart: number): SegmentLocal {
+  const { track: _t, lane: _l, speed: _s, ...rest } = seg
+  const box = seg.crop_boxes[0]
+  return {
+    ...rest, muted: !!box.muted, hidden: !!box.hidden,
+    crop_boxes: [{ ...box, source_video_id: null, source_offset_ms: Math.max(0, Math.round((box.source_offset_ms ?? 0) - mainStart)), muted: false, hidden: false }],
+  }
+}
+
 // ── Saving and loading ────────────────────────────────────────────────────────
 
 /** What is saved beside the rows (clips.layers) to get the layers back */
@@ -173,6 +212,8 @@ export interface SavedLayers {
   /** Videos on top on a lane above the first (id → lane) */
   tracks?: Record<string, number>
 }
+// (a part of the main video on a row is always noted whole in `cut`: its row is saved as a plain
+// part of the main video, or not at all while it's hidden, and only the note brings it back)
 
 const rowKeys = (rows: SegmentLocal[]) => rows.map(r => `${r.id}:${Math.round(r.start_ms)}:${Math.round(r.end_ms)}`).sort()
 
@@ -181,14 +222,14 @@ const rowKeys = (rows: SegmentLocal[]) => rows.map(r => `${r.id}:${Math.round(r.
  * layers back. `segments` in the times the clip is saved in, each crop box with its keyframes.
  * No video on top = nothing to note (null).
  */
-export function toSaved(segments: SegmentLocal[], mainVideoId: Main, below = 0): { rows: SegmentLocal[]; layers: SavedLayers | null } {
+export function toSaved(segments: SegmentLocal[], mainVideoId: Main, below = 0, mainStart = 0): { rows: SegmentLocal[]; layers: SavedLayers | null } {
   const whole = segments.map(s => ({ ...s, start_ms: Math.round(s.start_ms), end_ms: Math.round(s.end_ms) })).filter(s => s.end_ms > s.start_ms)
   if (!whole.some(s => isShot(s, mainVideoId))) return { rows: whole, layers: null }
-  const rows = flattenShots(whole, mainVideoId, true, below)
+  const rows = flattenShots(whole, mainVideoId, true, below, mainStart)
   const kept = new Map(rows.map(r => [r.id, r]))
   // Saved whole: its own row has its own times (a video's row may differ in the flags it carries)
   const isWhole = (s: SegmentLocal) => { const r = kept.get(s.id); return !!r && r.start_ms === s.start_ms && r.end_ms === s.end_ms }
-  const cut = whole.filter(s => !isWhole(s))
+  const cut = whole.filter(s => !isWhole(s) || isMainShot(s, mainVideoId))
   const ids = new Set(whole.map(s => s.id))
   const parts = rows.filter(r => !ids.has(r.id) || cut.some(c => c.id === r.id)).map(r => r.id)
   const broll = whole.filter(s => isShot(s, mainVideoId) && s.lane === 'broll').map(s => s.id)
@@ -227,7 +268,9 @@ const plainShot = (s: SegmentLocal, mainVideoId: Main): SegmentLocal => {
  * points at a section by id (transitions).
  */
 export function restoreLayers(rows: SegmentLocal[], layers: unknown, mainVideoId: Main): { segments: SegmentLocal[]; renamed: Record<string, string> } {
-  if (!rows.some(r => isShot(r, mainVideoId))) return { segments: rows, renamed: {} }
+  // (parts of the main video on rows are saved as plain parts of it: only the note has them)
+  const mainShots = validLayers(layers) && layers.cut.some(c => isMainShot(c, mainVideoId))
+  if (!mainShots && !rows.some(r => isShot(r, mainVideoId))) return { segments: rows, renamed: {} }
   // Which videos were added as B-roll (ids stay the same, so this holds even when the rest of the note is void)
   const brollIds = new Set(Array.isArray((layers as SavedLayers | null)?.broll) ? (layers as SavedLayers).broll : [])
   const saved = (layers as SavedLayers | null)?.tracks
