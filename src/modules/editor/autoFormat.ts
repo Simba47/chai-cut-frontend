@@ -2,153 +2,244 @@ import type { LayoutType } from '@chai-cut/shared'
 import type { BoxPosition } from '@/lib/interpolation'
 import { defaultCropForSlot, normalizedSlotAspect } from './utils'
 
-// ── Auto format: which format a scene gets (Subjects tool) ─────────────────────
-// The user's decision table (2026-10-24), checked in this order, for one place of a scene (one of the
-// stretches where its shot comes back — who talks can differ between them):
-//   1. Short pieces: nothing special for now (every piece gets its own format).
-//   2. Faces too small to blow up sharply (a wide shot): Vertical — on everyone seen when they fit one
-//      view, else on whoever talks most, else on the middle of them (user, 2026-10-24: a wide shot of
-//      four, two with their backs turned, read as two tiny faces and became a Split of those two at
-//      7×; a wide shot can't be counted, nor blown up, so it isn't split).
-//   3. Everyone fits in one 9:16 view: Vertical framing them all.
-//   4. One person: Vertical on them.
-//   5. Two: Split — the speaker at the bottom, the listener (reactions) on top.
-//   6. Three: all three talk → Trio; else Split — the speaker at the bottom, the other two together on
-//      top; with the speaker in the middle seat (the other two don't fit one view) → Trio.
-//   7. Four: Trio, the middle two together in the middle view. Five or more: Split at the biggest gap,
-//      each view framing all of its side.
-// "Talks": at least ACTIVE_SHARE of the talking in that place; the speaker: whoever talks most. Not
-// known (no transcript, or nobody talks there): two → Split, the left one on top; three → Trio.
-// Split and Trio stack their views top to bottom. Each view is placed on its people here; the
-// following (Follow) keeps a one-person view on its person as they move.
+// ── Auto format: which format a place gets (Subjects tool) ─────────────────────
+// The Rulebook ("Auto Format Framing Spec", 2026-10-25; the user: "follow the rulebook"). For each
+// place (one stretch where a scene's shot comes back), the first rule that fits decides:
+//   0. No people found: the place is left as it is (the caller never asks).
+//   1. Everyone fits one 9:16 crop with FIT_MARGIN room either side (always true for one person): Vertical.
+//   2. Exactly 2 people: Split — the speaker at the bottom, the other on top.
+//   3. Exactly 3 people: Trio in seat order (left, middle, right = top, middle, bottom).
+//   4. 4 or more who form exactly 3 groups (1 + 2 + 1, 2 + 1 + 2…): Trio, one group per view.
+//   5. 4 or more, any other seating: Split into two sides — cut at the break between two groups, else at
+//      the gap nearest the middle — the speaker's side at the bottom.
+// The format comes from the people and how they sit; the speaker only orders a Split's views. Speaker:
+// whoever talks most in the place with at least SPEAKER_MIN of it, ahead of everyone else; nobody (no
+// transcript, crosstalk): left on top. Groups: the gaps between neighbours' face boxes in face widths — a
+// break is at least BREAK_RATIO × the tightest gap and at least BREAK_MIN. Split and Trio stack their
+// views top to bottom; each view is framed here (section 5 of the spec); Follow keeps a one-person view
+// on its person, a view on 2+ people holds.
+// Never lose a subject (the user, 2026-10-25 — over the Rulebook's tiny-face rule, which put a wide shot
+// of seven in one Vertical slice and cut four of them out): small faces go by the rules above too, and
+// a Split or Trio must hold every face whole in a view within MAX_ZOOM; when it can't (people spread wider
+// than its views can show), the place shows the whole picture — Blur fill.
+
+/**
+ * Every threshold, under the Rulebook's names and defaults (its section 7): tune here and rerun the test
+ * log (autoFormat.test.ts). PRESENCE_MIN is applied by the scan (backend track_subjects.ts findAngles),
+ * SHORT_PLACE by Auto format in EditorShell; SWAP_ON_TURN / MIN_HOLD (off) and FOLLOW_SMOOTH are not
+ * built yet.
+ */
+export const AUTO_FORMAT = {
+  /** Who counts as in the frame: their face in this share of the place's frames (the scan) */
+  PRESENCE_MIN: 0.5,
+  /** A group fits one Vertical view with this share of its span as room either side */
+  FIT_MARGIN: 0.15,
+  /** A gap is a break between groups at this many times the tightest gap… */
+  BREAK_RATIO: 1.5,
+  /** …and at least this many face widths */
+  BREAK_MIN: 1.0,
+  /** The speaker has at least this share of the place's talking */
+  SPEAKER_MIN: 0.2,
+  /** A Split swaps top and bottom when the speaker changes (not built: the order is fixed per place) */
+  SWAP_ON_TURN: false,
+  MIN_HOLD: 2.0,
+  /** A place shorter than this (seconds) takes the format of the place before it */
+  SHORT_PLACE: 1.0,
+  /** A one-person view's height in face heights: Split, Trio */
+  SPLIT_FACE_H: 3.2,
+  TRIO_FACE_H: 2.6,
+  /** Room around a group in one view: this share of its span either side */
+  GROUP_PAD: 0.15,
+  /** The face centre this far down its view */
+  FACE_Y: 0.4,
+  /** The view's top at least this many face heights above the forehead (wins over FACE_Y) */
+  HEADROOM_MIN: 0.5,
+  /** The tightest crop: face heights tall, face widths wide */
+  MIN_VIEW_H: 1.55,
+  MIN_VIEW_W: 1.6,
+  /** The largest upscale: a crop at least 1 / MAX_ZOOM of its output view's pixels */
+  MAX_ZOOM: 2.0,
+  /** How fast a view follows its person (seconds to settle; not wired yet) */
+  FOLLOW_SMOOTH: 0.4,
+} as const
+
+/** Output view heights in pixels (1080 × 1920): Vertical, Split, Trio */
+const VIEW_PX_H: Partial<Record<LayoutType, number>> = { vertical: 1920, split: 960, trio: 640 }
+/**
+ * The source's height in pixels when not known: the editor only has the editing copy (720p at most) and
+ * the export reads the original — the Rulebook's own example is a 1080p source
+ */
+export const SOURCE_PX_H = 1080
 
 type Face = { x: number; y: number; w: number; h: number }
 export interface AutoLayout {
   layout: LayoutType
   framing: BoxPosition[]
-  /** Which rule decided it (for the notice and the tests) */
-  why: 'small' | 'fits' | 'one' | 'two' | 'three-all' | 'three-split' | 'three-middle' | 'three' | 'four' | 'many'
+  /** Which rule decided it (for the notice and the tests); 'whole': no Split or Trio could hold everyone */
+  why: 'fits' | 'two' | 'three' | 'groups3' | 'sides' | 'whole'
 }
 
-/** A face narrower than this share of the picture is too small to blow up sharply (≈70 px of a 1080p picture) */
-export const SMALL_FACE = 70 / 1920
-/** "Talks" in a place: this share of the talking there or more */
-export const ACTIVE_SHARE = 0.2
-/** Everyone fits one Vertical view when they take up at most this share of its width (room either side) */
-const FITS_SHARE = 0.85
-/** A one-person view's height, in face heights: a Split view shows head and shoulders, a Trio view a little closer */
-const FACE_TO_VIEW: Partial<Record<LayoutType, number>> = { split: 3.2, trio: 2.6 }
-/** A view of several people: this much room either side of them (a share of their width) */
-const GROUP_ROOM = 0.15
-/** The faces sit this far down their view (a share of its height): headroom above */
-const FACE_DOWN = 0.4
-/**
- * …and the view's top at least this many face heights above the faces' top: the face box runs from
- * the forehead to the chin, the hair above it (user, 2026-10-24: a tight Trio view put the face's middle
- * 40% down and cut the top of the head off; their own framing had the view's top half a face above)
- */
-export const HEAD_ROOM = 0.5
-/** A one-person view is never narrower than this many face widths, even when people sit close together */
-const MIN_FACE_WIDTHS = 1.6
-/** …nor shorter than this many face heights (the whole head, some shoulders: the user's own 2.9× Trio views) */
-const MIN_FACE_HEIGHTS = 1.55
+/** The whole picture, nobody cropped out: the wide video on a blurred copy of itself */
+export const WHOLE_PICTURE: LayoutType = 'frame_blur_fill'
 
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v))
 const midX = (f: Face) => f.x + f.w / 2
 const midY = (f: Face) => f.y + f.h / 2
 
-/**
- * A view of aspect `a` (width / height in the picture's own units) `h` high, centred on cx, its faces'
- * middle at cy and their top at `top` (room for the hair above), inside the picture
- */
-function viewAt(a: number, cx: number, cy: number, h: number, top: number, faceH: number): BoxPosition {
-  let w = a * h
-  if (w > 1) { w = 1; h = 1 / a }
-  if (h > 1) { h = 1; w = a }
-  return { x: clamp(cx - w / 2, 0, 1 - w), y: clamp(Math.min(cy - h * FACE_DOWN, top - HEAD_ROOM * faceH), 0, 1 - h), w, h }
-}
+/** A strip of the picture a view keeps to: [left, right] (fractions of the width) */
+type Strip = readonly [number, number]
 
-/** A view on one person; `others`: the people beside them (the view stops short of showing them) */
-function personView(layout: LayoutType, a: number, f: Face, others: Face[]): BoxPosition {
-  const gaps = others.map(g => Math.abs(midX(g) - midX(f)))
-  let h = f.h * (FACE_TO_VIEW[layout] ?? 3)
-  if (gaps.length) h = Math.min(h, Math.min(...gaps) / a)
-  h = Math.max(h, (f.w * MIN_FACE_WIDTHS) / a, f.h * MIN_FACE_HEIGHTS)
-  return viewAt(a, midX(f), midY(f), h, f.y, f.h)
-}
+/** The smallest view height the upscale limit allows for a view of this layout (fractions of the picture) */
+const minZoomH = (layout: LayoutType, sourcePxH: number) => (VIEW_PX_H[layout] ?? 0) / AUTO_FORMAT.MAX_ZOOM / sourcePxH
 
-/** A view framing all of `group` (with room either side) */
-function groupView(layout: LayoutType, a: number, group: Face[]): BoxPosition {
-  if (group.length === 1) return viewAt(a, midX(group[0]), midY(group[0]), group[0].h * (FACE_TO_VIEW[layout] ?? 3), group[0].y, group[0].h)
+/** The smallest view height for `group` in a view of this layout: the tightness and upscale limits, and the group's own span */
+function leastH(layout: LayoutType, a: number, group: readonly Face[], sourcePxH: number) {
   const left = Math.min(...group.map(f => f.x)), right = Math.max(...group.map(f => f.x + f.w))
-  const width = (right - left) * (1 + 2 * GROUP_ROOM)
-  const tallest = Math.max(...group.map(f => f.h))
-  const h = Math.max(width / a, tallest * (FACE_TO_VIEW[layout] ?? 3))
-  return viewAt(a, (left + right) / 2, group.reduce((t, f) => t + midY(f), 0) / group.length, h, Math.min(...group.map(f => f.y)), tallest)
+  return Math.max(Math.max(...group.map(f => f.h)) * AUTO_FORMAT.MIN_VIEW_H, (Math.max(...group.map(f => f.w)) * AUTO_FORMAT.MIN_VIEW_W) / a,
+    (right - left) / a, minZoomH(layout, sourcePxH))
 }
 
 /**
- * The format for one place of a scene. `faces`: its people (fractions of the picture; any order);
- * `talk`: how long each of them talks there (ms, in the same order), or null when not known;
- * `videoAR`: the picture's width / height (16:9 when not known yet). Null with no faces.
+ * The strips of side-by-side groups (left to right), so the views of a Split or Trio never overlap (the
+ * user, 2026-10-25: a close two-shot gave two near full-height views that both showed the middle quarter
+ * of the picture). A boundary sits in the gap between two groups — halfway, unless a view needs more room
+ * than that gives it (a person at the picture's edge), then as far as the gap allows; the picture's edges at
+ * the ends. `minWidths`: the narrowest each view may be. Null when no boundaries give every view its room.
  */
-export function decideFormat(faces: readonly Face[], talk: readonly number[] | null, videoAR?: number): AutoLayout | null {
+export function strips(groupsLR: readonly (readonly Face[])[], minWidths: readonly number[]): Strip[] | null {
+  const k = groupsLR.length
+  const ends = groupsLR.map(g => [Math.min(...g.map(f => f.x)), Math.max(...g.map(f => f.x + f.w))] as const)
+  // Boundary i (between views i and i + 1) lies in the gap between their groups
+  const lo = ends.slice(0, -1).map(e => e[1]), hi = ends.slice(1).map(e => e[0])
+  const b = lo.map((l, i) => clamp((l + hi[i]) / 2, l, Math.max(l, hi[i])))
+  const at = (j: number) => (j === 0 ? 0 : j === k ? 1 : b[j - 1])
+  // Room for each view: left to right, then right to left
+  for (let j = 1; j < k; j++) if (at(j) - at(j - 1) < minWidths[j - 1]) b[j - 1] = Math.min(hi[j - 1], at(j - 1) + minWidths[j - 1])
+  for (let j = k; j >= 2; j--) if (at(j) - at(j - 1) < minWidths[j - 1]) b[j - 2] = Math.max(lo[j - 2], at(j) - minWidths[j - 1])
+  const out = groupsLR.map((_, j) => [at(j), at(j + 1)] as const)
+  const ok = out.every(([l, r], j) => r - l >= minWidths[j] - 1e-9 && l <= ends[j][0] + 1e-9 && r >= ends[j][1] - 1e-9)
+  return ok ? out : null
+}
+
+/**
+ * A view on `group` (one person, or several) inside `strip`: as tall as the layout wants (SPLIT_FACE_H /
+ * TRIO_FACE_H face heights, or the group's span with GROUP_PAD either side), never shorter than the
+ * tightness and upscale limits, never wider than its strip; centred on the group, sliding in at the
+ * strip's (or picture's) edge, the face FACE_Y down unless the headroom asks for more. Null when the strip
+ * is too narrow for the smallest view the limits allow.
+ */
+function viewIn(layout: LayoutType, a: number, group: readonly Face[], strip: Strip, sourcePxH: number): BoxPosition | null {
+  const left = Math.min(...group.map(f => f.x)), right = Math.max(...group.map(f => f.x + f.w))
+  const tallest = Math.max(...group.map(f => f.h))
+  const faceH = layout === 'trio' ? AUTO_FORMAT.TRIO_FACE_H : AUTO_FORMAT.SPLIT_FACE_H
+  const want = group.length === 1 ? tallest * faceH : Math.max(((right - left) * (1 + 2 * AUTO_FORMAT.GROUP_PAD)) / a, tallest * faceH)
+  const least = leastH(layout, a, group, sourcePxH)
+  // The tallest the strip and the picture allow
+  const most = Math.min(1, 1 / a, (strip[1] - strip[0]) / a)
+  if (least > most + 1e-9) return null
+  const h = clamp(want, least, most), w = a * h
+  const cx = (left + right) / 2, cy = group.reduce((t, f) => t + midY(f), 0) / group.length
+  const top = Math.min(...group.map(f => f.y))
+  return {
+    x: clamp(cx - w / 2, strip[0], strip[1] - w),
+    y: clamp(Math.min(cy - h * AUTO_FORMAT.FACE_Y, top - AUTO_FORMAT.HEADROOM_MIN * tallest), 0, 1 - h),
+    w, h,
+  }
+}
+
+/** The gaps between neighbours (left to right), each in face widths: the space between their boxes / their mean width */
+export function seatGaps(byX: readonly Face[]): number[] {
+  return byX.slice(1).map((g, i) => (g.x - (byX[i].x + byX[i].w)) / ((g.w + byX[i].w) / 2))
+}
+
+/** Where the groups break: the indexes i where a break falls between person i - 1 and i */
+export function seatBreaks(gaps: readonly number[]): number[] {
+  if (!gaps.length) return []
+  const tightest = Math.max(0, Math.min(...gaps))
+  return gaps.flatMap((g, k) => (g >= AUTO_FORMAT.BREAK_RATIO * tightest && g >= AUTO_FORMAT.BREAK_MIN ? [k + 1] : []))
+}
+
+/**
+ * The format for one place. `faces`: its people (fractions of the picture; any order); `talk`: how long
+ * each talks there (ms, the same order), or null when not known; `videoAR`: the picture's width / height
+ * (16:9 when not known); `sourcePxH`: its height in pixels (the upscale limit). Null with no faces (rule 0).
+ */
+export function decideFormat(faces: readonly Face[], talk: readonly number[] | null, videoAR?: number, sourcePxH = SOURCE_PX_H): AutoLayout | null {
   if (!faces.length) return null
-  // Left to right, each with how much they talk
+  // Left to right: A, B, C… each with how much they talk
   const order = faces.map((f, i) => ({ f, t: talk?.[i] ?? 0 })).sort((p, q) => midX(p.f) - midX(q.f))
   const byX = order.map(o => o.f)
   const n = byX.length
+  // The speaker: the most talk, at least SPEAKER_MIN of it, ahead of everyone (two level: crosstalk, nobody)
   const total = order.reduce((s, o) => s + o.t, 0)
-  const known = !!talk && total > 0
-  const share = (i: number) => (known ? order[i].t / total : 0)
-  // The speaker: whoever talks most (null: not known)
-  const speaker = known ? order.reduce((best, o, i) => (o.t > order[best].t ? i : best), 0) : null
+  const ranked = order.map((o, i) => ({ i, t: o.t })).sort((p, q) => q.t - p.t)
+  const speaker = total > 0 && ranked[0].t / total >= AUTO_FORMAT.SPEAKER_MIN && (ranked.length === 1 || ranked[0].t > ranked[1].t) ? ranked[0].i : null
   const aSplit = normalizedSlotAspect('split', videoAR) ?? 1, aTrio = normalizedSlotAspect('trio', videoAR) ?? 1
   const vertical = (cx: number, why: AutoLayout['why']): AutoLayout => ({ layout: 'vertical', framing: [defaultCropForSlot('vertical', 0, videoAR, cx)], why })
-
-  /** Split: `top` and `bottom` people (each view framing its people) */
-  const split = (top: Face[], bottom: Face[], why: AutoLayout['why']): AutoLayout => ({
-    layout: 'split', why,
-    framing: [top, bottom].map(g => (g.length === 1 ? personView('split', aSplit, g[0], byX.filter(f => f !== g[0])) : groupView('split', aSplit, g))),
-  })
-  /** Trio: the views from the top, each framing its people */
-  const trio = (views: Face[][], why: AutoLayout['why']): AutoLayout => ({
-    layout: 'trio', why,
-    framing: views.map(g => (g.length === 1 ? personView('trio', aTrio, g[0], byX.filter(f => f !== g[0])) : groupView('trio', aTrio, g))),
-  })
-  /** Two people: the speaker at the bottom (not known: the left one on top) */
-  const two = (why: AutoLayout['why']) => (speaker === 1 || speaker === null ? split([byX[0]], [byX[1]], why) : split([byX[1]], [byX[0]], why))
-  /** Four: the middle two together in the middle view */
-  const four = (why: AutoLayout['why']) => trio([[byX[0]], [byX[1], byX[2]], [byX[3]]], why)
-  /** Five or more: two sides, cut at the biggest gap between neighbours */
-  const many = (why: AutoLayout['why']) => {
-    let cut = 1
-    for (let i = 1; i < n; i++) if (midX(byX[i]) - midX(byX[i - 1]) > midX(byX[cut]) - midX(byX[cut - 1])) cut = i
-    return split(byX.slice(0, cut), byX.slice(cut), why)
+  const whole: AutoLayout = { layout: WHOLE_PICTURE, framing: [], why: 'whole' }
+  /** Views on side-by-side groups (left to right), each in its own strip; null when one can't be made */
+  const viewsFor = (layout: LayoutType, a: number, groupsLR: Face[][]) => {
+    const st = strips(groupsLR, groupsLR.map(g => a * Math.min(leastH(layout, a, g, sourcePxH), 1)))
+    if (!st) return null
+    const views = groupsLR.map((g, i) => viewIn(layout, a, g, st[i], sourcePxH))
+    return views.every(Boolean) ? (views as BoxPosition[]) : null
   }
+  /** Split into two sides (left: byX before `cut`): the speaker's side at the bottom; no speaker: left on top */
+  const sides = (cut: number, why: AutoLayout['why']): AutoLayout | null => {
+    const views = viewsFor('split', aSplit, [byX.slice(0, cut), byX.slice(cut)])
+    if (!views) return null
+    return { layout: 'split', why, framing: speaker !== null && speaker < cut ? [views[1], views[0]] : views }
+  }
+  /** Trio: the groups left to right become the views top to bottom */
+  const trio = (groupsLR: Face[][], why: AutoLayout['why']): AutoLayout | null => {
+    const views = viewsFor('trio', aTrio, groupsLR)
+    return views ? { layout: 'trio', why, framing: views } : null
+  }
+  /** Every face whole inside some view */
+  const keepsEveryone = (r: AutoLayout) => byX.every(f => r.framing.some(v =>
+    f.x >= v.x - 1e-6 && f.x + f.w <= v.x + v.w + 1e-6 && f.y >= v.y - 1e-6 && f.y + f.h <= v.y + v.h + 1e-6))
+  /** The Split or Trio if it could be made and keeps everyone; else the whole picture */
+  const unlessLost = (r: AutoLayout | null): AutoLayout => (r && keepsEveryone(r) ? r : whole)
+  /** Two sides cut at the gap nearest the middle (the sides differ by one person at most; with an odd
+   *  count, the wider of the two middle gaps) */
+  const middleCut = () => {
+    const gaps = seatGaps(byX)
+    const middles = n % 2 === 0 ? [n / 2] : [(n - 1) / 2, (n + 1) / 2]
+    return middles.reduce((b, c) => (gaps[c - 1] > gaps[b - 1] ? c : b))
+  }
+  /** Two sides at `cut` — or, when that can't keep everyone sharp (a person alone at the picture's edge
+   *  with too narrow a strip), at the other cuts, nearest the middle first; only then the whole picture */
+  const sidesAt = (cut: number, why: AutoLayout['why']): AutoLayout => {
+    const others = Array.from({ length: n - 1 }, (_, i) => i + 1).filter(c => c !== cut).sort((p, q) => Math.abs(p - n / 2) - Math.abs(q - n / 2))
+    for (const c of [cut, ...others]) {
+      const r = sides(c, why)
+      if (r && keepsEveryone(r)) return r
+    }
+    return whole
+  }
+  /** A Trio that can't keep everyone sharp in its strips (too close for three views): two sides instead —
+   *  the simpler format (the Rulebook, section 6) — and only then the whole picture */
+  const trioOrSides = (r: AutoLayout | null, cut: number): AutoLayout => (r && keepsEveryone(r) ? r : sidesAt(cut, 'sides'))
 
-  // 1 person
-  if (n === 1) return vertical(midX(byX[0]), 'one')
+  // 1. Everyone fits one 9:16 crop, with FIT_MARGIN room either side (always true for one person)
   const vw = defaultCropForSlot('vertical', 0, videoAR).w
   const left = Math.min(...byX.map(f => f.x)), right = Math.max(...byX.map(f => f.x + f.w))
-  const fits = right - left <= FITS_SHARE * vw
-  // 2. Faces too small to blow up sharply: Vertical — on all of them, else the talker, else their middle
-  if (Math.min(...byX.map(f => f.w)) < SMALL_FACE) {
-    return vertical(fits || speaker === null ? (left + right) / 2 : midX(byX[speaker]), 'small')
-  }
-  // 3. Everyone fits one Vertical view
+  const fits = n === 1 || (right - left) * (1 + 2 * AUTO_FORMAT.FIT_MARGIN) <= vw
   if (fits) return vertical((left + right) / 2, 'fits')
-  // 5. Two
-  if (n === 2) return two('two')
-  // 6. Three
-  if (n === 3) {
-    if (!known) return trio(byX.map(f => [f]), 'three')
-    if (order.every((_, i) => share(i) >= ACTIVE_SHARE)) return trio(byX.map(f => [f]), 'three-all')
-    // The speaker in the middle seat: the other two don't fit one view without them
-    if (speaker === 1) return trio(byX.map(f => [f]), 'three-middle')
-    return split(byX.filter((_, i) => i !== speaker), [byX[speaker!]], 'three-split')
+  // 2. Exactly two: the speaker at the bottom
+  if (n === 2) return sidesAt(1, 'two')
+  // 3. Exactly three: Trio in seat order, wherever the speaker sits
+  if (n === 3) return trioOrSides(trio(byX.map(f => [f]), 'three'), middleCut())
+  // 4. Four or more in exactly three groups: Trio, one group a view
+  const gaps = seatGaps(byX)
+  const breaks = seatBreaks(gaps)
+  if (breaks.length === 2) {
+    // (two sides at the wider of the two breaks, when the Trio can't be made)
+    const wider = gaps[breaks[0] - 1] >= gaps[breaks[1] - 1] ? breaks[0] : breaks[1]
+    return trioOrSides(trio([byX.slice(0, breaks[0]), byX.slice(breaks[0], breaks[1]), byX.slice(breaks[1])], 'groups3'), wider)
   }
-  // 7. Four; five or more
-  if (n === 4) return four('four')
-  return many('many')
+  // 5. Any other seating: two sides — at the break between two groups, else at the gap nearest the
+  //    middle (the sides differ by one person at most; with an odd count, the wider of the two middle gaps)
+  if (breaks.length === 1) return sidesAt(breaks[0], 'sides')
+  return sidesAt(middleCut(), 'sides')
 }
