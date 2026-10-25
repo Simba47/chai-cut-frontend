@@ -1,6 +1,7 @@
 'use client'
 
 import { useRef, useState, useEffect, useLayoutEffect, useCallback, Fragment } from 'react'
+import { createPortal } from 'react-dom'
 import type { SegmentLocal, TextOverlay, FrameItem, FrameLane } from '@chai-cut/shared'
 import type { TrackRef } from '@/modules/editor/tracks'
 import { Waveform } from '../Waveform'
@@ -27,6 +28,9 @@ import {
  * frame from the player's live time (no redraw while playing). Times are placed in % of the layer,
  * so every drag works out its time from where the layer is on screen (msFromClientX).
  */
+
+/** Where a new row would open while something is carried: a quiet line, as in Resolve (the carried clip itself shows where it goes) */
+const NEW_ROW_LINE = 'rgb(var(--ed-fg) / 0.5)'
 
 export interface TimelineProps {
   segments: SegmentLocal[]
@@ -765,17 +769,16 @@ export function Timeline({
       if (!moved && Math.abs(ev.clientX - sx) < 3 && Math.abs(ev.clientY - sy) < 3) return
       moved = true
       noSnapRef.current = ev.altKey
+      const t = rawMsFromClientX(ev.clientX)
       if (part === 'body') {
-        // Over the main row: it would go in there (a lime line where); else onto the row under the pointer
+        // Where it starts, as carried: it goes exactly there (wherever it's let go)
+        const st = snapSpanAt(Math.max(0, Math.min(room - len, t - grab)), len, seg.id)
+        // Over the main row: it would go in there, where its start is (a line there); else onto the row under the pointer
         const main = onShotToMain ? trackRef.current?.querySelector('[data-lane="main"]')?.getBoundingClientRect() : null
-        overMain = main && ev.clientY >= main.top && ev.clientY <= main.bottom ? Math.round(msFromClientX(ev.clientX)) : null
+        overMain = main && ev.clientY >= main.top && ev.clientY <= main.bottom ? Math.round(st) : null
         setMainDropAt(overMain)
         if (overMain != null) { if (trackHoverRef.current) { trackHoverRef.current = null; setTrackHover(null) } }
         else hoverTrack(ev, 'visual', seg.track ?? 0)
-      }
-      const t = rawMsFromClientX(ev.clientX)
-      if (part === 'body') {
-        const st = snapSpanAt(Math.max(0, Math.min(room - len, t - grab)), len, seg.id)
         next = { start: st, end: Math.min(room, st + len) }
         setBrollGhost({ id: seg.id, ...next })
         // (carried past the end: the timeline grows now, so it can be seen where it goes)
@@ -1121,15 +1124,16 @@ export function Timeline({
     // It isn't a part — it can't be picked; dragging the part after it in closes it
     if (isGapPart(seg, mainVideoId)) return null
     return (
-      <div key={seg.id} className="tl2-block absolute" data-part={i + 1} data-selected={sel || undefined}
+      <div key={seg.id} className="tl2-block absolute" data-part={i + 1} data-seg-id={seg.id} data-selected={sel || undefined}
         title={`${isInsert ? 'Inserted video' : 'Part'} ${i + 1} · ${name} · ${msToLabel(seg.start_ms)}–${msToLabel(seg.end_ms)} · tap to select it${onMovePart && mains.filter(m => !isTailPart(m)).length > 1 ? ', drag to move it' : ''}`}
         // (a part narrower than it is drawn lies over its neighbours: it can still be tapped)
         style={{
           ...blockBox(start, end), zIndex: sel ? 3 : (end - start) * pxPerMs < 12 ? 2 : 1,
           ...(onMovePart && mains.filter(m => !isTailPart(m)).length > 1 && !seg.locked ? { cursor: 'grab' } : {}),
-          // (carried along the row: it follows the pointer, over everything)
-          ...(insertDrag?.id === seg.id ? { transform: `translate(${insertDrag.dx}px, ${insertDrag.dy}px)`, zIndex: 40, opacity: 0.85, cursor: 'grabbing', filter: 'drop-shadow(0 8px 14px rgba(0,0,0,0.6))' } : {}),
+          // (carried: it is drawn over everything instead, following the pointer — blockGhost)
+          ...(insertDrag?.id === seg.id ? { opacity: 0, cursor: 'grabbing' } : {}),
         }}>
+        {insertDrag?.id === seg.id && blockGhost(seg, insertDrag, name, isInsert, url, box?.source_offset_ms ?? 0, end - start)}
         <div className="absolute inset-0 overflow-hidden" style={{ borderRadius: 8 }}>
           {url && (
             <VideoThumbnails tile videoUrl={url} radius={0} dim={false}
@@ -1166,6 +1170,37 @@ export function Timeline({
         {sel && <div className="absolute inset-0 pointer-events-none" style={{ borderRadius: 8, boxShadow: `inset 0 0 0 2px ${ACCENT}` }} />}
         {sel && (['start', 'end'] as const).map(edge => grip(seg, i, edge))}
       </div>
+    )
+  }
+  /**
+   * A part of the main row being carried: drawn over the whole page at the pointer (as in Resolve /
+   * CapCut) — never under the rows or cut off by them, wherever it goes, onto a row above or below
+   * too. Its own place is left empty meanwhile.
+   */
+  function blockGhost(seg: SegmentLocal, d: { dx: number; dy: number }, name: string, isInsert: boolean, url: string | undefined, offsetMs: number, lenMs: number) {
+    const home = document.querySelector<HTMLElement>(`.tl2-block[data-seg-id="${CSS.escape(seg.id)}"]`)
+    if (!home || typeof document === 'undefined') return null
+    const r = anchorOf(seg.id, home)
+    return createPortal(
+      <div className="tl2-block" aria-hidden="true"
+        style={{
+          position: 'fixed', left: r.left + d.dx, top: r.top + d.dy, width: r.width, height: r.height, zIndex: 1000, pointerEvents: 'none',
+          opacity: 0.92, cursor: 'grabbing', borderRadius: 8, filter: 'drop-shadow(0 10px 18px rgba(0,0,0,0.65))', boxShadow: `inset 0 0 0 2px ${ACCENT}`,
+        }}>
+        <div className="absolute inset-0 overflow-hidden" style={{ borderRadius: 8 }}>
+          {url && (
+            <VideoThumbnails tile videoUrl={url} radius={0} dim={false}
+              startMs={isInsert ? offsetMs : (sourceAt ? sourceAt(seg.start_ms) : clipStartMs + seg.start_ms)}
+              durationMs={Math.max(1, seg.end_ms - seg.start_ms)}
+              sourceAt={!isInsert && sourceAt ? (c => sourceAt(seg.start_ms + c)) : undefined}
+              sourceKey={`${sourceKey ?? ''}|${seg.start_ms}`} />
+          )}
+          <div className="absolute inset-0" style={{ background: 'linear-gradient(180deg, rgba(0,0,0,0.45), transparent 38%, transparent 62%, rgba(0,0,0,0.55))' }} />
+        </div>
+        <span className="tl2-tag absolute left-1.5 top-1"><i style={{ background: isInsert ? MEDIA_COLORS.video : LAYOUT_COLORS[seg.layout] }} />{isInsert ? 'Video' : name}</span>
+        <span className="tl2-len absolute right-1.5 bottom-1">{lenLabel(lenMs)}</span>
+      </div>,
+      document.body,
     )
   }
   const grip = (seg: SegmentLocal, i: number, edge: 'start' | 'end') => {
@@ -1212,10 +1247,16 @@ export function Timeline({
           left: `${at(start)}%`, width: `max(10px, ${pct(end - start)}%)`,
           '--bar-c': color, cursor: st.locked ? 'pointer' : on ? 'grabbing' : 'grab', zIndex: sel ? 3 : 1,
           ...(st.hidden ? { opacity: 0.45 } : {}),
-          // (carried: over the other rows, with a shadow under it)
-          ...(lifted ? { transform: `translateY(${lifted.dy}px)`, zIndex: 40, cursor: 'grabbing', filter: 'drop-shadow(0 6px 10px rgba(0,0,0,0.55))' } : {}),
+          // (carried: it is drawn over everything instead, following the pointer — liftedGhost)
+          ...(lifted ? { opacity: 0, cursor: 'grabbing' } : {}),
         } as React.CSSProperties}>
-        {inside && <div className="absolute inset-0 overflow-hidden pointer-events-none" style={{ borderRadius: 'inherit', opacity: sel ? 0.55 : 0.35 }}>{inside}</div>}
+        {inside && (
+          // (a video's own pictures, plain as the main video's; a light shade keeps its name readable)
+          <div className="absolute inset-0 overflow-hidden pointer-events-none" style={{ borderRadius: 'inherit', opacity: kind === 'video' || kind === 'broll' ? 1 : sel ? 0.55 : 0.35 }}>
+            {inside}
+            {(kind === 'video' || kind === 'broll') && <div className="absolute inset-0" style={{ background: 'linear-gradient(90deg, rgba(0,0,0,0.55), rgba(0,0,0,0.1) 45%, transparent)' }} />}
+          </div>
+        )}
         <span className="relative flex items-center gap-1 min-w-0 pointer-events-none" style={{ paddingLeft: sel ? GRIP_W - 4 : 2, paddingRight: 6 }}>
           <MediaIcon kind={kind} />
           {kind === 'video' || kind === 'broll'
@@ -1243,19 +1284,71 @@ export function Timeline({
         ))}
       </div>
       {tip && <span className="tl2-bar-tip" style={{ left: `${at(tip.at)}%` }}>{tip.text}</span>}
+      {lifted && liftedGhost(key, kind, lifted, name, st, inside)}
       </Fragment>
+    )
+  }
+  /**
+   * Where the carried thing was when it was picked up (screen px), kept for the whole drag: the
+   * copy is drawn from there plus how far the pointer went, so it stays under the pointer even when
+   * the rows scroll or open up meanwhile
+   */
+  const ghostAnchor = useRef<{ id: string; left: number; top: number; width: number; height: number } | null>(null)
+  if (!lift && !insertDrag) ghostAnchor.current = null
+  const anchorOf = (id: string, home: HTMLElement) => {
+    if (ghostAnchor.current?.id !== id) {
+      const r = home.getBoundingClientRect()
+      ghostAnchor.current = { id, left: r.left, top: r.top, width: r.width, height: r.height }
+    }
+    return ghostAnchor.current
+  }
+  /**
+   * A bar being carried (as in Resolve / CapCut): drawn over the whole page, where it would go, at
+   * the pointer's height — never under the main video or cut off by the rows around it, so it can
+   * be seen all the way to wherever it's let go. Its own place is left empty meanwhile.
+   */
+  function liftedGhost(key: string, kind: 'video' | 'broll' | 'photo' | 'text' | 'music', l: { dy: number; start: number; end: number }, name: string,
+    st: { hidden?: boolean; muted?: boolean; locked?: boolean }, inside?: React.ReactNode) {
+    // (rows under the main video scroll on their own, outside the layer: looked for on the page)
+    const layer = trackRef.current
+    const home = document.querySelector<HTMLElement>(`.tl2-bar[data-item-id="${CSS.escape(key)}"]:not([aria-hidden])`)
+    if (!layer || !home || typeof document === 'undefined') return null
+    const tr = layer.getBoundingClientRect(), r = anchorOf(key, home)
+    const x = tr.left + (l.start / viewDur) * tr.width, w = Math.max(10, ((l.end - l.start) / viewDur) * tr.width)
+    return createPortal(
+      <div aria-hidden="true" style={{ position: 'fixed', left: x, width: w, top: r.top + l.dy, height: r.height, zIndex: 1000, pointerEvents: 'none' }}>
+      {/* where it goes, on it */}
+      <span className="absolute whitespace-nowrap text-[10.5px] font-bold px-1.5 rounded-full" style={{ left: 0, bottom: '100%', marginBottom: 3, background: 'rgba(10,10,10,0.85)', color: '#fff', fontVariantNumeric: 'tabular-nums', boxShadow: '0 0 0 1px rgb(var(--ed-fg) / 0.15)' }}>
+        {clockLabel(l.start)} – {clockLabel(l.end)}
+      </span>
+      <div className="tl2-bar" data-sel="" data-kind={kind}
+        style={{
+          position: 'absolute', left: 0, right: 0, top: 0, bottom: 0,
+          // (solid: what it passes over doesn't show through it)
+          '--bar-c': MEDIA_COLORS[kind], background: kind === 'video' || kind === 'broll' ? '#0d0d0d' : `color-mix(in srgb, ${MEDIA_COLORS[kind]} 55%, #0d0d0d)`,
+          cursor: 'grabbing', filter: 'drop-shadow(0 10px 18px rgba(0,0,0,0.65))', ...(st.hidden ? { opacity: 0.7 } : {}),
+        } as React.CSSProperties}>
+        {inside && <div className="absolute inset-0 overflow-hidden" style={{ borderRadius: 'inherit', opacity: kind === 'video' || kind === 'broll' ? 1 : 0.55 }}>{inside}</div>}
+        <span className="relative flex items-center gap-1 min-w-0" style={{ paddingLeft: 8, paddingRight: 6 }}>
+          <MediaIcon kind={kind} />
+          <span className="truncate">{name}</span>
+          <span className="tl2-bar-len">{lenLabel(l.end - l.start)}</span>
+        </span>
+      </div>
+      </div>,
+      document.body,
     )
   }
   const trackRow = (family: 'visual' | 'audio', t: number, edge: 'top' | 'bottom' | null, children: React.ReactNode, inHead = false) => {
     const hover = trackHover?.family === family ? trackHover.target : null
     return (
       <div key={`${family}-${t}`} data-lane={`${family === 'visual' ? 'track' : 'audio'}-${t}`} data-track-row={family} data-track={t}
-        className="relative" style={{ height: ROW_H, ...(hover === t ? { boxShadow: `inset 0 0 0 1.5px ${ACCENT}`, background: 'rgba(200,255,0,0.07)', borderRadius: 6 } : {}) }}
+        className="relative" style={{ height: ROW_H, ...(hover === t ? { background: 'rgb(var(--ed-fg) / 0.045)', borderRadius: 6 } : {}) }}
         // (the rows above the main video are in the head, which moves the playhead itself)
         onPointerDown={inHead ? undefined : handleScrubDown}>
         {hover === 'new' && edge && (
           <div className="absolute left-0 right-0 pointer-events-none rounded-full" aria-hidden="true"
-            style={{ [edge]: -ROW_GAP / 2 - 1.5, height: 3, background: ACCENT, boxShadow: '0 0 8px rgba(200,255,0,0.6)', zIndex: 20 }} />
+            style={{ [edge]: -ROW_GAP / 2 - 1, height: 2, background: NEW_ROW_LINE, zIndex: 20 }} />
         )}
         {children}
       </div>
@@ -1547,7 +1640,7 @@ export function Timeline({
             </div>
             {/* dragged up with no rows above yet: a new one opens here, over the main video */}
             {trackHover?.family === 'visual' && trackHover.target === 'new' && aboveTracks.length === 0 && (
-              <div className="absolute left-0 right-0 pointer-events-none rounded-full" aria-hidden="true" style={{ top: RULER_H, height: 3, zIndex: 25, background: ACCENT, boxShadow: '0 0 8px rgba(200,255,0,0.6)' }} />
+              <div className="absolute left-0 right-0 pointer-events-none rounded-full" aria-hidden="true" style={{ top: RULER_H, height: 2, zIndex: 25, background: NEW_ROW_LINE }} />
             )}
             {/* Rows on top of the main video: videos, photos, text */}
             {aboveTracks.length > 0 && (
@@ -1719,7 +1812,7 @@ export function Timeline({
             )}
             {snapLine !== null && <div className="absolute pointer-events-none" style={{ left: `${at(snapLine)}%`, top: RULER_H, bottom: 0, width: 0, borderLeft: `1.5px dashed ${ACCENT}`, zIndex: 20 }} />}
             {/* a bar being dragged: where it will play */}
-            {lift && <span className="tl2-trim-tip absolute" style={{ left: `clamp(60px, ${at(lift.start)}%, calc(100% - 60px))` }}>{clockLabel(lift.start)} – {clockLabel(lift.end)}</span>}
+            {/* (a carried bar says where it goes on itself: liftedGhost) */}
           </div>
 
           {/* Rows under the main video (videos, photos and text, played over it like the rows above) */}
@@ -1735,7 +1828,7 @@ export function Timeline({
                 </div>
               )}
               {trackHover?.target === 'new-below' && (
-                <div className="pointer-events-none rounded-full" aria-hidden="true" style={{ height: 3, background: ACCENT, boxShadow: '0 0 8px rgba(200,255,0,0.6)' }} />
+                <div className="pointer-events-none rounded-full" aria-hidden="true" style={{ height: 2, background: NEW_ROW_LINE }} />
               )}
             </div>
           )}
