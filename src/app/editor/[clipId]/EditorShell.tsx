@@ -67,7 +67,7 @@ import { frameSlotSize } from '@/modules/editor/frames'
 import { getBoxPositionAtLerp, type BoxPosition } from '@/lib/interpolation'
 import { SubjectsPanel, type SubjectItem, type AnglesView } from '@/components/editor/SubjectsPanel'
 import { angleRows, angleAt, type Angle, type AngleRow } from '@/modules/editor/angles'
-import { decideFormat } from '@/modules/editor/autoFormat'
+import { decideFormat, AUTO_FORMAT } from '@/modules/editor/autoFormat'
 import type { SegmentLocal, CropBoxLocal, FrameLayout, FrameLane, FrameItem, FrameSettings, TransitionType } from '@chai-cut/shared'
 import { SPEED_MIN, SPEED_MAX } from '@chai-cut/shared'
 import { TransitionsPanel, TRANSITION_DEFAULT_MS, TRANSITION_KINDS, playedTransitionMs, type TransitionJoin } from '@/components/editor/TransitionsPanel'
@@ -2108,16 +2108,31 @@ export function EditorShell({
         && (!mainSlots || (mainSlots.includes(b.slot_index) && frameSlotSize(seg.layout as FrameLayout, true, b.slot_index, seg.frame) !== null)))
       // Two or more views: each follows the person inside it, nobody in two (viewPeople)
       const who = views.length > 1 ? viewPeople(seg, views, tracked, kfs, cuts) : null
+      // Views side by side that don't overlap where they start (a Split or Trio Auto format laid, say)
+      // keep to their own strips while they follow (the user, 2026-10-25: views must never overlap): each
+      // from halfway between it and the view on its left to halfway to the one on its right
+      const starts = views.map(b => getBoxPositionAtLerp(seg.start_ms, kfs[b.id] ?? b.keyframes ?? []))
+      const apart = views.length > 1 && starts.every((p, a) => starts.every((q, b) => a >= b
+        || Math.min(p.x + p.w, q.x + q.w) <= Math.max(p.x, q.x) + 1e-6 || Math.min(p.y + p.h, q.y + q.h) <= Math.max(p.y, q.y) + 1e-6))
+      const byLeft = starts.map((p, i) => ({ p, i })).sort((a, b) => a.p.x - b.p.x)
+      const stripOf = (i: number): readonly [number, number] => {
+        if (!apart) return [0, 1]
+        const k = byLeft.findIndex(e => e.i === i)
+        const prev = byLeft[k - 1]?.p, nxt = byLeft[k + 1]?.p, me = starts[i]
+        return [prev ? (prev.x + prev.w + me.x) / 2 : 0, nxt ? (me.x + me.w + nxt.x) / 2 : 1]
+      }
       views.forEach((box, i) => {
         if (holdGroups && onSeveral(seg, box)) return
-        const size = getBoxPositionAtLerp(seg.start_ms, kfs[box.id] ?? box.keyframes ?? [])
+        const size = starts[i]
         const view = { w: size.w, h: size.h }
         const person = who ? who[i] : null
         if (who && !person) return
-        const changes = !person
+        const found = !person
           ? autoDirectChanges(tracked, seg.start_ms, seg.end_ms, trim.toSource, view, cuts, trim.toTimeline)
           : followChanges(person.path, seg.start_ms, seg.end_ms, trim.toSource, view, 'smooth', cuts)
-        if (!changes?.length) return
+        if (!found?.length) return
+        const [sl, sr] = stripOf(i)
+        const changes = found.map(c => ({ ...c, x: Math.max(sl, Math.min(c.x, sr - c.w)) }))
         next[box.id] = buildKeyframes(changes.map((c, k) => (k === 0 ? { ...c, t_ms: seg.start_ms } : c)))
           .map(k => ({ id: crypto.randomUUID(), box_id: box.id, t_ms: k.t_ms, x: k.x, y: k.y, w: k.w, h: k.h }))
         framed++
@@ -2371,10 +2386,17 @@ export function EditorShell({
       const rows = angleItems.filter(r => r.people > 0)
       // Each place of each scene on its own (who talks differs between them: modules/editor/autoFormat.ts),
       // all decided first, then laid at once (one undo step)
-      const plans = rows.filter(r => !r.group).flatMap(row => row.places.filter(pl => !byHand(pl.shown)).flatMap(pl => {
+      const decided = rows.filter(r => !r.group).flatMap(row => row.places.filter(pl => !byHand(pl.shown)).flatMap(pl => {
         const plan = decideFormat(row.faces.map(f => f.box), pl.talk, ar)
         return plan ? [{ row, shown: pl.shown, plan }] : []
-      }))
+      })).sort((p, q) => p.shown[0] - q.shown[0])
+      // A very short place (under SHORT_PLACE) takes the format of the place right before it, so fast
+      // cutting doesn't flicker (the Rulebook, section 6); the first, or one after a gap, keeps its own
+      const plans = decided.map((x, i) => {
+        const before = i > 0 ? decided[i - 1] : null
+        const short = x.shown[1] - x.shown[0] < AUTO_FORMAT.SHORT_PLACE * 1000
+        return short && before && Math.abs(before.shown[1] - x.shown[0]) <= 150 ? { ...x, plan: before.plan } : x
+      })
       // A scene of two or more that gets the same format and views in every place (who talks changes
       // nothing there: four people's Trio, say) becomes a group with it (user, 2026-10-24: the scene
       // showed "Mark as group" after Auto format): wherever its shot comes back, Follow gives it the
@@ -2388,16 +2410,18 @@ export function EditorShell({
       }
       const groups = rows.flatMap(row => {
         const plan = sameEverywhere(row)
-        return plan && plan.layout !== 'vertical'
+        return plan && (plan.layout === 'split' || plan.layout === 'trio')
           ? [{ at: row.at, layout: plan.layout, boxes: plan.framing.map((b, i) => ({ slot_index: i, x: b.x, y: b.y, w: b.w, h: b.h })) }]
           : []
       })
-      const laid = { vertical: 0, split: 0, trio: 0 }
+      const laid = { vertical: 0, split: 0, trio: 0, whole: 0 }
       for (const { shown, plan } of plans) {
         if (stopAskedRef.current) break
-        if (!formatSpans([shown], plan.layout, plan.framing).length) continue
+        // (the whole picture: a frame showing all of the video — no views to place)
+        if (!formatSpans([shown], plan.layout, plan.framing.length ? plan.framing : undefined).length) continue
         formatsLaidRef.current = true
-        if (plan.layout === 'vertical' || plan.layout === 'split' || plan.layout === 'trio') laid[plan.layout]++
+        if (plan.why === 'whole') laid.whole++
+        else if (plan.layout === 'vertical' || plan.layout === 'split' || plan.layout === 'trio') laid[plan.layout]++
       }
       // Who to follow: everyone whose face can be told (once each, where it is biggest), and the person
       // of a one-person scene even when it can't — a view on one person keeps on them as they move
@@ -2427,8 +2451,9 @@ export function EditorShell({
         } catch { /* the most groups a clip can have, say: the scene stays as laid */ }
       }
       if (added.length) setSubjects(list => [...list, ...added])
-      const scenes = laid.vertical + laid.split + laid.trio
-      const what = [laid.vertical && `${laid.vertical} Vertical`, laid.split && `${laid.split} Split`, laid.trio && `${laid.trio} Trio`].filter(Boolean).join(', ')
+      const scenes = laid.vertical + laid.split + laid.trio + laid.whole
+      const what = [laid.vertical && `${laid.vertical} Vertical`, laid.split && `${laid.split} Split`, laid.trio && `${laid.trio} Trio`,
+        laid.whole && `${laid.whole} whole picture (Blur fill, so nobody is cut out)`].filter(Boolean).join(', ')
       if (stopAskedRef.current) return
       if (!scenes && !added.length) {
         setSubjectNotice('Every scene already has its format — nothing to do.')
