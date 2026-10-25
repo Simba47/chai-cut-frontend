@@ -335,7 +335,8 @@ export function EditorShell({
     // (videos put in between make the clip longer than its stretch of the video)
     const lenMs = Math.max(savedClip.end_ms - savedClip.start_ms + insertedMs(insertsOf(restored.segments, ownVideoId)), ...restored.segments.map(s => s.end_ms))
     const localSegments = [
-      ...normalizeCoverage(restored.segments.filter(s => !isShot(s, ownVideoId)), lenMs),
+      // (time no part covers gets a Vertical part of its own: no "default framing" anywhere)
+      ...fillUncovered(normalizeCoverage(restored.segments.filter(s => !isShot(s, ownVideoId)), lenMs), lenMs, ownVideoId),
       ...restored.segments.filter(s => isShot(s, ownVideoId)).map(s => ({ ...s, end_ms: Math.min(s.end_ms, lenMs) })).filter(s => s.end_ms - s.start_ms >= 100),
     ].sort((a, b) => a.start_ms - b.start_ms)
     const initialKeyframeMap: KeyframeMap = {}
@@ -904,7 +905,7 @@ export function EditorShell({
   // Format panel: sections whose "what's in it" list is open, the kind of item shown, and the list
   const [openSections, setOpenSections] = useState<Set<string>>(() => new Set())
   const [sectionFilter, setSectionFilter] = useState<'all' | SectionItemKind>('all')
-  // Format panel: layout groups (Vertical, Split screen, Trio, Default framing) that are unfolded; all start folded shut
+  // Format panel: layout groups (Vertical, Split screen, Trio) that are unfolded; all start folded shut
   const [openGroups, setOpenGroups] = useState<Set<string>>(() => new Set())
   const sectionListRef = useRef<HTMLDivElement>(null)
   // Picking a photo, text or music (timeline, preview or its panel) opens its settings on the left
@@ -1049,11 +1050,13 @@ export function EditorShell({
     const added = part ? addedVideoBox(part, mainVideoId) : null
     return !!part?.muted || (!!added && added.muted === false)
   }
-  // Uncovered stretch under the playhead, if any
-  const currentGap = useMemo(
-    () => playingSection ? null : uncoveredRanges(sections, clipLengthMs).find(g => currentTimeMs >= g.start_ms && currentTimeMs <= g.end_ms) ?? null,
-    [playingSection, sections, clipLengthMs, currentTimeMs],
-  )
+  // Uncovered stretch under the playhead, if any (not the room after the last part: empty, no
+  // default framing there — what's on the rows reaches past the main row)
+  const currentGap = useMemo(() => {
+    if (playingSection) return null
+    const rowEnd = Math.max(0, ...sections.map(s => s.end_ms))
+    return uncoveredRanges(sections, clipLengthMs).find(g => g.start_ms < rowEnd - 1 && currentTimeMs >= g.start_ms && currentTimeMs <= g.end_ms) ?? null
+  }, [playingSection, sections, clipLengthMs, currentTimeMs])
   // Selection follows the playhead: selecting a format seeks to it, so the crop boxes,
   // layout buttons, timeline highlight and preview always talk about the same format.
   // (the empty space a deleted part left is no part: no layout, nothing to frame or change there)
@@ -1090,7 +1093,11 @@ export function EditorShell({
     () => sections.filter(s => s.end_ms - s.start_ms > 50).sort((a, b) => a.start_ms - b.start_ms),
     [sections],
   )
-  const uncovered = useMemo(() => uncoveredRanges(sections, clipLengthMs), [sections, clipLengthMs])
+  // (not the room after the last part: it's empty, what's on the rows reaches past the main row)
+  const uncovered = useMemo(() => {
+    const rowEnd = Math.max(0, ...sections.map(s => s.end_ms))
+    return uncoveredRanges(sections, clipLengthMs).filter(g => g.start_ms < rowEnd - 1)
+  }, [sections, clipLengthMs])
 
   function getVideoAR() {
     const v = videoRef.current
@@ -1612,8 +1619,9 @@ export function EditorShell({
         }
         return
       }
-      // Default framing follows: give that stretch the new format
-      const gapEnd = next ? next.start_ms : clipLengthMs
+      // A stretch with no part follows: give it the new format (not the room after the last part:
+      // that is empty, what's on the rows reaches past the main row)
+      const gapEnd = next ? next.start_ms : seg.end_ms
       if (gapEnd - seg.end_ms >= 300) {
         const id = addFormat(seg.end_ms, gapEnd, layout, ar, neighbourFraming(layout, seg.end_ms, gapEnd))
         joinSameLayoutNeighbours(id, transitionAfter())
@@ -2591,16 +2599,6 @@ export function EditorShell({
     setSegmentEdge(activeSegment.id, edge, currentTimeMs, clipLengthMs)
   }
 
-  function addFormatInGap(gap: { start_ms: number; end_ms: number }) {
-    const id = addFormat(gap.start_ms, gap.end_ms, 'vertical', getVideoAR())
-    // (a clip of pieces: the new part shows the video from where it is there)
-    if (piecesOn) {
-      const box = useEditorStore.getState().segments.find(s => s.id === id)?.crop_boxes[0]
-      if (box) updateBoxSource(id, box.id, null, Math.round(videoAtPieces(pieces, gap.start_ms)))
-    }
-    seekToMs(gap.start_ms)
-  }
-
   function handleResetPositions() {
     const first = [...sections].sort((a, b) => a.start_ms - b.start_ms)[0]
     if (!first) return
@@ -2611,10 +2609,12 @@ export function EditorShell({
     setActiveSegmentId(first.id)
   }
 
+  // (never taken out, leaving time with no part: that would be "default framing". Its look goes
+  // back to Vertical instead; empty space stays empty)
   function handleDeleteFormat(segId: string) {
-    if (cropPositions.length > 1) { removeSegment(segId); return }
-    const seg = cropPositions[0]
+    const seg = cropPositions.find(s => s.id === segId)
     if (!seg) return
+    if (isGapPart(seg, mainVideoId)) { notifyLocked('This empty space can’t be cut out here: a clip must stay at least a second long'); return }
     pause()
     skipCanvasTransitionRef.current = true
     applyLayout(seg.id, 'vertical', getVideoAR())
@@ -5449,9 +5449,6 @@ export function EditorShell({
                     style={{ background: 'rgba(200,255,0,0.12)', color: 'var(--ed-accent-text)' }}>
                     {cropPositions.length}
                   </span>
-                  {uncovered.length > 0 && (
-                    <span className="text-[11px]" style={{ color: 'rgb(var(--ed-fg) / 0.4)' }}>+ {uncovered.length} default</span>
-                  )}
                   <div className="flex-1" />
                   {cropPositions.length > 1 && (
                     <button onClick={() => confirm({
@@ -5498,7 +5495,7 @@ export function EditorShell({
                     const isActiveSeg = seg.id === activeSegment?.id
                     const only = cropPositions.length === 1
                     // Deleting a section cuts that part of the video out (askDeleteFormat); only the whole clip is reset instead
-                    const deleteLabel = isInsert(seg, mainVideoId) ? 'Remove this inserted video (the rest moves back)' : !cutOk ? (only ? 'Reset this format to Vertical' : `Delete format ${i + 1} (its time goes back to default framing)`)
+                    const deleteLabel = isInsert(seg, mainVideoId) ? 'Remove this inserted video (the rest moves back)' : !cutOk ? (only ? 'Reset this format to Vertical' : `Reset format ${i + 1} to Vertical`)
                       : clipLengthMs - (seg.end_ms - seg.start_ms) < MIN_CLIP_LEFT_MS ? 'Reset this format to Vertical' : `Delete this part of the video (${msToLabel(seg.start_ms)}–${msToLabel(seg.end_ms)})`
                     const name = LAYOUTS.find(l => l.id === shown)?.label ?? shown
                     const all = itemsBySection.get(seg.id) ?? []
@@ -5643,17 +5640,6 @@ export function EditorShell({
                           </div>
                         )
                       })}
-                      {uncovered.length > 0 && (
-                        <div className="flex flex-col gap-1.5">
-                          <SectionGroupHead label="Default framing" count={uncovered.length}
-                            lengthMs={uncovered.reduce((n, g) => n + g.end_ms - g.start_ms, 0)}
-                            open={openGroups.has('gaps')} playing={!!currentGap} onToggle={() => toggleGroup('gaps')} />
-                          {openGroups.has('gaps') && uncovered.map(g => (
-                            <GapRow key={`gap-${g.start_ms}`} gap={g} active={currentGap?.start_ms === g.start_ms}
-                              onSelect={() => seekToMs(g.start_ms)} onAdd={() => addFormatInGap(g)} />
-                          ))}
-                        </div>
-                      )}
                     </>
                   )
                   })()}
@@ -6760,7 +6746,7 @@ function lengthLabel(ms: number): string {
   return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s`
 }
 
-/** A fold-away heading over the sections that share a layout (or the uncovered "Default framing" stretches) */
+/** A fold-away heading over the sections that share a layout */
 function SectionGroupHead({ label, layout, count, lengthMs, open, playing, onToggle }: {
   label: string
   layout?: LayoutType
@@ -6785,32 +6771,6 @@ function SectionGroupHead({ label, layout, count, lengthMs, open, playing, onTog
   )
 }
 
-function GapRow({ gap, active, onSelect, onAdd }: {
-  gap: { start_ms: number; end_ms: number }
-  active: boolean
-  onSelect: () => void
-  onAdd: () => void
-}) {
-  return (
-    <div role="button" tabIndex={0} onClick={onSelect} onKeyDown={e => { if (e.key === 'Enter') onSelect() }}
-      className="flex items-center gap-2 px-2 py-1.5 rounded-lg cursor-pointer transition-colors hover:bg-[rgb(var(--ed-fg)/0.04)]"
-      style={{ background: active ? 'rgb(var(--ed-fg) / 0.05)' : undefined, border: '1px dashed rgb(var(--ed-fg) / 0.16)' }}>
-      <span className="shrink-0 w-7 h-8 flex items-center justify-center rounded-md" style={{ border: '1px dashed rgb(var(--ed-fg) / 0.25)', color: 'rgb(var(--ed-fg) / 0.4)' }}>
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><rect x="7" y="3" width="10" height="18" rx="2" /></svg>
-      </span>
-      <span className="flex-1 min-w-0 flex flex-col gap-0.5">
-        <span className="text-xs font-medium truncate" style={{ color: 'rgb(var(--ed-fg) / 0.6)' }}>Default framing</span>
-        <span className="text-[11px] tabular-nums" style={{ color: 'rgb(var(--ed-fg) / 0.38)' }}>{msToLabel(gap.start_ms)} → {msToLabel(gap.end_ms)}</span>
-      </span>
-      <button onClick={e => { e.stopPropagation(); onAdd() }} title="Give this part its own layout"
-        className="shrink-0 h-7 px-2.5 flex items-center gap-1 rounded-lg text-[11px] font-bold transition-opacity hover:opacity-90"
-        style={{ color: '#000', background: '#C8FF00' }}>
-        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3.5" strokeLinecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
-        Add
-      </button>
-    </div>
-  )
-}
 
 /** Circular arrow with a 5 inside: jump 5 seconds back or forward */
 function SkipFiveIcon({ dir }: { dir: 'back' | 'forward' }) {

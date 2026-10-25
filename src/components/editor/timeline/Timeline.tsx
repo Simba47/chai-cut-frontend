@@ -372,15 +372,6 @@ export function Timeline({
   for (let i = 0; i + 1 < mains.length; i++) {
     if (Math.abs(mains[i + 1].start_ms - mains[i].end_ms) <= 1) junctions.push({ left: mains[i], right: mains[i + 1] })
   }
-  const gaps: { start_ms: number; end_ms: number }[] = []
-  {
-    let cursor = 0
-    for (const seg of mains) {
-      if (seg.start_ms - cursor >= 50) gaps.push({ start_ms: cursor, end_ms: seg.start_ms })
-      cursor = Math.max(cursor, seg.end_ms)
-    }
-    if (duration - cursor >= 50) gaps.push({ start_ms: cursor, end_ms: duration })
-  }
   const isSel = (id: string, own: boolean) => (selectedId !== undefined ? id === selectedId : own)
   const musicEnd = (m: { start_ms: number; duration_ms?: number }) => Math.min(duration, m.start_ms + (m.duration_ms ?? duration))
   const originals = musicTracks.filter(m => m.original)
@@ -1566,29 +1557,37 @@ export function Timeline({
             )}
             {/* Main row: one block per part; a transition button between touching parts */}
             <div data-lane="main" className="relative" style={{ height: mainRowH }}>
-              {gaps.map(g => (
-                <div key={`gap-${g.start_ms}`} className="tl2-gap absolute" style={blockBox(g.start_ms, g.end_ms)}
-                  title={`${msToLabel(g.start_ms)}–${msToLabel(g.end_ms)} · no format: default framing`}>
-                  <span>Default framing</span>
-                </div>
-              ))}
               {mains.map((seg, i) => mainBlock(seg, i))}
               {/* a video from a row carried over the main row: it goes in here */}
               {mainDropAt != null && (
                 <div className="absolute pointer-events-none" style={{ left: `${at(mainDropAt)}%`, top: 0, bottom: 0, zIndex: 35 }}>
-                  <div className="absolute top-0 bottom-0 rounded-full" style={{ left: -1.5, width: 3, background: ACCENT, boxShadow: '0 0 8px rgba(200,255,0,0.6)' }} />
+                  <div className="absolute top-0 bottom-0 rounded-full" style={{ left: -1, width: 2, background: ACCENT }} />
                   <span className="absolute whitespace-nowrap text-[10px] font-bold px-1.5 py-0.5 rounded" style={{ top: -2, left: 6, background: ACCENT, color: '#000' }}>Insert into the main video · {clockLabel(mainDropAt)}</span>
                 </div>
               )}
               {/* a video in the main row being carried: where it will go in */}
-              {insertDrag && !insertDrag.off && (() => {
+              {/* Let go over empty room: exactly here — its outline where it will be */}
+              {insertDrag && !insertDrag.off && insertDrag.place != null && (() => {
+                const seg = mains.find(m => m.id === insertDrag.id)
+                if (!seg) return null
+                const len = seg.end_ms - seg.start_ms
+                return (
+                  <div className="absolute pointer-events-none" style={{ ...blockBox(insertDrag.place, insertDrag.place + len), zIndex: 35, borderRadius: 8,
+                    boxShadow: `inset 0 0 0 2px ${ACCENT}`, background: 'color-mix(in srgb, #c8ff00 10%, transparent)' }}>
+                    <span className="absolute whitespace-nowrap text-[10px] font-bold px-1.5 py-0.5 rounded" style={{ top: -18, left: 0, background: ACCENT, color: '#000' }}>
+                      {`Place here · starts at ${clockLabel(insertDrag.place)}`}
+                    </span>
+                  </div>
+                )
+              })()}
+              {insertDrag && !insertDrag.off && insertDrag.place == null && (() => {
                 const seg = mains.find(m => m.id === insertDrag.id)
                 if (!seg) return null
                 const stays = insertDrag.to > seg.start_ms && insertDrag.to < seg.end_ms
                 const lands = insertDrag.to >= seg.end_ms ? insertDrag.to - (seg.end_ms - seg.start_ms) : insertDrag.to
                 return (
                   <div className="absolute pointer-events-none" style={{ left: `${at(insertDrag.to)}%`, top: 0, bottom: 0, zIndex: 35 }}>
-                    {!stays && <div className="absolute top-0 bottom-0 rounded-full" style={{ left: -1.5, width: 3, background: ACCENT, boxShadow: '0 0 8px rgba(200,255,0,0.6)' }} />}
+                    {!stays && <div className="absolute top-0 bottom-0 rounded-full" style={{ left: -1, width: 2, background: ACCENT }} />}
                     <span className="absolute whitespace-nowrap text-[10px] font-bold px-1.5 py-0.5 rounded" style={{ top: -2, left: 6, background: ACCENT, color: '#000' }}>
                       {stays ? 'Let go: it stays here' : `Move here · starts at ${clockLabel(lands)}`}
                     </span>

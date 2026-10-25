@@ -2084,8 +2084,6 @@ body {
 .tl2-grip[data-edge="end"] { border-radius: 3px 8px 8px 3px; }
 .tl2-grip:hover, .tl2-grip[data-on] { filter: brightness(1.12); box-shadow: 0 0 12px rgba(200, 255, 0, 0.6); }
 .tl2-grip:focus-visible { outline: 2px solid #fff; outline-offset: 1px; }
-.tl2-gap { display: flex; align-items: center; justify-content: center; overflow: hidden; border-radius: 8px; background: repeating-linear-gradient(135deg, rgba(255, 255, 255, 0.06) 0 6px, transparent 6px 12px); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.1); pointer-events: none; }
-.tl2-gap span { font-size: 10px; font-weight: 600; color: rgb(var(--ed-fg) / 0.5); white-space: nowrap; }
 /* the transition button between two parts */
 .tl2-trans { width: 20px; height: 20px; margin: -10px 0 0 -10px; display: grid; place-items: center; border-radius: 7px; background: #1b1b1f; color: rgb(var(--ed-fg) / 0.85); box-shadow: 0 0 0 1.5px rgba(0, 0, 0, 0.85), 0 0 0 2.5px rgba(255, 255, 255, 0.16); z-index: 6; transition: transform .12s, color .15s, background .15s; }
 .tl2-trans:hover { transform: scale(1.12); color: #c8ff00; }
