@@ -1,7 +1,7 @@
 'use client'
 
 import { TEMPLATE_FONTS, templateFontFamily, templateOf, isLatinText } from '@/modules/captions/templates'
-import { drawCreatorCaptions } from '@/modules/captions/creator'
+import { drawCreatorCaptions, CREATOR_DEFAULT_Y } from '@/modules/captions/creator'
 import { personMask } from '@/modules/captions/personMask'
 import { useCaptionStore } from '@/modules/captions/store'
 import { useRef, useEffect, useCallback, useState, useMemo, useId, createContext, useContext } from 'react'
@@ -1247,6 +1247,17 @@ function exportFont(id?: string | null) {
   return f
 }
 
+/**
+ * Where captions sit when they haven't been moved (position_y unset), as each look draws them: a
+ * Creator style's own place (Behind near the top…), "One word" in the middle, the rest near the
+ * bottom. The box that moves them starts from here, so they stay under the pointer.
+ */
+export function captionDefaultY(style: Partial<CaptionStyle>): number {
+  const tpl = templateOf(style)
+  if (tpl?.look) return CREATOR_DEFAULT_Y[tpl.look]
+  return (tpl ? tpl.base : style.animation) === 'word' ? 0.5 : 0.84
+}
+
 /** Words per caption line for a style (render.py _preset_events uses the same rule) */
 export function captionWordsPerLine(style: Partial<CaptionStyle>) {
   const tpl = templateOf(style)
@@ -1818,6 +1829,8 @@ interface OutputCanvasProps {
   captionStyle?: Partial<CaptionStyle>
   captionTextCase?: TextCase
   showCaptions?: boolean
+  /** No captions at this clip time (a gap left by a deleted part: its words aren't shown) */
+  captionsOffAt?: (clipMs: number) => boolean
   // Text overlays
   textOverlays?: TextOverlayType[]
   activeTextOverlayId?: string | null
@@ -1837,8 +1850,6 @@ interface OutputCanvasProps {
    */
   transitionCuts?: TransitionCut[]
   /** The Free plan's watermark: drawn last, over everything, where the export puts it (watermark.ts) */
-  /** No captions at this clip time (a gap left by a deleted part: its words aren't shown) */
-  captionsOffAt?: (clipMs: number) => boolean
   watermark?: boolean
   /** The clip's progress bar (a brand kit's) and the clip's length it fills over; null = none */
   progressBar?: (ProgressBar & { lengthMs: number }) | null
@@ -1940,6 +1951,8 @@ export function OutputCanvas({
   const captionStyleRef  = useRef(captionStyle)
   const captionCaseRef   = useRef(captionTextCase)
   const showCaptionsRef  = useRef(showCaptions)
+  const captionsOffAtRef = useRef(captionsOffAt)
+  captionsOffAtRef.current = captionsOffAt
   captionStyleRef.current = captionStyle
   captionCaseRef.current  = captionTextCase
   showCaptionsRef.current = showCaptions
@@ -1959,8 +1972,6 @@ export function OutputCanvas({
   const captionChunksRef  = useRef<FlatWord[][]>([])
   const liveLineRef       = useRef<FlatWord[] | null>(null)
   const prevWordsRef      = useRef<typeof words>(undefined)
-  const captionsOffAtRef = useRef(captionsOffAt)
-  captionsOffAtRef.current = captionsOffAt
   // Presets change how many words a line holds
   const wordsPerLine = captionWordsPerLine(captionStyle ?? {})
   const prevPerLineRef    = useRef(wordsPerLine)
@@ -2526,7 +2537,7 @@ export function OutputCanvas({
       {showCaptions && onCaptionPositionChange && (
         <CaptionBox
           rect={capRect}
-          position_y={captionStyle?.position_y ?? 0.84}
+          position_y={captionStyle?.position_y ?? captionDefaultY(captionStyle ?? {})}
           position_x={captionStyle?.position_x ?? 0.5}
           size={captionStyle?.size ?? 52}
           onMove={onCaptionPositionChange}
