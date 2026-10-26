@@ -29,6 +29,8 @@ type LinkBrand = {
 }
 const CURRENT_KEY = 'shortcut:brandKit'
 const SAVE_AFTER_MS = 600
+/** A save that didn't land is sent again after this long, longer each time (up to RETRY_MAX_MS) */
+const RETRY_FIRST_MS = 2000, RETRY_MAX_MS = 30000
 
 export interface BrandKits {
   kits: BrandKit[]
@@ -38,7 +40,8 @@ export interface BrandKits {
   error: string | null
   current: BrandKit | null
   select: (id: string) => void
-  create: () => Promise<void>
+  /** A new kit (picked): it's given back */
+  create: () => Promise<BrandKit>
   /** logo_url, music_url, sting_url: the new files' links, for showing and playing them (not saved) */
   update: (id: string, patch: KitPatch) => void
   remove: (id: string) => Promise<void>
@@ -48,14 +51,18 @@ export interface BrandKits {
   /** A brand read from a website or profile link (server services/brandFromLink.ts) */
   fromLink: (url: string) => Promise<LinkBrand>
   saveState: SaveState
+  /** Why the server turned a save down (it isn't tried again); null while saves can still land */
+  saveError: string | null
   reload: () => void
 }
 
 async function json<T>(res: Response): Promise<T> {
   const body = await res.json().catch(() => ({}))
-  if (!res.ok) throw new Error((body as { error?: string }).error ?? 'Something went wrong. Please try again.')
+  if (!res.ok) throw Object.assign(new Error((body as { error?: string }).error ?? 'Something went wrong. Please try again.'), { status: res.status })
   return body as T
 }
+/** A save the server turned down for good (the kit gone, not allowed…): sending it again won't help */
+const refused = (e: unknown) => { const st = (e as { status?: number })?.status; return !!st && st >= 400 && st < 500 && st !== 408 && st !== 429 }
 
 /** A picture's height ÷ width, read in the browser before it's uploaded */
 function pictureRatio(file: File): Promise<number> {
@@ -68,6 +75,10 @@ function pictureRatio(file: File): Promise<number> {
   })
 }
 
+/** What the kit's save line says */
+export const saveLabel = (b: Pick<BrandKits, 'saveState' | 'saveError'>) =>
+  b.saveState === 'saving' ? 'Saving…' : b.saveState === 'error' ? (b.saveError ? `Not saved — ${b.saveError}` : 'Not saved yet — trying again…') : 'Saved'
+
 /** The account's brand kits: loaded once, changes saved shortly after they're made */
 export function useBrandKits(): BrandKits {
   const [kits, setKits] = useState<BrandKit[]>([])
@@ -77,10 +88,14 @@ export function useBrandKits(): BrandKits {
   const [error, setError] = useState<string | null>(null)
   const [currentId, setCurrentId] = useState<string | null>(null)
   const [saveState, setSaveState] = useState<SaveState>('saved')
+  const [saveError, setSaveError] = useState<string | null>(null)
   const timers = useRef(new Map<string, ReturnType<typeof setTimeout>>())
   const pending = useRef(new Map<string, { name?: string; data?: BrandKitData }>())
   /** Each kit's save on its way (the next one waits for it) */
   const sending = useRef(new Map<string, Promise<void>>())
+  /** How many times in a row a kit's save hasn't landed (it waits longer before each try) */
+  const tries = useRef(new Map<string, number>())
+  const flushRef = useRef<(id: string, keepalive?: boolean) => void>(() => {})
 
   const load = useCallback(() => {
     setLoading(true); setError(null)
@@ -95,6 +110,23 @@ export function useBrandKits(): BrandKits {
       .finally(() => setLoading(false))
   }, [])
   useEffect(() => { load() }, [load])
+  // Back to this tab (the kits may have changed in another one: the Brands page, another clip):
+  // read again, quietly — only while nothing here is waiting to be saved, so nothing typed is lost
+  useEffect(() => {
+    const again = () => {
+      if (document.visibilityState !== 'visible' || pending.current.size || timers.current.size || sending.current.size) return
+      fetch('/api/brand-kits').then(r => json<{ kits: BrandKit[]; limit: number; plan: string }>(r))
+        .then(d => {
+          if (pending.current.size || timers.current.size) return
+          setKits(d.kits); setLimit(d.limit); setPlan(d.plan)
+          setCurrentId(cur => (d.kits.some(k => k.id === cur) ? cur : d.kits[0]?.id ?? null))
+        })
+        .catch(() => { /* kept as it is */ })
+    }
+    document.addEventListener('visibilitychange', again)
+    window.addEventListener('focus', again)
+    return () => { document.removeEventListener('visibilitychange', again); window.removeEventListener('focus', again) }
+  }, [])
 
   const flush = useCallback((id: string, keepalive = false) => {
     const t = timers.current.get(id)
@@ -102,16 +134,37 @@ export function useBrandKits(): BrandKits {
     timers.current.delete(id)
     const patch = pending.current.get(id)
     pending.current.delete(id)
-    if (!patch) return
+    // (nothing left to send — only a name being retyped: what's on screen is as saved)
+    if (!patch || (patch.name === undefined && patch.data === undefined)) {
+      if (!timers.current.size && !pending.current.size && !sending.current.size) setSaveState('saved')
+      return
+    }
     setSaveState('saving')
     const send = () => fetch(`/api/brand-kits/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch), keepalive })
       .then(r => json<{ kit: BrandKit }>(r))
       // (the saved kit's logo link; what's on screen stays as typed meanwhile)
       .then(d => {
+        tries.current.delete(id)
         setKits(ks => ks.map(k => (k.id === id ? { ...k, logo_url: d.kit.logo_url ?? k.logo_url } : k)))
-        if (!timers.current.size) setSaveState('saved')
+        if (!timers.current.size && !pending.current.size) { setSaveState('saved'); setSaveError(null) }
       })
-      .catch(() => setSaveState('error'))
+      .catch(e => {
+        // Turned down (the kit deleted elsewhere, not allowed): said why, not sent again
+        if (refused(e)) {
+          tries.current.delete(id)
+          setSaveState('error'); setSaveError(e instanceof Error ? e.message : String(e))
+          return
+        }
+        // Not saved (no connection, the server busy): the change is kept — under anything changed
+        // since — and sent again shortly, then again a little later each time, until it lands
+        const newer = pending.current.get(id)
+        pending.current.set(id, { ...patch, ...newer })
+        setSaveState('error')
+        if (keepalive || timers.current.has(id)) return
+        const n = (tries.current.get(id) ?? 0) + 1
+        tries.current.set(id, n)
+        timers.current.set(id, setTimeout(() => flushRef.current(id), Math.min(RETRY_MAX_MS, RETRY_FIRST_MS * 2 ** (n - 1))))
+      })
     // One save of a kit at a time, in order: a slow earlier save landing after a later one would
     // put back what it had (leaving the editor: sent at once)
     const before = keepalive ? undefined : sending.current.get(id)
@@ -119,15 +172,34 @@ export function useBrandKits(): BrandKits {
     sending.current.set(id, run)
     run.finally(() => { if (sending.current.get(id) === run) sending.current.delete(id) })
   }, [])
+  flushRef.current = flush
   // Leaving the editor: what's still waiting is sent
   useEffect(() => () => { for (const id of [...pending.current.keys()]) flush(id, true) }, [flush])
+  // Back online: what's waiting goes at once. Leaving the page: what's waiting is sent on the way
+  // out, and if saves have been failing (it may not land), the browser asks first
+  useEffect(() => {
+    const online = () => { for (const id of [...pending.current.keys()]) flush(id) }
+    const leaving = (e: BeforeUnloadEvent) => {
+      if (!pending.current.size) return
+      const failing = tries.current.size > 0
+      for (const id of [...pending.current.keys()]) flush(id, true)
+      if (failing) e.preventDefault()
+    }
+    window.addEventListener('online', online)
+    window.addEventListener('beforeunload', leaving)
+    return () => { window.removeEventListener('online', online); window.removeEventListener('beforeunload', leaving) }
+  }, [flush])
 
   const update = useCallback((id: string, { logo_url, music_url, sting_url, ...patch }: KitPatch) => {
     setKits(ks => ks.map(k => (k.id === id ? {
       ...k, ...(patch.name !== undefined ? { name: patch.name } : {}), ...(patch.data ? { data: patch.data } : {}),
       ...(logo_url !== undefined ? { logo_url } : {}), ...(music_url !== undefined ? { music_url } : {}), ...(sting_url !== undefined ? { sting_url } : {}),
     } : k)))
-    pending.current.set(id, { ...pending.current.get(id), ...patch })
+    // (a name being retyped — empty for a moment — isn't saved: the box puts "Brand kit" back if left empty)
+    const { name, ...rest } = patch
+    const send = name !== undefined && !name.trim() ? rest : patch
+    pending.current.set(id, { ...pending.current.get(id), ...send })
+    setSaveError(null)
     const t = timers.current.get(id)
     if (t) clearTimeout(t)
     timers.current.set(id, setTimeout(() => flush(id), SAVE_AFTER_MS))
@@ -144,6 +216,7 @@ export function useBrandKits(): BrandKits {
       .then(r => json<{ kit: BrandKit }>(r))
     setKits(ks => [...ks, kit])
     select(kit.id)
+    return kit
   }, [select])
 
   const remove = useCallback(async (id: string) => {
@@ -178,7 +251,7 @@ export function useBrandKits(): BrandKits {
   }, [])
 
   const current = kits.find(k => k.id === currentId) ?? null
-  return { kits, limit, plan, loading, error, current, select, create, update, remove, leave, uploadLogo, fromLink, saveState, reload: load }
+  return { kits, limit, plan, loading, error, current, select, create, update, remove, leave, uploadLogo, fromLink, saveState, saveError, reload: load }
 }
 
 /**
@@ -297,6 +370,10 @@ export function BrandKitPanel({ brand, onKitId, onTurnOn, onTurnOff, onDelete, p
         <span aria-hidden="true">+</span> {busy ? 'Making…' : 'New brand kit'}
       </button>
       {full && <p className="-mt-2 text-[11px]" style={{ color: 'rgb(var(--ed-fg) / 0.5)' }}>That&rsquo;s all your plan has room for. <a href="/pricing" className="font-semibold hover:underline" style={{ color: 'var(--ed-accent-text)' }}>Upgrade</a> for more.</p>}
+      {/* All of them, outside the editor (a new tab: this clip stays open) */}
+      <a href="/brand" target="_blank" rel="noopener" className="-mt-1 self-center text-[11px] font-semibold hover:underline" style={{ color: 'rgb(var(--ed-fg) / 0.55)' }}>
+        All your brand kits ↗
+      </a>
       {note && <p role="alert" className="-mt-2 text-[11px]" style={{ color: '#fca5a5' }}>{note}</p>}
 
       {brand.current && (
@@ -347,7 +424,7 @@ export function BrandKitPanel({ brand, onKitId, onTurnOn, onTurnOff, onDelete, p
 }
 
 /** A picture's height ÷ width from its link (null when it doesn't load) */
-function urlRatio(url: string): Promise<number | null> {
+export function urlRatio(url: string): Promise<number | null> {
   return new Promise(resolve => {
     const img = new Image()
     img.onload = () => resolve(img.naturalWidth ? img.naturalHeight / img.naturalWidth : null)
@@ -505,7 +582,7 @@ function ProgressBarFields({ value, onChange }: { value: ProgressBar; onChange: 
   )
 }
 
-function KitBadge({ kit }: { kit: BrandKit }) {
+export function KitBadge({ kit }: { kit: BrandKit }) {
   return (
     <span className="shrink-0 w-10 h-10 rounded-lg flex items-center justify-center overflow-hidden" style={{ background: kit.data.colors.main, boxShadow: '0 0 0 1px rgb(var(--ed-fg) / 0.12)' }}>
       {kit.logo_url
@@ -530,7 +607,11 @@ const STEPS: Array<{ id: StepId; name: string; short: string; about: string }> =
   { id: 'team', name: 'Team', short: 'Share with your team', about: 'Share this kit with your team, and lock its colours and fonts for them.' },
 ]
 
-export function BrandKitStudio({ brand, onKitId, onTurnOn, onTurnOff, onClose }: BrandSwitchProps & { brand: BrandKits; onClose: () => void }) {
+export function BrandKitStudio({ brand, onKitId = null, onTurnOn, onTurnOff, onClose, closeLabel = 'Back to the video' }: Partial<BrandSwitchProps> & {
+  brand: BrandKits; onClose: () => void
+  /** What closing it goes back to (the Brands page: "Back to your brands") */
+  closeLabel?: string
+}) {
   const kit = brand.current
   const [uploading, setUploading] = useState(false)
   const [logoError, setLogoError] = useState<string | null>(null)
@@ -548,7 +629,7 @@ export function BrandKitStudio({ brand, onKitId, onTurnOn, onTurnOff, onClose }:
         {!brand.loading && !brand.error && (
           <p className="text-xs max-w-xs" style={{ color: 'rgb(var(--ed-fg) / 0.55)' }}>Make one with &ldquo;New brand kit&rdquo; on the left: your colours, logo, @handle and title style, ready for every clip.</p>
         )}
-        <button type="button" onClick={onClose} className="text-xs font-semibold hover:underline" style={{ color: 'var(--ed-accent-text)' }}>Back to the video</button>
+        <button type="button" onClick={onClose} className="text-xs font-semibold hover:underline" style={{ color: 'var(--ed-accent-text)' }}>{closeLabel}</button>
       </div>
     )
   }
@@ -592,7 +673,8 @@ export function BrandKitStudio({ brand, onKitId, onTurnOn, onTurnOff, onClose }:
     try {
       const up = await brand.uploadLogo(file)
       // (shown straight away from the link the upload gave)
-      brand.update(kit.id, { data: { ...kit.data, logo: { ...kit.data.logo, path: up.path, ratio: up.ratio } }, logo_url: up.url })
+      const cur = now()
+      brand.update(kit.id, { data: { ...cur, logo: { ...cur.logo, path: up.path, ratio: up.ratio } }, logo_url: up.url })
     } catch (e) {
       setLogoError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -615,10 +697,10 @@ export function BrandKitStudio({ brand, onKitId, onTurnOn, onTurnOff, onClose }:
         {readOnly
           ? <span className="text-[11px] shrink-0" style={{ color: 'rgb(var(--ed-fg) / 0.5)' }}>Shared by {kit.shared_by}{d.lock ? ' · brand lock' : ''}</span>
           : <span role="status" className="text-[11px] shrink-0" style={{ color: brand.saveState === 'error' ? '#fca5a5' : 'rgb(var(--ed-fg) / 0.45)' }}>
-            {brand.saveState === 'saving' ? 'Saving…' : brand.saveState === 'error' ? 'Not saved — check your connection' : 'Saved'}
+            {saveLabel(brand)}
           </span>}
-        <div className="shrink-0"><BrandOnSwitch kit={kit} onKitId={onKitId} onTurnOn={onTurnOn} onTurnOff={onTurnOff} compact /></div>
-        <button type="button" onClick={onClose} aria-label="Back to the video" title="Back to the video"
+        {onTurnOn && onTurnOff && <div className="shrink-0"><BrandOnSwitch kit={kit} onKitId={onKitId} onTurnOn={onTurnOn} onTurnOff={onTurnOff} compact /></div>}
+        <button type="button" onClick={onClose} aria-label={closeLabel} title={closeLabel}
           className="w-8 h-8 flex items-center justify-center rounded-lg shrink-0 transition-colors hover:bg-[rgb(var(--ed-fg)/0.1)]" style={{ color: 'rgb(var(--ed-fg) / 0.6)' }}>
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
         </button>
@@ -654,7 +736,7 @@ export function BrandKitStudio({ brand, onKitId, onTurnOn, onTurnOff, onClose }:
             </div>
             {readOnly && (
               <p className="text-xs leading-relaxed p-3 rounded-lg" style={{ background: 'rgba(200,255,0,0.08)', color: 'rgb(var(--ed-fg) / 0.75)' }}>
-                {kit.shared_by} shared this kit with you: switch it on for your clips. Only they can change it.
+                {kit.shared_by} shared this kit with you: {onTurnOn ? 'switch it on for your clips' : 'pick it for a clip in the editor'}. Only they can change it.
                 {d.lock && ' Brand lock is on: your colour and font choices are its colours and fonts.'}
               </p>
             )}
@@ -867,7 +949,7 @@ const MOCK_W = 200, MOCK_H = (MOCK_W * 16) / 9, K = MOCK_W / 1080
 /** Frame text is drawn in Montserrat Bold (render.py _frame_text_font) */
 const FRAME_FONT = 'Montserrat, sans-serif'
 
-function Mock({ label, children }: { label: string; children: React.ReactNode }) {
+export function Mock({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <figure className="flex flex-col gap-2 m-0">
       <figcaption className="cap-heading">{label}</figcaption>
@@ -883,7 +965,7 @@ function Mock({ label, children }: { label: string; children: React.ReactNode })
  * caption line in the kit's caption style. The logo can be dragged anywhere (onPlace: its new
  * top-left, shares of the frame); the app's buttons can be laid over it.
  */
-function ClipMock({ kit, platform = 'off', onPlace }: { kit: BrandKit; platform?: Platform; onPlace?: (x: number, y: number) => void }) {
+export function ClipMock({ kit, platform = 'off', onPlace }: { kit: BrandKit; platform?: Platform; onPlace?: (x: number, y: number) => void }) {
   const d = kit.data, box = logoBox(d.logo)
   const [drag, setDrag] = useState<{ x: number; y: number } | null>(null)
   const shown = drag ?? { x: box.x, y: box.y }
@@ -963,7 +1045,7 @@ function PlatformSwitch({ value, onChange }: { value: Platform; onChange: (p: Pl
 }
 
 /** A caption style change from the Captions panel, as the kit keeps it */
-function captionPatch(u: Partial<import('@/lib/shared/types').CaptionStyle>): Partial<BrandCaptions> {
+export function captionPatch(u: Partial<import('@/lib/shared/types').CaptionStyle>): Partial<BrandCaptions> {
   const out: Partial<BrandCaptions> = {}
   if ('template' in u) out.template = u.template ?? null
   if (u.animation) out.animation = u.animation
@@ -990,7 +1072,7 @@ function DefaultSwitch({ kit, compact = false, onChange }: { kit: BrandKit; comp
   )
 }
 
-function Switch({ on, label, onChange }: { on: boolean; label: string; onChange: (on: boolean) => void }) {
+export function Switch({ on, label, onChange }: { on: boolean; label: string; onChange: (on: boolean) => void }) {
   return (
     <button type="button" role="switch" aria-checked={on} aria-label={label} onClick={e => { e.preventDefault(); onChange(!on) }}
       className="relative shrink-0 rounded-full transition-colors" style={{ width: 34, height: 19, background: on ? '#c8ff00' : 'rgb(var(--ed-fg) / 0.18)' }}>
@@ -1203,7 +1285,7 @@ function CardFields({ value: c, onChange }: { value: BrandCardSettings; onChange
   )
 }
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+export function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <section className="flex flex-col gap-3 p-4 rounded-2xl" style={{ background: 'rgb(var(--ed-fg) / 0.03)', boxShadow: 'inset 0 0 0 1px rgb(var(--ed-fg) / 0.08)' }}>
       <h3 className="cap-heading">{title}</h3>
@@ -1212,7 +1294,7 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   )
 }
 
-function ColorRow({ label, hint, value, onChange }: { label: string; hint?: string; value: string; onChange: (v: string) => void }) {
+export function ColorRow({ label, hint, value, onChange }: { label: string; hint?: string; value: string; onChange: (v: string) => void }) {
   const [draft, setDraft] = useState(value)
   useEffect(() => { setDraft(value) }, [value])
   return (
