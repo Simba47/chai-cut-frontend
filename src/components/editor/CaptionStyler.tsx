@@ -7,36 +7,12 @@ import { CaptionKeyWords } from './CaptionKeyWords'
 import { useEffect, useRef, useState } from 'react'
 import type { AnimationType, CaptionStyle } from '@chai-cut/shared'
 import { SARVAM_LANGUAGES, DEFAULT_CAPTION_STYLE } from '@chai-cut/shared'
+import { VIDEO_FONTS } from '@/lib/shared/videoFonts'
 
 export type TextCase = 'title' | 'upper' | 'lower'
 
-export const VIDEO_FONTS = [
-  { name: 'Default',           family: 'sans-serif' },
-  { name: 'Roboto',            family: 'Roboto' },
-  { name: 'Montserrat',        family: 'Montserrat' },
-  { name: 'Poppins',           family: 'Poppins' },
-  { name: 'Lato',              family: 'Lato' },
-  { name: 'Inter',             family: 'Inter' },
-  { name: 'Nunito',            family: 'Nunito' },
-  { name: 'Rubik',             family: 'Rubik' },
-  { name: 'DM Sans',           family: 'DM Sans' },
-  { name: 'Ubuntu',            family: 'Ubuntu' },
-  { name: 'Space Grotesk',     family: 'Space Grotesk' },
-  { name: 'Outfit',            family: 'Outfit' },
-  { name: 'Sora',              family: 'Sora' },
-  { name: 'Raleway',           family: 'Raleway' },
-  { name: 'Oswald',            family: 'Oswald' },
-  { name: 'Bebas Neue',        family: 'Bebas Neue' },
-  { name: 'Anton',             family: 'Anton' },
-  { name: 'Barlow Condensed',  family: 'Barlow Condensed' },
-  { name: 'Fjalla One',        family: 'Fjalla One' },
-  { name: 'Archivo Black',     family: 'Archivo Black' },
-  { name: 'Exo 2',             family: 'Exo 2' },
-  { name: 'Righteous',         family: 'Righteous' },
-  { name: 'Fredoka One',       family: 'Fredoka One' },
-  { name: 'Playfair Display',  family: 'Playfair Display' },
-  { name: 'Pacifico',          family: 'Pacifico' },
-]
+// (the list itself is shared with the server: lib/shared/videoFonts.ts)
+export { VIDEO_FONTS }
 
 const GOOGLE_FONTS_URL =
   'https://fonts.googleapis.com/css2?family=Roboto:wght@700&family=Montserrat:wght@700&family=Poppins:wght@700&family=Lato:wght@700&family=Inter:wght@700&family=Nunito:wght@700&family=Rubik:wght@700&family=DM+Sans:wght@700&family=Ubuntu:wght@700&family=Space+Grotesk:wght@700&family=Outfit:wght@700&family=Sora:wght@700&family=Raleway:wght@700&family=Oswald:wght@700&family=Bebas+Neue&family=Anton&family=Barlow+Condensed:wght@700&family=Fjalla+One&family=Archivo+Black&family=Exo+2:wght@700&family=Righteous&family=Fredoka+One&family=Playfair+Display:wght@700&family=Pacifico&display=swap'

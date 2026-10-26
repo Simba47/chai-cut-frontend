@@ -2,20 +2,22 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { CaptionStyler, loadVideoFonts, type TextCase } from '@/components/editor/CaptionStyler'
-import {
-  ClipMock, Mock, KitBadge, Switch, ColorRow, Section, captionPatch, urlRatio, saveLabel, type BrandKits,
-} from '@/components/editor/BrandKit'
-import { brandCaptionStyle, type BrandKitData, type BrandCaptions } from '@/lib/shared/brandKit'
+import { ClipMock, Mock, KitBadge, Switch, captionPatch, saveLabel, type BrandKits } from '@/components/editor/BrandKit'
+import { brandCaptionStyle, DEFAULT_BRAND_KIT, type BrandKitData, type BrandCaptions } from '@/lib/shared/brandKit'
+import { BrandStart, BrandCard, type Found } from './BrandMaker'
 
 /**
- * Setting up a brand in about a minute (the Brands page): three steps with the clip preview always in
- * view — 1. your brand (filled from a website or profile link, or by hand), 2. your caption look,
- * 3. all set (used for every new clip). Everything else — fonts, text style, the Branded card, the
- * team — is under "More options" (the full kit editor, BrandKitStudio). Saved as it's changed.
+ * Setting up a brand in about a minute (the Brands page; brand kit rebuild, Phase 1): four steps with
+ * the clip preview always in view — 1. where your brand is (a link, your logo, or a few words:
+ * BrandMaker.tsx BrandStart), 2. here's your brand (everything found, changed in place: BrandCard),
+ * 3. your caption look, 4. all set (used for every new clip). Everything else — text style, the
+ * Branded card, the team — is under "More options" (the full kit editor, BrandKitStudio). Saved as
+ * it's changed.
  */
 
-type StepId = 'brand' | 'captions' | 'done'
+type StepId = 'start' | 'brand' | 'captions' | 'done'
 const STEPS: Array<{ id: StepId; name: string }> = [
+  { id: 'start', name: 'Start' },
   { id: 'brand', name: 'Your brand' },
   { id: 'captions', name: 'Captions' },
   { id: 'done', name: 'All set' },
@@ -29,13 +31,10 @@ export function BrandSetup({ brand, onDone, onMore }: {
   onMore: () => void
 }) {
   const kit = brand.current
-  const [step, setStep] = useState<StepId>('brand')
-  const [url, setUrl] = useState('')
-  const [reading, setReading] = useState(false)
-  const [note, setNote] = useState<{ text: string; bad: boolean } | null>(null)
-  const [uploading, setUploading] = useState(false)
-  const [logoError, setLogoError] = useState<string | null>(null)
-  const fileRef = useRef<HTMLInputElement>(null)
+  // A kit with nothing of its own yet starts at "Where's your brand?"; one being changed, at its card
+  const fresh = !!kit && !kit.data.logo.path && !kit.data.handle && kit.data.colors.main === DEFAULT_BRAND_KIT.colors.main
+  const [step, setStep] = useState<StepId>(fresh ? 'start' : 'brand')
+  const [found, setFound] = useState<Found | null>(null)
   const bodyRef = useRef<HTMLDivElement>(null)
   // A new step starts at its top (not where the last one was scrolled to)
   useEffect(() => { bodyRef.current?.scrollTo({ top: 0 }) }, [step])
@@ -54,48 +53,8 @@ export function BrandSetup({ brand, onDone, onMore }: {
   }
   const setCaptions = (c: Partial<BrandCaptions>) => { const cur = now(); set({ ...cur, captions: { ...cur.captions, ...c } }) }
 
-  async function fill() {
-    if (!url.trim() || reading || !kit) return
-    setReading(true); setNote(null)
-    try {
-      const b = await brand.fromLink(url.trim())
-      const cur = now()
-      const ratio = b.logo ? b.logo.ratio ?? (b.logo.url ? await urlRatio(b.logo.url) : null) ?? 1 : null
-      const data: BrandKitData = {
-        ...cur,
-        handle: cur.handle || b.handle || '',
-        card_title: cur.card_title || b.name || '',
-        colors: b.colors ? { ...cur.colors, main: b.colors.main, accent: b.colors.accent ?? cur.colors.accent } : cur.colors,
-        logo: b.logo ? { ...cur.logo, path: b.logo.path, ratio } : cur.logo,
-      }
-      const rename = b.name && /^Brand kit( \d+)?$/.test(kit.name.trim()) ? { name: b.name } : {}
-      set(data, { ...rename, ...(b.logo ? { logo_url: b.logo.url } : {}) })
-      const got = [b.logo && 'logo', b.colors && 'colours', b.name && 'name', b.handle && '@handle'].filter(Boolean)
-      setNote(got.length ? { text: `Found your ${got.join(', ')} — check them below`, bad: false }
-        : { text: `Nothing to use was found on ${b.source} — add your logo and colours below`, bad: true })
-    } catch (e) {
-      setNote({ text: e instanceof Error ? e.message : String(e), bad: true })
-    } finally { setReading(false) }
-  }
-
-  async function pickLogo(file: File | undefined) {
-    if (!file || !kit) return
-    setUploading(true); setLogoError(null)
-    try {
-      const up = await brand.uploadLogo(file)
-      const cur = now()
-      set({ ...cur, logo: { ...cur.logo, path: up.path, ratio: up.ratio } }, { logo_url: up.url })
-    } catch (e) {
-      setLogoError(e instanceof Error ? e.message : String(e))
-    } finally {
-      setUploading(false)
-      if (fileRef.current) fileRef.current.value = ''
-    }
-  }
-
   const at = STEPS.findIndex(x => x.id === step)
   const saved = saveLabel(brand)
-  const field = { background: 'rgb(var(--ed-fg) / 0.06)', boxShadow: 'inset 0 0 0 1px rgb(var(--ed-fg) / 0.1)' }
   const ghost = { color: 'var(--ed-text)', background: 'rgb(var(--ed-fg) / 0.08)', boxShadow: 'inset 0 0 0 1px rgb(var(--ed-fg) / 0.12)' }
   return (
     <div className="bs h-full flex flex-col min-h-0">
@@ -123,69 +82,35 @@ export function BrandSetup({ brand, onDone, onMore }: {
       <div className="flex-1 min-h-0 flex">
         <div ref={bodyRef} className="flex-1 min-w-0 overflow-y-auto">
           <div className="max-w-[560px] mx-auto px-6 py-6 flex flex-col gap-5">
+            {step === 'start' && (
+              <>
+                <header className="flex flex-col gap-1">
+                  <span className="bs-kicker">Step 1 of 4</span>
+                  <h2 className="bs-title">Where&rsquo;s your brand?</h2>
+                  <p className="bs-sub">Pick one and we make your kit from it: logo, colours and font. You can change everything next.</p>
+                </header>
+                <BrandStart kit={kit} brand={brand} now={now} set={set} onFound={f => { setFound(f); setStep('brand') }} />
+                <div className="bs-or" aria-hidden="true"><span>or</span></div>
+                <button type="button" className="bs-link self-center text-[12.5px]" onClick={() => setStep('brand')}>Set it up yourself</button>
+              </>
+            )}
             {step === 'brand' && (
               <>
                 <header className="flex flex-col gap-1">
-                  <span className="bs-kicker">Step 1 of 3</span>
-                  <h2 className="bs-title">Your brand</h2>
-                  <p className="bs-sub">Paste your website or a profile link (Instagram, YouTube…): we fill in your logo, colours, name and @handle.</p>
+                  <span className="bs-kicker">Step 2 of 4</span>
+                  <h2 className="bs-title">Here&rsquo;s your brand</h2>
+                  <p className="bs-sub">Tap anything to change it. Drag the logo on the preview to place it.</p>
                 </header>
-                <div className="flex flex-col gap-2">
-                  <div className="flex gap-2">
-                    <input value={url} onChange={e => setUrl(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') fill() }} maxLength={500} autoFocus
-                      placeholder="yourbrand.com or instagram.com/yourbrand" aria-label="Website or profile link"
-                      className="flex-1 min-w-0 h-11 px-3.5 rounded-xl text-sm text-[var(--ed-text)] outline-none" style={field} />
-                    <button type="button" onClick={fill} disabled={reading || !url.trim()} className="bs-primary h-11 px-4 disabled:opacity-50">
-                      {reading ? 'Reading…' : 'Fill in my brand'}
-                    </button>
-                  </div>
-                  {note && <p role={note.bad ? 'alert' : 'status'} className="text-[12px]" style={{ color: note.bad ? '#fca5a5' : 'var(--ed-accent-text)' }}>{note.text}</p>}
-                </div>
-                <div className="bs-or" aria-hidden="true"><span>or set it yourself</span></div>
-                <Section title="Logo">
-                  <div className="flex items-center gap-3">
-                    <div className="w-20 h-20 rounded-xl flex items-center justify-center overflow-hidden shrink-0"
-                      style={{ background: 'repeating-conic-gradient(rgb(var(--ed-fg) / 0.08) 0 25%, transparent 0 50%) 0 0 / 14px 14px', boxShadow: 'inset 0 0 0 1px rgb(var(--ed-fg) / 0.12)' }}>
-                      {d.logo.path && kit.logo_url
-                        // eslint-disable-next-line @next/next/no-img-element
-                        ? <img src={kit.logo_url} alt="Your logo" className="max-w-[85%] max-h-[85%] object-contain" />
-                        : <span className="text-[11px]" style={{ color: 'rgb(var(--ed-fg) / 0.4)' }}>No logo</span>}
-                    </div>
-                    <div className="flex flex-col gap-1.5">
-                      <input ref={fileRef} type="file" accept="image/png,image/jpeg,image/webp" className="hidden" onChange={e => pickLogo(e.target.files?.[0])} />
-                      <button type="button" onClick={() => fileRef.current?.click()} disabled={uploading} className="h-8 px-3 rounded-lg text-xs font-semibold disabled:opacity-50" style={ghost}>
-                        {uploading ? 'Uploading…' : d.logo.path ? 'Change logo' : 'Upload logo'}
-                      </button>
-                      {d.logo.path && (
-                        <button type="button" onClick={() => set({ ...now(), logo: { ...now().logo, path: null, ratio: null } })}
-                          className="self-start text-[11px] hover:underline" style={{ color: 'rgb(var(--ed-fg) / 0.5)' }}>Remove logo</button>
-                      )}
-                      <span className="text-[11px]" style={{ color: 'rgb(var(--ed-fg) / 0.45)' }}>PNG with a see-through background works best · up to 5 MB</span>
-                    </div>
-                  </div>
-                  {logoError && <p role="alert" className="text-[11px]" style={{ color: '#fca5a5' }}>{logoError}</p>}
-                  {d.logo.path && <p className="text-[11px]" style={{ color: 'rgb(var(--ed-fg) / 0.45)' }}>Drag it on the preview to place it anywhere.</p>}
-                </Section>
-                <Section title="Name and @handle">
-                  <input value={kit.name} onChange={e => brand.update(kit.id, { name: e.target.value })} maxLength={40} aria-label="Brand name"
-                    onBlur={e => { if (!e.target.value.trim()) brand.update(kit.id, { name: 'Brand kit' }) }}
-                    placeholder="Your brand's name" className="h-9 px-3 rounded-lg text-sm text-[var(--ed-text)] outline-none" style={field} />
-                  <label className="flex items-center gap-1 h-9 px-3 rounded-lg" style={field}>
-                    <span className="text-sm font-semibold" style={{ color: 'rgb(var(--ed-fg) / 0.45)' }}>@</span>
-                    <input value={d.handle} onChange={e => set({ ...now(), handle: e.target.value.replace(/^@+/, '').replace(/\s+/g, '') })} maxLength={40}
-                      placeholder="yourchannel" aria-label="Your @handle" className="flex-1 min-w-0 bg-transparent text-sm text-[var(--ed-text)] outline-none" />
-                  </label>
-                </Section>
-                <Section title="Colours">
-                  <ColorRow label="Main colour" hint="Frame backgrounds and your Branded card" value={d.colors.main} onChange={main => set({ ...now(), colors: { ...now().colors, main } })} />
-                  <ColorRow label="Accent colour" hint="Shown first in the editor's colour choices" value={d.colors.accent} onChange={accent => set({ ...now(), colors: { ...now().colors, accent } })} />
-                </Section>
+                <BrandCard kit={kit} brand={brand} now={now} set={set} found={found} readOnly={!!kit.shared_by} />
+                {!kit.shared_by && (
+                  <button type="button" className="bs-link self-start text-[12px]" onClick={() => setStep('start')}>Start again from a link, your logo or a few words</button>
+                )}
               </>
             )}
             {step === 'captions' && (
               <>
                 <header className="flex flex-col gap-1">
-                  <span className="bs-kicker">Step 2 of 3</span>
+                  <span className="bs-kicker">Step 3 of 4</span>
                   <h2 className="bs-title">Your caption look</h2>
                   <p className="bs-sub">Pick how captions look on your clips. You can still change any clip&rsquo;s captions in the editor.</p>
                 </header>
@@ -211,13 +136,14 @@ export function BrandSetup({ brand, onDone, onMore }: {
             {step === 'done' && (
               <>
                 <header className="flex flex-col gap-1">
-                  <span className="bs-kicker">Step 3 of 3</span>
+                  <span className="bs-kicker">Step 4 of 4</span>
                   <h2 className="bs-title">You&rsquo;re all set</h2>
                   <p className="bs-sub">Here&rsquo;s your brand. It&rsquo;s saved — change anything any time from your Brand kits.</p>
                 </header>
                 <ul className="bs-check" aria-label="What your brand kit has">
                   <Check ok={!!d.logo.path} label="Logo" missing="No logo yet" onFix={() => setStep('brand')} />
-                  <Check ok label={`Colours`} extra={<span className="flex gap-1">{[d.colors.main, d.colors.accent].map(c => <i key={c} className="bs-swatch" style={{ background: c }} />)}</span>} />
+                  <Check ok label={`Colours`} extra={<span className="flex gap-1">{[...new Set([d.colors.main, d.colors.accent, ...d.colors.extra])].map(c => <i key={c} className="bs-swatch" style={{ background: c }} />)}</span>} />
+                  <Check ok={!!d.title.font} label={`Font: ${d.title.font ?? ''}`} missing="No title font yet" onFix={() => setStep('brand')} />
                   <Check ok={!!d.handle} label={d.handle ? `@${d.handle}` : '@handle'} missing="No @handle yet" onFix={() => setStep('brand')} />
                   <Check ok={d.captions.on} label="Caption look" missing="Brand captions are off" onFix={() => setStep('captions')} />
                 </ul>

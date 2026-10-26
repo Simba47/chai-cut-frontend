@@ -5,7 +5,7 @@ import sql from '@/lib/db'
 import { getUserPlan } from './quota'
 import { brandKitLimit, cleanBrandKitData, DEFAULT_BRAND_KIT, brandCaptionStyle, logoBox, logoSpan, isBrandFont, brandFontKey, MAX_KIT_SHARES, SHARE_PLANS, type BrandKit, type BrandKitData } from '@/lib/shared/brandKit'
 import { hasColumn } from './clips'
-import { uploadMusic, musicUrl } from './music'
+import { pictureColours } from './brandStyle'
 
 /**
  * Brand kits (lib/shared/brandKit.ts): a user's saved looks, kept in brand_kits (the backend creates
@@ -23,9 +23,15 @@ async function tableReady() {
   if (!row?.ok) throw err('Brand kits are being set up — try again in a few minutes.', 503)
 }
 
+/**
+ * How long a logo's link works: as long as a signed link can (7 days). The editor puts it on the logo
+ * it adds to a clip, so a short one (it was 6 hours) left a broken logo in an editor kept open longer.
+ */
+export const LOGO_LINK_SECONDS = 7 * 24 * 60 * 60
+
 async function signLogo(path: string | null): Promise<string | null> {
   if (!path) return null
-  return getSignedUrl(r2, new GetObjectCommand({ Bucket: R2_BUCKET, Key: path }), { expiresIn: 60 * 60 * 6 }).catch(() => null)
+  return getSignedUrl(r2, new GetObjectCommand({ Bucket: R2_BUCKET, Key: path }), { expiresIn: LOGO_LINK_SECONDS }).catch(() => null)
 }
 
 type Row = { id: string; name: string; data: unknown }
@@ -34,15 +40,40 @@ async function toKit(row: Row, ownerId: string, sharedBy: string | null = null):
   const data = cleanBrandKitData(row.data, ownerId)
   // (someone else's default is not this user's)
   if (sharedBy !== null) data.is_default = false
-  const sign = (p: string | null | undefined) => (p ? musicUrl(p).catch(() => null) : Promise.resolve(null))
-  const [logo_url, music_url, sting_url] = await Promise.all([signLogo(data.logo.path), sign(data.sound.music?.path), sign(data.sound.sting?.path)])
-  return { id: row.id, name: row.name, data, logo_url, music_url, sting_url, ...(sharedBy !== null ? { shared_by: sharedBy } : {}) }
+  return { id: row.id, name: row.name, data, logo_url: await signLogo(data.logo.path), ...(sharedBy !== null ? { shared_by: sharedBy } : {}) }
 }
 
 /** Is the sharing table there yet (the backend makes it when it starts)? */
 async function sharesReady(): Promise<boolean> {
   const [row] = await sql<{ ok: boolean }[]>`SELECT to_regclass('public.brand_kit_shares') IS NOT NULL AS ok`.catch(() => [])
   return !!row?.ok
+}
+
+/**
+ * Whether the user can put this kit on their clips: their own, or one shared with them. The one check
+ * every place that takes a kit's id uses (Make my clips, saving a clip with its brand switch on).
+ */
+export async function canUseKit(userId: string, kitId: string): Promise<boolean> {
+  if (!/^[0-9a-f-]{36}$/i.test(kitId)) return false
+  const shares = await sharesReady()
+  const [row] = await (shares
+    ? sql`SELECT 1 FROM brand_kits bk WHERE bk.id = ${kitId}
+        AND (bk.user_id = ${userId} OR EXISTS (SELECT 1 FROM brand_kit_shares s WHERE s.kit_id = bk.id AND s.user_id = ${userId}))`
+    : sql`SELECT 1 FROM brand_kits WHERE id = ${kitId} AND user_id = ${userId}`).catch(() => [])
+  return !!row
+}
+
+/**
+ * The kit taken off clips that still have it switched on (`ownerId`: only that person's clips; else
+ * everyone's): they keep their look — the logo and styles stay as they are — but no longer point at a
+ * kit they can't use (the kit deleted, or no longer shared with them), which left the editor's switch
+ * stuck on a kit it couldn't find
+ */
+async function releaseClips(kitId: string, ownerId?: string): Promise<void> {
+  if (!(await hasColumn('clips', 'brand'))) return
+  await (ownerId
+    ? sql`UPDATE clips c SET brand = NULL FROM videos v WHERE v.id = c.video_id AND v.user_id = ${ownerId} AND c.brand->>'kit_id' = ${kitId}`
+    : sql`UPDATE clips SET brand = NULL WHERE brand->>'kit_id' = ${kitId}`)
 }
 
 /** The user's kits, oldest first, then the kits shared with them, and how many of their own their plan allows */
@@ -107,6 +138,8 @@ export async function unshareKit(userId: string, kitId: string, memberId: string
   const [kit] = await sql<{ user_id: string }[]>`SELECT user_id FROM brand_kits WHERE id = ${kitId}`
   if (!kit || (kit.user_id !== userId && memberId !== userId)) throw err('Brand kit not found', 404)
   await sql`DELETE FROM brand_kit_shares WHERE kit_id = ${kitId} AND user_id = ${memberId}`
+  // (their clips with it on keep their look, the kit's switch off)
+  await releaseClips(kitId, memberId).catch(e => console.error('[brand] clips not released from a kit no longer shared:', e))
 }
 
 /** A new kit (default settings, or `data`), within the plan's count */
@@ -131,13 +164,6 @@ export async function updateBrandKit(userId: string, kitId: string, body: { name
   const [cur] = await sql<Row[]>`SELECT id, name, data FROM brand_kits WHERE id = ${kitId} AND user_id = ${userId}`
   if (!cur) throw err('Brand kit not found', 404)
   const data = cleanBrandKitData(body.data === undefined ? cur.data : body.data, userId)
-  // The intro and outro: only the user's own videos
-  const ends = [data.intro, data.outro].filter((v): v is string => !!v)
-  if (ends.length) {
-    const own = new Set((await sql`SELECT id FROM videos WHERE id = ANY(${ends}) AND user_id = ${userId}`).map(r => String(r.id)))
-    if (data.intro && !own.has(data.intro)) data.intro = null
-    if (data.outro && !own.has(data.outro)) data.outro = null
-  }
   const row = await sql.begin(async tx => {
     // One default kit per account: marking this one unmarks the others
     if (data.is_default) {
@@ -190,7 +216,8 @@ export async function brandNewClips(userId: string, clips: Array<{ id: string; l
     // Saved with the kit switched on (the editor's Brand kit switch; nothing to put back when switched off)
     if (await hasColumn('clips', 'brand')) {
       const [row] = await sql<{ id: string }[]>`SELECT id FROM brand_kits WHERE user_id = ${userId} AND (data->>'is_default')::boolean LIMIT 1`
-      if (row) await sql`UPDATE clips SET brand = ${sql.json({ kit_id: row.id, before: null } as never)} WHERE id = ANY(${clips.map(c => c.id)})`
+      // (with the kit's settings as they went on: when the kit changes, the clips follow it — brand engine, updateBrand)
+      if (row) await sql`UPDATE clips SET brand = ${sql.json({ kit_id: row.id, before: null, applied: kit } as never)} WHERE id = ANY(${clips.map(c => c.id)})`
     }
     if (kit.captions.on) {
       const style = brandCaptionStyle(kit.captions)
@@ -204,11 +231,15 @@ export async function brandNewClips(userId: string, clips: Array<{ id: string; l
   }
 }
 
-/** The kit goes; its logo file stays (clips it was put on still show it) */
+/**
+ * The kit goes; its logo file stays (clips it was put on still show it). Every clip with it switched
+ * on — the owner's, and those of the people it was shared with — keeps its look, the switch off.
+ */
 export async function deleteBrandKit(userId: string, kitId: string): Promise<void> {
   await tableReady()
   const rows = await sql`DELETE FROM brand_kits WHERE id = ${kitId} AND user_id = ${userId} RETURNING id`
   if (!rows.length) throw err('Brand kit not found', 404)
+  await releaseClips(kitId).catch(e => console.error('[brand] clips not released from a deleted kit:', e))
 }
 
 const MAX_FONT_BYTES = 10 * 1024 * 1024
@@ -246,29 +277,20 @@ export async function readBrandFont(userId: string, family: string): Promise<{ b
   return { body: await res.Body.transformToByteArray(), type: res.ContentType ?? 'font/ttf' }
 }
 
-/** A sound logo is short: its file at most this big */
-const MAX_STING_BYTES = 3 * 1024 * 1024
-
-/**
- * Brand music or a sound logo for a kit: stored like a song added in the editor (audio/<user>/…, so
- * clips play and export it like any song); the kit keeps its path
- */
-export async function uploadBrandSound(userId: string, file: File, kind: 'music' | 'sting'): Promise<{ path: string; name: string; url: string }> {
-  if (kind === 'sting' && file.size > MAX_STING_BYTES) throw err('A sound logo is a few seconds long: its file can be at most 3 MB', 400)
-  const { storage_path, url } = await uploadMusic(userId, file)
-  const name = file.name.replace(/\.[^.]+$/, '').replace(/[-_]+/g, ' ').trim().slice(0, 60) || (kind === 'music' ? 'Brand music' : 'Sound logo')
-  return { path: storage_path, name, url }
-}
-
 const LOGO_TYPES: Record<string, string> = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp' }
 const MAX_LOGO_BYTES = 5 * 1024 * 1024
 
-/** A logo uploaded for a kit: kept under brand/<user>/ (a PNG keeps its see-through background) */
-export async function uploadBrandLogo(userId: string, file: File): Promise<{ path: string; url: string | null }> {
+/**
+ * A logo uploaded for a kit: kept under brand/<user>/ (a PNG keeps its see-through background), with
+ * its brand colours read from it (brandStyle.ts pictureColours: on our server, no paid service)
+ */
+export async function uploadBrandLogo(userId: string, file: File): Promise<{ path: string; url: string | null; colors: { main: string; accent: string | null } | null }> {
   const ext = LOGO_TYPES[file.type]
   if (!ext) throw err('Use a PNG, JPG or WebP picture for the logo', 400)
   if (file.size > MAX_LOGO_BYTES) throw err('The logo can be at most 5 MB', 400)
   const path = `brand/${userId}/${crypto.randomUUID()}.${ext}`
-  await r2.send(new PutObjectCommand({ Bucket: R2_BUCKET, Key: path, Body: Buffer.from(await file.arrayBuffer()), ContentType: file.type }))
-  return { path, url: await signLogo(path) }
+  const body = Buffer.from(await file.arrayBuffer())
+  await r2.send(new PutObjectCommand({ Bucket: R2_BUCKET, Key: path, Body: body, ContentType: file.type }))
+  const [url, colors] = await Promise.all([signLogo(path), pictureColours(body)])
+  return { path, url, colors }
 }

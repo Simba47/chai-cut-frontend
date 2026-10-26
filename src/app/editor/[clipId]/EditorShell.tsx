@@ -37,16 +37,17 @@ import { FramesPanel } from '@/components/editor/FramesPanel'
 import { FrameTextPanel } from '@/components/editor/FrameTextPanel'
 import { useConfirm } from '@/components/editor/ConfirmDialog'
 import { BrandKitPanel, BrandKitStudio, useBrandKits } from '@/components/editor/BrandKit'
-import { useBrandStore, setBrandOn, type BrandOn, type BrandBefore, type FrameBefore } from '@/modules/editor/brandState'
+import { useBrandStore, setBrandOn, type BrandOn } from '@/modules/editor/brandState'
+import { putBrandOn, takeBrandOff, brandNewFrames, updateBrand, brandChanged, fillBrandCard, type BrandTarget } from '@/modules/brand/engine'
 import { CleanupPanel, type CleanupRow } from '@/components/editor/CleanupPanel'
 import { cleanupCards, isDeleted } from '@/modules/editor/cleanup'
-import { cardLookOf, isBrandLogo, logoBox, logoSpan, showHandle, brandPalette, brandCaptionStyle, brandLockOf, type BrandKit, type ProgressBar } from '@/lib/shared/brandKit'
+import { brandPalette, brandLockOf, type BrandKit, type ProgressBar } from '@/lib/shared/brandKit'
 import { setBrandPalette, setBrandLock } from '@/components/editor/brandPalette'
 import { setBrandFonts, ensureBrandFont } from '@/components/editor/brandFonts'
 import { EditorTour, hasSeenEditorTour } from '@/components/editor/EditorTour'
 import { FrameAddMenu, addChoices, type AddChoice } from '@/components/editor/FrameAddMenu'
 import { createFrameMediaPool } from '@/modules/editor/frameMedia'
-import { FRAME_TEMPLATES, isFrameLayout, frameOf, mainAudioVolume, mainSlotSound, frameLanes, frameSlotLabels, emptySlotStretches, slotOffers, laneInRowKey, newItemCorners, frameSlotCount, itemAt, isTextLane, textLaneLook, DEFAULT_BAND, type TextLane } from '@/modules/editor/frames'
+import { FRAME_TEMPLATES, isFrameLayout, frameOf, mainAudioVolume, mainSlotSound, frameLanes, frameSlotLabels, emptySlotStretches, slotOffers, laneInRowKey, newItemCorners, frameSlotCount, itemAt, isTextLane, textLaneLook, type TextLane } from '@/modules/editor/frames'
 import { signOut } from 'next-auth/react'
 import { PlatformOverlay, PLATFORM_SAFE, type Platform } from '@/components/editor/PlatformOverlay'
 // ── Domain stores ──────────────────────────────────────────────────────────────
@@ -72,7 +73,7 @@ import { getBoxPositionAtLerp, type BoxPosition } from '@/lib/interpolation'
 import { SubjectsPanel, type SubjectItem, type AnglesView } from '@/components/editor/SubjectsPanel'
 import { angleRows, angleAt, type Angle, type AngleRow } from '@/modules/editor/angles'
 import { decideFormat, AUTO_FORMAT, keepsAll, viewsOverlap } from '@/modules/editor/autoFormat'
-import type { SegmentLocal, CropBoxLocal, FrameLayout, FrameLane, FrameItem, FrameSettings, TransitionType } from '@chai-cut/shared'
+import type { SegmentLocal, CropBoxLocal, FrameLayout, FrameLane, FrameItem, TransitionType } from '@chai-cut/shared'
 import { SPEED_MIN, SPEED_MAX } from '@chai-cut/shared'
 import { TransitionsPanel, TRANSITION_DEFAULT_MS, TRANSITION_KINDS, playedTransitionMs, type TransitionJoin } from '@/components/editor/TransitionsPanel'
 
@@ -2893,21 +2894,6 @@ export function EditorShell({
     } : null)
   }, [lockKey])
   useEffect(() => () => setBrandLock(null), [])
-  /** A frame with the kit's corners on its main video and its photos and videos (not on areas drawn square or with their own shape) */
-  function withKitCorners(seg: SegmentLocal, corners: number): SegmentLocal {
-    if (!isFrameLayout(seg.layout) || seg.locked) return seg
-    const layout = seg.layout, f = frameOf(seg), slots = frameSlotCount(layout)
-    const rounded = (slot: number) => slot < slots && newItemCorners(layout, slot) > 0
-    return {
-      ...seg,
-      frame: {
-        ...f,
-        // (slots this frame doesn't use take them too: a frame picked later that has them carries them over)
-        main_corners: Object.fromEntries(Object.entries(f.main_corners ?? {}).map(([k, v]) => [k, Number(k) >= slots || rounded(Number(k)) ? corners : v])),
-        items: (f.items ?? []).map(it => (it.kind !== 'text' && typeof it.lane === 'number' && rounded(it.lane) && !it.locked ? { ...it, corners } : it)),
-      },
-    }
-  }
   // Every kit's own fonts in the font pickers (and loaded, so text in them draws)
   const fontsKey = brand.kits.flatMap(k => k.data.fonts.map(f => `${f.family}=${f.name}`)).join('|')
   useEffect(() => {
@@ -2919,24 +2905,6 @@ export function EditorShell({
   const usedFonts = [captionStyle.font, ...textOverlays.map(t => t.font)].filter(Boolean).join('|')
   useEffect(() => { usedFonts.split('|').forEach(f => { ensureBrandFont(f) }) }, [usedFonts])
 
-  /** A Branded card's text from a kit's card settings: its title and @handle (each when it shows), over the whole card */
-  function brandCardItems(seg: SegmentLocal, kit: BrandKit): FrameItem[] {
-    const d = kit.data, c = d.card, span = { start_ms: seg.start_ms, end_ms: seg.end_ms }
-    const title = d.card_title.trim() || kit.name, handle = showHandle(d.handle)
-    const out: FrameItem[] = []
-    if (title && c.title.show) out.push({ id: crypto.randomUUID(), lane: 'band', kind: 'text', ...span, text: title, bg: textLaneLook(seg, 'band').bg, color: c.title.color, size: c.title.size })
-    if (handle && c.handle.show) out.push({ id: crypto.randomUUID(), lane: 'band2', kind: 'text', ...span, text: handle, bg: textLaneLook(seg, 'band2').bg, color: c.handle.color, size: c.handle.size })
-    return out
-  }
-  /**
-   * A Branded card as the kit's card settings make it (user, 2026-10-19): its look — background,
-   * where the video, title and @handle sit (frame.card) — and its title and @handle when it has no text yet
-   */
-  function fillBrandCard(seg: SegmentLocal, kit: BrandKit): SegmentLocal {
-    const f = frameOf(seg), c = kit.data.card
-    const hasText = (f.items ?? []).some(it => it.kind === 'text')
-    return { ...seg, frame: { ...f, card: cardLookOf(c), band: { ...DEFAULT_BAND, ...f.band, bg: c.bg.color }, items: hasText ? f.items : [...(f.items ?? []), ...brandCardItems(seg, kit)] } }
-  }
   // The Branded card just picked in Frames, once it's on the timeline (a pick can ask first)
   useEffect(() => {
     const pick = brandFillRef.current, kit = brand.current
@@ -2949,152 +2917,52 @@ export function EditorShell({
     useEditorStore.setState(st => ({ segments: st.segments.map(x => (x.id === seg.id ? fillBrandCard(x, kit) : x)) }))
   }, [segments]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  /**
-   * The brand on one frame section: the kit's colour on its bands, its text colours, its corners,
-   * a Branded card as the kit's card settings make it — and what the section was before (to put
-   * back when the brand is switched off). Locked sections are left alone.
-   */
-  function brandFrame(seg: SegmentLocal, kit: BrandKit): { seg: SegmentLocal; before: FrameBefore } {
-    const d = kit.data, f = frameOf(seg), band = { ...DEFAULT_BAND, ...f.band }
-    const card = seg.layout === 'frame_brand_card'
-    const before: FrameBefore = { layout: seg.layout, band: { bg: band.bg, color: band.color }, items: {}, main_corners: f.main_corners ?? null, item_corners: {} }
-    const bandBg = card ? d.card.bg.color : d.colors.main
-    const items = (f.items ?? []).map(it => {
-      if (it.locked) return it
-      if (it.kind === 'text' && !it.captions) {
-        before.items[it.id] = { color: it.color ?? null, bg: it.bg ?? null }
-        const color = card && it.lane === 'band2' ? d.card.handle.color : card && it.lane === 'band' ? d.card.title.color : d.title.color
-        // (a band's text carries the band's colour: it follows it; a see-through or own colour stays)
-        return { ...it, color, ...(isTextLane(it.lane) && it.bg === band.bg ? { bg: bandBg } : {}) }
-      }
-      if (it.kind !== 'text') before.item_corners![it.id] = it.corners ?? null
-      return it
-    })
-    let next: SegmentLocal = { ...seg, frame: { ...f, band: { ...band, bg: bandBg, color: d.title.color }, items } }
-    if (card) {
-      before.card = f.card ?? null
-      const had = new Set((next.frame?.items ?? []).map(it => it.id))
-      next = fillBrandCard(next, kit)
-      before.added = (next.frame?.items ?? []).filter(it => !had.has(it.id)).map(it => it.id)
+  /** This clip's parts as the brand engine takes them (modules/brand/engine.ts): the stores' values now, not this render's */
+  function brandTarget(): BrandTarget {
+    const m = useMediaStore.getState(), c = useCaptionStore.getState()
+    return {
+      clipId: clip.id, lengthMs: clipLengthMs, mainVideoId: mainVideoId ?? null,
+      overlays: m.overlays, texts: m.textOverlays, caption: c.captionStyle, textCase: c.captionTextCase,
+      segments: useEditorStore.getState().segments,
     }
-    if (d.frames.corners !== null) next = withKitCorners(next, d.frames.corners)
-    return { seg: next, before }
   }
-
-  const NO_BEFORE: BrandBefore = { texts: {}, caption: null, text_case: null, progress_bar: null, frames: {}, end_card: null }
-
-  /**
-   * A kit put on this clip, as one undo step: its logo where and when the kit says (in place of a
-   * kit's logo put on before), its captions' style when they're on in the kit (the captions themselves
-   * aren't switched on or made), its title font and colour on the clip's text, the brand on every frame
-   * (brandFrame). Anything locked is left as it is. Returns what it changed, to put back when switched off.
-   * (A kit's intro, outro, end card, progress bar and sound aren't put on any more — user, 2026-10-20.)
-   */
-  function applyBrandKit(kit: BrandKit): BrandBefore {
-    const d = kit.data
-    const before: BrandBefore = {
-      ...NO_BEFORE,
-      texts: Object.fromEntries(textOverlays.filter(t => !t.locked).map(t => [t.id, { font: t.font ?? null, color: t.color ?? null }])),
-      caption: d.captions.on ? Object.fromEntries(Object.keys(brandCaptionStyle(d.captions)).map(k => [k, (captionStyle as unknown as Record<string, unknown>)[k] ?? null])) as Partial<CaptionStyle> : null,
-      text_case: d.captions.on ? captionTextCase : null,
-      progress_bar: progressBar,
-      frames: {},
-    }
-    setOverlays(prev => {
-      const rest = prev.filter(o => !(o.type === 'image' && isBrandLogo(o.storage_path) && !o.locked))
-      if (!d.logo.path) return rest
-      const [start, end] = logoSpan(d.logo, clipLengthMs)
-      return [...rest, {
-        id: crypto.randomUUID(), clip_id: clip.id, type: 'image' as const,
-        storage_path: d.logo.path, preview_url: kit.logo_url ?? undefined,
-        source_video_id: null, source_offset_ms: 0, ...logoBox(d.logo),
-        start_ms: start, end_ms: end, z_index: Math.max(0, ...rest.map(o => o.z_index)) + 1,
-        created_at: new Date().toISOString(), opacity: d.logo.opacity < 0.999 ? d.logo.opacity : null,
-      }]
-    })
-    setTextOverlays(prev => prev.map(t => (t.locked ? t : { ...t, font: d.title.font ?? 'sans-serif', color: d.title.color })))
-    if (d.captions.on) {
-      updateCaptionStyle(brandCaptionStyle(d.captions))
-      setCaptionTextCase(d.captions.uppercase ? 'upper' : 'title')
-    }
-    useEditorStore.setState(st => ({
-      segments: st.segments.map(seg => {
-        if (!isFrameLayout(seg.layout) || seg.locked || isShot(seg, mainVideoId)) return seg
-        const r = brandFrame(seg, kit)
-        before.frames[seg.id] = r.before
-        return r.seg
-      }),
-    }))
-    return before
+  /** What the brand engine gave, written back: only the parts it changed (one undo step with the rest of the change) */
+  function writeBrand(was: BrandTarget, t: BrandTarget) {
+    const same = (a: unknown, b: unknown) => a === b || JSON.stringify(a) === JSON.stringify(b)
+    if (!same(t.overlays, was.overlays)) setOverlays(t.overlays)
+    if (!same(t.texts, was.texts)) setTextOverlays(t.texts)
+    const cur = was.caption as unknown as Record<string, unknown>, next = t.caption as unknown as Record<string, unknown>
+    const patch = Object.fromEntries(Object.keys(next).filter(k => !same(next[k], cur[k])).map(k => [k, next[k]])) as Partial<CaptionStyle>
+    if (Object.keys(patch).length) updateCaptionStyle(patch)
+    if (t.textCase !== was.textCase) setCaptionTextCase(t.textCase as typeof captionTextCase)
+    if (!same(t.segments, was.segments)) useEditorStore.setState({ segments: t.segments })
   }
 
   /** The brand kit switched on for this clip (user, 2026-10-19): a different kit on before comes off first. One undo step. */
   function turnBrandOn(kit: BrandKit) {
     if (useBrandStore.getState().on) turnBrandOff()
-    setBrandOn({ kit_id: kit.id, before: applyBrandKit(kit) })
+    const was = brandTarget()
+    const r = putBrandOn(was, kit)
+    writeBrand(was, r.target)
+    // (the kit's settings as they went on: when they change, the clip follows — updateBrand)
+    setBrandOn({ kit_id: kit.id, before: r.before, applied: kit.data })
   }
 
   /**
-   * The brand kit switched off: what it put on comes off — its logo, the Branded card text it added,
-   * and (on clips it was switched on for before they were taken out) its sound, progress bar, intro,
-   * outro and end card — and what it changed goes back as it was:
-   * text, captions, frame colours and corners (each only where it still is as the brand left it, so
-   * the user's own changes since are kept). Locked things stay. One undo step.
+   * The brand kit switched off (the brand engine's takeBrandOff): what it put on comes off and what
+   * it changed goes back where the user hasn't changed it since; here also (on clips it was switched
+   * on for before kits stopped holding them) its progress bar and end card. One undo step.
    */
   function turnBrandOff() {
     const on = useBrandStore.getState().on
     if (!on) return
     const kit = brand.kits.find(k => k.id === on.kit_id) ?? null
-    const d = kit?.data, b = on.before
-    setOverlays(prev => prev.filter(o => !(o.type === 'image' && isBrandLogo(o.storage_path) && !o.locked)))
-    if (d) {
-      const sounds = [d.sound.music?.path, d.sound.sting?.path].filter((x): x is string => !!x)
-      if (sounds.length) setAudioTracks(prev => prev.filter(t => t.locked || !sounds.includes(t.storage_path)))
-      if (b) setProgressBar(b.progress_bar)
-      if (b) {
-        const font = d.title.font ?? 'sans-serif'
-        setTextOverlays(prev => prev.map(t => {
-          const was = b.texts[t.id]
-          return was && !t.locked && t.font === font && t.color === d.title.color ? { ...t, font: was.font, color: was.color } : t
-        }))
-        if (b.caption && d.captions.on && captionStyle.template === d.captions.template && captionStyle.color === d.captions.color) {
-          updateCaptionStyle(b.caption)
-          if (b.text_case) setCaptionTextCase(b.text_case as typeof captionTextCase)
-        }
-      }
-    }
-    if (b) {
-      useEditorStore.setState(st => ({
-        segments: st.segments.map(seg => {
-          const was = b.frames[seg.id]
-          if (!was || seg.locked || was.layout !== seg.layout || !isFrameLayout(seg.layout)) return seg
-          const f = frameOf(seg)
-          const added = new Set(was.added ?? [])
-          const items = (f.items ?? []).filter(it => it.locked || !added.has(it.id)).map(it => {
-            if (it.locked) return it
-            const w = was.items[it.id]
-            if (w) return { ...it, color: w.color ?? undefined, bg: w.bg ?? undefined }
-            if (was.item_corners && it.id in was.item_corners) return { ...it, corners: was.item_corners[it.id] ?? undefined }
-            return it
-          })
-          return {
-            ...seg,
-            frame: {
-              ...f, items, band: { ...DEFAULT_BAND, ...f.band, bg: was.band.bg, color: was.band.color },
-              ...(d && d.frames.corners !== null ? { main_corners: was.main_corners ?? undefined } : {}),
-              ...(seg.layout === 'frame_brand_card' ? { card: (was.card as FrameSettings['card']) ?? null } : {}),
-            },
-          }
-        }),
-      }))
-    }
-    if (d) {
-      // Its intro and outro taken out
-      for (const id of [d.intro, d.outro]) {
-        if (!id) continue
-        for (const x of useEditorStore.getState().segments.filter(sg => isInsert(sg, mainVideoId) && playsVideo(sg, id) && !sg.locked)) removeInsert(x.id)
-      }
-    }
+    // (the kit as it is, else — deleted since — as it was when it last went on: its text and caption
+    // styles still come off)
+    const d = kit?.data ?? on.applied ?? null, b = on.before
+    const was = brandTarget()
+    writeBrand(was, takeBrandOff(was, d, b))
+    if (d && b) setProgressBar(b.progress_bar)
     // The end card it made goes back to a plain part
     const endCard = b?.end_card ? useEditorStore.getState().segments.find(x => x.id === b.end_card) : undefined
     if (endCard && endCard.layout === 'frame_brand_card' && !endCard.locked) {
@@ -3107,32 +2975,35 @@ export function EditorShell({
   // frame), and the logo keeps covering the whole clip when the kit shows it throughout. In the same
   // undo step as the pick (history.ts groups a burst of changes).
   const kitOn = brandOn ? brand.kits.find(k => k.id === brandOn.kit_id) ?? null : null
+  // The kit on this clip is gone (deleted, or no longer shared with this user): the clip keeps its
+  // look, the switch goes off — it pointed at a kit no list had, so every kit said "another kit is
+  // on" and none could switch it off. Only once the kits are read (not while they load or failed).
+  useEffect(() => {
+    if (brandOn && !brand.loading && !brand.error && !brand.kits.some(k => k.id === brandOn.kit_id)) setBrandOn(null)
+  }, [brandOn, brand.kits, brand.loading, brand.error])
   useEffect(() => {
     const on = useBrandStore.getState().on
     if (!on || !kitOn) return
-    const known = on.before?.frames ?? {}
-    const todo = new Set(useEditorStore.getState().segments
-      .filter(x => isFrameLayout(x.layout) && !x.locked && !isShot(x, mainVideoId) && known[x.id]?.layout !== x.layout).map(x => x.id))
-    if (todo.size) {
-      const add: Record<string, FrameBefore> = {}
-      useEditorStore.setState(st => ({
-        segments: st.segments.map(x => {
-          if (!todo.has(x.id)) return x
-          const r = brandFrame(x, kitOn)
-          add[x.id] = r.before
-          return r.seg
-        }),
-      }))
-      setBrandOn({ ...on, before: { ...(on.before ?? NO_BEFORE), frames: { ...known, ...add } } })
-    }
-    if (kitOn.data.logo.show === 'all') {
-      const short = useMediaStore.getState().overlays.find(o => o.type === 'image' && isBrandLogo(o.storage_path) && !o.locked && (o.end_ms < clipLengthMs - 1 || o.end_ms > clipLengthMs + 1))
-      if (short) setOverlays(prev => prev.map(o => (o.id === short.id ? { ...o, start_ms: 0, end_ms: clipLengthMs } : o)))
-    }
+    const was = brandTarget()
+    const r = brandNewFrames(was, kitOn, on.before)
+    if (!r) return
+    writeBrand(was, r.target)
+    setBrandOn({ ...on, before: r.before })
   }, [segments, kitOn?.id, clipLengthMs]) // eslint-disable-line react-hooks/exhaustive-deps
+  // The kit changed since it went on this clip (a new logo, other colours — here, on the Brands page,
+  // by a teammate): the clip follows it, where it still shows what the kit put there (updateBrand).
+  // A clip branded before the kit's settings were kept with it takes the kit as it is now, and
+  // follows it from there.
+  useEffect(() => {
+    const on = useBrandStore.getState().on
+    if (!on || !kitOn) return
+    if (!on.applied) { setBrandOn({ ...on, applied: kitOn.data }); return }
+    if (!brandChanged(on.applied, kitOn.data)) return
+    const was = brandTarget()
+    writeBrand(was, updateBrand(was, on.applied, kitOn))
+    setBrandOn({ ...on, applied: kitOn.data })
+  }, [kitOn]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  /** Is this part of the clip video `id` put in between (a kit's intro or outro)? */
-  const playsVideo = (s: SegmentLocal, id: string) => s.crop_boxes.length === 1 && s.crop_boxes[0].source_video_id === id
   function askDeleteBrandKit(kit: BrandKit) {
     confirm({
       title: `Delete “${kit.name}”?`,

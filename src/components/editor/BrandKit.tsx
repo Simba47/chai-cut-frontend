@@ -4,11 +4,12 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { CaptionStyler, FontPicker, loadVideoFonts, type TextCase } from './CaptionStyler'
 import { PlatformOverlay, PLATFORM_SAFE, type Platform } from './PlatformOverlay'
 import { ensureBrandFont } from './brandFonts'
+import { BrandStart, BrandCard, type Found } from '@/components/brand/BrandMaker'
 import { cardAreas, cardBackgroundPixels, CARD_PATTERNS, CARD_PATTERN_SCALE, CARD_VIDEO_WIDTH, type CardPattern } from '@/lib/shared/brandCard'
 import { templateOf, templateFontFamily } from '@/modules/captions/templates'
 import {
-  LOGO_SIZE, LOGO_SECONDS, MAX_EXTRA_COLORS, MAX_BRAND_FONTS, PROGRESS_HEIGHT, MAX_KIT_SHARES, CARD_TEXT_SIZE, type BrandCardSettings,
-  brandCaptionStyle, cleanProgressBar, logoBox, showHandle,
+  LOGO_SIZE, LOGO_SECONDS, MAX_BRAND_FONTS, PROGRESS_HEIGHT, MAX_KIT_SHARES, CARD_TEXT_SIZE, type BrandCardSettings,
+  brandCaptionStyle, logoBox, showHandle, type LinkBrand,
   type BrandKit, type BrandKitData, type BrandCaptions, type LogoCorner, type LogoShow, type ProgressBar,
 } from '@/lib/shared/brandKit'
 
@@ -20,13 +21,7 @@ import {
  */
 
 type SaveState = 'saved' | 'saving' | 'error'
-type KitPatch = { name?: string; data?: BrandKitData; logo_url?: string | null; music_url?: string | null; sting_url?: string | null }
-/** What a link gave (server services/brandFromLink.ts LinkBrand) */
-type LinkBrand = {
-  source: string; name: string | null; handle: string | null
-  logo: { path: string; url: string | null; ratio: number | null } | null
-  colors: { main: string; accent: string | null } | null
-}
+type KitPatch = { name?: string; data?: BrandKitData; logo_url?: string | null }
 const CURRENT_KEY = 'shortcut:brandKit'
 const SAVE_AFTER_MS = 600
 /** A save that didn't land is sent again after this long, longer each time (up to RETRY_MAX_MS) */
@@ -42,12 +37,13 @@ export interface BrandKits {
   select: (id: string) => void
   /** A new kit (picked): it's given back */
   create: () => Promise<BrandKit>
-  /** logo_url, music_url, sting_url: the new files' links, for showing and playing them (not saved) */
+  /** logo_url: the new logo's link, for showing it (not saved) */
   update: (id: string, patch: KitPatch) => void
   remove: (id: string) => Promise<void>
   /** Stop using a kit someone shared with you */
   leave: (id: string) => Promise<void>
-  uploadLogo: (file: File) => Promise<{ path: string; url: string | null; ratio: number }>
+  /** A logo for a kit, stored; `colors`: its own brand colours, read from it (null: they couldn't be) */
+  uploadLogo: (file: File) => Promise<{ path: string; url: string | null; ratio: number; colors: { main: string; accent: string | null } | null }>
   /** A brand read from a website or profile link (server services/brandFromLink.ts) */
   fromLink: (url: string) => Promise<LinkBrand>
   saveState: SaveState
@@ -190,10 +186,10 @@ export function useBrandKits(): BrandKits {
     return () => { window.removeEventListener('online', online); window.removeEventListener('beforeunload', leaving) }
   }, [flush])
 
-  const update = useCallback((id: string, { logo_url, music_url, sting_url, ...patch }: KitPatch) => {
+  const update = useCallback((id: string, { logo_url, ...patch }: KitPatch) => {
     setKits(ks => ks.map(k => (k.id === id ? {
       ...k, ...(patch.name !== undefined ? { name: patch.name } : {}), ...(patch.data ? { data: patch.data } : {}),
-      ...(logo_url !== undefined ? { logo_url } : {}), ...(music_url !== undefined ? { music_url } : {}), ...(sting_url !== undefined ? { sting_url } : {}),
+      ...(logo_url !== undefined ? { logo_url } : {}),
     } : k)))
     // (a name being retyped — empty for a moment — isn't saved: the box puts "Brand kit" back if left empty)
     const { name, ...rest } = patch
@@ -233,8 +229,8 @@ export function useBrandKits(): BrandKits {
     const ratio = await pictureRatio(file)
     const form = new FormData()
     form.append('file', file)
-    const d = await fetch('/api/brand-kits/logo', { method: 'POST', body: form }).then(r => json<{ path: string; url: string | null }>(r))
-    return { ...d, ratio }
+    const d = await fetch('/api/brand-kits/logo', { method: 'POST', body: form }).then(r => json<{ path: string; url: string | null; colors?: { main: string; accent: string | null } | null }>(r))
+    return { ...d, colors: d.colors ?? null, ratio }
   }, [])
 
   const fromLink = useCallback((url: string) => fetch('/api/brand-kits/from-link', {
@@ -396,8 +392,8 @@ export function BrandKitPanel({ brand, onKitId, onTurnOn, onTurnOff, onDelete, p
               </summary>
               <div className="px-3 pb-3">
                 <ClipProgressBar value={progressBar ?? null} onChange={onProgressBarChange}
-                  // Switched on: the kit's bar (its colour, thickness and edge)
-                  start={cleanProgressBar(brand.current.data.progress)!} />
+                  // Switched on: in the kit's accent colour, along the bottom
+                  start={{ color: brand.current.data.colors.accent, height: 12, position: 'bottom' }} />
               </div>
             </details>
           )}
@@ -434,35 +430,6 @@ export function urlRatio(url: string): Promise<number | null> {
   })
 }
 
-/** A website or profile link, read for the brand (the kit is filled from it) */
-function LinkFill({ onFill }: { onFill: (url: string) => Promise<string> }) {
-  const [url, setUrl] = useState('')
-  const [busy, setBusy] = useState(false)
-  const [note, setNote] = useState<{ text: string; bad: boolean } | null>(null)
-  async function go() {
-    if (!url.trim() || busy) return
-    setBusy(true); setNote(null)
-    try { setNote({ text: await onFill(url.trim()), bad: false }) } catch (e) { setNote({ text: e instanceof Error ? e.message : String(e), bad: true }) } finally { setBusy(false) }
-  }
-  return (
-    <div className="flex flex-col gap-2">
-      <p className="text-[11px] -mt-1" style={{ color: 'rgb(var(--ed-fg) / 0.5)' }}>
-        Paste your website or a profile link: we take the logo, colours, name and @handle from it.
-      </p>
-      <div className="flex gap-2">
-        <input value={url} onChange={e => setUrl(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') go() }} maxLength={500}
-          placeholder="yourbrand.com or instagram.com/yourbrand" aria-label="Website or profile link"
-          className="flex-1 min-w-0 h-9 px-3 rounded-lg text-sm text-[var(--ed-text)] outline-none"
-          style={{ background: 'rgb(var(--ed-fg) / 0.06)', boxShadow: 'inset 0 0 0 1px rgb(var(--ed-fg) / 0.1)' }} />
-        <button type="button" onClick={go} disabled={busy || !url.trim()} className="h-9 px-3 rounded-lg text-xs font-semibold disabled:opacity-50"
-          style={{ color: 'var(--ed-text)', background: 'rgb(var(--ed-fg) / 0.08)', boxShadow: 'inset 0 0 0 1px rgb(var(--ed-fg) / 0.12)' }}>
-          {busy ? 'Reading…' : 'Fill the kit'}
-        </button>
-      </div>
-      {note && <p role={note.bad ? 'alert' : 'status'} className="text-[11px]" style={{ color: note.bad ? '#fca5a5' : 'var(--ed-accent-text)' }}>{note.text}</p>}
-    </div>
-  )
-}
 
 type KitShare = { user_id: string; name: string | null; email: string | null }
 
@@ -600,7 +567,7 @@ export function KitBadge({ kit }: { kit: BrandKit }) {
 
 type StepId = 'basics' | 'text' | 'captions' | 'card' | 'team'
 const STEPS: Array<{ id: StepId; name: string; short: string; about: string }> = [
-  { id: 'basics', name: 'Basics', short: 'Logo, colours, @handle', about: 'What everything else uses: your logo, your colours and your @handle. Paste a link to fill them in for you.' },
+  { id: 'basics', name: 'Basics', short: 'Logo, colours, @handle', about: 'What everything else uses: your logo, your colours and your @handle. Start from a link, your logo or a few words, then change anything.' },
   { id: 'text', name: 'Text & fonts', short: 'Titles, fonts, corners', about: 'How text on your clips looks, your own fonts, and how round your videos are in frames.' },
   { id: 'captions', name: 'Captions', short: 'Caption style', about: 'The caption look your clips get with the brand kit on.' },
   { id: 'card', name: 'Branded card', short: 'Your own frame', about: 'Your own frame: its background, where the video sits, and your title and @handle.' },
@@ -613,12 +580,11 @@ export function BrandKitStudio({ brand, onKitId = null, onTurnOn, onTurnOff, onC
   closeLabel?: string
 }) {
   const kit = brand.current
-  const [uploading, setUploading] = useState(false)
-  const [logoError, setLogoError] = useState<string | null>(null)
+  // What the last way in (a link, a logo, a few words) found: the card offers its colours and styles
+  const [found, setFound] = useState<Found | null>(null)
   // The app's buttons over the preview: where the logo is safe from them
   const [platform, setPlatform] = useState<Platform>('instagram')
   const latest = useRef<{ id: string; data: BrandKitData; pending: boolean } | null>(null)
-  const fileRef = useRef<HTMLInputElement>(null)
   const [step, setStep] = useState<StepId>('basics')
   useEffect(() => { loadVideoFonts() }, [])
 
@@ -637,51 +603,15 @@ export function BrandKitStudio({ brand, onKitId = null, onTurnOn, onTurnOff, onC
   // Each change builds on the one before it, even two in a row before the screen updates (picking a
   // caption style sets the style, then its capitals): the second would otherwise undo the first
   latest.current = latest.current && latest.current.id === kit.id && latest.current.pending ? latest.current : { id: kit.id, data: d, pending: false }
-  const set = (data: BrandKitData) => {
+  const set = (data: BrandKitData, extra: { name?: string; logo_url?: string | null } = {}) => {
     latest.current = { id: kit.id, data, pending: true }
     queueMicrotask(() => { if (latest.current) latest.current.pending = false })
-    brand.update(kit.id, { data })
+    brand.update(kit.id, { data, ...extra })
   }
   const now = () => (latest.current?.id === kit.id ? latest.current.data : d)
   const setCaptions = (c: Partial<BrandCaptions>) => { const cur = now(); set({ ...cur, captions: { ...cur.captions, ...c } }) }
   // A kit someone shared with this user: shown, not changed
   const readOnly = !!kit.shared_by
-
-  /** The kit filled from a link: its logo, colours, and the name, @handle and card title where they're still empty */
-  async function fillFromLink(url: string): Promise<string> {
-    const b = await brand.fromLink(url)
-    const cur = now()
-    const ratio = b.logo ? b.logo.ratio ?? (b.logo.url ? await urlRatio(b.logo.url) : null) ?? 1 : null
-    const data: BrandKitData = {
-      ...cur,
-      handle: cur.handle || b.handle || '',
-      card_title: cur.card_title || b.name || '',
-      colors: b.colors ? { ...cur.colors, main: b.colors.main, accent: b.colors.accent ?? cur.colors.accent } : cur.colors,
-      logo: b.logo ? { ...cur.logo, path: b.logo.path, ratio } : cur.logo,
-    }
-    latest.current = { id: kit!.id, data, pending: true }
-    queueMicrotask(() => { if (latest.current) latest.current.pending = false })
-    const rename = b.name && /^Brand kit( \d+)?$/.test(kit!.name.trim()) ? { name: b.name } : {}
-    brand.update(kit!.id, { data, ...rename, ...(b.logo ? { logo_url: b.logo.url } : {}) })
-    const got = [b.logo && 'logo', b.colors && 'colours', b.name && 'name', b.handle && '@handle'].filter(Boolean)
-    return got.length ? `From ${b.source}: ${got.join(', ')} — check them below` : `Nothing to use was found on ${b.source} — fill the kit in by hand`
-  }
-
-  async function pickLogo(file: File | undefined) {
-    if (!file || !kit) return
-    setUploading(true); setLogoError(null)
-    try {
-      const up = await brand.uploadLogo(file)
-      // (shown straight away from the link the upload gave)
-      const cur = now()
-      brand.update(kit.id, { data: { ...cur, logo: { ...cur.logo, path: up.path, ratio: up.ratio } }, logo_url: up.url })
-    } catch (e) {
-      setLogoError(e instanceof Error ? e.message : String(e))
-    } finally {
-      setUploading(false)
-      if (fileRef.current) fileRef.current.value = ''
-    }
-  }
 
   const steps = STEPS.filter(x => x.id !== 'team' || !readOnly)
   const at = Math.max(0, steps.findIndex(x => x.id === step))
@@ -744,34 +674,12 @@ export function BrandKitStudio({ brand, onKitId = null, onTurnOn, onTurnOff, onC
             {cur.id === 'basics' && (
               <>
                 {!readOnly && (
-                  <Section title="Fill from a link">
-                    <LinkFill onFill={fillFromLink} />
+                  <Section title="Start from">
+                    <BrandStart compact kit={kit} brand={brand} now={now} set={set} onFound={setFound} />
                   </Section>
                 )}
-                <Section title="Logo">
-                  <div className="flex items-center gap-3">
-                    <div className="w-20 h-20 rounded-xl flex items-center justify-center overflow-hidden shrink-0"
-                      style={{ background: 'repeating-conic-gradient(rgb(var(--ed-fg) / 0.08) 0 25%, transparent 0 50%) 0 0 / 14px 14px', boxShadow: 'inset 0 0 0 1px rgb(var(--ed-fg) / 0.12)' }}>
-                      {d.logo.path && kit.logo_url
-                        // eslint-disable-next-line @next/next/no-img-element
-                        ? <img src={kit.logo_url} alt="Your logo" className="max-w-[85%] max-h-[85%] object-contain" />
-                        : <span className="text-[11px]" style={{ color: 'rgb(var(--ed-fg) / 0.4)' }}>No logo</span>}
-                    </div>
-                    <div className="flex flex-col gap-1.5">
-                      <input ref={fileRef} type="file" accept="image/png,image/jpeg,image/webp" className="hidden" onChange={e => pickLogo(e.target.files?.[0])} />
-                      <button type="button" onClick={() => fileRef.current?.click()} disabled={uploading}
-                        className="h-8 px-3 rounded-lg text-xs font-semibold disabled:opacity-50"
-                        style={{ color: 'var(--ed-text)', background: 'rgb(var(--ed-fg) / 0.08)', boxShadow: 'inset 0 0 0 1px rgb(var(--ed-fg) / 0.12)' }}>
-                        {uploading ? 'Uploading…' : d.logo.path ? 'Change logo' : 'Upload logo'}
-                      </button>
-                      {d.logo.path && (
-                        <button type="button" onClick={() => set({ ...now(), logo: { ...now().logo, path: null, ratio: null } })}
-                          className="self-start text-[11px] hover:underline" style={{ color: 'rgb(var(--ed-fg) / 0.5)' }}>Remove logo</button>
-                      )}
-                      <span className="text-[11px]" style={{ color: 'rgb(var(--ed-fg) / 0.45)' }}>PNG with a see-through background works best · up to 5 MB</span>
-                    </div>
-                  </div>
-                  {logoError && <p role="alert" className="text-[11px]" style={{ color: '#fca5a5' }}>{logoError}</p>}
+                <BrandCard kit={kit} brand={brand} now={now} set={set} found={found} readOnly={readOnly} />
+                <Section title="Logo on the clip">
                   <div className="cap-row">
                     <span className="flex flex-col min-w-0">
                       <span className="cap-label">Place</span>
@@ -798,21 +706,6 @@ export function BrandKitStudio({ brand, onKitId = null, onTurnOn, onTurnOff, onC
                     onChange={size => set({ ...now(), logo: { ...now().logo, size } })} />
                   <RangeRow label="Opacity" min={0.1} max={1} step={0.05} value={d.logo.opacity} text={`${Math.round(d.logo.opacity * 100)}%`}
                     onChange={opacity => set({ ...now(), logo: { ...now().logo, opacity } })} />
-                </Section>
-                <Section title="Colours">
-                  <ColorRow label="Main colour" hint="Branded card background and frame bands" value={d.colors.main} onChange={main => set({ ...now(), colors: { ...now().colors, main } })} />
-                  <ColorRow label="Accent colour" hint="Your @handle on the Branded card" value={d.colors.accent} onChange={accent => set({ ...now(), colors: { ...now().colors, accent } })} />
-                  <ExtraColors value={d.colors.extra} onChange={extra => set({ ...now(), colors: { ...now().colors, extra } })} />
-                  <p className="text-[11px] -mt-1" style={{ color: 'rgb(var(--ed-fg) / 0.45)' }}>
-                    All your brand colours show first in the editor&rsquo;s colour choices — text, captions and frames.
-                  </p>
-                </Section>
-                <Section title="@handle">
-                  <label className="flex items-center gap-1 h-9 px-3 rounded-lg" style={{ background: 'rgb(var(--ed-fg) / 0.06)', boxShadow: 'inset 0 0 0 1px rgb(var(--ed-fg) / 0.1)' }}>
-                    <span className="text-sm font-semibold" style={{ color: 'rgb(var(--ed-fg) / 0.45)' }}>@</span>
-                    <input value={d.handle} onChange={e => set({ ...now(), handle: e.target.value.replace(/^@+/, '').replace(/\s+/g, '') })} maxLength={40}
-                      placeholder="yourchannel" aria-label="Your @handle" className="flex-1 min-w-0 bg-transparent text-sm text-[var(--ed-text)] outline-none" />
-                  </label>
                 </Section>
                 {!readOnly && (
                   <Section title="New clips">
@@ -1156,32 +1049,6 @@ function TextRow({ label, placeholder, value, max, onChange, commitOnBlur = fals
   )
 }
 
-/** Up to MAX_EXTRA_COLORS more brand colours: each one changed, removed, or one added */
-function ExtraColors({ value, onChange }: { value: string[]; onChange: (v: string[]) => void }) {
-  return (
-    <div className="cap-row">
-      <span className="flex flex-col min-w-0">
-        <span className="cap-label">More colours</span>
-        <span className="text-[11px]" style={{ color: 'rgb(var(--ed-fg) / 0.45)' }}>Up to {MAX_EXTRA_COLORS}</span>
-      </span>
-      <span className="flex items-center gap-2 shrink-0">
-        {value.map((c, i) => (
-          <span key={i} className="relative group">
-            <input type="color" value={c} aria-label={`Brand colour ${i + 3}`} onChange={e => onChange(value.map((x, j) => (j === i ? e.target.value.toLowerCase() : x)))}
-              className="w-8 h-8 rounded-md cursor-pointer bg-transparent" style={{ border: 'none', padding: 0 }} />
-            <button type="button" aria-label={`Remove brand colour ${i + 3}`} onClick={() => onChange(value.filter((_, j) => j !== i))}
-              className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full text-[10px] leading-none opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
-              style={{ background: '#111', color: '#fff', boxShadow: '0 0 0 1px rgb(var(--ed-fg) / 0.3)' }}>×</button>
-          </span>
-        ))}
-        {value.length < MAX_EXTRA_COLORS && (
-          <button type="button" onClick={() => onChange([...value, '#ffffff'])} aria-label="Add a brand colour"
-            className="w-8 h-8 rounded-md text-base font-semibold" style={{ color: 'rgb(var(--ed-fg) / 0.6)', boxShadow: 'inset 0 0 0 1.5px rgb(var(--ed-fg) / 0.2)' }}>+</button>
-        )}
-      </span>
-    </div>
-  )
-}
 
 /** The Branded card as it starts: the video as a rounded card on the main colour, the title above, the @handle below */
 /** The Branded card as the editor and the export draw it (lib/shared/brandCard.ts): its background, video, title and @handle */

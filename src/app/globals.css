@@ -1735,7 +1735,52 @@ body {
 .bs-check-row[data-ok] .bs-check-ico { background: #c8ff00; }
 .bs-swatch { width: 16px; height: 16px; border-radius: 5px; box-shadow: inset 0 0 0 1px rgb(var(--ed-fg) / 0.18); }
 .bs-default { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border-radius: 12px; background: rgba(200,255,0,0.06); box-shadow: inset 0 0 0 1px rgba(200,255,0,0.3); }
-@media (max-width: 760px) { .bs-preview { display: none; } .bs-steps .bs-step { font-size: 0; padding-right: 4px; } .bs-steps .bs-step .bs-step-n { font-size: 11px; } }
+/* ── Making a brand in a minute (components/brand/BrandMaker.tsx): the three ways in, then the card ── */
+.bm-ways { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.bm-way { display: flex; flex-direction: column; gap: 3px; padding: 12px; border-radius: 12px; text-align: left; background: rgb(var(--ed-fg) / 0.04); box-shadow: inset 0 0 0 1px rgb(var(--ed-fg) / 0.1); transition: background .15s, box-shadow .15s; }
+.bm-way:hover { background: rgb(var(--ed-fg) / 0.07); }
+.bm-way[data-on] { background: rgba(200,255,0,0.08); box-shadow: inset 0 0 0 1.5px rgba(200,255,0,0.55); }
+.bm-way:focus-visible, .bm-chip:focus-visible, .bm-swatch:focus-visible, .bm-offer:focus-visible, .bm-drop:focus-visible { outline: 2px solid rgba(200,255,0,0.7); outline-offset: 2px; }
+.bm-way-name { font-size: 13px; font-weight: 700; color: var(--ed-text); }
+.bm-way-about { font-size: 11px; line-height: 1.35; color: rgb(var(--ed-fg) / 0.5); }
+[data-compact] .bm-way { padding: 9px 10px; }
+.bm-input { height: 44px; padding: 0 14px; border-radius: 12px; font-size: 14px; color: var(--ed-text); background: rgb(var(--ed-fg) / 0.06); box-shadow: inset 0 0 0 1px rgb(var(--ed-fg) / 0.1); outline: none; }
+.bm-input:focus, .bm-input:focus-within { box-shadow: inset 0 0 0 1.5px rgba(200,255,0,0.6); }
+.bm-input-sm { height: 36px; padding: 0 12px; border-radius: 9px; font-size: 13px; }
+.bm-textarea { height: auto; min-height: 64px; padding: 10px 14px; line-height: 1.45; resize: vertical; }
+.bm-hex { width: 92px; height: 32px; padding: 0 8px; border-radius: 8px; font-size: 12px; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+.bm-drop { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 22px 14px; border-radius: 14px; text-align: center; border: 1.5px dashed rgb(var(--ed-fg) / 0.22); background: rgb(var(--ed-fg) / 0.03); transition: border-color .15s; }
+.bm-drop:hover:not(:disabled) { border-color: rgba(200,255,0,0.6); }
+.bm-chip { display: inline-flex; align-items: center; gap: 5px; height: 28px; padding: 0 10px; border-radius: 999px; font-size: 11.5px; font-weight: 600; color: rgb(var(--ed-fg) / 0.78); background: rgb(var(--ed-fg) / 0.06); box-shadow: inset 0 0 0 1px rgb(var(--ed-fg) / 0.1); }
+.bm-chip:hover { color: var(--ed-text); }
+.bm-chip[data-on] { color: var(--ed-text); background: rgba(200,255,0,0.1); box-shadow: inset 0 0 0 1.5px rgba(200,255,0,0.55); }
+.bm-chip-dot { width: 10px; height: 10px; border-radius: 50%; box-shadow: inset 0 0 0 1px rgb(var(--ed-fg) / 0.25); }
+.bm-card { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.bm-found { grid-column: 1 / -1; margin: 0; font-size: 12px; font-weight: 600; color: var(--ed-accent-text, #c8ff00); }
+.bm-tile { display: flex; flex-direction: column; gap: 10px; min-width: 0; padding: 14px; border-radius: 16px; background: rgb(var(--ed-fg) / 0.03); box-shadow: inset 0 0 0 1px rgb(var(--ed-fg) / 0.08); }
+.bm-tile-wide { grid-column: 1 / -1; }
+.bm-tile-label { font-size: 11px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: rgb(var(--ed-fg) / 0.45); }
+.bm-logo { width: 72px; height: 72px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; overflow: hidden; border-radius: 12px; background: repeating-conic-gradient(rgb(var(--ed-fg) / 0.08) 0 25%, transparent 0 50%) 0 0 / 14px 14px; box-shadow: inset 0 0 0 1px rgb(var(--ed-fg) / 0.12); }
+.bm-btn { height: 32px; padding: 0 12px; border-radius: 9px; font-size: 12px; font-weight: 600; color: var(--ed-text); background: rgb(var(--ed-fg) / 0.08); box-shadow: inset 0 0 0 1px rgb(var(--ed-fg) / 0.12); }
+.bm-btn:disabled { opacity: .5; }
+.bm-quiet { font-size: 11px; color: rgb(var(--ed-fg) / 0.5); }
+.bm-quiet:hover { text-decoration: underline; }
+.bm-swatch { display: block; width: 40px; height: 40px; border-radius: 12px; box-shadow: inset 0 0 0 1px rgb(var(--ed-fg) / 0.2); transition: transform .12s; }
+.bm-swatch:hover { transform: translateY(-1px); }
+.bm-swatch[data-on] { outline: 2px solid #c8ff00; outline-offset: 2px; }
+.bm-swatch-add { display: grid; place-items: center; font-size: 18px; color: rgb(var(--ed-fg) / 0.6); background: transparent; box-shadow: inset 0 0 0 1.5px rgb(var(--ed-fg) / 0.2); }
+.bm-swatch-x { position: absolute; top: -6px; right: -6px; width: 18px; height: 18px; border-radius: 50%; font-size: 11px; line-height: 1; color: #fff; background: #111; box-shadow: 0 0 0 1px rgb(var(--ed-fg) / 0.3); opacity: 0; transition: opacity .12s; }
+.group:hover > .bm-swatch-x, .bm-swatch-x:focus-visible { opacity: 1; }
+.bm-picker { width: 32px; height: 32px; padding: 0; border: none; background: transparent; cursor: pointer; }
+.bm-offer { width: 24px; height: 24px; border-radius: 7px; box-shadow: inset 0 0 0 1px rgb(var(--ed-fg) / 0.25); transition: transform .12s; }
+.bm-offer:hover { transform: scale(1.12); }
+/* (the title shown in its font on a dark card: a white title would vanish on the light theme) */
+.bm-sample { max-width: 100%; padding: 8px 12px; border-radius: 10px; font-size: 22px; font-weight: 700; line-height: 1.15; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; background: #141418; }
+@media (max-width: 560px) {
+  .bm-ways, .bm-card { grid-template-columns: 1fr; }
+}
+@media (prefers-reduced-motion: reduce) { .bm-swatch, .bm-offer, .bm-way { transition: none; } }
+@media (max-width: 760px) { .bs-preview { display: none; } .bs-steps .bs-step { font-size: 0; padding-right: 4px; } .bs-steps .bs-step .bs-step-n { font-size: 11px; } .bs-step-line { display: none; } }
 
 /* Clip card action bar (clip board ClipCard): hairline on top, quiet ghost buttons on the left,
    one lime main action on the right. Buttons are compact so they fit the card with their words. */

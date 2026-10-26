@@ -3,12 +3,18 @@ import net from 'node:net'
 import { PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3'
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 import { r2, R2_BUCKET } from '@/lib/r2'
+import { LOGO_LINK_SECONDS } from './brandKits'
+import { readSiteStyle, mergePalette, googleFontFamilies, loadSharp, logoColors } from './brandStyle'
+// (the logo's colours are read where the other brand colours are: brandStyle.ts)
+export { logoColors } from './brandStyle'
+import type { LinkBrand } from '@/lib/shared/brandKit'
 
 /**
  * A brand kit filled from a link (the Brand kit tool's "Fill from a link"): the page at a website or
- * profile link is read for the brand's name, @handle, logo and colours — no paid service. The logo is
- * copied into the user's brand folder like an uploaded one. Colours come from the page's theme colour
- * and the logo's own colours (read with sharp, which Next ships; without it only the theme colour).
+ * profile link is read for the brand's name, @handle, logo, colours and fonts — no paid service. The
+ * logo is copied into the user's brand folder like an uploaded one. Colours come from the logo's own
+ * colours (read with sharp, which Next ships), the site's styles and its theme colour; fonts from its
+ * styles, matched to the nearest of the editor's fonts (brandStyle.ts).
  *
  * The link is the user's: the server fetches it only over http(s) on the usual ports, never to a
  * private or local address (checked again at every redirect), with time and size limits.
@@ -18,16 +24,14 @@ const err = (message: string, status: number) => Object.assign(new Error(message
 const TIMEOUT_MS = 8000
 const MAX_PAGE = 2 * 1024 * 1024
 const MAX_IMAGE = 5 * 1024 * 1024
+/** A site's styles: at most this many stylesheets read, each at most this big */
+const MAX_SHEETS = 4
+const MAX_CSS = 1536 * 1024
+/** A stylesheet slower than this is skipped: the brand's name and logo shouldn't wait on it */
+const CSS_TIMEOUT_MS = 4000
 const UA = 'Mozilla/5.0 (compatible; ShortcutBrandKit/1.0; +https://shortcutapp.in)'
 
-export interface LinkBrand {
-  /** Where it was read from (the site's host) */
-  source: string
-  name: string | null
-  handle: string | null
-  logo: { path: string; url: string | null; ratio: number | null } | null
-  colors: { main: string; accent: string | null } | null
-}
+export type { LinkBrand } from '@/lib/shared/brandKit'
 
 /** An address the server must never fetch: loopback, private, link-local, carrier NAT, multicast, reserved */
 export function privateAddress(ip: string): boolean {
@@ -58,10 +62,10 @@ async function safeUrl(raw: string): Promise<URL> {
 }
 
 /** GET with every redirect checked again, a time limit, and at most `max` bytes read */
-async function fetchSafe(raw: string, max: number, accept: string): Promise<{ body: Buffer; type: string; url: URL }> {
+async function fetchSafe(raw: string, max: number, accept: string, ms = TIMEOUT_MS): Promise<{ body: Buffer; type: string; url: URL }> {
   let url = await safeUrl(raw)
   for (let hop = 0; hop < 5; hop++) {
-    const res = await fetch(url, { redirect: 'manual', signal: AbortSignal.timeout(TIMEOUT_MS), headers: { 'User-Agent': UA, Accept: accept } })
+    const res = await fetch(url, { redirect: 'manual', signal: AbortSignal.timeout(ms), headers: { 'User-Agent': UA, Accept: accept } })
     if (res.status >= 300 && res.status < 400 && res.headers.get('location')) {
       url = await safeUrl(new URL(res.headers.get('location')!, url).toString())
       continue
@@ -139,7 +143,28 @@ export function readPage(html: string, base: URL) {
   const shareLogo = share && /logo/i.test(share.split('/').pop() ?? '') ? share : null
   // On a profile page the share picture is the profile picture: the best logo there
   const logos = [...new Set((social ? [share, ...icons] : [...logoImgs, shareLogo, ...icons]).filter((u): u is string => !!u))]
-  return { name: siteName ? siteName.slice(0, 40) : null, handle: handleOf(base, meta('twitter:site')), themeColor: hexColor(meta('theme-color')), logos }
+  // Its styles: the stylesheets it links (a social profile's are the network's, not the brand's), its
+  // inline <style>s, and the fonts its Google Fonts links load
+  const sheets = social ? [] : [...new Set(links
+    .filter(l => /(^|\s)stylesheet(\s|$)/i.test(l.rel ?? '') || (/(^|\s)preload(\s|$)/i.test(l.rel ?? '') && l.as === 'style'))
+    .map(l => abs(l.href)).filter((u): u is string => !!u))]
+  const inlineCss = social ? [] : [...html.matchAll(/<style\b[^>]*>([\s\S]*?)<\/style>/gi)].map(m => m[1]).filter(s => s.length < MAX_CSS)
+  const googleFamilies = social ? [] : sheets.flatMap(googleFontFamilies)
+  return {
+    name: siteName ? siteName.slice(0, 40) : null, handle: handleOf(base, meta('twitter:site')), themeColor: hexColor(meta('theme-color')), logos,
+    sheets: sheets.filter(u => !googleFontFamilies(u).length), inlineCss, googleFamilies,
+  }
+}
+
+/** The site's fonts and colours from its styles (brandStyle.ts): its stylesheets read side by side; one that can't be read is skipped */
+export async function siteStyle(info: ReturnType<typeof readPage>) {
+  if (!info.inlineCss.length && !info.sheets.length && !info.googleFamilies.length) return null
+  const sheets = await Promise.all(info.sheets.slice(0, MAX_SHEETS).map(u =>
+    fetchSafe(u, MAX_CSS, 'text/css,*/*;q=0.1', CSS_TIMEOUT_MS).then(r => (/css|text\/plain|octet/.test(r.type) || !r.type ? r.body.toString('utf8') : ''), () => '')))
+  const css = [...info.inlineCss, ...sheets].filter(Boolean)
+  // (fonts a stylesheet loads from Google Fonts with @import count as loaded too)
+  const imported = css.flatMap(c => [...c.matchAll(/@import\s+(?:url\()?["']?(https:\/\/fonts\.googleapis\.com[^"')\s]+)/gi)].flatMap(m => googleFontFamilies(m[1])))
+  return readSiteStyle(css, [...info.googleFamilies, ...imported])
 }
 
 /** A site's name from its page title — the shorter end: "Stripe | Financial…", "The AI workspace… | Notion" */
@@ -173,39 +198,6 @@ function hexColor(v: string | null): string | null {
   return m ? `#${[m[1], m[2], m[3]].map(x => Math.min(255, +x).toString(16).padStart(2, '0')).join('')}` : null
 }
 
-type Sharp = (typeof import('sharp'))['default']
-async function loadSharp(): Promise<Sharp | null> {
-  try { return (await import('sharp')).default } catch { return null }
-}
-
-const toHex = (r: number, g: number, b: number) => `#${[r, g, b].map(x => Math.round(x).toString(16).padStart(2, '0')).join('')}`
-const lum = ([r, g, b]: number[]) => (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255
-const sat = ([r, g, b]: number[]) => { const hi = Math.max(r, g, b), lo = Math.min(r, g, b); return hi === 0 ? 0 : (hi - lo) / hi }
-const dist = (a: number[], b: number[]) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2])
-
-/**
- * A logo's brand colours from its pixels (RGBA): `main` its most used colour that isn't near-white
- * (a logo's background or its dark letters), `accent` its most colourful one well apart from that
- */
-export function logoColors(px: Uint8Array | Buffer, channels: number): { main: string; accent: string | null } | null {
-  const buckets = new Map<number, { n: number; r: number; g: number; b: number }>()
-  for (let i = 0; i + channels - 1 < px.length; i += channels) {
-    if (channels === 4 && px[i + 3] < 160) continue
-    const r = px[i], g = px[i + 1], b = px[i + 2]
-    const key = ((r >> 4) << 8) | ((g >> 4) << 4) | (b >> 4)
-    const k = buckets.get(key) ?? { n: 0, r: 0, g: 0, b: 0 }
-    k.n++; k.r += r; k.g += g; k.b += b
-    buckets.set(key, k)
-  }
-  const total = [...buckets.values()].reduce((s, k) => s + k.n, 0)
-  if (!total) return null
-  const colours = [...buckets.values()].map(k => ({ n: k.n, c: [k.r / k.n, k.g / k.n, k.b / k.n] })).sort((a, b) => b.n - a.n)
-  const main = colours.find(x => lum(x.c) < 0.92 && x.n / total > 0.02) ?? colours[0]
-  const accent = colours.filter(x => x !== main && x.n / total > 0.01 && dist(x.c, main.c) > 90 && sat(x.c) > 0.3 && lum(x.c) > 0.12)
-    .sort((a, b) => sat(b.c) * Math.sqrt(b.n) - sat(a.c) * Math.sqrt(a.n))[0]
-  return { main: toHex(main.c[0], main.c[1], main.c[2]), accent: accent ? toHex(accent.c[0], accent.c[1], accent.c[2]) : null }
-}
-
 /** Reads the link and copies its logo into the user's brand folder */
 export async function brandFromLink(userId: string, link: unknown): Promise<LinkBrand> {
   if (typeof link !== 'string' || !link.trim() || link.length > 500) throw err('Paste a website or profile link', 400)
@@ -219,6 +211,8 @@ export async function brandFromLink(userId: string, link: unknown): Promise<Link
   if (next) page = await open(new URL(next, page.url).toString()).catch(() => page)
   if (!/html|xml|text\/plain/.test(page.type) && page.type) throw err('That link isn’t a web page', 400)
   const info = readPage(page.body.toString('utf8'), page.url)
+  // (the styles read while the logo is looked for)
+  const styleRead = siteStyle(info).catch(() => null)
   const sharp = await loadSharp()
   type Pick = { body: Buffer; type: string; ratio: number | null; colors: { main: string; accent: string | null } | null }
   let pick: Pick | null = null
@@ -252,16 +246,16 @@ export async function brandFromLink(userId: string, link: unknown): Promise<Link
     // (the logo not stored: the name and colours still come back)
     const stored = await r2.send(new PutObjectCommand({ Bucket: R2_BUCKET, Key: path, Body: pick.body, ContentType: pick.type })).then(() => true, () => false)
     if (stored) {
-      const url = await getSignedUrl(r2, new GetObjectCommand({ Bucket: R2_BUCKET, Key: path }), { expiresIn: 60 * 60 * 6 }).catch(() => null)
+      const url = await getSignedUrl(r2, new GetObjectCommand({ Bucket: R2_BUCKET, Key: path }), { expiresIn: LOGO_LINK_SECONDS }).catch(() => null)
       logo = { path, url, ratio: pick.ratio }
     }
   }
-  const fromLogo = pick?.colors ?? null
-  const main = fromLogo?.main ?? info.themeColor
-  const accent = fromLogo?.accent ?? (fromLogo && info.themeColor && info.themeColor !== fromLogo.main ? info.themeColor : null)
+  const style = await styleRead
+  // The logo's own colours first (the brand's), then the site's and its theme colour
+  const colors = mergePalette(pick?.colors ?? null, style?.colors ?? [], info.themeColor)
   return {
     source: page.url.hostname.replace(/^www\./, ''),
-    name: info.name, handle: info.handle, logo,
-    colors: main ? { main, accent } : null,
+    name: info.name, handle: info.handle, logo, colors,
+    fonts: style && (style.heading || style.body) ? { heading: style.heading, body: style.body } : null,
   }
 }

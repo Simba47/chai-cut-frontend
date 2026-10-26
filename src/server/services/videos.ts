@@ -436,12 +436,16 @@ export interface AutoClipOptions {
   titleLanguage?: 'roman' | 'english' | 'native'
 }
 
-/** The brand kit Make my clips puts on its clips: 'none', one of the user's own kits, else 'default' (the worker's lib/brandKit.ts) */
+/**
+ * The brand kit Make my clips puts on its clips: 'none', a kit the user can use — their own or one
+ * shared with them (the worker reads either: its lib/brandKit.ts) — else 'default'. (A shared kit used
+ * to be turned into 'default' here, so the clips got the user's own default kit instead.)
+ */
 async function brandKitChoice(userId: string, want: string | undefined): Promise<string> {
   if (want === 'none') return 'none'
-  if (want && /^[0-9a-f-]{36}$/i.test(want)) {
-    const [own] = await sql`SELECT 1 FROM brand_kits WHERE id = ${want} AND user_id = ${userId}`.catch(() => [])
-    if (own) return want
+  if (want) {
+    const { canUseKit } = await import('./brandKits')
+    if (await canUseKit(userId, want)) return want
   }
   return 'default'
 }
