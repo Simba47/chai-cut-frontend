@@ -67,7 +67,7 @@ import { frameSlotSize } from '@/modules/editor/frames'
 import { getBoxPositionAtLerp, type BoxPosition } from '@/lib/interpolation'
 import { SubjectsPanel, type SubjectItem, type AnglesView } from '@/components/editor/SubjectsPanel'
 import { angleRows, angleAt, type Angle, type AngleRow } from '@/modules/editor/angles'
-import { decideFormat, AUTO_FORMAT } from '@/modules/editor/autoFormat'
+import { decideFormat, AUTO_FORMAT, keepsAll, viewsOverlap } from '@/modules/editor/autoFormat'
 import type { SegmentLocal, CropBoxLocal, FrameLayout, FrameLane, FrameItem, FrameSettings, TransitionType } from '@chai-cut/shared'
 import { SPEED_MIN, SPEED_MAX } from '@chai-cut/shared'
 import { TransitionsPanel, TRANSITION_DEFAULT_MS, TRANSITION_KINDS, playedTransitionMs, type TransitionJoin } from '@/components/editor/TransitionsPanel'
@@ -2059,7 +2059,9 @@ export function EditorShell({
    * videos are left alone. One undo step.
    */
   function frameClipOnSubjects(list: SubjectRow[]) {
-    const groups = list.filter(s => s.status === 'done' && s.shot && s.spans?.length)
+    // (a group whose saved views overlap is never laid again: Auto format rebuilds it — views never overlap)
+    const groups = list.filter(s => s.status === 'done' && s.shot && s.spans?.length
+      && !viewsOverlap([...s.shot.boxes].sort((p, q) => p.slot_index - q.slot_index)))
     const tracked = list.filter(s => s.status === 'done' && !s.shot && s.path?.length) as Array<SubjectRow & { path: SubjectPoint[] }>
     if (!tracked.length && !groups.length) return
     const held = groups.length ? applyGroupShots(groups.map(g => ({
@@ -2132,7 +2134,17 @@ export function EditorShell({
           : followChanges(person.path, seg.start_ms, seg.end_ms, trim.toSource, view, 'smooth', cuts)
         if (!found?.length) return
         const [sl, sr] = stripOf(i)
-        const changes = found.map(c => ({ ...c, x: Math.max(sl, Math.min(c.x, sr - c.w)) }))
+        const changes = found.map(c => {
+          const inStrip = { ...c, x: Math.max(sl, Math.min(c.x, sr - c.w)) }
+          // Their face drifting out of the view (kept in its strip): the view widens, inside the strip
+          // and the picture, to keep them whole (never ignore anyone)
+          const face = person && apart ? subjectBoxAt(person.path, trim.toSource(c.t_ms), cuts) : null
+          if (!face || (face.x >= inStrip.x && face.x + face.w <= inStrip.x + inStrip.w)) return inStrip
+          const l = Math.max(sl, Math.min(inStrip.x, face.x)), r = Math.min(sr, Math.max(inStrip.x + inStrip.w, face.x + face.w))
+          const w = r - l, h = Math.min(1, w * (c.h / c.w))
+          const wide = h * (c.w / c.h)
+          return { ...c, x: Math.max(sl, Math.min(l, sr - wide)), w: wide, h, y: Math.max(0, Math.min(c.y - (h - c.h) * 0.4, 1 - h)) }
+        })
         next[box.id] = buildKeyframes(changes.map((c, k) => (k === 0 ? { ...c, t_ms: seg.start_ms } : c)))
           .map(k => ({ id: crypto.randomUUID(), box_id: box.id, t_ms: k.t_ms, x: k.x, y: k.y, w: k.w, h: k.h }))
         framed++
@@ -2384,18 +2396,35 @@ export function EditorShell({
         return over.length === 1 && Math.abs(over[0].start_ms - a) <= 150 && Math.abs(over[0].end_ms - b) <= 150
       }
       const rows = angleItems.filter(r => r.people > 0)
+      // A group whose saved views overlap or leave someone out (marked before these rules) is rebuilt by
+      // the rules, not kept (the user, 2026-10-26: views never overlap; never ignore anyone)
+      const rebuilt = new Set<AngleRow>()
+      for (const row of rows) {
+        if (!row.group) continue
+        const g = subjects.find(x => x.shot && x.label === row.group!.label)
+        if (!g?.shot) continue
+        const boxes = [...g.shot.boxes].sort((p, q) => p.slot_index - q.slot_index)
+        if (!viewsOverlap(boxes) && keepsAll(g.shot.layout as LayoutType, boxes, row.faces.map(f => f.box))) continue
+        try {
+          await subjectsCall(`${subjectsUrl}?id=${encodeURIComponent(g.id)}`, { method: 'DELETE' })
+          setSubjects(list => list.filter(x => x.id !== g.id))
+          rebuilt.add(row)
+        } catch { /* it stays as it was */ }
+      }
       // Each place of each scene on its own (who talks differs between them: modules/editor/autoFormat.ts),
       // all decided first, then laid at once (one undo step)
-      const decided = rows.filter(r => !r.group).flatMap(row => row.places.filter(pl => !byHand(pl.shown)).flatMap(pl => {
+      const decided = rows.filter(r => !r.group || rebuilt.has(r)).flatMap(row => row.places.filter(pl => rebuilt.has(row) || !byHand(pl.shown)).flatMap(pl => {
         const plan = decideFormat(row.faces.map(f => f.box), pl.talk, ar)
         return plan ? [{ row, shown: pl.shown, plan }] : []
       })).sort((p, q) => p.shown[0] - q.shown[0])
       // A very short place (under SHORT_PLACE) takes the format of the place right before it, so fast
-      // cutting doesn't flicker (the Rulebook, section 6); the first, or one after a gap, keeps its own
+      // cutting doesn't flicker (the Rulebook, section 6) — only when that format holds everyone in this
+      // place too (never ignore anyone); the first, or one after a gap, keeps its own
       const plans = decided.map((x, i) => {
         const before = i > 0 ? decided[i - 1] : null
         const short = x.shown[1] - x.shown[0] < AUTO_FORMAT.SHORT_PLACE * 1000
-        return short && before && Math.abs(before.shown[1] - x.shown[0]) <= 150 ? { ...x, plan: before.plan } : x
+        const fits = before && keepsAll(before.plan.layout, before.plan.framing, x.row.faces.map(f => f.box))
+        return short && before && fits && Math.abs(before.shown[1] - x.shown[0]) <= 150 ? { ...x, plan: before.plan } : x
       })
       // A scene of two or more that gets the same format and views in every place (who talks changes
       // nothing there: four people's Trio, say) becomes a group with it (user, 2026-10-24: the scene

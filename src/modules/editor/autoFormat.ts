@@ -243,3 +243,25 @@ export function decideFormat(faces: readonly Face[], talk: readonly number[] | n
   if (breaks.length === 1) return sidesAt(breaks[0], 'sides')
   return sidesAt(middleCut(), 'sides')
 }
+
+const within = (f: Face, v: BoxPosition) =>
+  f.x >= v.x - 1e-6 && f.x + f.w <= v.x + v.w + 1e-6 && f.y >= v.y - 1e-6 && f.y + f.h <= v.y + v.h + 1e-6
+
+/**
+ * Whether a format keeps everyone (the user, 2026-10-26: "never ever ignore any person in the view"):
+ * every face whole in a view — in a Vertical, a face wider than the 9:16 crop itself has its middle in it;
+ * the whole picture keeps everyone
+ */
+export function keepsAll(layout: LayoutType, framing: readonly BoxPosition[], faces: readonly Face[]): boolean {
+  if (layout === WHOLE_PICTURE) return true
+  if (!framing.length) return false
+  return faces.every(f => (layout === 'vertical' && f.w > framing[0].w
+    ? f.x + f.w / 2 >= framing[0].x && f.x + f.w / 2 <= framing[0].x + framing[0].w
+    : framing.some(v => within(f, v))))
+}
+
+/** Whether any two views share part of the picture (the user, 2026-10-26: views never overlap, in any format) */
+export function viewsOverlap(framing: readonly BoxPosition[]): boolean {
+  return framing.some((p, a) => framing.some((q, b) => a < b
+    && Math.min(p.x + p.w, q.x + q.w) - Math.max(p.x, q.x) > 1e-6 && Math.min(p.y + p.h, q.y + q.h) - Math.max(p.y, q.y) > 1e-6))
+}
