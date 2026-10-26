@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { VideoThumbnails, MEDIA_DRAG_TYPE } from './SegmentTimeline'
+import { VideoThumbnails, MEDIA_DRAG_TYPE, noteDragIn } from './SegmentTimeline'
 
 const muted = (a: number) => `rgb(var(--ed-fg) / ${a})`
 const ACCENT = '#c8ff00'
@@ -245,32 +245,11 @@ function Thumb({ item, size }: { item: LibraryItem; size: 'card' | 'row' }) {
   )
 }
 
-/** Each kind's name and colour (the timeline's colours: video orange, photo blue, audio purple) */
-const KIND: Record<LibraryItem['kind'], { label: string; color: string }> = {
-  video: { label: 'Video', color: '#f97316' }, image: { label: 'Photo', color: '#60a5fa' }, audio: { label: 'Audio', color: '#c084fc' },
-}
-
 const dragStart = (item: LibraryItem) => (e: React.DragEvent) => {
   e.dataTransfer.setData(MEDIA_DRAG_TYPE, JSON.stringify(item))
   e.dataTransfer.effectAllowed = 'copy'
-  // What follows the pointer: a small file (its kind and name), not the whole big card
-  const k = KIND[item.kind]
-  const chip = document.createElement('div')
-  chip.style.cssText = 'position:fixed;top:-200px;left:-200px;display:flex;align-items:center;gap:6px;padding:5px 9px 5px 6px;'
-    + 'border-radius:8px;background:#1c1c1f;border:1px solid rgba(255,255,255,0.14);box-shadow:0 6px 18px rgba(0,0,0,0.5);'
-    + 'font:600 11px system-ui,sans-serif;color:#fff;max-width:180px;white-space:nowrap;'
-  const icon = document.createElement('span')
-  icon.style.cssText = `flex:none;width:18px;height:22px;border-radius:3px 7px 3px 3px;background:${k.color};position:relative;`
-  const fold = document.createElement('span')
-  fold.style.cssText = 'position:absolute;top:0;right:0;width:7px;height:7px;background:rgba(255,255,255,0.45);border-radius:0 0 0 3px;'
-  icon.appendChild(fold)
-  const name = document.createElement('span')
-  name.style.cssText = 'overflow:hidden;text-overflow:ellipsis;'
-  name.textContent = item.name
-  chip.append(icon, name)
-  document.body.appendChild(chip)
-  e.dataTransfer.setDragImage(chip, 14, 14)
-  setTimeout(() => chip.remove(), 0)
+  // (over the timeline it shows itself as a bar where it would go, with its pictures; elsewhere its name follows the pointer)
+  noteDragIn(e, { name: item.name, kind: item.kind, ms: item.duration_ms, url: item.url })
 }
 
 function AddButton({ onAdd, name }: { onAdd: () => void; name: string }) {

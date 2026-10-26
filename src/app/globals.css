@@ -2120,19 +2120,10 @@ body {
 .tl2-bar-grip[data-edge="end"] { right: 0; border-radius: 2px 6px 6px 2px; }
 
 /* while something is dragged in: the row under the main video to drop it on top of the video */
-.tl2-dropzone { position: relative; margin: 6px 0 2px; border-radius: 8px; border: 1.5px dashed rgba(200, 255, 0, 0.35); background: rgba(200, 255, 0, 0.04);
-  transition: background-color .15s, border-color .15s; animation: tl2-dropzone-in .18s ease-out; }
-.tl2-dropzone[data-on] { border-color: #c8ff00; background: rgba(200, 255, 0, 0.12); }
-.tl2-dropzone > span { position: absolute; top: 50%; transform: translate(8px, -50%); display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; pointer-events: none;
-  font-size: 11px; font-weight: 700; color: rgba(200, 255, 0, 0.8); }
-.tl2-dropzone[data-on] > span { color: #c8ff00; }
-@keyframes tl2-dropzone-in { from { opacity: 0; transform: translateY(-4px); } }
-/* …over the ruler at the top of the timeline (nothing moves under the pointer); its words left of the drop line */
+/* where something dragged in can open a new row: invisible, a faint shade while over it (what's dragged shows itself: Timeline dropGhost) */
+.tl2-dropzone { position: relative; margin: 6px 0 2px; border-radius: 6px; transition: background-color .15s; }
+.tl2-dropzone[data-on] { background: rgb(var(--ed-fg) / 0.045); }
 .tl2-dropzone-top { position: absolute; left: 0; right: 0; top: 1px; bottom: 1px; margin: 0; z-index: 30; }
-.tl2-dropzone-top > span { transform: translate(calc(-100% - 10px), -50%); }
-[data-theme="light"] .tl2-dropzone { border-color: rgba(120, 160, 0, 0.45); background: rgba(168, 217, 0, 0.08); }
-[data-theme="light"] .tl2-dropzone[data-on] { border-color: #8fb800; background: rgba(168, 217, 0, 0.18); }
-[data-theme="light"] .tl2-dropzone > span { color: #4d6400; }
 /* the playhead, in the middle; a short lime flash when it clicks onto a cut */
 .tl2-playhead { position: absolute; top: 0; bottom: 0; left: 0; width: 2px; margin-left: -1px; border-radius: 2px; background: #fff; box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.4), 0 0 10px rgba(255, 255, 255, 0.35); z-index: 70; pointer-events: none; }
 .tl2-playhead[data-snap="a"] { animation: tl2-snap-a .35s ease-out; }
@@ -2152,6 +2143,36 @@ body {
 .tl2-mute:hover { background: rgb(var(--ed-fg) / 0.1); }
 .tl2-mute[data-on] { color: #f87171; background: rgba(248, 113, 113, 0.12); }
 .tl2-row-ico { position: absolute; left: 17px; width: 18px; height: 18px; display: grid; place-items: center; }
+/* the Captions row (as CapCut's caption track): each caption line a small block with its words, a line in
+   its style's colour along its top; the lines selected outlined lime; a stretch dragged across, lime */
+.tl2-caps { cursor: pointer; touch-action: none; }
+.tl2-capline { position: absolute; top: 3px; bottom: 3px; overflow: hidden; border-radius: 5px; padding: 3px 5px 0; margin-right: 1px;
+  font-size: 10px; font-weight: 600; line-height: 1.25; white-space: nowrap; color: rgb(var(--ed-fg) / 0.72);
+  background: color-mix(in srgb, var(--cap-c) 12%, rgb(var(--ed-fg) / 0.05)); box-shadow: inset 0 2px 0 var(--cap-c), inset 0 0 0 1px rgb(var(--ed-fg) / 0.08); pointer-events: none; }
+.tl2-capline > span { display: block; overflow: hidden; text-overflow: ellipsis; }
+.tl2-capline[data-on] { color: var(--ed-text); background: rgba(200, 255, 0, 0.14); box-shadow: inset 0 2px 0 var(--cap-c), inset 0 0 0 1.5px #c8ff00; }
+.tl2-caps-sel { position: absolute; top: 0; bottom: 0; border-radius: 4px; background: rgba(200, 255, 0, 0.16); box-shadow: inset 0 0 0 1.5px #c8ff00; pointer-events: none; z-index: 3; }
+.tl2-caps-sel > span { position: absolute; left: 4px; bottom: calc(100% + 2px); padding: 0 5px; border-radius: 999px; font-size: 9.5px; font-weight: 800; white-space: nowrap; color: #0a0a0a; background: #c8ff00; font-variant-numeric: tabular-nums; }
+/* the top of the Captions panel: what the style picked below changes */
+.cap-apply { display: flex; flex-direction: column; gap: 7px; padding: 10px; margin-bottom: 10px; border-radius: 10px; background: rgb(var(--ed-fg) / 0.04); box-shadow: inset 0 0 0 1px rgb(var(--ed-fg) / 0.08); }
+.cap-apply-dot { width: 8px; height: 8px; border-radius: 999px; background: rgb(var(--ed-fg) / 0.35); flex-shrink: 0; }
+.cap-apply-dot[data-on] { background: #c8ff00; box-shadow: 0 0 0 3px rgba(200, 255, 0, 0.18); }
+.cap-apply-title { font-size: 12.5px; font-weight: 700; color: var(--ed-text); }
+.cap-apply-when { font-weight: 500; color: rgb(var(--ed-fg) / 0.55); font-variant-numeric: tabular-nums; }
+.cap-apply-note { font-size: 11px; line-height: 1.4; color: rgb(var(--ed-fg) / 0.55); }
+.cap-apply-chip { height: 26px; padding: 0 10px; border-radius: 999px; font-size: 11px; font-weight: 600; color: rgb(var(--ed-fg) / 0.78); background: rgb(var(--ed-fg) / 0.07); transition: background-color .15s, color .15s; }
+.cap-apply-chip:hover { color: var(--ed-text); background: rgb(var(--ed-fg) / 0.12); }
+.cap-apply-link { font-size: 11.5px; font-weight: 700; color: #c8ff00; }
+.cap-apply-link:hover { text-decoration: underline; }
+/* on a row of videos, photos and text a bar is as tall as a part of the main video, its name at its top */
+[data-track-row="visual"] .tl2-bar, [data-track-row="visual"] .tl2-bar[data-sel] { top: 4px; bottom: 4px; align-items: flex-start; padding-top: 5px; border-radius: 8px; }
+/* a row's view / sound / lock (as in Resolve's track header): quiet grey; marked while switched */
+.tl2-row-ctl { position: absolute; width: 20px; height: 20px; display: grid; place-items: center; border-radius: 5px; color: rgb(var(--ed-fg) / 0.42); transition: background-color .15s, color .15s; }
+.tl2-row-ctl:hover { color: var(--ed-text); background: rgb(var(--ed-fg) / 0.08); }
+.tl2-row-ctl:focus-visible { outline: 2px solid rgba(200, 255, 0, 0.6); outline-offset: 1px; }
+.tl2-row-ctl[data-on] { color: var(--ed-text); background: rgb(var(--ed-fg) / 0.1); }
+.tl2-row-ctl[data-key="muted"][data-on] { color: #f87171; background: rgba(248, 113, 113, 0.14); }
+.tl2-row-ctl[data-key="locked"][data-on] { color: #c8ff00; background: rgba(200, 255, 0, 0.12); }
 .tl2-menu { min-width: 180px; border-radius: 12px; background: var(--ed-popover, var(--ed-panel)); border: 1px solid rgb(var(--ed-fg) / 0.14); box-shadow: 0 12px 32px rgba(0, 0, 0, 0.55); }
 .tl2-menu button { display: flex; align-items: center; gap: 10px; padding: 6px 12px; font-size: 12.5px; font-weight: 600; color: var(--ed-text); text-align: left; transition: background .12s; }
 .tl2-menu button:hover { background: rgb(var(--ed-fg) / 0.07); }

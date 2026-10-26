@@ -2639,6 +2639,48 @@ export const MEDIA_DRAG_TYPE = 'application/x-shortcut-media'
 /** The drag type of stock footage dragged from the B-roll search (its StockResult as JSON) */
 export const STOCK_DRAG_TYPE = 'application/x-shortcut-stock'
 
+/**
+ * What is being dragged in from a panel (the Media library, the B-roll search), while it is: a drag
+ * can't be read until it's dropped, so the timeline shows where it would go from this (its name,
+ * kind and length). Set when the drag starts, cleared when it ends (noteDragIn).
+ */
+type DraggedIn = { name: string; kind: 'video' | 'image' | 'audio'; ms: number | null; url?: string | null; thumb?: string | null }
+export const draggedIn: { current: DraggedIn | null } = { current: null }
+/** No picture of its own follows the pointer (the browser's): over the timeline the bar itself shows where it goes */
+let blankImage: HTMLImageElement | null = null
+/**
+ * A drag from a panel starts (in its dragstart): noted for the timeline, and instead of the
+ * browser's picture a small chip with its name follows the pointer — only while it isn't over the
+ * timeline, where the bar itself is drawn (Timeline dropGhost), as when a bar is moved there.
+ */
+export function noteDragIn(e: React.DragEvent, what: DraggedIn) {
+  draggedIn.current = what
+  if (typeof document === 'undefined') return
+  if (!blankImage) { blankImage = new Image(); blankImage.src = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7' }
+  e.dataTransfer.setDragImage(blankImage, 0, 0)
+  const chip = document.createElement('div')
+  chip.style.cssText = 'position:fixed;left:0;top:0;z-index:1000;pointer-events:none;display:none;align-items:center;gap:6px;padding:5px 9px;'
+    + 'border-radius:8px;background:#1c1c1f;border:1px solid rgba(255,255,255,0.14);box-shadow:0 6px 18px rgba(0,0,0,0.5);'
+    + 'font:600 11px system-ui,sans-serif;color:#fff;max-width:180px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;'
+  chip.textContent = what.name
+  document.body.appendChild(chip)
+  const follow = (ev: DragEvent) => {
+    const over = (ev.target as Element | null)?.closest?.('.tl2-view')
+    chip.style.display = over ? 'none' : 'flex'
+    chip.style.transform = `translate(${ev.clientX + 12}px, ${ev.clientY + 10}px)`
+  }
+  const clear = () => {
+    draggedIn.current = null
+    chip.remove()
+    document.removeEventListener('dragover', follow)
+    window.removeEventListener('dragend', clear)
+    window.removeEventListener('drop', clear)
+  }
+  document.addEventListener('dragover', follow)
+  window.addEventListener('dragend', clear)
+  window.addEventListener('drop', clear)
+}
+
 // The icon column next to the timeline: one per kind of lane
 export type LaneMeta = { label: string; color: string; icon: React.ReactNode; add?: 'video' | 'broll' | 'photo' | 'music' | 'text' }
 export const LANE_META: Record<string, LaneMeta> = {
