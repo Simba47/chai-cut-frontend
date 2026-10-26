@@ -9,9 +9,17 @@ const g = global as typeof globalThis & { _sql?: postgres.Sql; _sqlSettings?: nu
 // while it's in use (keep_alive), renew connections now and then (max_lifetime), and give up on
 // a connection that can't be made instead of hanging (connect_timeout).
 export const DB_IDLE_TIMEOUT_S = 20
-const POOL_MAX = 5
+// Connections each copy of the website keeps (DB_POOL_MAX, default 5). With many copies behind a
+// pooler (PgBouncer), each can take more without the database running out.
+const POOL_MAX = Math.max(1, Number(process.env.DB_POOL_MAX) || 5)
+// DB_POOLER=on: the database is reached through PgBouncer in transaction mode, which hands each
+// query to whichever database connection is free, so a statement prepared on one is unknown on the
+// next: prepared statements are turned off then.
+const BEHIND_POOLER = process.env.DB_POOLER === 'on'
+// DB_SSL=off: Railway's private network (where a pooler sits) has no SSL; the public proxy needs it
+const SSL = process.env.DB_SSL === 'off' ? false : 'require'
 /** Raise when the pool's settings below change: a running dev server then makes a new pool */
-const SETTINGS = 2
+const SETTINGS = 3
 
 // `next dev` keeps the pool across code reloads (it lives on `global`), so a dev server started
 // before a settings change would keep its old pool — and its dead connections — until restarted.
@@ -23,7 +31,7 @@ if (g._sql && process.env.NODE_ENV === 'development' && g._sqlSettings !== SETTI
 }
 if (!g._sql) {
   g._sql = postgres(process.env.DATABASE_URL!, {
-    ssl: 'require', max: POOL_MAX,
+    ssl: SSL, max: POOL_MAX, ...(BEHIND_POOLER ? { prepare: false } : {}),
     idle_timeout: DB_IDLE_TIMEOUT_S, keep_alive: 15, max_lifetime: 30 * 60, connect_timeout: 15,
   })
   g._sqlSettings = SETTINGS

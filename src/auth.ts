@@ -9,9 +9,10 @@ import sql from './lib/db'
 
 const g = global as typeof globalThis & { _pgPool?: Pool }
 if (!g._pgPool) {
-  // Same reason as lib/db.ts: idle connections are closed before Railway's proxy drops them
+  // Same reason as lib/db.ts: idle connections are closed before Railway's proxy drops them.
+  // DB_SSL=off as in lib/db.ts (Railway's private network, where a pooler sits, has no SSL)
   g._pgPool = new Pool({
-    connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false }, max: 3,
+    connectionString: process.env.DATABASE_URL, ssl: process.env.DB_SSL === 'off' ? false : { rejectUnauthorized: false }, max: 3,
     idleTimeoutMillis: 20_000, keepAlive: true, connectionTimeoutMillis: 15_000,
   })
 }

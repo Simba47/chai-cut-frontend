@@ -5,6 +5,7 @@ import { InfoTip } from '@/components/ui/info-tip'
 import { useFrameAt } from '@/modules/clips/thumbs'
 import { ScrubPlayer } from '@/components/clips/ScrubPlayer'
 import { useLocalVideo } from '@/modules/clips/localVideo'
+import { usePolling } from '@/lib/usePolling'
 import { useState, useRef, useEffect, useCallback, useSyncExternalStore } from 'react'
 import { useRouter } from 'next/navigation'
 import { Breadcrumbs } from '@/components/ui/breadcrumbs'
@@ -360,27 +361,21 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
     }
     setClips(cs => cs.map(x => x.id === id ? { ...x, status: 'rendering', output_url: null } : x))
   }
-  // While a download waits on its export, check every 3 s; save it the moment it's done
+  // While a download waits on its export, check (usePolling's rhythm); save it the moment it's done
+  // (a hidden tab saves it the moment it is shown again)
   const waitingDl = Object.keys(dlState).filter(id => dlState[id] === 'exporting').join(',')
-  useEffect(() => {
-    if (!waitingDl) return
-    const t = setInterval(() => {
-      for (const id of waitingDl.split(',')) {
-        fetch(`/api/clips/${id}/status`).then(r => (r.ok ? r.json() : null)).then((d: { status: string; output_url: string | null } | null) => {
-          if (!d) return
-          if (d.status === 'done' && d.output_url) {
-            setClips(cs => cs.map(x => x.id === id ? { ...x, status: 'done', output_url: d.output_url } : x))
-            setDlState(s => { const n = { ...s }; delete n[id]; return n })
-            saveFile(id)
-          } else if (d.status === 'failed') {
-            setClips(cs => cs.map(x => x.id === id ? { ...x, status: 'failed' } : x))
-            setDlState(s => ({ ...s, [id]: { error: 'The export failed' } }))
-          }
-        }).catch(() => {})
+  usePolling(() => Promise.all(waitingDl.split(',').map(id =>
+    fetch(`/api/clips/${id}/status`).then(r => (r.ok ? r.json() : null)).then((d: { status: string; output_url: string | null } | null) => {
+      if (!d) return
+      if (d.status === 'done' && d.output_url) {
+        setClips(cs => cs.map(x => x.id === id ? { ...x, status: 'done', output_url: d.output_url } : x))
+        setDlState(s => { const n = { ...s }; delete n[id]; return n })
+        saveFile(id)
+      } else if (d.status === 'failed') {
+        setClips(cs => cs.map(x => x.id === id ? { ...x, status: 'failed' } : x))
+        setDlState(s => ({ ...s, [id]: { error: 'The export failed' } }))
       }
-    }, 3000)
-    return () => clearInterval(t)
-  }, [waitingDl])
+    }).catch(() => {}))), !!waitingDl)
   // Which section of the clip list is showing
   // Manual edit (picked on the dashboard): no AI tools, and only "Your clips" and "Favorites" in the list
   const manualOnly = startWith === 'manual'
@@ -559,11 +554,7 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
     readingAsked.current = true
     checkReading(startWith === 'ai')
   }, [isReady]) // eslint-disable-line react-hooks/exhaustive-deps
-  useEffect(() => {
-    if (reading?.status !== 'running') return
-    const id = setInterval(() => checkReading(), 4000)
-    return () => clearInterval(id)
-  }, [reading?.status, checkReading])
+  usePolling(() => checkReading(), reading?.status === 'running')
   useEffect(() => {
     if (reading?.status !== 'ready') return
     const run = afterReading.current
@@ -589,20 +580,16 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
     setReading(r => (r?.status === 'running' ? r : { status: 'running', progress: null, error: null }))
   }
 
-  // Poll while processing
-  useEffect(() => {
-    if (!isProcessing) return
-    const id = setInterval(async () => {
-      try {
-        const r = await fetch(`/api/videos/${video.id}`)
-        if (!r.ok) return
-        const { video: updated } = await r.json()
-        setVideo(v => ({ ...v, ...updated }))
-        if (updated.status === 'ready') { clearInterval(id); router.refresh() }
-      } catch { /* ignore */ }
-    }, 3000)
-    return () => clearInterval(id)
-  }, [isProcessing, video.id, router])
+  // Poll while processing (it stops by itself once the video is no longer processing)
+  usePolling(async () => {
+    try {
+      const r = await fetch(`/api/videos/${video.id}`)
+      if (!r.ok) return
+      const { video: updated } = await r.json()
+      setVideo(v => ({ ...v, ...updated }))
+      if (updated.status === 'ready') router.refresh()
+    } catch { /* ignore */ }
+  }, isProcessing)
 
   function seek(ms: number, play = true) {
     const v = videoRef.current
@@ -692,13 +679,9 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
     else if (wasRunningRef.current && autoJob?.status === 'done') router.push(`/videos/${video.id}/clips`)
   }, [autoRunning, autoJob?.status, router, video.id])
   const autoRendering = autoClips.some(c => c.status === 'rendering')
-  // Show an earlier run on load, then poll every 3 s while the job runs or its clips export
+  // Show an earlier run on load, then poll (usePolling's rhythm) while the job runs or its clips export
   useEffect(() => { if (video.status === 'ready') loadAutoClips().catch(() => {}) }, [video.id, video.status]) // eslint-disable-line react-hooks/exhaustive-deps
-  useEffect(() => {
-    if (!autoRunning && !autoRendering) return
-    const t = setInterval(() => { loadAutoClips().catch(() => {}) }, 3000)
-    return () => clearInterval(t)
-  }, [autoRunning, autoRendering]) // eslint-disable-line react-hooks/exhaustive-deps
+  usePolling(() => loadAutoClips().catch(() => {}), autoRunning || autoRendering)
   // New clips also belong in the clip list on the right
   const autoDoneCount = autoClips.filter(c => c.status !== 'rendering').length
   useEffect(() => { if (autoDoneCount > 0) router.refresh() }, [autoDoneCount, router])
@@ -2171,11 +2154,7 @@ function useSubEdit(clipId: string, onDone?: () => void) {
     } catch { /* offline for a moment: the next check */ }
   }, [url])
   useEffect(() => { check() }, [check])
-  useEffect(() => {
-    if (!busy) return
-    const t = setInterval(check, 3000)
-    return () => clearInterval(t)
-  }, [busy, check])
+  usePolling(check, busy)
   async function start() {
     setError(null)
     setState('queued')
