@@ -2084,8 +2084,6 @@ body {
 .tl2-grip[data-edge="end"] { border-radius: 3px 8px 8px 3px; }
 .tl2-grip:hover, .tl2-grip[data-on] { filter: brightness(1.12); box-shadow: 0 0 12px rgba(200, 255, 0, 0.6); }
 .tl2-grip:focus-visible { outline: 2px solid #fff; outline-offset: 1px; }
-.tl2-gap { display: flex; align-items: center; justify-content: center; overflow: hidden; border-radius: 8px; background: repeating-linear-gradient(135deg, rgba(255, 255, 255, 0.06) 0 6px, transparent 6px 12px); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.1); pointer-events: none; }
-.tl2-gap span { font-size: 10px; font-weight: 600; color: rgb(var(--ed-fg) / 0.5); white-space: nowrap; }
 /* the transition button between two parts */
 .tl2-trans { width: 20px; height: 20px; margin: -10px 0 0 -10px; display: grid; place-items: center; border-radius: 7px; background: #1b1b1f; color: rgb(var(--ed-fg) / 0.85); box-shadow: 0 0 0 1.5px rgba(0, 0, 0, 0.85), 0 0 0 2.5px rgba(255, 255, 255, 0.16); z-index: 6; transition: transform .12s, color .15s, background .15s; }
 .tl2-trans:hover { transform: scale(1.12); color: #c8ff00; }
@@ -2107,6 +2105,9 @@ body {
 .tl2-bar { top: 5px; bottom: 5px; display: flex; align-items: center; overflow: hidden; border-radius: 6px; font-size: 10.5px; font-weight: 600; color: #fff; touch-action: none;
   background: color-mix(in srgb, var(--bar-c) 32%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--bar-c) 65%, transparent); transition: top .12s, bottom .12s; }
 .tl2-bar[data-sel] { top: 1px; bottom: 1px; background: color-mix(in srgb, var(--bar-c) 48%, transparent); box-shadow: inset 0 0 0 2px #c8ff00, 0 0 10px rgba(200, 255, 0, 0.3); }
+/* a video on a row looks like the main video: its own pictures, plain (no colour over them) */
+.tl2-bar:is([data-kind="video"], [data-kind="broll"]) { background: #0d0d0d; box-shadow: inset 0 0 0 1px rgb(var(--ed-fg) / 0.14); }
+.tl2-bar:is([data-kind="video"], [data-kind="broll"])[data-sel] { background: #0d0d0d; box-shadow: inset 0 0 0 2px #c8ff00; }
 .tl2-bar-len { flex-shrink: 0; padding: 0 4px; border-radius: 4px; font-size: 9.5px; background: rgba(0, 0, 0, 0.4); font-variant-numeric: tabular-nums; }
 .tl2-bar-grip { top: 0; bottom: 0; width: 10px; background: #c8ff00; cursor: ew-resize; z-index: 4; }
 /* a bar's grips are the main video's (.tl2-grip), a little narrower; the bubble over the edge being trimmed */
@@ -2159,11 +2160,6 @@ body {
 .tl2-menu button { padding: 7px 12px; }
 .tl2-menu-ico { flex-shrink: 0; width: 30px; height: 30px; display: grid; place-items: center; border-radius: 8px; background: rgb(var(--ed-fg) / 0.07); }
 .tl2-menu-hint { font-size: 11px; font-weight: 500; color: rgb(var(--ed-fg) / 0.5); white-space: nowrap; }
-/* an overlay's size on the toolbar: Full screen | Window */
-.ov-shape { display: flex; gap: 2px; padding: 2px; border-radius: 9px; background: rgb(var(--ed-fg) / 0.06); }
-.ov-shape button { display: flex; align-items: center; gap: 5px; height: 26px; padding: 0 9px; border-radius: 7px; font-size: 11.5px; font-weight: 600; color: rgb(var(--ed-fg) / 0.6); white-space: nowrap; transition: background .15s, color .15s; }
-.ov-shape button:hover { color: var(--ed-text); }
-.ov-shape button[data-on] { background: rgb(var(--ed-fg) / 0.14); color: #c8ff00; }
 /* The Text tool's animation kinds (TextOverlayPanel AnimationPicker): chips as the caption styles' */
 .tx-an-kind { display: inline-flex; align-items: center; gap: 5px; height: 28px; padding: 0 11px; border-radius: 999px; font-size: 11.5px; font-weight: 600;
   color: rgb(var(--ed-fg) / 0.7); background: rgb(var(--ed-fg) / 0.05); box-shadow: inset 0 0 0 1px rgb(var(--ed-fg) / 0.08); transition: background-color .15s, color .15s; }

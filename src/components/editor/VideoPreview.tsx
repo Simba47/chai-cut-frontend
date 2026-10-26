@@ -1,7 +1,7 @@
 'use client'
 
 import { TEMPLATE_FONTS, templateFontFamily, templateOf, isLatinText } from '@/modules/captions/templates'
-import { drawCreatorCaptions } from '@/modules/captions/creator'
+import { drawCreatorCaptions, CREATOR_DEFAULT_Y } from '@/modules/captions/creator'
 import { personMask } from '@/modules/captions/personMask'
 import { useCaptionStore } from '@/modules/captions/store'
 import { useRef, useEffect, useCallback, useState, useMemo, useId, createContext, useContext } from 'react'
@@ -17,7 +17,7 @@ import { backgroundPixels, frameBackgroundOf, type FrameBackground } from '@/lib
 import { isFrameLayout, frameSlotLabels, frameLanesFor, frameBandShown, frameOf, itemAt, captionBandAt, cornerGeometry, MIN_ROW_H, mainRect, boxRect, MIN_BOX as MIN_MAIN_BOX, frameAreas, frameBase, areaRadius, frameSlotSize, isTextLane, frameRows, validRowOrder, slotOffers, BLUR_SOURCE_SLOT, FRAME_TEMPLATES, barAt, barFlipped, MIN_MOVABLE_W } from '@/modules/editor/frames'
 import type { FrameMediaPool } from '@/modules/editor/frameMedia'
 import { useLiveTimeMs, liveTime, usePlayerStore, LIVE_REDRAW_MS } from '@/modules/player/store'
-import { addedVideoBox } from '@/modules/editor/visibility'
+import { addedVideoBox, isGapPart } from '@/modules/editor/visibility'
 import { trackPresentedFrame } from '@/modules/player/presentedFrame'
 import { drawWatermark } from './watermark'
 import type { ProgressBar } from '@/lib/shared/brandKit'
@@ -109,6 +109,8 @@ export function VideoPreview({
     raf = requestAnimationFrame(draw)
     return () => cancelAnimationFrame(raf)
   }, [showsOverlay])
+  // A gap left by a deleted part, with nothing on top: nothing to show or frame here (black)
+  const gapHere = !!activeSegment && !showsOverlay && isGapPart(activeSegment, mainVideoId)
   // The shape of what this view shows: the overlay video's while it shows, else the main video's
   const videoAR = showsOverlay ? overlayAR ?? mainAR : mainAR
 
@@ -135,7 +137,7 @@ export function VideoPreview({
           crossOrigin="anonymous"
           preload="auto"
           // (still playing under a video on top: it keeps the time for everything)
-          style={{ width: '100%', height: '100%', display: 'block', ...(showsOverlay ? { opacity: 0 } : {}) }}
+          style={{ width: '100%', height: '100%', display: 'block', ...(showsOverlay || gapHere ? { opacity: 0 } : {}) }}
           onLoadedMetadata={e => {
             const v = e.currentTarget
             if (v.videoWidth && v.videoHeight) setVideoAR(v.videoWidth / v.videoHeight)
@@ -147,7 +149,7 @@ export function VideoPreview({
 
         {/* Crop boxes — each is locked to the shape of its slot in the output, so what's
             inside the box is exactly what gets exported */}
-        {activeSegment && (() => {
+        {activeSegment && !gapHere && (() => {
           const layout = activeSegment.layout
           const aspect = normalizedSlotAspect(layout, videoAR ?? undefined, frameBandShown(activeSegment))
           const frame = isFrameLayout(layout)
@@ -196,7 +198,7 @@ export function VideoPreview({
         })()}
 
         {/* Subjects: each tracked person's face at this moment (on the main video only) */}
-        {subjectsAt && !showsOverlay && subjectsAt(currentTimeMs).map(s => (
+        {subjectsAt && !showsOverlay && !gapHere && subjectsAt(currentTimeMs).map(s => (
           <div key={s.id} aria-hidden="true" className="absolute pointer-events-none" style={{
             zIndex: 15, left: `${s.box.x * 100}%`, top: `${s.box.y * 100}%`, width: `${s.box.w * 100}%`, height: `${s.box.h * 100}%`,
             border: `2px solid ${s.color}`, borderRadius: 6, boxShadow: '0 0 0 1px rgba(0,0,0,0.45)',
@@ -1174,14 +1176,22 @@ function buildCaptionChunks(words: TranscriptWord[], maxWords = CAPTION_MAX_WORD
       if (nextStart - last.end_ms < 500) end = nextStart
       end = Math.min(end, nextStart)
     }
-    if (end > last.end_ms) chunks[i][chunks[i].length - 1] = { ...last, end_ms: end }
+    // (cut short too: a word whose end runs on past the next line — a leftover from an earlier
+    // reading — would hold its line on screen over the next ones)
+    if (end !== last.end_ms) chunks[i][chunks[i].length - 1] = { ...last, end_ms: Math.max(last.start_ms, end) }
   }
 
   return chunks
 }
 
+/** The line on screen at `tMs`: of the lines covering it, the one that started last */
 function findCaptionChunk(chunks: FlatWord[][], tMs: number) {
-  return chunks.find(c => tMs >= c[0].start_ms && tMs <= c[c.length - 1].end_ms) ?? null
+  let found: FlatWord[] | null = null
+  for (const c of chunks) {
+    if (c[0].start_ms > tMs) break
+    if (tMs <= c[c.length - 1].end_ms) found = c
+  }
+  return found
 }
 
 // ── Animated caption presets ──────────────────────────────────────────────────
@@ -1235,6 +1245,17 @@ function exportFont(id?: string | null) {
       .catch(() => loadedExportFonts.delete(f.family))
   }
   return f
+}
+
+/**
+ * Where captions sit when they haven't been moved (position_y unset), as each look draws them: a
+ * Creator style's own place (Behind near the top…), "One word" in the middle, the rest near the
+ * bottom. The box that moves them starts from here, so they stay under the pointer.
+ */
+export function captionDefaultY(style: Partial<CaptionStyle>): number {
+  const tpl = templateOf(style)
+  if (tpl?.look) return CREATOR_DEFAULT_Y[tpl.look]
+  return (tpl ? tpl.base : style.animation) === 'word' ? 0.5 : 0.84
 }
 
 /** Words per caption line for a style (render.py _preset_events uses the same rule) */
@@ -1808,6 +1829,8 @@ interface OutputCanvasProps {
   captionStyle?: Partial<CaptionStyle>
   captionTextCase?: TextCase
   showCaptions?: boolean
+  /** No captions at this clip time (a gap left by a deleted part: its words aren't shown) */
+  captionsOffAt?: (clipMs: number) => boolean
   // Text overlays
   textOverlays?: TextOverlayType[]
   activeTextOverlayId?: string | null
@@ -1867,7 +1890,7 @@ export function OutputCanvas({
   videoRef, currentTimeMs: timeProp, live = false, clipStartMs = 0, videoToTimeline, activeSegment: segmentProp, getPositionAt, segmentAt, hardCuts = false, sourceFor, slotSourceFor,
   overlays = [], activeOverlayId, onOverlayChange, onSelectOverlay, onDeleteOverlay,
   className, style, skipTransitionRef,
-  words, captionStyle, captionTextCase = 'title', showCaptions = false,
+  words, captionStyle, captionTextCase = 'title', showCaptions = false, captionsOffAt,
   textOverlays = [], activeTextOverlayId, onTextOverlayChange, onSelectTextOverlay, onDeleteTextOverlay, editTextOverlayId, onEditTextDone,
   onCaptionPositionChange, onCaptionSizeChange, transitionCuts, watermark, progressBar, timelineToVideo, clock, frameMedia, onFrameLaneClick, onFrameItemClick, activeFrameItemId, onFrameItemChange, onDeleteFrameItem, onFrameRowsChange, onFrameRowsSwap, onFrameBarChange, onFrameFaceChange, onFrameMainRectChange,
 }: OutputCanvasProps) {
@@ -1928,6 +1951,8 @@ export function OutputCanvas({
   const captionStyleRef  = useRef(captionStyle)
   const captionCaseRef   = useRef(captionTextCase)
   const showCaptionsRef  = useRef(showCaptions)
+  const captionsOffAtRef = useRef(captionsOffAt)
+  captionsOffAtRef.current = captionsOffAt
   captionStyleRef.current = captionStyle
   captionCaseRef.current  = captionTextCase
   showCaptionsRef.current = showCaptions
@@ -2315,7 +2340,7 @@ export function OutputCanvas({
           }
 
           // Draw captions on top of the video frame
-          if (showCaptionsRef.current && captionChunksRef.current.length > 0) {
+          if (showCaptionsRef.current && captionChunksRef.current.length > 0 && !captionsOffAtRef.current?.(clipRelativeMs)) {
             const captionLookupMs = liveMs - (captionStyleRef.current?.timing_offset_ms ?? 0)
             capOut.current.rect = null
             drawCaptions(ctx, captionChunksRef.current, captionLookupMs, captionStyleRef.current ?? {}, captionCaseRef.current, captionBandAt(seg, clipRelativeMs), capOut.current)
@@ -2512,7 +2537,7 @@ export function OutputCanvas({
       {showCaptions && onCaptionPositionChange && (
         <CaptionBox
           rect={capRect}
-          position_y={captionStyle?.position_y ?? 0.84}
+          position_y={captionStyle?.position_y ?? captionDefaultY(captionStyle ?? {})}
           position_x={captionStyle?.position_x ?? 0.5}
           size={captionStyle?.size ?? 52}
           onMove={onCaptionPositionChange}
