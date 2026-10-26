@@ -26,16 +26,17 @@ export async function startSession(userId: string): Promise<string | undefined> 
 
 /** Is this the account's current sign-in? (Yes when the database can't say: a hiccup never signs anyone out) */
 export async function isCurrentSession(userId: string, sid: string | undefined): Promise<boolean> {
-  let known = current.get(userId)
-  if (!known || Date.now() - known.at > CHECK_TTL_MS) {
-    try {
-      const [u] = await sql<{ session_id: string | null }[]>`SELECT session_id FROM users WHERE id = ${userId}`
-      if (!u) return false   // the account was deleted
-      known = { sid: u.session_id, at: Date.now() }
-      current.set(userId, known)
-    } catch {
-      return true
-    }
+  // The remembered id is trusted only when it agrees. One that disagrees is looked up again before
+  // anyone is signed out: with several copies of the website, the new sign-in may have been made on
+  // another copy a moment ago (startSession), and this copy's memory is then out of date.
+  const known = current.get(userId)
+  if (known && Date.now() - known.at <= CHECK_TTL_MS && (known.sid === null || known.sid === sid)) return true
+  try {
+    const [u] = await sql<{ session_id: string | null }[]>`SELECT session_id FROM users WHERE id = ${userId}`
+    if (!u) return false   // the account was deleted
+    current.set(userId, { sid: u.session_id, at: Date.now() })
+    return u.session_id === null || u.session_id === sid
+  } catch {
+    return true
   }
-  return known.sid === null || known.sid === sid
 }
