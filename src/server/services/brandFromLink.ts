@@ -66,7 +66,9 @@ async function fetchSafe(raw: string, max: number, accept: string): Promise<{ bo
       url = await safeUrl(new URL(res.headers.get('location')!, url).toString())
       continue
     }
-    if (!res.ok || !res.body) throw err(`The page answered ${res.status}`, 400)
+    if (res.status === 401 || res.status === 403 || res.status === 429) throw err('That site doesn’t let us read it — add your logo and colours below instead', 400)
+    if (res.status === 404 || res.status === 410) throw err('That page isn’t there — check the link', 400)
+    if (!res.ok || !res.body) throw err('That page couldn’t be opened. Check the link, or fill the kit in by hand.', 400)
     const chunks: Uint8Array[] = []
     let n = 0
     const reader = res.body.getReader()
@@ -82,7 +84,10 @@ async function fetchSafe(raw: string, max: number, accept: string): Promise<{ bo
   throw err('That link redirects too many times', 400)
 }
 
-const decode = (s: string) => s.replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&#0?39;|&#x27;|&apos;/g, '\'').replace(/&lt;/g, '<').replace(/&gt;/g, '>').trim()
+const decode = (s: string) => s
+  .replace(/&#x([0-9a-f]{1,6});/gi, (m, h) => { const n = parseInt(h, 16); return n > 0 && n < 0x110000 ? String.fromCodePoint(n) : m })
+  .replace(/&#(\d{1,7});/g, (m, d) => { const n = +d; return n > 0 && n < 0x110000 ? String.fromCodePoint(n) : m })
+  .replace(/&quot;/g, '"').replace(/&apos;/g, '\'').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').trim()
 function attrs(tag: string): Record<string, string> {
   const out: Record<string, string> = {}
   for (const m of tag.matchAll(/([a-zA-Z_:][\w:.-]*)\s*=\s*("([^"]*)"|'([^']*)'|([^\s"'>]+))/g)) out[m[1].toLowerCase()] = decode(m[3] ?? m[4] ?? m[5] ?? '')
@@ -91,24 +96,60 @@ function attrs(tag: string): Record<string, string> {
 
 /** The page's tags that tell its brand, read without a full HTML parser */
 export function readPage(html: string, base: URL) {
-  const head = html.slice(0, 600_000)
-  const metas = [...head.matchAll(/<meta\b[^>]*>/gi)].map(m => attrs(m[0]))
+  // (the whole page as fetched, up to MAX_PAGE: a profile page can put its tags a megabyte in)
+  const metas = [...html.matchAll(/<meta\b[^>]*>/gi)].map(m => attrs(m[0]))
   const meta = (key: string) => metas.find(m => (m.property ?? m.name ?? '').toLowerCase() === key)?.content || null
-  const links = [...head.matchAll(/<link\b[^>]*>/gi)].map(m => attrs(m[0]))
+  const links = [...html.matchAll(/<link\b[^>]*>/gi)].map(m => attrs(m[0]))
   const abs = (u: string | null | undefined) => { if (!u || u.startsWith('data:')) return null; try { return new URL(u, base).toString() } catch { return null } }
-  const title = decode(/<title[^>]*>([^<]*)</i.exec(head)?.[1] ?? '')
-  const siteName = meta('og:site_name') || meta('application-name') || (title ? title.split(/\s+[|–—·:-]\s+/)[0] : null)
-  // A logo picture on the page (its file, alt, class or id says logo), then the site's icons, then the share picture
-  const logoImgs = [...head.matchAll(/<img\b[^>]*>/gi)].map(m => attrs(m[0]))
-    .filter(a => /logo/i.test(`${a.src ?? ''} ${a.alt ?? ''} ${a.class ?? ''} ${a.id ?? ''}`)).map(a => abs(a.src ?? a['data-src']))
-  const size = (l: Record<string, string>) => Math.max(0, ...(l.sizes ?? '').split(/\s+/).map(s => parseInt(s, 10) || 0))
-  const icons = links.filter(l => /(^|\s)(apple-touch-icon(-precomposed)?|icon|shortcut icon|mask-icon)(\s|$)/i.test(l.rel ?? ''))
-    .sort((a, b) => (/apple/i.test(b.rel) ? 1 : 0) - (/apple/i.test(a.rel) ? 1 : 0) || size(b) - size(a)).map(l => abs(l.href))
-  const social = /(^|\.)(instagram|youtube|x|twitter|tiktok|facebook|linkedin)\.com$/i.test(base.hostname)
+  const title = decode(/<title[^>]*>([^<]*)</i.exec(html)?.[1] ?? '')
+  const social = /(^|\.)(instagram|youtube|x|twitter|tiktok|facebook|linkedin|threads)\.(com|net)$/i.test(base.hostname)
+  // On a profile page the brand is the profile ("Nike (@nike) • Instagram photos…", "MrBeast - YouTube"), not the site
+  const profileName = (t: string | null) => t ? t.split(/\s+\(@|\s+[|•·–—-]\s+|\s+on\s+(Instagram|TikTok|X|Threads)\b/)[0].trim() || null : null
+  const siteName = social
+    ? profileName(meta('og:title') || meta('twitter:title') || title)
+    : meta('og:site_name') || meta('application-name') || titleName(title)
   const share = abs(meta('og:image') || meta('twitter:image'))
+  const size = (l: Record<string, string>) => Math.max(0, ...(l.sizes ?? '').split(/\s+/).map(s => parseInt(s, 10) || 0))
+  // The site's own icons — always its brand mark: the big home-screen ones first, the 16-px tab icons last
+  const icons = links.filter(l => /(^|\s)(apple-touch-icon(-precomposed)?|icon|shortcut icon|mask-icon|fluid-icon)(\s|$)/i.test(l.rel ?? ''))
+    .sort((a, b) => rank(b) - rank(a) || size(b) - size(a)).map(l => abs(l.href))
+  function rank(l: Record<string, string>) {
+    if (/apple-touch/i.test(l.rel)) return 4
+    if (/fluid-icon/i.test(l.rel) || size(l) >= 96) return 3
+    if (/svg/i.test(l.type ?? '') || /\.svg(\?|$)/i.test(l.href ?? '') || /mask-icon/i.test(l.rel)) return 2
+    return 1
+  }
+  // A logo picture on the page counts only when it is the site's own: in its header or top bar, or its
+  // file named for the brand ("boAt_logo_black.svg"). A page's other logos — customers, partners,
+  // events, products ("promo_logo_apple_watch") — are someone else's, and photos ("…forms the Stripe
+  // logo", a .jpg, 2000 px wide) are no logo at all
+  const domain = base.hostname.split('.').slice(0, -1).filter(l => l.length >= 3 && l !== 'www').pop() // (open.spotify.com: spotify)
+  const brandKeys = [...new Set([siteName, domain]
+    .map(k => (k ?? '').toLowerCase().replace(/[^a-z0-9]/g, '')).filter(k => k.length >= 3))]
+  const flat = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '')
+  const logoImgs = [...html.matchAll(/<img\b[^>]*>/gi)].map(m => attrs(m[0])).filter(a => {
+    const src = a.src ?? a['data-src'] ?? '', file = decodeURIComponent(src.split(/[?#]/)[0].split('/').pop() ?? '')
+    if (!/logo/i.test(`${file} ${a.alt ?? ''} ${a.class ?? ''} ${a.id ?? ''}`) || /\.jpe?g$/i.test(file) || (parseInt(a.width ?? '', 10) || 0) >= 1000) return false
+    const ownPlace = /(^|[\s_-])(header|navbar|nav|site|brand|masthead|top)[\w-]*logo|logo[\w-]*(header|nav|site|brand|main|primary)/i.test(`${a.class ?? ''} ${a.id ?? ''}`)
+    const ownFile = brandKeys.some(k => flat(file).startsWith(k) || flat(file).startsWith(`logo${k}`))
+      || ((a.alt ?? '').length <= 40 && brandKeys.some(k => flat(a.alt ?? '').startsWith(k) && /logo/i.test(a.alt ?? '')))
+    return ownPlace || ownFile
+  }).map(a => abs(a.src ?? a['data-src']))
+  // (a share picture that is the logo — open_graph_logo.png — is one too; any other is a banner)
+  const shareLogo = share && /logo/i.test(share.split('/').pop() ?? '') ? share : null
   // On a profile page the share picture is the profile picture: the best logo there
-  const logos = [...new Set((social ? [share, ...icons, ...logoImgs] : [...logoImgs, ...icons, share]).filter((u): u is string => !!u))]
+  const logos = [...new Set((social ? [share, ...icons] : [...logoImgs, shareLogo, ...icons]).filter((u): u is string => !!u))]
   return { name: siteName ? siteName.slice(0, 40) : null, handle: handleOf(base, meta('twitter:site')), themeColor: hexColor(meta('theme-color')), logos }
+}
+
+/** A site's name from its page title — the shorter end: "Stripe | Financial…", "The AI workspace… | Notion" */
+function titleName(title: string): string | null {
+  // (a page standing in for the site — a redirect, a bot check — names nothing)
+  if (/^(redirecting|just a moment|attention required|access denied|loading|please wait|403|404|error)\b/i.test(title)) return null
+  const parts = title.split(/\s+[|–—·:-]\s+/).map(p => p.trim()).filter(Boolean)
+  if (!parts.length) return null
+  const first = parts[0], last = parts[parts.length - 1]
+  return last.length < first.length ? last : first
 }
 
 /** The @handle: from a profile link's path, else the site's Twitter / X account */
@@ -168,36 +209,54 @@ export function logoColors(px: Uint8Array | Buffer, channels: number): { main: s
 /** Reads the link and copies its logo into the user's brand folder */
 export async function brandFromLink(userId: string, link: unknown): Promise<LinkBrand> {
   if (typeof link !== 'string' || !link.trim() || link.length > 500) throw err('Paste a website or profile link', 400)
-  const page = await fetchSafe(link.trim(), MAX_PAGE, 'text/html,application/xhtml+xml').catch(e => {
+  const open = (url: string) => fetchSafe(url, MAX_PAGE, 'text/html,application/xhtml+xml').catch(e => {
     throw e?.expose ? e : err('That page couldn’t be opened. Check the link, or fill the kit in by hand.', 400)
   })
+  let page = await open(link.trim())
+  // A page that only sends you on (<meta http-equiv="refresh" content="0; url=…">): the page it sends to
+  const refresh = /<meta\b[^>]*http-equiv\s*=\s*["']?refresh[^>]*>/i.exec(page.body.subarray(0, 20_000).toString('utf8'))
+  const next = refresh && /url\s*=\s*['"]?([^'">\s]+)/i.exec(attrs(refresh[0]).content ?? '')?.[1]
+  if (next) page = await open(new URL(next, page.url).toString()).catch(() => page)
   if (!/html|xml|text\/plain/.test(page.type) && page.type) throw err('That link isn’t a web page', 400)
   const info = readPage(page.body.toString('utf8'), page.url)
   const sharp = await loadSharp()
-  let logo: LinkBrand['logo'] = null
-  let fromLogo: { main: string; accent: string | null } | null = null
-  for (const src of info.logos.slice(0, 6)) {
+  type Pick = { body: Buffer; type: string; ratio: number | null; colors: { main: string; accent: string | null } | null }
+  let pick: Pick | null = null
+  // (a 32-px tab icon blurs on a video: used only when the page has nothing bigger)
+  let small: Pick | null = null
+  for (const src of info.logos.slice(0, 8)) {
     const img = await fetchSafe(src, MAX_IMAGE, 'image/png,image/webp,image/svg+xml,image/jpeg,image/*').catch(() => null)
     if (!img || img.body.length < 100) continue
     const isSvg = img.type === 'image/svg+xml' || /^\s*(<\?xml[^>]*>\s*)?<svg/i.test(img.body.subarray(0, 300).toString('utf8'))
-    let body = img.body, type = img.type, ratio: number | null = null
-    if (sharp) {
-      try {
-        const pic = sharp(img.body, { density: isSvg ? 300 : undefined }).resize(1024, 1024, { fit: 'inside', withoutEnlargement: !isSvg })
-        const out = await pic.png().toBuffer({ resolveWithObject: true })
-        if (out.info.width < 32 || out.info.height < 16) continue
-        body = out.data; type = 'image/png'; ratio = out.info.height / out.info.width
-        const { data, info: px } = await sharp(out.data).resize(48, 48, { fit: 'inside' }).ensureAlpha().raw().toBuffer({ resolveWithObject: true })
-        fromLogo = logoColors(data, px.channels)
-      } catch { continue }
-    } else if (!['image/png', 'image/jpeg', 'image/webp'].includes(type)) continue
-    const ext = type === 'image/png' ? 'png' : type === 'image/jpeg' ? 'jpg' : 'webp'
-    const path = `brand/${userId}/${crypto.randomUUID()}.${ext}`
-    await r2.send(new PutObjectCommand({ Bucket: R2_BUCKET, Key: path, Body: body, ContentType: type }))
-    const url = await getSignedUrl(r2, new GetObjectCommand({ Bucket: R2_BUCKET, Key: path }), { expiresIn: 60 * 60 * 6 }).catch(() => null)
-    logo = { path, url, ratio }
-    break
+    if (!sharp) {
+      if (!['image/png', 'image/jpeg', 'image/webp'].includes(img.type)) continue
+      pick = { body: img.body, type: img.type, ratio: null, colors: null }
+      break
+    }
+    try {
+      const pic = sharp(img.body, { density: isSvg ? 300 : undefined }).resize(1024, 1024, { fit: 'inside', withoutEnlargement: !isSvg })
+      const out = await pic.png().toBuffer({ resolveWithObject: true })
+      const side = Math.max(out.info.width, out.info.height)
+      if (side < 32 || out.info.height < 16) continue
+      const { data, info: px } = await sharp(out.data).resize(48, 48, { fit: 'inside' }).ensureAlpha().raw().toBuffer({ resolveWithObject: true })
+      const found: Pick = { body: out.data, type: 'image/png', ratio: out.info.height / out.info.width, colors: logoColors(data, px.channels) }
+      if (side >= 64) { pick = found; break }
+      small ??= found
+    } catch { continue }
   }
+  pick ??= small
+  let logo: LinkBrand['logo'] = null
+  if (pick) {
+    const ext = pick.type === 'image/png' ? 'png' : pick.type === 'image/jpeg' ? 'jpg' : 'webp'
+    const path = `brand/${userId}/${crypto.randomUUID()}.${ext}`
+    // (the logo not stored: the name and colours still come back)
+    const stored = await r2.send(new PutObjectCommand({ Bucket: R2_BUCKET, Key: path, Body: pick.body, ContentType: pick.type })).then(() => true, () => false)
+    if (stored) {
+      const url = await getSignedUrl(r2, new GetObjectCommand({ Bucket: R2_BUCKET, Key: path }), { expiresIn: 60 * 60 * 6 }).catch(() => null)
+      logo = { path, url, ratio: pick.ratio }
+    }
+  }
+  const fromLogo = pick?.colors ?? null
   const main = fromLogo?.main ?? info.themeColor
   const accent = fromLogo?.accent ?? (fromLogo && info.themeColor && info.themeColor !== fromLogo.main ? info.themeColor : null)
   return {
