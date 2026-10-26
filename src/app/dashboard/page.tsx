@@ -192,7 +192,7 @@ export default function DashboardPage() {
     if (!res?.ok) setVideos(prev)
   }
 
-  // Same full-screen loader as the clip board and editor (ring, glow, progress bar, tips)
+  // Same full-screen loader as the clip board and editor (ring, glow, progress bar)
   if (loading) return <BrandLoaderScreen mascot="dashboard" label="Loading your videos…" />
 
   const usagePct = planInfo ? Math.min(100, (planInfo.usage.videos / planInfo.maxVideos) * 100) : 0

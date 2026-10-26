@@ -1288,8 +1288,8 @@ body {
 .cap-swatch[data-on] { box-shadow: 0 0 0 2px #141414, 0 0 0 4px #c8ff00; }
 
 /* ── Full-screen loader (components/ui/brand-loader.tsx: BrandLoaderScreen) ──
-   Dark page with a faint dot grid and a lime glow behind the mark; the label, a thin bar sweeping
-   like progress, and a rotating tip. */
+   Dark page with a faint dot grid and a lime glow behind the mark; the label, and under it a lime
+   streak with a glowing head sweeping along a hairline track. */
 /* No position here: the component adds "fixed inset-0" (overlay) or "relative h-dvh" (page) */
 .bls {
   overflow: hidden; display: flex; flex-direction: column; align-items: center; justify-content: center;
@@ -1310,21 +1310,27 @@ body {
 .bls-center { position: relative; display: grid; place-items: center; width: 96px; height: 96px; }
 .bls-center .brand-loader { position: relative; z-index: 1; }
 .bls-label { position: relative; margin: 22px 0 0; font-size: 15px; font-weight: 600; letter-spacing: -0.005em; color: rgba(244,244,245,0.9); }
-.bls-bar { position: relative; width: 180px; height: 3px; margin-top: 14px; border-radius: 999px; overflow: hidden; background: rgba(255,255,255,0.08); }
+/* (taller than the track so the head's glow fits; both ends fade out, so the streak glides in and away) */
+.bls-bar {
+  position: relative; width: 220px; height: 14px; margin-top: 10px; overflow: hidden;
+  -webkit-mask-image: linear-gradient(90deg, transparent, #000 18%, #000 82%, transparent);
+          mask-image: linear-gradient(90deg, transparent, #000 18%, #000 82%, transparent);
+}
+.bls-bar::before {
+  content: ''; position: absolute; left: 0; right: 0; top: 6px; height: 2px; border-radius: 999px;
+  background: rgba(255,255,255,0.09);
+}
 .bls-bar span {
-  position: absolute; top: 0; bottom: 0; left: 0; width: 40%; border-radius: inherit;
-  background: linear-gradient(90deg, transparent, #c8ff00, transparent);
+  position: absolute; top: 6px; left: 0; width: 45%; height: 2px; border-radius: 999px;
+  background: linear-gradient(90deg, transparent, rgba(200,255,0,0.35) 45%, #c8ff00 88%, #efffc2);
   /* (moved with transform, not left: it runs on the compositor, smooth while the page is busy loading) */
   will-change: transform;
-  animation: bls-sweep 1.4s cubic-bezier(.65,0,.35,1) infinite;
+  animation: bls-sweep 1.6s cubic-bezier(.45,0,.2,1) infinite;
 }
-.bls-tip {
-  position: relative; display: flex; align-items: center; gap: 8px; margin: 26px 0 0; padding: 0 16px; text-align: center;
-  font-size: 12.5px; color: rgba(244,244,245,0.5); animation: bls-tip .5s ease-out;
-}
-.bls-tip span {
-  flex-shrink: 0; padding: 2px 7px; border-radius: 999px; font-size: 10px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase;
-  color: #c8ff00; background: rgba(200,255,0,0.1); box-shadow: inset 0 0 0 1px rgba(200,255,0,0.25);
+/* the head: a small bright point with a lime halo */
+.bls-bar span::after {
+  content: ''; position: absolute; right: -2px; top: -2px; width: 6px; height: 6px; border-radius: 50%;
+  background: #f6ffd9; box-shadow: 0 0 6px 1px rgba(200,255,0,0.9), 0 0 14px 3px rgba(200,255,0,0.35);
 }
 /* ── The mascot loader (components/ui/panda-loader.tsx): the Shortcut panda — one rendered scene
    on black for each loading screen (editor, clip board, dashboard): a looping video over its first
@@ -1354,9 +1360,8 @@ body {
 }
 @keyframes bls-breathe { 0%, 100% { opacity: .75; scale: 1; } 50% { opacity: 1; scale: 1.06; } }
 @keyframes bls-sweep { from { transform: translateX(-100%); } to { transform: translateX(250%); } }
-@keyframes bls-tip { from { opacity: 0; transform: translateY(6px); } }
 @media (prefers-reduced-motion: reduce) {
-  .bls-glow, .bls-bar span, .bls-tip { animation: none; }
+  .bls-glow, .bls-bar span { animation: none; }
 }
 
 /* Clip card time chip (clip board): a lime play dot, the time range in a clean tabular figure
