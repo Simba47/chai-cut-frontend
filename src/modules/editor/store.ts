@@ -345,6 +345,8 @@ export const useEditorStore = create<EditorState & EditorActions>()((set, get) =
         && a.crop_boxes.length === b.crop_boxes.length
         // (the same speed, smoothing and pitch: a part slowed down stays its own part)
         && speedOfSeg(a) === speedOfSeg(b) && !!a.smooth === !!b.smooth && !!a.pitch === !!b.pitch
+        // (shown and heard alike: a hidden or silent part — or the empty space a deleted part left — stays its own)
+        && !!a.hidden === !!b.hidden && !!a.muted === !!b.muted && !!a.crop_boxes[0]?.hidden === !!b.crop_boxes[0]?.hidden
         // Main video only, playing on without a jump
         && a.crop_boxes.every(box => {
           const other = b.crop_boxes.find(x => x.slot_index === box.slot_index)

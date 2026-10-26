@@ -22,6 +22,7 @@ import { useVideoSync } from '@/modules/player/useSync'
 import { useCaptionStore } from '@/modules/captions/store'
 import { useMediaStore } from '@/modules/media/store'
 import { rowsToLocal, normalizeCoverage, msToLabel, uncoveredRanges } from '@/modules/editor/utils'
+import { fillUncovered } from '@/modules/editor/place'
 import { insertsOf, insertedMs, piecesOf } from '@/modules/editor/inserts'
 import { isShot } from '@/modules/editor/shots'
 
@@ -148,7 +149,10 @@ export function EditorShellMobile({
   useEffect(() => {
     // (videos put in between make the clip longer than its stretch of the video: nothing after them is cut off)
     const rows = rowsToLocal(initialSegments)
-    const localSegments = normalizeCoverage(rows, clip.end_ms - clip.start_ms + insertedMs(insertsOf(rows, (clip as unknown as { video_id: string }).video_id)))
+    const vid = (clip as unknown as { video_id: string }).video_id
+    const lenMs = clip.end_ms - clip.start_ms + insertedMs(insertsOf(rows, vid))
+    // (time no part covers gets a Vertical part of its own: no "default framing" anywhere)
+    const localSegments = fillUncovered(normalizeCoverage(rows, lenMs), lenMs, vid)
     const initialKeyframeMap: KeyframeMap = {}
     for (const seg of initialSegments) {
       for (const box of seg.crop_boxes) {
@@ -476,7 +480,13 @@ export function EditorShellMobile({
   }
   function askDeleteSegment(id: string) {
     const i = segments.findIndex(s => s.id === id)
-    confirm({ title: `Delete crop position ${i + 1}?` }, () => removeSegment(id))
+    // (its time goes to the part next to it: never left with no part, "default framing")
+    confirm({ title: `Delete crop position ${i + 1}?` }, () => {
+      const seg = segments[i]
+      const next = seg && (segments.find(s => Math.abs(s.end_ms - seg.start_ms) <= 1) ?? segments.find(s => Math.abs(s.start_ms - seg.end_ms) <= 1))
+      if (next) useEditorStore.getState().absorbSection(id, next.id)
+      else if (seg) useEditorStore.getState().applyLayout(id, 'vertical')
+    })
   }
   function askDeleteTextOverlay(id: string) {
     confirm({ title: 'Delete this text?' }, () => deleteTextOverlay(id))

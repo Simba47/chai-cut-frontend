@@ -1,6 +1,6 @@
 import type { AudioTrack, SegmentLocal } from '@chai-cut/shared'
 import { getBoxPositionAtLerp } from '@/lib/interpolation'
-import { addedVideoBox } from './visibility'
+import { addedVideoBox, isGapPart } from './visibility'
 import type { KeyframeMap } from './store'
 import { isMainAudioTrack, type TimedState } from './trimState'
 
@@ -163,7 +163,11 @@ function shiftSeg(seg: SegmentLocal, d: number): SegmentLocal {
  * A stretch of the timeline [at, at + ms): the main video from `from` on — at `speed` (1 when
  * not given: `ms` of timeline is `ms · speed` of video) — or held at `hold` while an inserted video plays
  */
-export interface Piece { id: string; at: number; ms: number; from?: number; hold?: number; speed?: number; /** its sound's pitch follows the speed */ pitch?: boolean }
+export interface Piece {
+  id: string; at: number; ms: number; from?: number; hold?: number; speed?: number; /** its sound's pitch follows the speed */ pitch?: boolean
+  /** The empty space a part left in the main row (visibility.ts isGapPart): nothing of it is seen or heard */
+  blank?: boolean
+}
 
 /** A part's speed (1 as filmed); never 0 or less */
 export const speedOf = (s: { speed?: number | null } | null | undefined) => (s?.speed && s.speed > 0 ? s.speed : 1)
@@ -180,8 +184,12 @@ export function mainFrom(seg: SegmentLocal): number | null {
  * The clip's pieces, in time order, from its main row (the parts, not the videos on top): an
  * inserted video holds the main video; any other part plays it from its own moment. Time no part
  * covers (default framing) carries the video on from the piece before it.
+ *
+ * `gapsHold`: the empty space a part left holds the main video too (the player's clock runs on
+ * its own there, as in the room after the main video) — the part moved away plays that moment
+ * where it is now, so the moment is seen in one place only. Otherwise the space runs its moment, blank.
  */
-export function piecesOf(segments: SegmentLocal[], mainVideoId: string | null | undefined, isLayer: (s: SegmentLocal) => boolean): Piece[] {
+export function piecesOf(segments: SegmentLocal[], mainVideoId: string | null | undefined, isLayer: (s: SegmentLocal) => boolean, gapsHold = false): Piece[] {
   const rows = segments.filter(s => !isLayer(s) && s.end_ms > s.start_ms).sort((a, b) => a.start_ms - b.start_ms)
   const out: Piece[] = []
   let cursor = 0, videoNow = 0
@@ -192,11 +200,13 @@ export function piecesOf(segments: SegmentLocal[], mainVideoId: string | null | 
     }
     const at = Math.max(cursor, s.start_ms), ms = s.end_ms - at
     if (ms <= 0) continue
+    const blank = isGapPart(s, mainVideoId)
     if (isInsert(s, mainVideoId)) out.push({ id: s.id, at, ms, hold: s.video_offset_ms as number })
+    else if (blank && gapsHold) out.push({ id: s.id, at, ms, hold: mainFrom(s) ?? videoNow, blank })
     else {
       const speed = speedOf(s)
       const from = (mainFrom(s) ?? videoNow) + (at - s.start_ms) * speed
-      out.push({ id: s.id, at, ms, from, ...(speed !== 1 ? { speed } : {}), ...(s.pitch ? { pitch: true } : {}) })
+      out.push({ id: s.id, at, ms, from, ...(speed !== 1 ? { speed } : {}), ...(s.pitch ? { pitch: true } : {}), ...(blank ? { blank } : {}) })
       videoNow = from + ms * speed
     }
     cursor = at + ms
@@ -222,7 +232,10 @@ export function videoAtPieces(pieces: Piece[], t: number): number {
 
 /** Where on the timeline the main video shows its moment `v` (clip ms): a moment cut out lands where the clip goes on after it */
 export function timelineAtPieces(pieces: Piece[], v: number): number {
-  for (const p of pieces) if (p.from != null && v >= p.from && v < p.from + pieceVideoMs(p)) return p.at + (v - p.from) / (p.speed ?? 1)
+  // (where it is seen first: empty space a part left still runs its moment, and the part has it now)
+  for (const blank of [false, true]) {
+    for (const p of pieces) if (!!p.blank === blank && p.from != null && v >= p.from && v < p.from + pieceVideoMs(p)) return p.at + (v - p.from) / (p.speed ?? 1)
+  }
   const next = pieces.find(p => p.from != null && p.from > v)
   return next ? next.at : piecesLength(pieces)
 }

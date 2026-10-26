@@ -1633,17 +1633,6 @@ export function SegmentTimeline({
     return undefined
   }
 
-  // Stretches with no format — rendered with the default framing
-  const gaps: { start_ms: number; end_ms: number }[] = []
-  {
-    let cursor = 0
-    for (const seg of layered ? mains : byTime) {
-      if (seg.start_ms - cursor >= 50) gaps.push({ start_ms: cursor, end_ms: seg.start_ms })
-      cursor = Math.max(cursor, seg.end_ms)
-    }
-    if (duration - cursor >= 50) gaps.push({ start_ms: cursor, end_ms: duration })
-  }
-
   // Media bars always show at full size, wherever the playhead is
   const inFocus = (_startMs: number, _endMs: number) => true
   const THIN_ROW_H = 6
@@ -2036,17 +2025,6 @@ export function SegmentTimeline({
                 )
               })}
 
-              {gaps.map(g => (
-                <div key={`gap-${g.start_ms}`} className="absolute inset-y-0 pointer-events-none flex items-center justify-center overflow-hidden"
-                  title={`${msToLabel(g.start_ms)}–${msToLabel(g.end_ms)} · no format: default Vertical framing`}
-                  style={{
-                    left: `${at(g.start_ms)}%`, width: `${pct(g.end_ms - g.start_ms)}%`,
-                    background: 'repeating-linear-gradient(135deg, rgba(0,0,0,0.6) 0 6px, rgba(0,0,0,0.4) 6px 12px)',
-                    boxShadow: 'inset 0 0 0 1px rgb(var(--ed-fg) / 0.12)',
-                  }}>
-                  <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full" style={{ color: 'rgba(255,255,255,0.8)', background: 'rgba(0,0,0,0.6)', border: '1px solid rgba(255,255,255,0.12)' }}>Default framing</span>
-                </div>
-              ))}
 
               {/* Each format (or frame): the selected one stays bright inside the lime selection outline,
                   the others are dimmed while one is selected. Its colour only shows as the dot on its chip. */}
