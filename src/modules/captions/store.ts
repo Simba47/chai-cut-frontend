@@ -3,6 +3,7 @@
 import { create } from 'zustand'
 import type { TranscriptWord, CaptionStyle } from '@chai-cut/shared'
 import type { TextCase } from '@/components/editor/CaptionStyler'
+import type { CaptionPart } from './parts'
 
 interface CaptionState {
   words: TranscriptWord[]
@@ -15,6 +16,10 @@ interface CaptionState {
   retranscribeError: string | null
   /** The caption line on the preview now (VideoPreview sets it when it changes): the Captions panel's key words */
   liveLine: Array<{ word: string; start_ms: number; end_ms: number }> | null
+  /** The parts after the first, each in its own look (parts.ts); the first part is captionStyle */
+  captionParts: CaptionPart[]
+  /** The caption part picked (on the timeline's Captions row): the Captions panel styles it. null: the first part; 'all': every part */
+  pickedCaptionPart: string | null
 }
 
 interface CaptionActions {
@@ -29,6 +34,8 @@ interface CaptionActions {
   setRetranscribeElapsed: (n: number) => void
   setRetranscribeError: (e: string | null) => void
   setLiveLine: (line: CaptionState['liveLine']) => void
+  setCaptionParts: (parts: CaptionPart[]) => void
+  pickCaptionPart: (id: string | null) => void
 }
 
 export const useCaptionStore = create<CaptionState & CaptionActions>()(set => ({
@@ -41,6 +48,8 @@ export const useCaptionStore = create<CaptionState & CaptionActions>()(set => ({
   retranscribeElapsed: 0,
   retranscribeError: null,
   liveLine: null,
+  captionParts: [],
+  pickedCaptionPart: null,
 
   // Which letters captions use is saved with the caption style (language: 'roman' = English letters)
   hydrate: (words, style = { color: '#FFE700' }, showCaptions = false) =>
@@ -58,4 +67,6 @@ export const useCaptionStore = create<CaptionState & CaptionActions>()(set => ({
   setRetranscribeElapsed: (n) => set({ retranscribeElapsed: n }),
   setRetranscribeError: (e) => set({ retranscribeError: e }),
   setLiveLine: (line) => set({ liveLine: line }),
+  setCaptionParts: (parts) => set(s => ({ captionParts: parts, pickedCaptionPart: s.pickedCaptionPart && s.pickedCaptionPart !== 'all' && !parts.some(p => p.id === s.pickedCaptionPart) ? null : s.pickedCaptionPart })),
+  pickCaptionPart: (id) => set({ pickedCaptionPart: id }),
 }))

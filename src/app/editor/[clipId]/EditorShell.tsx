@@ -4,7 +4,7 @@ import { InfoTip } from '@/components/ui/info-tip'
 import { musicGainAt, speechRangesInVideo, speechRanges, heardSpeech, type Range as SpeechRange } from '@/modules/editor/musicGain'
 import { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback } from 'react'
 import type { Clip, Segment, CropBox, BoxKeyframe, CaptionStyle, TextOverlay, AudioTrack, Transition, TranscriptWord, LayoutType, Overlay } from '@chai-cut/shared'
-import { VideoPreview, OutputCanvas } from '@/components/editor/VideoPreview'
+import { VideoPreview, OutputCanvas, buildCaptionChunks, captionWordsPerLine } from '@/components/editor/VideoPreview'
 import { withoutRanges } from '@/lib/cuts'
 import { cleanTrims, trimMap, addTrim, wordsOnTimeline, MAX_CLIP_MS, MIN_CLIP_MS } from '@/lib/trims'
 import { toTimelineState, toSourceState, rippleDelete, rippleStretch, lockedInRange, insertAtStart, extendEnd, type TimedState } from '@/modules/editor/trimState'
@@ -56,6 +56,8 @@ import { usePlayerStore, liveTime, useLiveTimeMs } from '@/modules/player/store'
 import { trackPresentedFrame } from '@/modules/player/presentedFrame'
 import { useVideoSync } from '@/modules/player/useSync'
 import { useCaptionStore } from '@/modules/captions/store'
+import { cleanParts, playedParts, playedPartAt, applyLook, lookOf, isLookChange, LOOK_KEYS, type CaptionPart } from '@/modules/captions/parts'
+import { CAPTION_TEMPLATES } from '@/modules/captions/templates'
 import { useMediaStore } from '@/modules/media/store'
 import { rowsToLocal, normalizeCoverage, uncoveredRanges, defaultCropForSlot, msToLabel } from '@/modules/editor/utils'
 import { isShot, flattenShots, toSaved, restoreLayers, asMainPart } from '@/modules/editor/shots'
@@ -393,6 +395,9 @@ export function EditorShell({
     // Off until switched on (captions cost money to make); a clip with a saved style keeps its choice
     const showCaptions = savedStyle ? savedStyle.enabled !== false : false
     hydrateCaptions(initialWords, savedStyle ?? { color: '#FFE700' }, showCaptions)
+    // Caption parts, each in its own look (captions/parts.ts), saved beside the rows
+    useCaptionStore.getState().setCaptionParts(cleanParts((savedClip as unknown as { layers?: { captionParts?: unknown } | null }).layers?.captionParts, lenMs))
+    useCaptionStore.getState().pickCaptionPart(null)
 
     hydrateMedia({
       overlays: loaded.overlays,
@@ -1341,7 +1346,7 @@ export function EditorShell({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           segments: saved.rows,
-          layers: withLanes(saved.layers, [...overlays, ...textOverlays, ...audioTracks], belowRowsRef.current),
+          layers: withCaptionParts(withLanes(saved.layers, [...overlays, ...textOverlays, ...audioTracks], belowRowsRef.current), useCaptionStore.getState().captionParts),
           captionStyle, textOverlays, audioTracks, transitions, filters,
           // A photo on a higher track is drawn over one on a lower track (the export orders photos by z_index)
           overlays: overlays.map(o => (o.type === 'image' && o.track != null ? { ...o, z_index: o.track + 1 } : o)),
@@ -2800,6 +2805,8 @@ export function EditorShell({
     })
     // Explicit defaults (not blanks): the save only writes caption fields that have a value
     useCaptionStore.setState(st => ({
+      // (one caption style for the whole clip again: no parts)
+      captionParts: [], pickedCaptionPart: null,
       captionStyle: { ...st.captionStyle, font: null, size: null, color: '#FFE700', position: null, position_y: null, position_x: null, animation: 'karaoke', template: null },
     }))
     // The video's own sound: full volume, not muted; and nothing stays selected
@@ -5162,6 +5169,105 @@ export function EditorShell({
     sectionListRef.current?.querySelector(`[data-section-id="${pickedSegId}"]`)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
   }, [tool, pickedSegId])
 
+  // ── Caption styles line by line (as in CapCut): the Captions row shows each caption line as a
+  //    block; the lines selected there take the style picked in the Captions panel, nothing
+  //    selected: every caption. Kept as parts (captions/parts.ts), each from a pause between words ──
+  const captionParts = useCaptionStore(st => st.captionParts)
+  /** Every caption part as it plays (the first: the clip's own style); none while there is one style throughout */
+  const playedCaptionParts = useMemo(() => (captionParts.length ? playedParts(captionStyle, captionParts, clipLengthMs) : undefined), [captionParts, captionStyle, clipLengthMs])
+  const captionTemplateName = (id: string) => { const t = CAPTION_TEMPLATES[id]; return t ? `${t.group} · ${t.label}` : undefined }
+  const captionLookName = (st: Partial<CaptionStyle>) => st.template ? captionTemplateName(st.template) ?? 'Style'
+    : (st.animation ?? 'karaoke').replace(/^./, c => c.toUpperCase())
+  /** A style's colour on the Captions row: its text colour (a caption style's own) */
+  const captionLookColor = (st: Partial<CaptionStyle>) => (st.template ? CAPTION_TEMPLATES[st.template]?.color : undefined) ?? st.color ?? '#FFFFFF'
+  /** The words in clip time (where a style starts and ends goes into the pauses between them) */
+  const captionWordsRel = useMemo(() => displayWords.map(w => ({ word: w.word, start_ms: w.start_ms - clip.start_ms, end_ms: w.end_ms - clip.start_ms })), [displayWords, clip.start_ms])
+  /** The caption lines as the preview shows them (each part's words, in its own words per line), in clip time */
+  const captionLines = useMemo(() => {
+    const parts = playedCaptionParts ?? playedParts(captionStyle, [], clipLengthMs)
+    return parts.flatMap((p, i) => {
+      const a = clip.start_ms + p.start_ms, b = i + 1 < parts.length ? clip.start_ms + p.end_ms : Infinity
+      const own = displayWords.filter(w => (i === 0 || w.start_ms >= a) && w.start_ms < b)
+      return buildCaptionChunks(own, captionWordsPerLine(p.style)).filter(ch => ch.length).map(ch => ({
+        start: ch[0].start_ms - clip.start_ms, end: ch[ch.length - 1].end_ms - clip.start_ms,
+        text: ch.map(w => w.word).join(' '), color: captionLookColor(p.style), name: captionLookName(p.style),
+      }))
+    })
+  }, [playedCaptionParts, captionStyle, clipLengthMs, displayWords, clip.start_ms]) // eslint-disable-line react-hooks/exhaustive-deps
+  /** The caption lines selected on the Captions row, as stretches of the clip (clip ms); none: every caption */
+  const [captionSel, setCaptionSel] = useState<[number, number][]>([])
+  const lineSelected = (l: { start: number; end: number }) => captionSel.some(([a, b]) => (l.start + l.end) / 2 >= a && (l.start + l.end) / 2 < b)
+  const selectedLines = captionLines.filter(lineSelected)
+  /** A caption line clicked on the Captions row: it alone (again: none), or added / taken off (Shift / Ctrl) */
+  function clickCaptionLine(i: number, add: boolean) {
+    const l = captionLines[i]
+    if (!l) return
+    clearPicksRef.current()
+    const range: [number, number] = [l.start, l.end]
+    const on = lineSelected(l)
+    if (add) setCaptionSel(sel => (on ? sel.filter(([a, b]) => !((l.start + l.end) / 2 >= a && (l.start + l.end) / 2 < b)) : [...sel, range]))
+    else setCaptionSel(on && selectedLines.length === 1 ? [] : [range])
+    openSettings('captions')
+  }
+  /** A stretch dragged across on the Captions row: the lines in it (Shift / Ctrl: added) */
+  function selectCaptionRange(r: [number, number], add: boolean) {
+    clearPicksRef.current()
+    setCaptionSel(sel => (add ? [...sel, r] : [r]))
+    openSettings('captions')
+  }
+  /**
+   * The Captions row is on the timeline only while the Captions panel is open (as a tool's own
+   * row): it never sits among the media rows otherwise. Closed: no caption lines stay selected.
+   */
+  const captionsPanelOpen = optionsOpen && tool === 'captions'
+  useEffect(() => { if (!captionsPanelOpen) setCaptionSel(s => (s.length ? [] : s)) }, [captionsPanelOpen])
+  // Anything else picked: the caption lines aren't any more
+  useEffect(() => {
+    if (lastPick || pickedSegId || activeOverlayId || activeTextOverlayId || pickedMusicId) setCaptionSel(s => (s.length ? [] : s))
+  }, [lastPick, pickedSegId, activeOverlayId, activeTextOverlayId, pickedMusicId])
+  /** The style shown in the Captions panel: the first selected line's (nothing selected: the clip's) */
+  const panelCaptionStyle = playedCaptionParts && selectedLines.length
+    ? playedPartAt(playedCaptionParts, selectedLines[0].start + 1).style
+    : captionStyle
+  /** A change in the Captions panel: a look change goes to the selected lines (none selected: every caption); anything else is the whole clip's */
+  function changeCaptionStyle(updates: Partial<CaptionStyle>) {
+    const st = useCaptionStore.getState()
+    const look = lookOf(updates)
+    const rest = Object.fromEntries(Object.entries(updates).filter(([k]) => !(LOOK_KEYS as readonly string[]).includes(k))) as Partial<CaptionStyle>
+    if (!isLookChange(updates) || (!selectedLines.length && !st.captionParts.length)) { updateCaptionStyle(updates); return }
+    if (Object.keys(rest).length) updateCaptionStyle(rest)
+    // The selected lines in runs of neighbours (each run one stretch, from the pause before its
+    // first line to the pause after its last); none selected: the whole clip
+    const runs: [number, number][] = []
+    if (!selectedLines.length) runs.push([0, clipLengthMs])
+    else {
+      captionLines.forEach((l, i) => {
+        if (!lineSelected(l)) return
+        const prevOn = i > 0 && lineSelected(captionLines[i - 1])
+        if (prevOn && runs.length) runs[runs.length - 1][1] = l.end - 1
+        else runs.push([l.start + 1, l.end - 1])
+      })
+    }
+    let base = st.captionStyle, parts = st.captionParts
+    for (const [a, b] of runs) {
+      const next = applyLook(base, parts, a, b, look, clipLengthMs, captionWordsRel)
+      base = { ...base, ...next.baseLook }
+      parts = next.parts
+    }
+    updateCaptionStyle(lookOf(base))
+    st.setCaptionParts(parts)
+  }
+  /** The lines from the playhead to the end (a quick selection) */
+  function selectCaptionsFromHere() {
+    const t = liveTime.get()
+    const from = captionLines.find(l => l.end > t)
+    setCaptionSel(from ? [[from.start, clipLengthMs + 1]] : [])
+  }
+  /** One caption style for the whole clip again: the first part's */
+  function oneCaptionStyle() {
+    useCaptionStore.getState().setCaptionParts([])
+  }
+
   // ── Hide / mute / lock ──────────────────────────────────────────────────────
   /** The hide / mute / lock state of a section, photo, text or music track */
   function ctlState(t: CtlTarget): { hidden?: boolean; muted?: boolean; locked?: boolean } | undefined {
@@ -5920,10 +6026,15 @@ export function EditorShell({
                       </>
                     )}
                   </div>
+                  {showCaptions && words.length > 0 && (
+                    <CaptionSelectBar lines={selectedLines} styles={playedCaptionParts?.length ?? 1}
+                      onClear={() => setCaptionSel([])} onFromHere={selectCaptionsFromHere} onAll={() => setCaptionSel([[0, clipLengthMs + 1]])}
+                      onOneStyle={oneCaptionStyle} />
+                  )}
                   {showCaptions && (
                     <CaptionStyler
-                      style={captionStyle} textCase={captionTextCase}
-                      onChange={updateCaptionStyle}
+                      style={panelCaptionStyle} textCase={captionTextCase}
+                      onChange={changeCaptionStyle}
                       onTextCaseChange={setCaptionTextCase}
                       onEditCaptions={() => setEditingTranscript(true)}
                       onRetranscribe={handleRetranscribe}
@@ -6377,7 +6488,7 @@ export function EditorShell({
                   videoRef={videoRef} currentTimeMs={currentTimeMs} clipStartMs={clip.start_ms} videoToTimeline={videoToTimeline}
                   activeSegment={viewSegment} getPositionAt={viewGetPositionAt} sourceFor={brollSource} slotSourceFor={borrowed.slotSourceFor}
                   skipTransitionRef={skipCanvasTransitionRef} words={displayWords}
-                  captionStyle={captionStyle} captionTextCase={captionTextCase} showCaptions={showCaptions}
+                  captionStyle={captionStyle} captionParts={playedCaptionParts} captionTextCase={captionTextCase} showCaptions={showCaptions}
                   // (no captions in a gap left by a deleted part: its words went with it)
                   captionsOffAt={t => gapRanges.some(([a, b]) => t >= a && t < b)}
                   // (a picture-in-picture video plays from its library link)
@@ -6387,7 +6498,7 @@ export function EditorShell({
                   onTextOverlayChange={(id, u) => { if (!blocked({ kind: 'text', id })) updateTextOverlay(id, u) }} onSelectTextOverlay={id => { if (id) pickText(id, false); else setActiveTextOverlayId(null) }}
                   editTextOverlayId={previewOpen ? editTextId : null} onEditTextDone={() => setEditTextId(null)} onDeleteTextOverlay={askDeleteTextOverlay}
                   onCaptionPositionChange={(y, x) => updateCaptionStyle({ position_y: y, position_x: x })}
-                  onCaptionSizeChange={size => updateCaptionStyle({ size })}
+                  onCaptionSizeChange={size => changeCaptionStyle({ size })}
                   frameMedia={framePool}
                   onFrameLaneClick={focusLane}
                   activeFrameItemId={activeFrameItemId}
@@ -6577,6 +6688,8 @@ export function EditorShell({
             ...(o.type === 'video' ? { video: { url: videoUrls[o.source_video_id!] ?? o.preview_url, offset: o.source_offset_ms ?? 0, muted: !!o.muted } } : {}),
           }))}
           laneCtl={laneCtl} onLaneCtl={toggleLane}
+          captionRow={captionsPanelOpen && showCaptions && words.length > 0 ? { lines: captionLines.map(l => ({ ...l, on: lineSelected(l) })) } : null}
+          onCaptionLineClick={clickCaptionLine} onSelectCaptionRange={selectCaptionRange}
           onTrackDrop={dropOnTrack} belowRows={belowRows} onMovePart={movePart} onPlacePart={placePart} onPartToTrack={partToTrack} onShotToMain={shotToMain} maxMs={MAX_CLIP_MS}
           activePhotoId={activeOverlayId} onSelectPhoto={id => pickPhoto(id, doubleTap(`p${id}`))}
           onPhotoTimeChange={(id, t) => {
@@ -6847,6 +6960,12 @@ function LiveTime() {
 }
 
 /** The tracks of photos, text and music, saved beside the clip's rows (read back by savedLanes, tracks.ts) */
+/** The caption parts saved beside the rows (clips.layers.captionParts: the export reads them too); none: left out */
+function withCaptionParts<L extends object>(layers: L | null, parts: CaptionPart[]): L | { v: 1; rows: string[]; cut: never[]; parts: string[]; captionParts: CaptionPart[] } | null {
+  if (!parts.length) return layers
+  return { ...(layers ?? { v: 1 as const, rows: [], cut: [], parts: [] }), captionParts: parts } as L & { captionParts: CaptionPart[] }
+}
+
 function withLanes<L extends object>(layers: L | null, items: Array<{ id: string; track?: number }>, below = 0): L | { v: 1; rows: string[]; cut: never[]; parts: string[]; lanes: Record<string, number>; below?: number } | null {
   const lanes: Record<string, number> = {}
   for (const x of items) if (x.track != null) lanes[x.id] = x.track
@@ -6867,6 +6986,44 @@ const SECTION_KINDS: { id: SectionItemKind; one: string; plural: string; color: 
 ]
 
 // ── Small UI pieces ───────────────────────────────────────────────────────────
+
+/**
+ * The top of the Captions panel: what a style picked below changes — the caption lines selected
+ * on the timeline's Captions row (as in CapCut), else every caption — with quick selections.
+ */
+function CaptionSelectBar({ lines, styles, onClear, onFromHere, onAll, onOneStyle }: {
+  /** The lines selected (clip ms) */
+  lines: { start: number; end: number }[]
+  /** How many caption styles the clip has */
+  styles: number
+  onClear: () => void
+  onFromHere: () => void
+  onAll: () => void
+  onOneStyle: () => void
+}) {
+  const n = lines.length
+  return (
+    <div className="cap-apply">
+      <div className="flex items-center gap-2">
+        <span className="cap-apply-dot" data-on={n > 0 || undefined} aria-hidden="true" />
+        <span className="cap-apply-title flex-1">
+          {n === 0 ? 'Styling all captions' : `Styling ${n} caption line${n > 1 ? 's' : ''}`}
+          {n > 0 && <span className="cap-apply-when"> · {msToLabel(lines[0].start)}–{msToLabel(lines[n - 1].end)}</span>}
+        </span>
+        {n > 0 && <button type="button" className="cap-apply-link" onClick={onClear}>Clear</button>}
+      </div>
+      <span className="cap-apply-note">
+        {n === 0 ? 'To style just some captions, click their lines on the Captions row of the timeline (Shift-click or drag for more).'
+          : 'The style you pick below goes on these lines only.'}
+      </span>
+      <div className="flex flex-wrap gap-1.5">
+        <button type="button" className="cap-apply-chip" onClick={onFromHere} title="Select every caption line from the playhead to the end">Select from playhead</button>
+        <button type="button" className="cap-apply-chip" onClick={onAll} title="Select every caption line">Select all</button>
+        {styles > 1 && <button type="button" className="cap-apply-chip" onClick={onOneStyle} title="Use the first line's style for every caption">Use one style ({styles} now)</button>}
+      </div>
+    </div>
+  )
+}
 
 /** A length in words people read at a glance: "11s", "1m 05s" */
 function lengthLabel(ms: number): string {

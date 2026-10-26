@@ -91,6 +91,19 @@ export interface TimelineProps {
   laneCtl?: (kind: string) => LaneCtl | null
   /** One of a row's buttons pressed: it switches for everything on the row */
   onLaneCtl?: (kind: string, key: LaneCtlKey) => void
+  /**
+   * The Captions row: the caption parts (captions/parts.ts playedParts, clip ms), each named by its
+   * style, and the one picked ('first' for the first part, else its id; null: none). None: no row.
+   */
+  /**
+   * The Captions row (as CapCut's caption track): each caption line a block with its words, in its
+   * style's colour (`on`: selected — the Captions panel styles the lines selected). None: no row.
+   */
+  captionRow?: { lines: { start: number; end: number; text: string; color: string; name: string; on: boolean }[] } | null
+  /** A caption line clicked (`add`: Shift / Ctrl — added to the selection, or taken off) */
+  onCaptionLineClick?: (index: number, add: boolean) => void
+  /** A stretch dragged across on the Captions row (clip ms): the lines in it are selected */
+  onSelectCaptionRange?: (range: [number, number], add: boolean) => void
   /** The clip's transitions (after which part, which kind, how long): the marker on each cut shows it */
   transitions?: { after_segment_id: string; type: string; duration_ms?: number | null }[]
   /** A cut's transition taken away (its marker's menu, or Delete on it) */
@@ -143,6 +156,10 @@ const BLOCK_H = 48
 const MAIN_PAD = 6
 const VIEW_ROW_H = 20
 const ORIG_ROW_H = 24
+/** The Captions row: one block per caption part, each in its own style */
+const CAP_ROW_H = 30
+/** The Captions row's icon (lane meta, as the other rows have) */
+const CAPTIONS_META: LaneMeta = { label: 'Captions', color: '#e5e7eb', icon: <><rect x="2.5" y="5" width="19" height="14" rx="2.5" /><path d="M10 10.2a2.2 2.2 0 100 3.6M16.5 10.2a2.2 2.2 0 100 3.6" /></> }
 const ROW_H = 30
 /** A row of videos, photos and text: its bars as tall as the main video's parts (BLOCK_H) */
 const VIS_ROW_H = BLOCK_H + 8
@@ -211,7 +228,7 @@ export function Timeline({
   viewMarkers = [], selectedViewT = null, onSelectView, onMoveView, onRemoveView, onDuplicateView,
   onBrollChange, videoUrls = {}, mediaLengths = {}, zoom: zoomProp, onZoomChange,
   onAddKind, cutJoins = [], isStock, onDropFiles, onDropStock, onDropMedia,
-  mainMuted = false, onToggleMainMute, laneCtl, onLaneCtl, transitions = [], onOpenTransition, onRemoveTransition, onApplyTransitionToAll, onDropTransition,
+  mainMuted = false, onToggleMainMute, laneCtl, onLaneCtl, captionRow, onCaptionLineClick, onSelectCaptionRange, transitions = [], onOpenTransition, onRemoveTransition, onApplyTransitionToAll, onDropTransition,
   onTrackDrop, belowRows = 0, onMovePart, onPlacePart, onPartToTrack, onShotToMain, maxMs, pickedSegmentId = null, selectedId, onPickSegment,
 }: TimelineProps) {
   const viewRef = useRef<HTMLDivElement>(null)        // what shows (the playhead sits in its middle)
@@ -1080,6 +1097,8 @@ export function Timeline({
 
   // ── The left column: what each row is (lined up with the rows) ──
   const [laneSpans, setLaneSpans] = useState<{ kind: string; top: number; h: number }[]>([])
+  /** A stretch being dragged across on the Captions row (clip ms) */
+  const [capDrag, setCapDrag] = useState<[number, number] | null>(null)
   const measureLanes = () => {
     const box = viewRef.current
     if (!box) return
@@ -1092,12 +1111,13 @@ export function Timeline({
     })
     const cover = trackRef.current ? trackRef.current.getBoundingClientRect().bottom - base0 : 0
     const next = [...by].map(([kind, v]) => ({ kind, top: Math.round(v.top), h: Math.round(v.bottom - v.top) }))
-      .filter(sp => sp.kind === 'main' || sp.kind === 'original' || sp.kind === 'views' || /^track-\d+$/.test(sp.kind) || sp.top + sp.h / 2 > cover)
+      .filter(sp => sp.kind === 'main' || sp.kind === 'captions' || sp.kind === 'original' || sp.kind === 'views' || /^track-\d+$/.test(sp.kind) || sp.top + sp.h / 2 > cover)
     setLaneSpans(prev => (JSON.stringify(prev) === JSON.stringify(next) ? prev : next))
   }
   useLayoutEffect(measureLanes)
   const metaOf = (kind: string): LaneMeta | undefined => {
     if (kind === 'main' || kind === 'views' || kind === 'frame') return undefined
+    if (kind === 'captions') return CAPTIONS_META
     if (LANE_META[kind]) return LANE_META[kind]
     const vt = /^track-(\d+)$/.exec(kind)
     if (vt) {
@@ -1398,6 +1418,52 @@ export function Timeline({
     )
   }
   /**
+   * The Captions row (as CapCut's caption track): each caption line a block with its words, a line
+   * in its style's colour along its top. Click a line to select it (Shift / Ctrl: add more), drag
+   * across the row to select every line in that stretch: the Captions panel styles them.
+   */
+  function captionStrip(row: NonNullable<TimelineProps['captionRow']>) {
+    const startSelect = (e: React.PointerEvent) => {
+      if (e.button !== 0) return
+      e.stopPropagation(); e.preventDefault()
+      const add = e.shiftKey || e.ctrlKey || e.metaKey
+      const sx = e.clientX, t0 = Math.max(0, Math.min(duration, rawMsFromClientX(e.clientX)))
+      let moved = false, range: [number, number] = [t0, t0]
+      setDragging('caption-range')
+      track(ev => {
+        if (!moved && Math.abs(ev.clientX - sx) < 4) return
+        moved = true
+        const t1 = Math.max(0, Math.min(duration, rawMsFromClientX(ev.clientX)))
+        range = [Math.round(Math.min(t0, t1)), Math.round(Math.max(t0, t1))]
+        setCapDrag(range)
+      }, () => {
+        setCapDrag(null)
+        if (moved && range[1] - range[0] >= 150) { onSelectCaptionRange?.(range, add); return }
+        // A click: the line there (or the nearest one), and the playhead goes there
+        const i = row.lines.findIndex(l => t0 >= l.start && t0 < l.end)
+        const near = i >= 0 ? i : row.lines.reduce((best, l, k) => (Math.abs((l.start + l.end) / 2 - t0) < Math.abs((row.lines[best].start + row.lines[best].end) / 2 - t0) ? k : best), 0)
+        if (row.lines.length) onCaptionLineClick?.(near, add)
+        onSeek(Math.round(t0))
+      })
+    }
+    return (
+      <div data-lane="captions" className="tl2-caps relative" style={{ height: CAP_ROW_H }} onPointerDown={startSelect}
+        title="Captions: click a line to style it (Shift-click or drag across for more)">
+        {row.lines.map((l, i) => (
+          <div key={`${l.start}-${i}`} className="tl2-capline" data-on={l.on || undefined} title={`${l.text}\n${l.name}`}
+            style={{ left: `${at(l.start)}%`, width: `max(3px, ${pct(l.end - l.start)}%)`, '--cap-c': l.color } as React.CSSProperties}>
+            <span>{l.text}</span>
+          </div>
+        ))}
+        {capDrag && capDrag[1] > capDrag[0] && (
+          <div className="tl2-caps-sel" style={{ left: `${at(capDrag[0])}%`, width: `${pct(capDrag[1] - capDrag[0])}%` }}>
+            <span>{clockLabel(capDrag[0])} – {clockLabel(capDrag[1])}</span>
+          </div>
+        )}
+      </div>
+    )
+  }
+  /**
    * A row's view, sound or lock button (as in Resolve's track header): grey while everything on the
    * row is shown, heard and free; marked while it's hidden, muted or locked. It switches for all of it.
    */
@@ -1601,7 +1667,7 @@ export function Timeline({
   const visualH = aboveTracks.length ? aboveTracks.length * VIS_ROW_H + (aboveTracks.length - 1) * ROW_GAP + 6 + 4 : 0
   const mainTop = RULER_H + visualH
   const mainRowH = BLOCK_H + MAIN_PAD * 2
-  const headH = mainTop + mainRowH + (originals.length ? ORIG_ROW_H : 0) + (viewMarkers.length ? VIEW_ROW_H : 0)
+  const headH = mainTop + mainRowH + (captionRow ? CAP_ROW_H : 0) + (originals.length ? ORIG_ROW_H : 0) + (viewMarkers.length ? VIEW_ROW_H : 0)
 
   return (
     <div className="tl2 flex items-stretch flex-auto min-h-0 select-none"
@@ -1842,6 +1908,9 @@ export function Timeline({
                 return <span className="tl2-trim-tip absolute" style={{ left: `${at(x)}%` }}>{lenLabel(len)}{gain >= 100 ? ` · +${lenLabel(gain)}` : ''}</span>
               })()}
             </div>
+            {/* Captions: one block per part, each in its own style — pick one to style it (the Captions
+                panel), Split (S) to start a new style at the playhead, drag the edge between two */}
+            {captionRow && captionStrip(captionRow)}
             {originals.length > 0 && (
               <div data-lane="original" className="relative" style={{ height: ORIG_ROW_H }}>
                 {originals.map(musicBar)}
