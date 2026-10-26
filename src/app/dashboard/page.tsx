@@ -4,6 +4,7 @@ import { preloadMascot } from '@/components/ui/mascot'
 import './dashboard.css'
 import { useState, useEffect, useRef, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
+import { usePolling } from '@/lib/usePolling'
 import type { Video } from '@chai-cut/shared'
 import { ACCEPTED_VIDEO_EXTENSIONS } from '@chai-cut/shared'
 import { Breadcrumbs } from '@/components/ui/breadcrumbs'
@@ -94,12 +95,7 @@ export default function DashboardPage() {
     Promise.all([fetchVideos(), fetchPlan()]).finally(() => setLoading(false))
   }, [])
 
-  useEffect(() => {
-    const hasPending = videos.some(v => v.status === 'uploaded' || v.status === 'transcribing')
-    if (!hasPending) return
-    const id = setInterval(fetchVideos, 3000)
-    return () => clearInterval(id)
-  }, [videos])
+  usePolling(fetchVideos, videos.some(v => v.status === 'uploaded' || v.status === 'transcribing'))
 
   const atLimit = !!planInfo && planInfo.usage.videos >= planInfo.maxVideos
 
