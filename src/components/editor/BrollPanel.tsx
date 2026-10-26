@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { ACCEPTED_VIDEO_EXTENSIONS } from '@chai-cut/shared'
 import { useVideoUpload } from '@/modules/upload/useVideoUpload'
-import { STOCK_DRAG_TYPE } from './SegmentTimeline'
+import { STOCK_DRAG_TYPE, noteDragIn } from './SegmentTimeline'
 
 export interface StockResult {
   ref: string; provider: string; title: string
@@ -253,7 +253,10 @@ function StockTile({ item, selected, onPick }: { item: StockResult; selected: bo
   return (
     <button onClick={onPick} onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}
       // Drag it onto the timeline to put it in at that spot
-      draggable onDragStart={e => { e.dataTransfer.setData(STOCK_DRAG_TYPE, JSON.stringify(item)); e.dataTransfer.effectAllowed = 'copy' }}
+      draggable onDragStart={e => {
+        e.dataTransfer.setData(STOCK_DRAG_TYPE, JSON.stringify(item)); e.dataTransfer.effectAllowed = 'copy'
+        noteDragIn(e, { name: item.title, kind: 'video', ms: item.duration > 0 ? Math.round(item.duration * 1000) : null, thumb: item.thumb })
+      }}
       title={`${item.title} · click to pick it, or drag it onto the timeline`}
       className="relative rounded-md overflow-hidden bg-black" style={{ aspectRatio: '16 / 10', outline: selected ? '2px solid #c8ff00' : 'none', outlineOffset: -2 }}>
       {hover

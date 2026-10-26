@@ -24,6 +24,8 @@ interface Snapshot {
   transitions: ReturnType<typeof useMediaStore.getState>['transitions']
   filters: ReturnType<typeof useMediaStore.getState>['filters']
   captionStyle: ReturnType<typeof useCaptionStore.getState>['captionStyle']
+  /** The caption parts after the first, each in its own look (captions/parts.ts) */
+  captionParts: ReturnType<typeof useCaptionStore.getState>['captionParts']
   /** The brand kit on the clip (brandState.ts): turning it on or off is one step like any edit */
   brand: ReturnType<typeof useBrandStore.getState>['on']
 }
@@ -43,7 +45,7 @@ function take(): Snapshot {
   return {
     segments: e.segments, keyframes: e.keyframes, trims: e.trims, clipRange: e.clipRange,
     overlays: m.overlays, textOverlays: m.textOverlays, audioTracks: m.audioTracks, transitions: m.transitions, filters: m.filters,
-    captionStyle: c.captionStyle,
+    captionStyle: c.captionStyle, captionParts: c.captionParts,
     brand: useBrandStore.getState().on,
   }
 }
@@ -56,6 +58,7 @@ function same(a: Snapshot, b: Snapshot) {
 function restore(s: Snapshot) {
   useEditorStore.setState({ segments: s.segments, keyframes: s.keyframes, trims: s.trims, clipRange: s.clipRange })
   useMediaStore.setState({ overlays: s.overlays, textOverlays: s.textOverlays, audioTracks: s.audioTracks, transitions: s.transitions, filters: s.filters })
+  useCaptionStore.getState().setCaptionParts(s.captionParts)
   useCaptionStore.setState({ captionStyle: s.captionStyle, romanize: s.captionStyle.language === 'roman' })
   useBrandStore.setState({ on: s.brand })
 }

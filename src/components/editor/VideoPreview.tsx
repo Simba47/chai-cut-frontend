@@ -4,6 +4,7 @@ import { TEMPLATE_FONTS, templateFontFamily, templateOf, isLatinText } from '@/m
 import { drawCreatorCaptions, CREATOR_DEFAULT_Y } from '@/modules/captions/creator'
 import { personMask } from '@/modules/captions/personMask'
 import { useCaptionStore } from '@/modules/captions/store'
+import type { PlayedPart } from '@/modules/captions/parts'
 import { useRef, useEffect, useCallback, useState, useMemo, useId, createContext, useContext } from 'react'
 import { emojiFamily, captionEmojiFamily } from '@/modules/editor/emojiFont'
 import type { RefObject } from 'react'
@@ -1101,7 +1102,7 @@ const CAPTION_GAP_MS = 300
 // Tag words whose timestamps were estimated from a phrase-level Sarvam token.
 type FlatWord = TranscriptWord & { _est?: true }
 
-function buildCaptionChunks(words: TranscriptWord[], maxWords = CAPTION_MAX_WORDS): FlatWord[][] {
+export function buildCaptionChunks(words: TranscriptWord[], maxWords = CAPTION_MAX_WORDS): FlatWord[][] {
   if (words.length === 0) return []
   const sorted = [...words].sort((a, b) => a.start_ms - b.start_ms)
   const chunks: FlatWord[][] = []
@@ -1827,6 +1828,11 @@ interface OutputCanvasProps {
   // Caption rendering
   words?: TranscriptWord[]
   captionStyle?: Partial<CaptionStyle>
+  /**
+   * The captions in parts, each in its own look (captions/parts.ts playedParts: clip ms, each part's
+   * style over captionStyle): a line never runs from one part into the next. None: one look throughout.
+   */
+  captionParts?: PlayedPart[]
   captionTextCase?: TextCase
   showCaptions?: boolean
   /** No captions at this clip time (a gap left by a deleted part: its words aren't shown) */
@@ -1890,7 +1896,7 @@ export function OutputCanvas({
   videoRef, currentTimeMs: timeProp, live = false, clipStartMs = 0, videoToTimeline, activeSegment: segmentProp, getPositionAt, segmentAt, hardCuts = false, sourceFor, slotSourceFor,
   overlays = [], activeOverlayId, onOverlayChange, onSelectOverlay, onDeleteOverlay,
   className, style, skipTransitionRef,
-  words, captionStyle, captionTextCase = 'title', showCaptions = false, captionsOffAt,
+  words, captionStyle, captionParts, captionTextCase = 'title', showCaptions = false, captionsOffAt,
   textOverlays = [], activeTextOverlayId, onTextOverlayChange, onSelectTextOverlay, onDeleteTextOverlay, editTextOverlayId, onEditTextDone,
   onCaptionPositionChange, onCaptionSizeChange, transitionCuts, watermark, progressBar, timelineToVideo, clock, frameMedia, onFrameLaneClick, onFrameItemClick, activeFrameItemId, onFrameItemChange, onDeleteFrameItem, onFrameRowsChange, onFrameRowsSwap, onFrameBarChange, onFrameFaceChange, onFrameMainRectChange,
 }: OutputCanvasProps) {
@@ -1975,11 +1981,33 @@ export function OutputCanvas({
   // Presets change how many words a line holds
   const wordsPerLine = captionWordsPerLine(captionStyle ?? {})
   const prevPerLineRef    = useRef(wordsPerLine)
-  if (words !== prevWordsRef.current || wordsPerLine !== prevPerLineRef.current) {
+  const prevPartsRef      = useRef<PlayedPart[] | undefined>(undefined)
+  /** In parts (captionParts): each part's lines, from its own words, in its own look (video ms) */
+  const captionPartChunksRef = useRef<{ start: number; end: number; chunks: FlatWord[][]; style: Partial<CaptionStyle> }[] | null>(null)
+  if (words !== prevWordsRef.current || wordsPerLine !== prevPerLineRef.current || captionParts !== prevPartsRef.current) {
     prevWordsRef.current   = words
     prevPerLineRef.current = wordsPerLine
+    prevPartsRef.current   = captionParts
     captionChunksRef.current = buildCaptionChunks(words ?? [], wordsPerLine)
+    captionPartChunksRef.current = captionParts && captionParts.length > 1
+      ? captionParts.map((part, i) => {
+        // (a word belongs to the part it starts in; the last part takes everything after its start)
+        const start = clipStartMs + part.start_ms, end = i + 1 < captionParts.length ? clipStartMs + part.end_ms : Infinity
+        const own = (words ?? []).filter(w => w.start_ms >= (i === 0 ? -Infinity : start) && w.start_ms < end)
+        return { start: i === 0 ? -Infinity : start, end, chunks: buildCaptionChunks(own, captionWordsPerLine(part.style)), style: part.style }
+      })
+      : null
   }
+  /** The lines and the look of the part playing at `ms` (video ms) */
+  const captionsAt = (ms: number) => {
+    const parts = captionPartChunksRef.current
+    const part = parts?.find(p => ms >= p.start && ms < p.end)
+    return part ? { chunks: part.chunks, style: part.style } : { chunks: captionChunksRef.current, style: captionStyleRef.current ?? {} }
+  }
+  /** The look of the part under the playhead (clip ms): the captions' box is that size */
+  const captionStyleNow = captionParts && captionParts.length > 1
+    ? [...captionParts].reverse().find(p => timeProp >= p.start_ms)?.style ?? captionParts[0].style
+    : captionStyle
 
   useEffect(() => {
     let rafId: number
@@ -2343,9 +2371,11 @@ export function OutputCanvas({
           if (showCaptionsRef.current && captionChunksRef.current.length > 0 && !captionsOffAtRef.current?.(clipRelativeMs)) {
             const captionLookupMs = liveMs - (captionStyleRef.current?.timing_offset_ms ?? 0)
             capOut.current.rect = null
-            drawCaptions(ctx, captionChunksRef.current, captionLookupMs, captionStyleRef.current ?? {}, captionCaseRef.current, captionBandAt(seg, clipRelativeMs), capOut.current)
+            // (in parts: the part playing now, its own lines and look)
+            const cap = captionsAt(captionLookupMs)
+            drawCaptions(ctx, cap.chunks, captionLookupMs, cap.style, captionCaseRef.current, captionBandAt(seg, clipRelativeMs), capOut.current)
             // The line on screen, for the Captions panel's key words (only when it changes)
-            const onScreen = findCaptionChunk(captionChunksRef.current, captionLookupMs)
+            const onScreen = findCaptionChunk(cap.chunks, captionLookupMs)
             if (onScreen !== liveLineRef.current) {
               liveLineRef.current = onScreen
               useCaptionStore.getState().setLiveLine(onScreen ? onScreen.map(w => ({ word: w.word, start_ms: w.start_ms, end_ms: w.end_ms })) : null)
@@ -2533,13 +2563,13 @@ export function OutputCanvas({
           onEndEdit={() => { setEditingTextId(null); onEditTextDone?.() }}
         />
       ))}
-      {/* The captions' box: drag to move them anywhere, the corners to make them bigger or smaller */}
+      {/* The captions' box: drag to move them anywhere, the corners to make them bigger or smaller (its size: the part playing's) */}
       {showCaptions && onCaptionPositionChange && (
         <CaptionBox
           rect={capRect}
-          position_y={captionStyle?.position_y ?? captionDefaultY(captionStyle ?? {})}
+          position_y={captionStyle?.position_y ?? captionDefaultY(captionStyleNow ?? {})}
           position_x={captionStyle?.position_x ?? 0.5}
-          size={captionStyle?.size ?? 52}
+          size={captionStyleNow?.size ?? 52}
           onMove={onCaptionPositionChange}
           onSize={onCaptionSizeChange}
         />
