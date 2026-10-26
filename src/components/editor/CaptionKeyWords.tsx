@@ -68,7 +68,8 @@ export function CaptionKeyWords({ style, tpl, onChange }: {
               const picked = emph[j]
               const byLine = !picked && auto.has(j)
               return (
-                <button key={w.start_ms} type="button" aria-pressed={picked}
+                // (two words can start at the same moment — one spoken word written as two: its place keeps them apart)
+                <button key={`${w.start_ms}-${j}`} type="button" aria-pressed={picked}
                   title={picked ? 'Key word: tap to take it off' : byLine ? 'Used as this line’s key word: tap to keep it' : 'Tap to make it a key word'}
                   onClick={() => toggle(w.start_ms, !picked)}
                   className="h-7 rounded-full px-2.5 text-[12px] font-semibold transition-colors"
