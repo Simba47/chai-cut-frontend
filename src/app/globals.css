@@ -2143,6 +2143,15 @@ body {
 .tl2-mute:hover { background: rgb(var(--ed-fg) / 0.1); }
 .tl2-mute[data-on] { color: #f87171; background: rgba(248, 113, 113, 0.12); }
 .tl2-row-ico { position: absolute; left: 17px; width: 18px; height: 18px; display: grid; place-items: center; }
+/* on a row of videos, photos and text a bar is as tall as a part of the main video, its name at its top */
+[data-track-row="visual"] .tl2-bar, [data-track-row="visual"] .tl2-bar[data-sel] { top: 4px; bottom: 4px; align-items: flex-start; padding-top: 5px; border-radius: 8px; }
+/* a row's view / sound / lock (as in Resolve's track header): quiet grey; marked while switched */
+.tl2-row-ctl { position: absolute; width: 20px; height: 20px; display: grid; place-items: center; border-radius: 5px; color: rgb(var(--ed-fg) / 0.42); transition: background-color .15s, color .15s; }
+.tl2-row-ctl:hover { color: var(--ed-text); background: rgb(var(--ed-fg) / 0.08); }
+.tl2-row-ctl:focus-visible { outline: 2px solid rgba(200, 255, 0, 0.6); outline-offset: 1px; }
+.tl2-row-ctl[data-on] { color: var(--ed-text); background: rgb(var(--ed-fg) / 0.1); }
+.tl2-row-ctl[data-key="muted"][data-on] { color: #f87171; background: rgba(248, 113, 113, 0.14); }
+.tl2-row-ctl[data-key="locked"][data-on] { color: #c8ff00; background: rgba(200, 255, 0, 0.12); }
 .tl2-menu { min-width: 180px; border-radius: 12px; background: var(--ed-popover, var(--ed-panel)); border: 1px solid rgb(var(--ed-fg) / 0.14); box-shadow: 0 12px 32px rgba(0, 0, 0, 0.55); }
 .tl2-menu button { display: flex; align-items: center; gap: 10px; padding: 6px 12px; font-size: 12.5px; font-weight: 600; color: var(--ed-text); text-align: left; transition: background .12s; }
 .tl2-menu button:hover { background: rgb(var(--ed-fg) / 0.07); }

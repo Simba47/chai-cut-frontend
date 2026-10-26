@@ -5338,47 +5338,36 @@ export function EditorShell({
     main: ['locked', 'hidden', 'muted'], broll: ['locked', 'hidden', 'muted'], video: ['locked', 'hidden', 'muted'],
     photo: ['locked', 'hidden'], music: ['locked', 'muted'], text: ['locked', 'hidden'],
   }
+  /** The parts of the main row the main row's buttons act on (not the empty space a part left, nor the room after the main video) */
+  const mainRowTargets = (): CtlTarget[] => sections.filter(s => !isGapPart(s, mainVideoId) && !isTail(s)).map(s => ({ kind: 'section', id: s.id }))
   /**
-   * The section the main track's view and sound buttons act on: the one picked on the strip, else
-   * the one under the playhead. Each section keeps its own (the preview and the export switch as
-   * the playhead goes from one to the next).
+   * The main row, as the other rows (Resolve's track header): its view, sound and lock for all of
+   * it. Its sound is the whole clip's (what "Mute clip audio" was); a frame has no view switch of
+   * its own (its slots are the frame).
    */
-  function currentSection(): SegmentLocal | undefined {
-    const picked = sections.find(s => s.id === pickedSegId)
-    if (picked) return picked
-    const byTime = [...sections].sort((a, b) => a.start_ms - b.start_ms)
-    return byTime.find(s => currentTimeMs >= s.start_ms && currentTimeMs < s.end_ms) ?? byTime[byTime.length - 1]
-  }
-  /** The main track: view and sound for the current section; the lock for the whole track */
   function mainCtl(): LaneCtl {
-    const sec = currentSection()
-    const t: CtlTarget | null = sec ? { kind: 'section', id: sec.id } : null
-    const all = laneTargets('main')
-    const n = sec ? [...sections].sort((a, b) => a.start_ms - b.start_ms).findIndex(s => s.id === sec.id) + 1 : 0
+    const all = mainRowTargets()
+    const viewable = all.filter(t => canCtl(t).includes('hidden'))
     return {
-      // (a frame section has no view switch of its own: its slots are the frame)
-      can: t && canCtl(t).includes('hidden') ? ['locked', 'hidden', 'muted'] : ['locked', 'muted'],
+      can: viewable.length ? ['locked', 'hidden', 'muted'] : ['locked', 'muted'],
       state: {
         locked: all.length > 0 && all.every(x => !!ctlState(x)?.locked),
-        hidden: !!t && !!ctlState(t)?.hidden,
-        muted: !!t && !!ctlState(t)?.muted,
+        hidden: viewable.length > 0 && viewable.every(x => !!ctlState(x)?.hidden),
+        muted: mainAllMuted,
       },
-      empty: !sec,
-      ...(sections.length > 1 && n ? { note: `section ${n}` } : {}),
+      empty: all.length === 0,
     }
   }
   function toggleMain(k: LaneCtlKey) {
-    const sec = currentSection()
-    if (!sec) return
-    const t: CtlTarget = { kind: 'section', id: sec.id }
-    if (k === 'locked') {
-      // The lock switches for every section
-      const want = !mainCtl().state.locked
-      for (const x of laneTargets('main')) if (!!ctlState(x)?.locked !== want) toggleCtl(x, 'locked')
-      return
+    const cur = mainCtl()
+    if (k === 'muted') { setMainAllMuted(!cur.state.muted); return }
+    const want = !cur.state[k]
+    // Hide only what isn't locked; the lock itself switches for everything
+    for (const t of mainRowTargets()) {
+      if (!canCtl(t).includes(k) || !!ctlState(t)?.[k] === want) continue
+      if (k !== 'locked' && isLocked(t)) continue
+      toggleCtl(t, k)
     }
-    if (blocked(t)) return
-    toggleCtl(t, k)
   }
   /** The main video is silent everywhere: the whole clip's switch is off, or every section is muted */
   // A section's sound is off: the main video's here, or (a video put in between) that video's own
@@ -6530,13 +6519,7 @@ export function EditorShell({
                     <path d="M15 14v7M12 18l3 3 3-3" stroke="#c084fc" />
                   </svg>
                 </button>
-                {/* Hide / mute / lock what's picked (a section, a video on top, a photo, a text, music or something in a frame) */}
-                {selTarget && (
-                  <>
-                    <span className="ed-tl-sep" aria-hidden="true" />
-                    <CtlButtons size="md" state={ctlState(selTarget)} can={canCtl(selTarget)} onToggle={k => toggleCtl(selTarget, k)} what={selName} />
-                  </>
-                )}
+                {/* (hide / mute / lock: beside each row on the timeline, not here) */}
               </>
             )
           })()}
@@ -6593,6 +6576,7 @@ export function EditorShell({
             id: o.id, start_ms: o.start_ms, end_ms: o.end_ms, url: o.preview_url, hidden: o.hidden, locked: isLocked({ kind: 'photo', id: o.id }), track: o.track, full: o.x <= 0.001 && o.y <= 0.001 && o.w >= 0.999 && o.h >= 0.999,
             ...(o.type === 'video' ? { video: { url: videoUrls[o.source_video_id!] ?? o.preview_url, offset: o.source_offset_ms ?? 0, muted: !!o.muted } } : {}),
           }))}
+          laneCtl={laneCtl} onLaneCtl={toggleLane}
           onTrackDrop={dropOnTrack} belowRows={belowRows} onMovePart={movePart} onPlacePart={placePart} onPartToTrack={partToTrack} onShotToMain={shotToMain} maxMs={MAX_CLIP_MS}
           activePhotoId={activeOverlayId} onSelectPhoto={id => pickPhoto(id, doubleTap(`p${id}`))}
           onPhotoTimeChange={(id, t) => {
@@ -6622,7 +6606,7 @@ export function EditorShell({
           zoom={timelineZoom} onZoomChange={setTimelineZoom} onScrubStart={pause}
           segments={segments} mainVideoId={mainVideoId} isStock={isStockShot} clipStartMs={clip.start_ms} clipEndMs={clip.end_ms}
           onDropFiles={dropFiles} onDropStock={dropStock} onDropMedia={dropMedia}
-          mainMuted={mainAllMuted} onToggleMainMute={() => setMainAllMuted(!mainAllMuted)}
+          mainMuted={mainAllMuted}
           transitions={transitions}
           onOpenTransition={(afterId, at) => { pause(); seekToMs(Math.max(0, at - 1)); setTransitionFocus({ id: afterId, n: Date.now() }); openSettings('transitions') }}
           onRemoveTransition={afterId => setTransitionAt(afterId, 'cut', 0)}
