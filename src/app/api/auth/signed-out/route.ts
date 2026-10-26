@@ -6,7 +6,9 @@ import { NextResponse, type NextRequest } from 'next/server'
  * /login, whose sign-in form says why (the `signed_out` note, AuthSlider.tsx).
  */
 export async function GET(req: NextRequest) {
-  const res = NextResponse.redirect(new URL('/login', req.url))
+  // Only the path: the browser stays on the address it is using. (Behind Railway the website sees
+  // itself as localhost:8080, so an address built from req.url sent the device to https://localhost:8080.)
+  const res = new NextResponse(null, { status: 307, headers: { Location: '/login' } })
   for (const { name } of req.cookies.getAll()) {
     // authjs.session-token, its __Secure- form on https, and their chunks (.0, .1, …)
     if (!name.includes('authjs.session-token')) continue
