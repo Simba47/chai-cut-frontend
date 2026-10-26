@@ -8,7 +8,7 @@ import { VideoPreview, OutputCanvas, buildCaptionChunks, captionWordsPerLine } f
 import { withoutRanges } from '@/lib/cuts'
 import { cleanTrims, trimMap, addTrim, wordsOnTimeline, MAX_CLIP_MS, MIN_CLIP_MS } from '@/lib/trims'
 import { toTimelineState, toSourceState, rippleDelete, rippleStretch, lockedInRange, insertAtStart, extendEnd, type TimedState } from '@/modules/editor/trimState'
-import { insertsOf, insertedMs, rippleInsert, isInsert, piecesOf, piecesLength, videoAtPieces, timelineAtPieces, rippleCut, pieceAt, speedOf, pieceVideoMs, mainFrom } from '@/modules/editor/inserts'
+import { insertsOf, insertedMs, rippleInsert, isInsert, goesAfterMain, piecesOf, piecesLength, videoAtPieces, timelineAtPieces, rippleCut, pieceAt, speedOf, pieceVideoMs, mainFrom } from '@/modules/editor/inserts'
 import { PostText, type PostTextValue } from '@/components/clips/PostText'
 import { BrollPanel, type StockResult } from '@/components/editor/BrollPanel'
 import { VideoPanel, type PanelVideo } from '@/components/editor/VideoPanel'
@@ -124,7 +124,7 @@ const PREVIEW_W = 360
 // and any media lanes — so a clip with nothing added leaves the room to the video. It grows as
 // lanes are added, up to this, then its lanes scroll (dragging the line above the play bar sets a
 // height for that visit; a double-click goes back to fitting)
-const TIMELINE_MAX_H = '35vh'
+const TIMELINE_MAX_H = '28vh'
 // How wide the side columns can be dragged
 const OPTIONS_RANGE: [number, number] = [220, 520]
 const PREVIEW_RANGE: [number, number] = [260, 620]
@@ -612,17 +612,27 @@ export function EditorShell({
         return Math.abs(p.x - q.x) + Math.abs(p.y - q.y) + Math.abs(p.w - q.w) + Math.abs(p.h - q.h) < 0.04
       })
     }
+    // (the empty room after a part: a stretch left where a part went to a row, or the hidden tail)
+    const empty = (sg: SegmentLocal) => isGapPart(sg, mainVideoId) || (isInsert(sg, mainVideoId) && !!sg.hidden && !!sg.crop_boxes[0]?.hidden)
+    // A video on a row starting just where a part ends, with only empty room after the part on the
+    // main row: the export plays the two one after the other (render.py takes every part and video
+    // on a row as one sequence in time order), so a transition goes between them — the video stays
+    // on its row
+    const rowVideoAt = (t: number) => shots.find(sh => !sh.crop_boxes[0]?.hidden && Math.abs(sh.start_ms - t) <= 1)
     const out: TransitionJoin[] = []
-    for (let i = 0; i + 1 < byTime.length; i++) {
-      const a = byTime[i], b = byTime[i + 1]
-      if (Math.abs(b.start_ms - a.end_ms) > 1) continue
+    for (let i = 0; i < byTime.length; i++) {
+      const a = byTime[i], next = byTime[i + 1]
+      const touching = next && Math.abs(next.start_ms - a.end_ms) <= 1 ? next : null
+      const onRow = !empty(a) && (!touching || empty(touching)) ? rowVideoAt(a.end_ms) : undefined
+      const b = onRow ?? touching
+      if (!b) continue
       // (a transition plays no longer than either part: the export's rule, render.py _transition_joins)
       const lenA = Math.round(a.end_ms) - Math.round(a.start_ms), lenB = Math.round(b.end_ms) - Math.round(b.start_ms)
-      out.push({ afterId: a.id, at: a.end_ms, from: name(a), to: name(b), sameShot: sameShot(a, b, a.end_ms),
+      out.push({ afterId: a.id, at: a.end_ms, from: name(a), to: onRow ? 'Video' : name(b), sameShot: !onRow && sameShot(a, b, a.end_ms),
         room: Math.min(lenA, lenB), shortSide: lenA <= lenB ? 'before' : 'after' })
     }
     return out
-  }, [sections, keyframes, timelineToVideo, mainVideoId, clip.start_ms]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [sections, shots, keyframes, timelineToVideo, mainVideoId, clip.start_ms]) // eslint-disable-line react-hooks/exhaustive-deps
   /** What the preview plays at each join that has a transition (timeline ms): as long as the export
    *  plays it there, and none where that's too short to show */
   const transitionCuts = useMemo(() => transitionJoins.flatMap(j => {
@@ -722,6 +732,8 @@ export function EditorShell({
   const [saveState, setSaveState] = useState<SaveState>('idle')
   /** The transition button between two parts on the timeline: the Transition tool opens on that cut */
   const [transitionFocus, setTransitionFocus] = useState<{ id: string; n: number } | null>(null)
+  /** The cut the Transition tool's controls are on (its section id): marked on the timeline */
+  const [transitionShown, setTransitionShown] = useState<string | null>(null)
   /** The last save had to keep newer transitions as a Dissolve (the database doesn't take them yet) */
   const [trAsDissolve, setTrAsDissolve] = useState(false)
   const [motionMode, setMotionMode] = useState(false)
@@ -3278,6 +3290,10 @@ export function EditorShell({
   // (never rippled in, so nothing on top is cut or moved by it).
   const isTail = (s: SegmentLocal) => isInsert(s, mainVideoId) && !!s.hidden && !!s.crop_boxes[0]?.hidden
   const tailOf = (segs = useEditorStore.getState().segments) => segs.find(isTail) ?? null
+  /** Where the main row's last part ends (the tail after it isn't one) */
+  const mainEndMs = () => Math.max(0, ...useEditorStore.getState().segments.filter(s => !isShot(s, mainVideoId) && !isTail(s)).map(s => s.end_ms))
+  /** A video dropped here goes on after the main row's last part, not on top (goesAfterMain) */
+  const afterMain = (atMs: number, lane: string | null | undefined) => !!mainVideoId && goesAfterMain(atMs, lane, mainEndMs())
   useEffect(() => {
     if (!mainVideoId) return
     const editor = useEditorStore.getState(), m = useMediaStore.getState()
@@ -3700,9 +3716,12 @@ export function EditorShell({
     const box = seg?.crop_boxes[0]
     if (!seg || !box?.source_video_id || blocked({ kind: 'broll', id: segId })) return
     if (isMainShot(seg, mainVideoId)) { lowerPart(seg, atMs, startMs); return }
+    // (at the main video's end or past it: on after its last part, never after the room past it)
+    const end = mainEndMs()
+    const at = goesAfterMain(atMs, 'main', end) ? end : atMs
     removeBrollShot(segId)
     tidyRowsBelow()
-    insertVideo(box.source_video_id, atMs, seg.end_ms - seg.start_ms, 60, { offsetMs: box.source_offset_ms ?? 0, muted: false, volume: box.volume ?? 1 })
+    insertVideo(box.source_video_id, at, seg.end_ms - seg.start_ms, at === end ? 0 : 60,{ offsetMs: box.source_offset_ms ?? 0, muted: false, volume: box.volume ?? 1 })
   }
   /** A part of the main video on a row dragged back onto the main row (shotToMain): one step */
   function lowerPart(seg: SegmentLocal, atMs: number, startMs: number) {
@@ -4568,7 +4587,11 @@ export function EditorShell({
     // A video from Media goes into the main strip, in between (as in InShot / CapCut): where
     // "Insert video" was picked, where it was dropped on the strip, or at the playhead — at the
     // nearest cut when the playhead is close to one. (Video on top: the timeline's + menu, or
-    // dropped on a lane under the strip.)
+    // dropped on a lane under the strip.) At the main video's end or past it: on after its last part.
+    if (item.kind === 'video' && afterMain(atMs, lane)) {
+      videoLengthMs(item.id).then(len => insertVideo(item.id, mainEndMs(), len, 0)).catch(e => notifyLocked(e instanceof Error ? e.message : 'Could not put the video in'))
+      return
+    }
     if (item.kind === 'video' && (lane === null || lane === 'main')) {
       const at = lane === 'main' ? atMs : insertAtMs ?? atMs
       const snap = lane === null && insertAtMs == null ? 1500 : 60
@@ -4623,7 +4646,8 @@ export function EditorShell({
     if (kind === 'video') {
       if (dropUploading) { notifyLocked('Wait for the upload in progress to finish'); return }
       const asBroll = lane === 'broll' || (lane === null && tool === 'media' && mediaSection === 'library')
-      dropTargetRef.current = { atMs, lane: lane === 'main' ? 'insert' : asBroll ? 'broll' : 'video', ...(target ? { frame: target } : {}) }
+      const toEnd = !target && afterMain(atMs, lane)
+      dropTargetRef.current = { atMs: toEnd ? mainEndMs() : atMs, lane: lane === 'main' || toEnd ? 'insert' : asBroll ? 'broll' : 'video', ...(target ? { frame: target } : {}) }
       openMedia(asBroll ? 'library' : 'media')
       dropUpload.start(f)
       return
@@ -4657,7 +4681,9 @@ export function EditorShell({
     for (const [i, f] of files.entries()) {
       const kind = (lane === 'music' || lane?.startsWith('audio-')) && kindOfFile(f) === 'video' ? 'music' : kindOfFile(f)
       if (!kind) { left++; continue }
-      if (at > clipLengthMs - 500) { left += files.length - i; break }
+      // (a video at the main video's end goes on after it: each next one then follows it there)
+      const toEnd = kind === 'video' && afterMain(at, lane)
+      if (!toEnd && at > clipLengthMs - 500) { left += files.length - i; break }
       preferTrack(lane)
       let end: number | null = null
       try {
@@ -4673,7 +4699,7 @@ export function EditorShell({
           if (!opened) { opened = true; openMedia(lane === 'broll' ? 'library' : 'media') }
           end = await new Promise<number | null>(resolve => {
             dropNextRef.current = resolve
-            dropTargetRef.current = { atMs: at, lane: lane === 'main' ? 'insert' : lane === 'broll' ? 'broll' : 'video' }
+            dropTargetRef.current = { atMs: toEnd ? mainEndMs() : at, lane: lane === 'main' || toEnd ? 'insert' : lane === 'broll' ? 'broll' : 'video' }
             dropUpload.start(f)
           })
         }
@@ -4698,6 +4724,12 @@ export function EditorShell({
     if (target === 'refused') return
     if (target) {
       importStock(item).then(videoId => videoIntoSlot(target, videoId, atMs))
+        .catch(e => notifyLocked(e instanceof Error ? e.message : 'Could not add that video'))
+      return
+    }
+    // At the main video's end or past it: on after its last part
+    if (afterMain(atMs, lane)) {
+      importStock(item).then(videoId => insertVideo(videoId, mainEndMs(), len, 0))
         .catch(e => notifyLocked(e instanceof Error ? e.message : 'Could not add that video'))
       return
     }
@@ -6216,7 +6248,7 @@ export function EditorShell({
               <TransitionsPanel joins={transitionJoins} transitions={transitions} currentTimeMs={currentTimeMs}
                 canAddHere={canAddTransitionAt(activeSegment, currentTimeMs)} onAddHere={addTransitionHere}
                 onSet={setTransitionAt} onPreview={previewJoin} onSeek={ms => { pause(); seekToMs(ms) }} savedAsDissolve={trAsDissolve}
-                focusJoin={transitionFocus} />
+                focusJoin={transitionFocus} onShownJoin={setTransitionShown} />
             )}
 
             {tool === 'text' && (
@@ -6721,6 +6753,7 @@ export function EditorShell({
           onDropFiles={dropFiles} onDropStock={dropStock} onDropMedia={dropMedia}
           mainMuted={mainAllMuted}
           transitions={transitions}
+          focusCut={tool === 'transitions' ? transitionShown : null}
           onOpenTransition={(afterId, at) => { pause(); seekToMs(Math.max(0, at - 1)); setTransitionFocus({ id: afterId, n: Date.now() }); openSettings('transitions') }}
           onRemoveTransition={afterId => setTransitionAt(afterId, 'cut', 0)}
           onApplyTransitionToAll={applyTransitionToAll}

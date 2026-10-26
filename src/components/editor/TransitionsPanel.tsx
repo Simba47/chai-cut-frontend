@@ -138,7 +138,7 @@ const SAME_SHOT_TIP = 'Dissolve looks like a plain cut there. Pick Slide, Whip, 
  * With no joins yet the tiles still show: picking one splits the clip at the playhead and puts
  * that transition on the new join (onAddHere).
  */
-export function TransitionsPanel({ joins, transitions, currentTimeMs, canAddHere, onAddHere, onSet, onPreview, onSeek, savedAsDissolve, focusJoin }: {
+export function TransitionsPanel({ joins, transitions, currentTimeMs, canAddHere, onAddHere, onSet, onPreview, onSeek, savedAsDissolve, focusJoin, onShownJoin }: {
   joins: TransitionJoin[]
   transitions: Transition[]
   currentTimeMs: number
@@ -155,6 +155,8 @@ export function TransitionsPanel({ joins, transitions, currentTimeMs, canAddHere
   savedAsDissolve?: boolean
   /** Opened from the transition button between two parts on the timeline: that cut (`n` changes each time) */
   focusJoin?: { id: string; n: number } | null
+  /** The cut the controls are on (its section id; null: none), so the timeline can mark it */
+  onShownJoin?: (afterId: string | null) => void
 }) {
   // The cut the controls are for (its section id): the one picked, else the one nearest the playhead
   const nearestJoin = () => [...joins].sort((a, b) => Math.abs(a.at - currentTimeMs) - Math.abs(b.at - currentTimeMs))[0]
@@ -178,6 +180,11 @@ export function TransitionsPanel({ joins, transitions, currentTimeMs, canAddHere
     }
     pickedAt.current = j ? { id: scope, at: j.at } : null
   }, [scope, joins])
+
+  // (the cut the controls are on: the one picked, else the nearest — the timeline marks it)
+  const shownId = (joins.find(j => j.afterId === scope) ?? nearestJoin())?.afterId ?? null
+  useEffect(() => { onShownJoin?.(shownId) }, [shownId]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => () => onShownJoin?.(null), []) // eslint-disable-line react-hooks/exhaustive-deps
 
   if (joins.length === 0) {
     return (

@@ -30,6 +30,19 @@ export function insertsOf(segments: SegmentLocal[], mainVideoId: string | null |
     .sort((a, b) => a.at - b.at)
 }
 
+/** How close before the main video's end a video dropped on a row still goes on after it (ms) */
+export const AFTER_MAIN_SNAP_MS = 800
+
+/**
+ * Whether a video dropped at `atMs` on `lane` goes onto the end of the main row (`mainEnd`: where its
+ * last part ends): dropped on the main row or a row of videos, at that end or past it. Nothing of the
+ * main video plays there, so on top each video would only step a row further down with no cut
+ * between them for a transition; on the main row they meet, as on CapCut's main track.
+ */
+export function goesAfterMain(atMs: number, lane: string | null | undefined, mainEnd: number): boolean {
+  return (lane === 'main' || (!!lane && /^track-(\d+|new|below)$/.test(lane))) && atMs >= mainEnd - AFTER_MAIN_SNAP_MS
+}
+
 /** How much the inserted videos add to the clip (ms) */
 export const insertedMs = (inserts: InsertSpan[]) => inserts.reduce((t, i) => t + i.ms, 0)
 
