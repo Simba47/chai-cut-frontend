@@ -9,6 +9,8 @@ export const PLANS = {
     maxClips: 3,
     autoCaption: false,
     watermark: true,
+    // Exports go to the front of the worker's line (the top plan's "priority rendering")
+    priorityExports: false,
     retentionDays: 30,
   },
   starter: {
@@ -21,6 +23,7 @@ export const PLANS = {
     maxClips: null,
     autoCaption: true,
     watermark: false,
+    priorityExports: false,
     retentionDays: 30,
   },
   creator: {
@@ -33,6 +36,7 @@ export const PLANS = {
     maxClips: null,
     autoCaption: true,
     watermark: false,
+    priorityExports: false,
     retentionDays: 45,
   },
   agency: {
@@ -45,6 +49,7 @@ export const PLANS = {
     maxClips: null,
     autoCaption: true,
     watermark: false,
+    priorityExports: true,
     retentionDays: 60,
   },
 } as const

@@ -1,6 +1,5 @@
 'use client'
 
-import { useEffect, useState } from 'react'
 import { BRAND_BOTTOM, BRAND_TOP } from '@/components/ui/brand-logo'
 import { PandaLoader } from '@/components/ui/panda-loader'
 import type { MascotScene } from '@/components/ui/mascot'
@@ -21,33 +20,16 @@ export function BrandLoader({ size = 44, label }: { size?: number; label?: strin
   )
 }
 
-/** Short tips shown one after another while a page loads */
-const TIPS = [
-  'Press Space to play or pause',
-  'Press S to trim at the playhead',
-  'Click a section on the timeline to select it',
-  'Check Instagram or YouTube view in Preview before you export',
-  'Make my clips finds the best moments for you',
-  'Extract the audio to set the volume of each part',
-]
-
 /**
  * Full-screen loader: page loads, and the moment between clicking and the next page appearing.
- * The mark sits in a soft lime glow, over a faint dot grid; under the label a
- * thin bar sweeps like progress and a tip changes every few seconds (styles: .bls-* in globals.css).
+ * The mark sits in a soft lime glow, over a faint dot grid; under the label a lime streak with a
+ * glowing head sweeps along a hairline track (styles: .bls-* in globals.css).
  * `mascot`: the Shortcut panda instead of the mark alone — true / 'editor': it lounges while its
  * laptop makes clips (opening the editing board); 'clipboard': it walks along, typing (opening the
  * clip board) — on a black page, as its walk is filmed on black; 'dashboard': it naps at its desk
  * (loading the videos), on black too.
  */
 export function BrandLoaderScreen({ label, overlay = false, mascot = false }: { label: string; overlay?: boolean; mascot?: boolean | MascotScene }) {
-  // Starts on the first tip (same on the server and in the browser), then picks a random one
-  const [tip, setTip] = useState(0)
-  useEffect(() => {
-    setTip(Math.floor(Math.random() * TIPS.length))
-    const t = setInterval(() => setTip(i => (i + 1) % TIPS.length), 3200)
-    return () => clearInterval(t)
-  }, [])
   return (
     <div className={`bls ${overlay ? 'fixed inset-0 z-[200]' : 'relative h-dvh'}`} data-mascot={mascot === true ? 'editor' : mascot || undefined} role={mascot ? 'status' : undefined}>
       <div className="bls-grid" aria-hidden="true" />
@@ -63,7 +45,6 @@ export function BrandLoaderScreen({ label, overlay = false, mascot = false }: { 
       )}
       <p className="bls-label">{label}</p>
       <div className="bls-bar" aria-hidden="true"><span /></div>
-      <p key={tip} className="bls-tip"><span>Tip</span>{TIPS[tip]}</p>
     </div>
   )
 }

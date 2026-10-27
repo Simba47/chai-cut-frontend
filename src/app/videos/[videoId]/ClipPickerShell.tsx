@@ -1,5 +1,7 @@
 'use client'
 
+// The brand on the clip board: a tag per clip, "Put on all" (brand kit Phase 2: components/brand/ClipBoardBrand.tsx)
+import { useClipBrands, BrandAllBar, BrandTag } from '@/components/brand/ClipBoardBrand'
 import { preloadMascot } from '@/components/ui/mascot'
 import { InfoTip } from '@/components/ui/info-tip'
 import { useFrameAt } from '@/modules/clips/thumbs'
@@ -395,6 +397,8 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
   // Edited = opened in the editor at least once (the editor creates a clip's formats on first open)
   // (Manual edit lists only the user's own clips, so an AI-made clip never counts, even though it has formats)
   const isEdited = (c: { layout: string | null; origin: ClipOrigin }) => c.layout != null && (!manualOnly || c.origin === 'yours')
+  // (brand kit Phase 2) each clip's kit, for its tag, and "Put on all"
+  const brands = useClipBrands(initialVideo.id, boardClips.map(c => c.id))
   const shownClips = clipTab === 'all' ? boardClips : clipTab === 'fav' ? boardClips.filter(c => c.favorite) : clipTab === 'edited' ? byTime.filter(isEdited) : byTime.filter(c => c.origin === clipTab)
   // Clip preview plays 9:16 clips as edited: in Manual edit only the edited ones
   const previewable = manualOnly ? byTime.filter(isEdited) : boardClips
@@ -1682,6 +1686,8 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
               })}
             </div>
           )}
+          {/* (brand kit Phase 2) a kit on every clip at once */}
+          {!selecting && <div className="px-4 pb-3 shrink-0"><BrandAllBar b={brands} total={boardClips.length} /></div>}
           {clipError && (
             <div role="alert" className="mx-4 mb-2 px-3 py-2 rounded-lg flex items-center justify-between gap-2" style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.25)' }}>
               <span className="text-xs" style={{ color: '#f87171' }}>{clipError}</span>
@@ -1733,6 +1739,7 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
                 selecting={selecting}
                 selected={selected.has(clip.id)}
                 onToggle={() => toggleSelected(clip.id)}
+                brandTag={<BrandTag b={brands} clipId={clip.id} />}
               />
             ))}
             {boardClips.length > 0 && !selecting && !manualOnly && (
@@ -2259,8 +2266,10 @@ function SubEditOverlay({ startedAt, estimate, ahead, onStop }: { startedAt: num
   )
 }
 
-function ClipCard({ id, focused, number, origin, title, startMs, endMs, status, outputUrl, playing, onSeek, onEdit, onPreview, previewing, open, onClose, disabled, selecting, selected, onToggle, videoUrl, favorite, reason, onFavorite, onDelete, onDownload, download, onSubEdited, manual, edited }: {
+function ClipCard({ id, focused, number, origin, title, startMs, endMs, status, outputUrl, playing, onSeek, onEdit, onPreview, previewing, open, onClose, disabled, selecting, selected, onToggle, videoUrl, favorite, reason, onFavorite, onDelete, onDownload, download, onSubEdited, manual, edited, brandTag }: {
   id: string
+  /** (brand kit Phase 2) its brand kit's tag, in the row of labels */
+  brandTag?: React.ReactNode
   /** Manual edit board: the slim card shows its start–end and Edit / Download on hover */
   manual?: boolean
   /** Manual edit board: opened in the editor already (a small green label) */
@@ -2468,6 +2477,7 @@ function ClipCard({ id, focused, number, origin, title, startMs, endMs, status, 
               {status === 'rendering' ? <Spinner /> : <span className="w-1.5 h-1.5 rounded-full" style={{ background: chip.color }} />}
               {chip.label}
             </span>
+            {!selecting && brandTag}
           </div>
         </div>
       </div>

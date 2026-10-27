@@ -24,6 +24,12 @@
 .dash-usage.is-warn .dash-usage-bar > div { background: var(--warning); }
 .dash-usage.is-full .dash-usage-bar > div { background: var(--danger); }
 
+/* Brand kits: a quiet link beside the usage */
+.dash-brand-link { display: inline-flex; align-items: center; gap: 7px; height: 34px; padding: 0 12px; border-radius: 999px; font-size: 12.5px; font-weight: 700; color: var(--text); background: var(--hover); border: 1px solid var(--border); white-space: nowrap; transition: border-color .15s, background-color .15s; }
+.dash-brand-link:hover { border-color: var(--border-strong); background: var(--surface-2); }
+.dash-brand-link svg { color: var(--accent); }
+@media (max-width: 640px) { .dash-brand-link span { display: none; } .dash-brand-link { padding: 0 10px; } }
+
 /* Buttons */
 .dash-btn {
   display: inline-flex; align-items: center; justify-content: center; gap: 6px;

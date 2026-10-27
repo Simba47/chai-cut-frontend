@@ -3,8 +3,8 @@
 import { create } from 'zustand'
 
 // ── A clip's brand kit, on or off (user, 2026-10-19) ───────────────────────────
-// On: the kit is on the clip (logo, sound, captions, text and frame colours, corners, Branded cards,
-// intro, outro, end card) and on every frame or format picked while it's on. Off: all of that comes
+// On: the kit is on the clip (logo, captions, text and frame colours, corners, Branded cards) and on
+// every frame or format picked while it's on. Off: all of that comes
 // off again. `before` keeps what the brand changed, so turning it off puts it back (where the user
 // hasn't changed it since). Saved with the clip (clips.brand); Undo covers it (history.ts).
 

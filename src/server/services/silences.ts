@@ -66,7 +66,7 @@ export async function scanSilences(userId: string, clipId: string, body: { start
         WHERE clip_silences.status NOT IN ('queued', 'running') OR clip_silences.updated_at < now() - ${STUCK}::interval
       RETURNING clip_id
     `
-    if (queued) await sql`INSERT INTO jobs (type, payload, status) VALUES ('detect_silence', ${sql.json({ clip_id: clipId, start_ms: start, end_ms: end })}, 'queued')`
+    if (queued) await sql`INSERT INTO jobs (type, payload, status) VALUES ('detect_silence', ${sql.json({ clip_id: clipId, start_ms: start, end_ms: end, user_id: userId })}, 'queued')`
   } catch (e) {
     if ((e as { code?: string })?.code === '42P01') return { ...NONE, status: 'unavailable' }
     throw e

@@ -1,5 +1,5 @@
 import type { CaptionStyle, CornerStyle } from './types'
-import type { ProgressBar } from './brandKit'
+import { cleanBrandKitData, type BrandKitData, type ProgressBar } from './brandKit'
 
 // A clip's brand kit, on or off (user, 2026-10-19): what the editor keeps (modules/editor/brandState.ts)
 // and the clip saves (clips.brand). Shared so the server can check what it saves.
@@ -9,8 +9,8 @@ export interface FrameBefore {
   /** The layout it was branded as (a new layout picked there gets branded again) */
   layout: string
   band: { bg: string; color: string }
-  /** Its text items' colours */
-  items: Record<string, { color?: string | null; bg?: string | null }>
+  /** Its text items' colours, and their font (absent on frames branded before fonts were kept) */
+  items: Record<string, { color?: string | null; bg?: string | null; font?: string | null }>
   main_corners?: Record<string, CornerStyle> | null
   /** Items' own corners (photos and videos in its slots) */
   item_corners?: Record<string, CornerStyle | null>
@@ -20,7 +20,8 @@ export interface FrameBefore {
 }
 
 export interface BrandBefore {
-  texts: Record<string, { font: string | null; color: string | null }>
+  /** Each text's font, colour and size before (size: absent on clips branded before it was kept) */
+  texts: Record<string, { font: string | null; color: string | null; size?: number | null }>
   caption: Partial<CaptionStyle> | null
   text_case: string | null
   progress_bar: ProgressBar | null
@@ -33,6 +34,12 @@ export interface BrandOn {
   kit_id: string
   /** null: on since the clip was made (its default kit), nothing to put back but what the brand adds */
   before: BrandBefore | null
+  /**
+   * The kit's settings as they were when the clip last took them (brand engine, updateBrand): when the
+   * kit has changed since, the clip follows it. Absent on clips branded before this was kept: the
+   * editor takes the kit as it is then, and follows it from there.
+   */
+  applied?: BrandKitData | null
 }
 
 /** A saved clip's brand state made safe (clips.brand); null when off or not one */
@@ -41,8 +48,10 @@ export function cleanBrandOn(raw: unknown): BrandOn | null {
   const r = raw as { kit_id?: unknown; before?: unknown }
   if (typeof r.kit_id !== 'string' || !/^[0-9a-f-]{36}$/i.test(r.kit_id)) return null
   const b = r.before && typeof r.before === 'object' ? r.before as Partial<BrandBefore> : null
+  const applied = (raw as { applied?: unknown }).applied
   return {
     kit_id: r.kit_id.toLowerCase(),
+    applied: applied && typeof applied === 'object' ? cleanBrandKitData(applied) : null,
     before: b ? {
       texts: b.texts && typeof b.texts === 'object' ? b.texts : {},
       caption: b.caption && typeof b.caption === 'object' ? b.caption : null,
