@@ -210,7 +210,7 @@ export async function trackSubjects(userId: string, clipId: string, body: { star
           AND payload->>'auto' IS NULL AND payload->>'angles' IS NULL LIMIT 1
       `
       if (!waiting) {
-        await sql`INSERT INTO jobs (type, payload, status) VALUES ('track_subjects', ${sql.json({ clip_id: clipId, start_ms: Math.round(start), end_ms: Math.round(end) })}, 'queued')`
+        await sql`INSERT INTO jobs (type, payload, status) VALUES ('track_subjects', ${sql.json({ clip_id: clipId, start_ms: Math.round(start), end_ms: Math.round(end), user_id: userId })}, 'queued')`
       }
     }
     return await sql<Subject[]>`SELECT ${pick(await extras())} FROM clip_subjects WHERE clip_id = ${clipId} ORDER BY created_at`
@@ -297,7 +297,7 @@ export async function scanAngles(userId: string, clipId: string, body: { start_m
       RETURNING clip_id
     `
     if (queued) {
-      await sql`INSERT INTO jobs (type, payload, status) VALUES ('track_subjects', ${sql.json({ clip_id: clipId, start_ms: Math.round(start), end_ms: Math.round(end), angles: true })}, 'queued')`
+      await sql`INSERT INTO jobs (type, payload, status) VALUES ('track_subjects', ${sql.json({ clip_id: clipId, start_ms: Math.round(start), end_ms: Math.round(end), angles: true, user_id: userId })}, 'queued')`
     }
   } catch (e) {
     if ((e as { code?: string })?.code === '42P01') return { ...NO_ANGLES, status: 'unavailable' }
@@ -404,7 +404,7 @@ export async function startSubEdit(userId: string, clipId: string): Promise<SubE
   const now = await subEditStatus(userId, clipId)
   if (now.status === 'queued' || now.status === 'processing') return now
   try {
-    await sql`INSERT INTO jobs (type, payload, status) VALUES ('track_subjects', ${sql.json({ clip_id: clipId, start_ms: Number(clip.start_ms), end_ms: Number(clip.end_ms), auto: true })}, 'queued')`
+    await sql`INSERT INTO jobs (type, payload, status) VALUES ('track_subjects', ${sql.json({ clip_id: clipId, start_ms: Number(clip.start_ms), end_ms: Number(clip.end_ms), auto: true, user_id: userId })}, 'queued')`
   } catch (e) {
     // An older database that doesn't allow this kind of job yet
     if ((e as { code?: string })?.code === '23514') {
