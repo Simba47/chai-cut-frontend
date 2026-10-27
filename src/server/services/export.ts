@@ -23,7 +23,10 @@ export async function queueRender(userId: string, clipId: string, quality: Rende
 
   const { getUserPlanConfig } = await import('./quota')
   const plan = await getUserPlanConfig(userId)
-  const payload = { clip_id: clipId, video_storage_path: row.storage_path, quality, watermark: plan.watermark }
+  // user_id: the worker's fair limits (exports one person runs at once); priority: the top plan's
+  // exports go to the front of the line
+  const payload = { clip_id: clipId, video_storage_path: row.storage_path, quality, watermark: plan.watermark, user_id: userId,
+    ...(plan.priorityExports ? { priority: true } : {}) }
   if (retranscribe && plan.autoCaption) {
     try {
       const { queueRetranscribe } = await import('./transcribe')
