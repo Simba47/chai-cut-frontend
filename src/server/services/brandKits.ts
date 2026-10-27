@@ -37,10 +37,26 @@ async function signLogo(path: string | null): Promise<string | null> {
 type Row = { id: string; name: string; data: unknown }
 /** A kit as the editor gets it. `ownerId`: whose kit it is (its files are theirs); `sharedBy`: shared with this user by them */
 async function toKit(row: Row, ownerId: string, sharedBy: string | null = null): Promise<BrandKit> {
-  const data = cleanBrandKitData(row.data, ownerId)
+  const data = await usableEnds(cleanBrandKitData(row.data, ownerId), ownerId, sharedBy !== null)
   // (someone else's default is not this user's)
   if (sharedBy !== null) data.is_default = false
   return { id: row.id, name: row.name, data, logo_url: await signLogo(data.logo.path), ...(sharedBy !== null ? { shared_by: sharedBy } : {}) }
+}
+
+/**
+ * A kit's intro and outro as the user can have them on their clips (brand kit Phase 4): their own
+ * videos still in their library. A shared kit's are its owner's videos — a clip can't show another
+ * user's video (saveClip refuses it) — so the people it's shared with get none.
+ */
+export async function usableEnds(data: BrandKitData, ownerId: string, shared: boolean): Promise<BrandKitData> {
+  const { intro, outro } = data.ends
+  if (!intro && !outro) return data
+  const ids = shared ? [] : [intro?.id, outro?.id].filter((x): x is string => !!x)
+  const have = new Set(ids.length
+    ? (await sql<{ id: string }[]>`SELECT id FROM videos WHERE id = ANY(${ids}) AND user_id = ${ownerId}`.catch(() => [])).map(r => r.id)
+    : [])
+  const keep = (v: typeof intro) => (v && have.has(v.id) ? v : null)
+  return { ...data, ends: { ...data.ends, intro: keep(intro), outro: keep(outro) } }
 }
 
 /** Is the sharing table there yet (the backend makes it when it starts)? */

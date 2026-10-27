@@ -143,6 +143,26 @@ export interface TimelineProps {
   onPhotoTimeChange?: (id: string, updates: { start_ms: number; end_ms: number }) => void
   zoom?: number
   onZoomChange?: (z: number) => void
+  /**
+   * Several things picked at once (as in Resolve): videos and photos on rows, text, music — by
+   * dragging a box over them from an empty spot, or Ctrl / Shift + click. Dragged, they move together;
+   * Delete takes them all. The main video's own parts aren't among them (that row closes up).
+   */
+  groupSel?: string[]
+  onGroupSel?: (ids: string[]) => void
+  /** Groups made (as Resolve's Link Clips): a click on any member picks them all; Alt + click one alone */
+  groups?: string[][]
+  /** What's picked made one group / its groups undone (the right-click menu; Ctrl+G, Ctrl+Shift+G) */
+  onGroup?: () => void
+  onUngroup?: () => void
+  /**
+   * What's picked together carried up or down: every member of that kind of row (videos, photos and
+   * text: 'visual'; music: 'audio') `delta` rows (+: further from the bottom for visual rows, further
+   * down for music) — the editor refuses if anything else is in the way there
+   */
+  onGroupRows?: (ids: string[], delta: number, family: 'visual' | 'audio') => void
+  /** The main video's parts among what's picked, carried along: each goes exactly there (or none, if one has no room) */
+  onGroupParts?: (moves: { id: string; startMs: number }[]) => void
 }
 
 /** What the + adds (at the playhead) */
@@ -236,6 +256,7 @@ export function Timeline({
   onAddKind, cutJoins = [], isStock, onDropFiles, onDropStock, onDropMedia,
   mainMuted = false, onToggleMainMute, laneCtl, onLaneCtl, captionRow, onCaptionLineClick, onSelectCaptionRange, transitions = [], focusCut = null, onOpenTransition, onRemoveTransition, onApplyTransitionToAll, onDropTransition,
   onTrackDrop, belowRows = 0, onMovePart, onPlacePart, onPartToTrack, onShotToMain, maxMs, pickedSegmentId = null, selectedId, onPickSegment,
+  groupSel = [], onGroupSel, groups = [], onGroup, onUngroup, onGroupRows, onGroupParts,
 }: TimelineProps) {
   const viewRef = useRef<HTMLDivElement>(null)        // what shows (the playhead sits in its middle)
   const contentRef = useRef<HTMLDivElement>(null)     // the layer that slides under it
@@ -261,6 +282,8 @@ export function Timeline({
   }, [grown])
   /** While a grip is dragged the timeline keeps its scale (the clip's length changes under it) */
   const [frozenDur, setFrozenDur] = useState<number | null>(null)
+  /** While something is carried along (carryAlong): the scale it started at (px per ms) */
+  const carryScaleRef = useRef<number | null>(null)
   const [brollGhost, setBrollGhost] = useState<{ id: string; start: number; end: number } | null>(null)
   /** A bar dragged by its body: it follows the pointer up and down too (it lands on the row it's let go
    *  over), and its new time shows over the timeline */
@@ -340,7 +363,9 @@ export function Timeline({
   const base = Math.max(120, viewW - PAD * 2)
   // (media dragged in past the end: the timeline grows to show all of it, as for a bar carried there)
   const scaleDur = Math.max(1, frozenDur ?? Math.max(duration, dropReach ?? 0))
-  const pxPerMs = (zoom * base) / scaleDur
+  // (while something is carried the scale is held exactly as it was: nothing — the clip growing, the
+  // view's own width — changes it under the pointer)
+  const pxPerMs = carryScaleRef.current ?? (zoom * base) / scaleDur
   const viewDur = Math.max(duration, frozenDur ?? 0, dropReach ?? 0, 1)
   const contentW = viewDur * pxPerMs
   const pct = (ms: number) => (ms / viewDur) * 100
@@ -354,8 +379,8 @@ export function Timeline({
   const freezeRef = useRef<number | null>(null)
   /** When the view was last scrolled by hand: it doesn't follow the playhead right after */
   const handScrollAt = useRef(0)
-  const geoRef = useRef({ viewW, pxPerMs, contentW })
-  geoRef.current = { viewW, pxPerMs, contentW }
+  const geoRef = useRef({ viewW, pxPerMs, contentW, duration })
+  geoRef.current = { viewW, pxPerMs, contentW, duration }
   const maxScroll = () => Math.max(0, geoRef.current.contentW - (geoRef.current.viewW - PAD * 2))
   const clampScroll = (x: number) => Math.max(0, Math.min(maxScroll(), x))
   const place = useCallback(() => {
@@ -396,16 +421,17 @@ export function Timeline({
     place()
   }, [pxPerMs]) // eslint-disable-line react-hooks/exhaustive-deps
 
+  // (from the layer's place and the scale as they are now — a drag keeps calling these while the clip
+  // grows under it, so never this render's length: the time under the pointer would drift back)
   function msFromClientX(clientX: number): number {
-    const rect = trackRef.current?.getBoundingClientRect()
-    if (!rect || rect.width <= 0) return 0
-    return Math.max(0, Math.min(((clientX - rect.left) / rect.width) * viewDur, duration))
+    return Math.min(rawMsFromClientX(clientX), geoRef.current.duration)
   }
   /** As msFromClientX, but not stopped at the timeline's end (a video on top can be taken past it) */
   function rawMsFromClientX(clientX: number): number {
     const rect = trackRef.current?.getBoundingClientRect()
-    if (!rect || rect.width <= 0) return 0
-    return Math.max(0, ((clientX - rect.left) / rect.width) * viewDur)
+    const k = geoRef.current.pxPerMs
+    if (!rect || rect.width <= 0 || !(k > 0)) return 0
+    return Math.max(0, (clientX - rect.left) / k)
   }
   const msPerPx = () => 1 / Math.max(1e-9, pxPerMs)
 
@@ -469,12 +495,267 @@ export function Timeline({
     const t = msFromClientX(clientX)
     return mains.find(m => t >= m.start_ms && t < m.end_ms) ?? null
   }
+  // ── Several picked at once (as in Resolve): a box dragged from an empty spot, Ctrl / Shift + click ──
+  const groupSet = new Set(groupSel)
+  /** The made group `id` is in (its members still on the timeline), if any */
+  const madeGroupOf = (id: string) => {
+    const g = groups.find(x => x.includes(id))
+    return g ? g.filter(x => !!groupItem(x)) : null
+  }
+  /** Ids with every member of their made groups added */
+  const withMade = (ids: string[]) => [...new Set(ids.flatMap(id => madeGroupOf(id) ?? [id]))]
+  /** The right-click menu on picked things: group / ungroup / where (screen px) */
+  const [groupMenu, setGroupMenu] = useState<{ x: number; y: number; canGroup: boolean; canUngroup: boolean; n: number } | null>(null)
+  type GroupItem = { id: string; kind: 'shot' | 'photo' | 'text' | 'music' | 'part'; start: number; end: number; track: number }
+  /** What a picked id is on the timeline (null: nothing that can be one of a group) */
+  const groupItem = (id: string): GroupItem | null => {
+    const sg = brolls.find(x => x.id === id)
+    if (sg) return sg.locked ? null : { id, kind: 'shot', start: sg.start_ms, end: sg.end_ms, track: sg.track ?? 0 }
+    const ph = photos.find(x => x.id === id)
+    if (ph) return ph.locked ? null : { id, kind: 'photo', start: ph.start_ms, end: ph.end_ms, track: ph.track ?? 0 }
+    const o = textOverlays.find(x => x.id === id)
+    if (o) return o.locked ? null : { id, kind: 'text', start: o.start_ms, end: o.end_ms, track: o.track ?? 0 }
+    const m = musicTracks.find(x => x.id === id)
+    if (m) return m.locked || m.original ? null : { id, kind: 'music', start: m.start_ms, end: musicEnd(m), track: m.track ?? 0 }
+    // A part of the main video (not the room after it, not an empty stretch): it moves only along its row
+    const mp = mains.find(x => x.id === id)
+    if (mp) return mp.locked || !onGroupParts || isTailPart(mp) || isGapPart(mp, mainVideoId) ? null : { id, kind: 'part', start: mp.start_ms, end: mp.end_ms, track: 0 }
+    return null
+  }
+  /** Which rows a picked thing moves up and down among (a part of the main video: none) */
+  const familyOf = (k: GroupItem['kind']) => (k === 'music' ? 'audio' as const : k === 'part' ? null : 'visual' as const)
+  /**
+   * While picked things are carried: how far along (px: for the main video's parts, which move on
+   * release) and how far up or down the ones of the grabbed one's kind of row go (px, and in rows)
+   */
+  const [groupShift, setGroupShift] = useState<{ dx: number; dy: number; rows: number; family: 'visual' | 'audio' | null } | null>(null)
+  /** The one thing picked on its own now, if it can join a group (Ctrl-click a second thing: both are picked) */
+  const pickedAlone = () => viewRef.current?.querySelector('.tl2-bar[data-sel][data-pick]:not([data-group]), .tl2-block[data-selected][data-pick]:not([data-group])')?.getAttribute('data-item-id') ?? null
+  /**
+   * A press on a bar, before the bar's own handling: Ctrl / Shift / ⌘ + click adds it to the picked
+   * ones or takes it off; pressed while one of several picked, the group is carried. True: handled here.
+   */
+  function groupPointer(e: React.PointerEvent, id: string, kind: string): boolean {
+    if (!onGroupSel || e.button !== 0 || kind === 'frame') return false
+    if (e.shiftKey || e.ctrlKey || e.metaKey) {
+      e.stopPropagation(); e.preventDefault()
+      if (!groupItem(id)) return true
+      const base = groupSel.length ? groupSel : withMade([pickedAlone()].filter((x): x is string => !!x && x !== id))
+      // (a member of a made group: the whole group comes and goes together)
+      const these = e.altKey ? [id] : madeGroupOf(id) ?? [id]
+      const next = base.includes(id) ? base.filter(x => !these.includes(x)) : [...new Set([...base, ...these])]
+      onPickSegment?.(null)
+      onGroupSel(next.length > 1 ? next : [])
+      // (one left: it's simply the one picked)
+      if (next.length === 1) pickOne(next[0])
+      return true
+    }
+    if (groupSet.has(id) && groupSel.length > 1) { handleGroupDown(e, id); return true }
+    // A member of a made group (no Alt: Alt + click picks it alone, to trim it): the whole group is
+    // picked, and a drag carries it at once
+    const made = !e.altKey ? madeGroupOf(id) : null
+    if (made && made.length > 1) {
+      onPickSegment?.(null)
+      onGroupSel(made)
+      handleGroupDown(e, id, made)
+      return true
+    }
+    // (a plain click on something else: just that one is picked, as before)
+    if (groupSel.length) onGroupSel([])
+    return false
+  }
+  /** One thing picked the usual way (its own row's pick) */
+  function pickOne(id: string) {
+    const it = groupItem(id)
+    if (!it) return
+    if (it.kind === 'shot' || it.kind === 'part') onPickSegment?.(id)
+    else if (it.kind === 'photo') onSelectPhoto?.(id)
+    else if (it.kind === 'text') onSelectTextOverlay?.(id)
+    else onSelectMusic?.(id)
+  }
+  /**
+   * The picked ones carried together (as in Resolve): along the timeline they keep their places to each
+   * other, never start before the clip or (but music) are held at its end, and the group's start or end
+   * clicks onto the edges of what isn't in it. Up or down, the ones on the grabbed one's kind of row
+   * (videos, photos and text; or music) go as many rows as it does — onto other rows, or a new one on
+   * top. The main video's parts go along their row only, placed on release. Not moved: a click — just
+   * that one is picked.
+   */
+  function handleGroupDown(e: React.PointerEvent, id: string, ids: string[] = groupSel) {
+    e.stopPropagation(); e.preventDefault()
+    const items = ids.map(groupItem).filter((x): x is GroupItem => !!x)
+    const inIt = new Set(ids)
+    if (!items.length) return
+    // (how far is measured on the timeline, not the screen: it holds while the timeline scrolls along)
+    const sx = e.clientX, k = msPerPx(), t0 = rawMsFromClientX(sx)
+    const first = Math.min(...items.map(x => x.start)), last = Math.max(...items.map(x => x.end))
+    const room = Math.max(duration, maxMs ?? duration)
+    let lo = -first
+    // (music stays within the clip; videos, photos and text on top can go on past its end)
+    let hi = Math.min(...items.map(x => (x.kind === 'music' ? duration : room) - x.end))
+    // The main video's parts among them stop at the parts of the main video that aren't (empty
+    // stretches and the room after the row are free): the whole group stops with them, so it all
+    // moves or none of it does
+    const solid = mains.filter(m => !inIt.has(m.id) && !isTailPart(m) && !isGapPart(m, mainVideoId))
+    for (const it of items) {
+      if (it.kind !== 'part') continue
+      const before = solid.filter(m => m.end_ms <= it.start + 1).reduce((a, m) => Math.max(a, m.end_ms), 0)
+      const after = solid.filter(m => m.start_ms >= it.end - 1).reduce((a, m) => Math.min(a, m.start_ms), Infinity)
+      lo = Math.max(lo, before - it.start)
+      hi = Math.min(hi, after - it.end)
+    }
+    const others = [0, duration, ...cutJoins,
+      ...segments.filter(s => !inIt.has(s.id)).flatMap(s => [s.start_ms, s.end_ms]),
+      ...photos.filter(p => !inIt.has(p.id)).flatMap(p => [p.start_ms, p.end_ms]),
+      ...textOverlays.filter(o => !inIt.has(o.id)).flatMap(o => [o.start_ms, o.end_ms]),
+      ...musicTracks.filter(m => !inIt.has(m.id)).flatMap(m => [m.start_ms, musicEnd(m)])]
+    let moved = false, d = 0, rows = 0
+    const sy = e.clientY
+    // Up or down: the rows of the grabbed one's kind, measured as they're drawn
+    const grabbed = items.find(x => x.id === id)
+    const family = grabbed ? familyOf(grabbed.kind) : null
+    const homeRow = (e.currentTarget as Element | null)?.closest?.('[data-track-row]') as HTMLElement | null
+    const lowest = family ? Math.min(...items.filter(x => familyOf(x.kind) === family).map(x => x.track)) : 0
+    const rowsAt = (y: number): { rows: number; dy: number } => {
+      if (!family || !homeRow || !grabbed || !onGroupRows) return { rows: 0, dy: 0 }
+      const list = [...(viewRef.current?.querySelectorAll<HTMLElement>(`[data-track-row="${family}"]`) ?? [])]
+      const home = homeRow.getBoundingClientRect()
+      if (!list.length) return { rows: 0, dy: 0 }
+      // (above the top row of videos, photos and text: a new row over them all)
+      const top = list.reduce((a, b) => (b.getBoundingClientRect().top < a.getBoundingClientRect().top ? b : a))
+      const tb = top.getBoundingClientRect()
+      if (family === 'visual' && y < tb.top - ROW_GAP) {
+        const maxT = Math.max(...list.map(r => Number(r.dataset.track)))
+        return { rows: maxT + 1 - grabbed.track, dy: tb.top - tb.height - ROW_GAP - home.top }
+      }
+      let best = homeRow, bestD = Infinity
+      for (const r of list) {
+        const b = r.getBoundingClientRect()
+        const dd = y < b.top ? b.top - y : y > b.bottom ? y - b.bottom : 0
+        if (dd < bestD) { best = r; bestD = dd }
+      }
+      const n = Number(best.dataset.track) - grabbed.track
+      // (none below the lowest row: the group stops where its lowest member is on row 0)
+      if (n < -lowest) {
+        const floor = list.find(r => Number(r.dataset.track) === grabbed.track - lowest)
+        return floor ? { rows: -lowest, dy: floor.getBoundingClientRect().top - home.top } : { rows: 0, dy: 0 }
+      }
+      return { rows: n, dy: best.getBoundingClientRect().top - home.top }
+    }
+    setDragging(`group-${id}`)
+    const parts = items.filter(x => x.kind === 'part')
+    const apply = (done: boolean) => {
+      for (const it of items) {
+        const s = Math.round(it.start + d), en = Math.round(it.end + d)
+        if (it.kind === 'part') continue
+        if (it.kind === 'shot') onBrollChange?.(it.id, s, en, done)
+        else if (done) continue
+        else if (it.kind === 'photo') onPhotoTimeChange?.(it.id, { start_ms: s, end_ms: en })
+        else if (it.kind === 'text') onTextOverlayUpdate?.(it.id, { start_ms: s, end_ms: en })
+        else onMusicMove?.(it.id, s)
+      }
+    }
+    track(ev => {
+      if (!moved && Math.abs(ev.clientX - sx) < 3 && Math.abs(ev.clientY - sy) < 3) return
+      moved = true
+      let want = Math.max(lo, Math.min(hi, rawMsFromClientX(ev.clientX) - t0))
+      // (the group's start or end onto another thing's edge, whichever is nearer)
+      if (!ev.altKey) {
+        const tol = SNAP_PX * k
+        let best: { dd: number; at: number } | null = null
+        for (const x of others) for (const edge of [first, last]) {
+          const dd = x - edge
+          if (Math.abs(dd - want) < tol && (!best || Math.abs(dd - want) < Math.abs(best.dd - want))) best = { dd, at: x }
+        }
+        if (best && best.dd >= lo && best.dd <= hi) { want = best.dd; setSnapLine(best.at) } else setSnapLine(null)
+      }
+      d = want
+      apply(false)
+      const v = rowsAt(ev.clientY)
+      rows = v.rows
+      setGroupShift({ dx: d * geoRef.current.pxPerMs, dy: v.dy, rows, family })
+    }, () => {
+      setGroupShift(null)
+      if (moved) {
+        apply(true)
+        if (rows !== 0 && family) onGroupRows?.(items.filter(x => familyOf(x.kind) === family).map(x => x.id), rows, family)
+        if (parts.length && Math.round(d) !== 0) onGroupParts?.(parts.map(p => ({ id: p.id, startMs: Math.round(p.start + d) })))
+        return
+      }
+      // A click on one of a made group: the group stays picked. Of a group picked only for now:
+      // just that one, picked the usual way
+      if (madeGroupOf(id)?.length) return
+      onGroupSel?.([])
+      pickOne(id)
+    }, true)
+  }
+  /**
+   * Right-click on something that can be grouped: picked first if it wasn't (with its made group),
+   * then a menu — Group what's picked, Ungroup it
+   */
+  function openGroupMenu(e: React.MouseEvent, id: string) {
+    e.preventDefault(); e.stopPropagation()
+    let ids = groupSel
+    if (!groupSet.has(id)) {
+      ids = madeGroupOf(id) ?? [id]
+      onPickSegment?.(null)
+      if (ids.length > 1) onGroupSel?.(ids); else { onGroupSel?.([]); pickOne(id) }
+    }
+    const inMade = ids.some(x => madeGroupOf(x)?.length)
+    const oneMade = inMade && ids.every(x => madeGroupOf(ids[0])?.includes(x)) && madeGroupOf(ids[0])!.length === ids.length
+    setGroupMenu({ x: e.clientX, y: e.clientY, canGroup: ids.length > 1 && !oneMade, canUngroup: inMade, n: ids.length })
+  }
+  /** The box being dragged out (screen px), to draw it */
+  const [box, setBox] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null)
+  /**
+   * A press on an empty spot of the rows: dragged, a box is drawn and everything it touches is picked
+   * (Ctrl / Shift / ⌘: added to what's picked); not dragged, a click — the playhead goes there, as
+   * before, and what was picked is let go
+   */
+  function beginBox(e: React.PointerEvent) {
+    e.preventDefault()
+    const add = e.shiftKey || e.ctrlKey || e.metaKey
+    const base = add ? (groupSel.length ? groupSel : [pickedAlone()].filter((x): x is string => !!x)) : []
+    const sx = e.clientX, sy = e.clientY
+    let moved = false, last = ''
+    if (!add) onPickSegment?.(null)
+    track(ev => {
+      if (!moved && Math.hypot(ev.clientX - sx, ev.clientY - sy) < 5) return
+      moved = true
+      const r = { x0: Math.min(sx, ev.clientX), y0: Math.min(sy, ev.clientY), x1: Math.max(sx, ev.clientX), y1: Math.max(sy, ev.clientY) }
+      setBox(r)
+      const hits = [...(viewRef.current?.querySelectorAll<HTMLElement>('.tl2-bar[data-pick][data-item-id], .tl2-block[data-pick][data-item-id]') ?? [])].filter(el => {
+        const b = el.getBoundingClientRect()
+        return b.right >= r.x0 && b.left <= r.x1 && b.bottom >= r.y0 && b.top <= r.y1
+      }).map(el => el.getAttribute('data-item-id')!)
+      const next = withMade([...new Set([...base, ...hits])])
+      const key = next.join(',')
+      if (key === last) return
+      last = key
+      if (next.length > 1) { onPickSegment?.(null); onGroupSel?.(next) }
+      else { onGroupSel?.([]); if (next.length === 1) pickOne(next[0]) }
+    }, () => {
+      setBox(null)
+      if (moved) return
+      if (!add) onGroupSel?.([])
+      onScrubStart?.()
+      scrubTo(msFromClientX(sx), !e.altKey)
+    })
+  }
+
   function handleScrubDown(e: React.PointerEvent) {
     if (e.button !== 0) return
     // The block under the finger (a very short part is drawn a little wider than its time: it is
     // still the one picked), else the part at that time on the main row
     const blockEl = (e.target as Element | null)?.closest?.('.tl2-block[data-part]')
     const hit = blockEl ? mains[Number(blockEl.getAttribute('data-part')) - 1] ?? null : partAt(e.clientX, e.clientY)
+    // An empty spot of the rows (not the ruler, which always moves the playhead): a click there moves
+    // the playhead, a drag draws a box that picks what it touches (beginBox)
+    const onRuler = (e.currentTarget as Element).classList?.contains('tl2-ruler')
+    if (onGroupSel && !onRuler && (!hit || isTailPart(hit) || isGapPart(hit, mainVideoId))) { beginBox(e); return }
+    // A part of the main video picked with others (Ctrl / Shift + click, one of those picked, one of a group)
+    if (hit && !onRuler && groupItem(hit.id) && groupPointer(e, hit.id, 'part')) return
+    if (groupSel.length) onGroupSel?.([])
     // On the main row: that part is picked. Anywhere else (the ruler, an empty spot): nothing is —
     // a click outside the selected part lets go of it (the playhead still moves there)
     onPickSegment?.(hit && !isTailPart(hit) && !isGapPart(hit, mainVideoId) ? hit.id : null)
@@ -565,7 +846,7 @@ export function Timeline({
       // (let go over itself: it stays)
       if (to > seg.start_ms && to < seg.end_ms) return
       onMovePart?.(seg.id, to)
-    })
+    }, true)
   }
   /** A video put in the main row (not a part of the main video itself) */
   const isInsertPart = (s: SegmentLocal) => s.video_offset_ms != null && !!s.crop_boxes[0]?.source_video_id
@@ -747,14 +1028,58 @@ export function Timeline({
     setSnapLine(null)
     return st
   }
-  function track(move: (ev: PointerEvent) => void, done?: () => void) {
+  /**
+   * Something carried along the timeline (a bar, a part, a group): the timeline holds its scale and its
+   * place meanwhile — the clip getting longer under it doesn't shrink everything away from the pointer —
+   * and held near either edge it scrolls along, the carried thing following (`move` again with the last
+   * pointer), as far as it goes: no letting go and picking up again. Settles once it's let go.
+   */
+  function carryAlong(move: (ev: PointerEvent) => void) {
+    freezeRef.current = currentTx()
+    carryScaleRef.current = geoRef.current.pxPerMs
+    setFrozenDur(duration)
+    const vr = viewRef.current?.getBoundingClientRect()
+    let last: PointerEvent | null = null, raf = 0
+    const tick = () => {
+      raf = 0
+      if (!last || !vr || freezeRef.current == null) return
+      const zone = 56, x = last.clientX
+      const v = x < vr.left + zone ? vr.left + zone - x : x > vr.right - zone ? -(x - (vr.right - zone)) : 0
+      if (v !== 0) {
+        // (faster the nearer the edge — and past it)
+        const step = Math.max(-28, Math.min(28, v * 0.4))
+        // (on past the clip's end, into the room after it — up to the longest a clip can be: what's
+        // carried there makes the clip longer behind it)
+        const { pxPerMs: kk, viewW: w, duration: len } = geoRef.current
+        const far = Math.max(maxScroll(), Math.max(len, maxMs ?? 0) * kk - (w - PAD * 2))
+        const next = Math.max(PAD - far, Math.min(PAD, freezeRef.current + step))
+        if (next !== freezeRef.current) { freezeRef.current = next; place(); move(last) }
+      }
+      raf = requestAnimationFrame(tick)
+    }
+    return {
+      /** The pointer moved: where it is now */
+      at(ev: PointerEvent) { last = ev; if (!raf) raf = requestAnimationFrame(tick) },
+      stop() {
+        if (raf) cancelAnimationFrame(raf)
+        raf = 0; last = null
+        carryScaleRef.current = null
+        setFrozenDur(null)
+        unfreeze()
+      },
+    }
+  }
+  function track(move: (ev: PointerEvent) => void, done?: () => void, carry = false) {
+    const along = carry ? carryAlong(move) : null
     const up = () => {
-      window.removeEventListener('pointermove', onMove); window.removeEventListener('pointerup', up)
+      window.removeEventListener('pointermove', onMove); window.removeEventListener('pointerup', up); window.removeEventListener('pointercancel', up)
+      along?.stop()
       setDragging(null); setSnapLine(null); setLift(null); done?.()
     }
-    const onMove = (ev: PointerEvent) => { noSnapRef.current = ev.altKey; move(ev) }
+    const onMove = (ev: PointerEvent) => { noSnapRef.current = ev.altKey; move(ev); along?.at(ev) }
     window.addEventListener('pointermove', onMove)
     window.addEventListener('pointerup', up)
+    window.addEventListener('pointercancel', up)
   }
   function hoverTrack(ev: PointerEvent, family: 'visual' | 'audio', current: number) {
     const rows = [...(viewRef.current?.querySelectorAll<HTMLElement>(`[data-track-row="${family}"]`) ?? [])]
@@ -824,7 +1149,11 @@ export function Timeline({
     let moved = false, overMain: number | null = null
     let next = { start: seg.start_ms, end: seg.end_ms }
     setDragging(`broll-${part}-${seg.id}`)
+    // (carried: the timeline holds its scale and scrolls along at its edges — carryAlong)
+    // eslint-disable-next-line prefer-const
+    let along: ReturnType<typeof carryAlong> | null = null
     const move = (ev: PointerEvent) => {
+      along?.at(ev)
       if (!moved && Math.abs(ev.clientX - sx) < 3 && Math.abs(ev.clientY - sy) < 3) return
       moved = true
       noSnapRef.current = ev.altKey
@@ -849,9 +1178,12 @@ export function Timeline({
       else next = { start: seg.start_ms, end: Math.min(maxEnd, Math.max(seg.start_ms + 500, snapEdgeAt(t, seg.id))) }
       onBrollChange?.(seg.id, Math.round(next.start), Math.round(next.end), false)
     }
+    if (part === 'body') along = carryAlong(ev => { const a = along; along = null; move(ev); along = a })
     const up = () => {
       window.removeEventListener('pointermove', move)
       window.removeEventListener('pointerup', up)
+      window.removeEventListener('pointercancel', up)
+      along?.stop()
       setDragging(null); setBrollGhost(null); setSnapLine(null); setLift(null); setMainDropAt(null)
       if (!moved) return
       if (overMain != null) { trackHoverRef.current = null; setTrackHover(null); onShotToMain?.(seg.id, overMain, Math.round(next.start)); return }
@@ -860,6 +1192,7 @@ export function Timeline({
     }
     window.addEventListener('pointermove', move)
     window.addEventListener('pointerup', up)
+    window.addEventListener('pointercancel', up)
   }
   /**
    * A video on top trimmed by a grip, as a part of the main video is: the timeline holds still (and
@@ -943,18 +1276,18 @@ export function Timeline({
     e.stopPropagation(); e.preventDefault()
     onSelectMusic?.(m.id)
     if (m.locked) return
-    const k = msPerPx(), sx = e.clientX, sy = e.clientY, len = musicEnd(m) - m.start_ms
+    const sx = e.clientX, sy = e.clientY, len = musicEnd(m) - m.start_ms, t0 = rawMsFromClientX(sx)
     setDragging(`music-${m.id}`)
     let dragged = false
     track(ev => {
       if (!dragged && Math.abs(ev.clientX - sx) < 3 && Math.abs(ev.clientY - sy) < 3) return
       dragged = true
-      const st = Math.round(snapSpanAt(Math.max(0, Math.min(duration - 200, m.start_ms + (ev.clientX - sx) * k)), len))
+      const st = Math.round(snapSpanAt(Math.max(0, Math.min(duration - 200, m.start_ms + rawMsFromClientX(ev.clientX) - t0)), len))
       onMusicMove?.(m.id, st)
       // (the clip's own sound stays on its row: only along)
       setLift({ id: m.id, dy: m.original ? 0 : ev.clientY - sy, start: st, end: Math.min(duration, st + len) })
       if (!m.original) hoverTrack(ev, 'audio', m.track ?? 0)
-    }, () => { if (dragged && !m.original) endTrackDrag({ kind: 'music', id: m.id }, m.track ?? 0) })
+    }, () => { if (dragged && !m.original) endTrackDrag({ kind: 'music', id: m.id }, m.track ?? 0) }, true)
   }
   function handleMusicTrim(e: React.PointerEvent, m: (typeof musicTracks)[number], edge: 'start' | 'end') {
     if (e.button !== 0) return
@@ -972,48 +1305,52 @@ export function Timeline({
     e.stopPropagation(); e.preventDefault()
     onSelectPhoto?.(ph.id)
     if (ph.locked) return
-    const k = msPerPx(), sx = e.clientX, sy = e.clientY, len = ph.end_ms - ph.start_ms
+    const sx = e.clientX, sy = e.clientY, len = ph.end_ms - ph.start_ms, t0 = rawMsFromClientX(sx)
+    // (past the clip's end too, as a video on top: the editor makes room after it, up to `maxMs`)
+    const room = Math.max(duration, maxMs ?? duration)
     setDragging(`photo-${ph.id}`)
     let dragged = false
     track(ev => {
       if (!dragged && Math.abs(ev.clientX - sx) < 3 && (part !== 'body' || Math.abs(ev.clientY - sy) < 3)) return
       dragged = true
-      const d = (ev.clientX - sx) * k
+      const d = rawMsFromClientX(ev.clientX) - t0
       if (part === 'body') {
-        const st = Math.round(snapSpanAt(Math.max(0, Math.min(duration - len, ph.start_ms + d)), len))
-        onPhotoTimeChange?.(ph.id, { start_ms: st, end_ms: Math.min(duration, st + len) })
-        setLift({ id: ph.id, dy: ev.clientY - sy, start: st, end: Math.min(duration, st + len) })
+        const st = Math.round(snapSpanAt(Math.max(0, Math.min(room - len, ph.start_ms + d)), len))
+        onPhotoTimeChange?.(ph.id, { start_ms: st, end_ms: st + len })
+        setLift({ id: ph.id, dy: ev.clientY - sy, start: st, end: st + len })
         hoverTrack(ev, 'visual', ph.track ?? 0)
       } else if (part === 'start') {
         onPhotoTimeChange?.(ph.id, { start_ms: Math.round(Math.max(0, Math.min(ph.end_ms - 200, snapEdgeAt(ph.start_ms + d)))), end_ms: ph.end_ms })
       } else {
-        onPhotoTimeChange?.(ph.id, { start_ms: ph.start_ms, end_ms: Math.round(Math.min(duration, Math.max(ph.start_ms + 200, snapEdgeAt(ph.end_ms + d)))) })
+        onPhotoTimeChange?.(ph.id, { start_ms: ph.start_ms, end_ms: Math.round(Math.min(room, Math.max(ph.start_ms + 200, snapEdgeAt(ph.end_ms + d)))) })
       }
-    }, () => { if (dragged) endTrackDrag({ kind: 'photo', id: ph.id }, ph.track ?? 0) })
+    }, () => { if (dragged) endTrackDrag({ kind: 'photo', id: ph.id }, ph.track ?? 0) }, true)
   }
   function handleTextDrag(e: React.PointerEvent, o: TextOverlay, part: 'body' | 'start' | 'end') {
     if (e.button !== 0) return
     e.stopPropagation(); e.preventDefault()
     onSelectTextOverlay?.(o.id)
     if (o.locked) return
-    const k = msPerPx(), sx = e.clientX, sy = e.clientY, len = o.end_ms - o.start_ms, trackNo = o.track ?? 0
+    const sx = e.clientX, sy = e.clientY, len = o.end_ms - o.start_ms, trackNo = o.track ?? 0, t0 = rawMsFromClientX(sx)
+    // (past the clip's end too, as a video on top: the editor makes room after it, up to `maxMs`)
+    const room = Math.max(duration, maxMs ?? duration)
     setDragging(`text-${o.id}`)
     let dragged = false
     track(ev => {
       if (!dragged && Math.abs(ev.clientX - sx) < 3 && (part !== 'body' || Math.abs(ev.clientY - sy) < 3)) return
       dragged = true
-      const d = (ev.clientX - sx) * k
+      const d = rawMsFromClientX(ev.clientX) - t0
       if (part === 'body') {
-        const st = Math.round(snapSpanAt(Math.max(0, Math.min(duration - len, o.start_ms + d)), len))
-        onTextOverlayUpdate?.(o.id, { start_ms: st, end_ms: Math.min(duration, st + len) })
-        setLift({ id: o.id, dy: ev.clientY - sy, start: st, end: Math.min(duration, st + len) })
+        const st = Math.round(snapSpanAt(Math.max(0, Math.min(room - len, o.start_ms + d)), len))
+        onTextOverlayUpdate?.(o.id, { start_ms: st, end_ms: st + len })
+        setLift({ id: o.id, dy: ev.clientY - sy, start: st, end: st + len })
         hoverTrack(ev, 'visual', trackNo)
       } else if (part === 'start') {
         onTextOverlayUpdate?.(o.id, { start_ms: Math.round(Math.max(0, Math.min(o.end_ms - 200, snapEdgeAt(o.start_ms + d)))) })
       } else {
-        onTextOverlayUpdate?.(o.id, { end_ms: Math.round(Math.min(duration, Math.max(o.start_ms + 200, snapEdgeAt(o.end_ms + d)))) })
+        onTextOverlayUpdate?.(o.id, { end_ms: Math.round(Math.min(room, Math.max(o.start_ms + 200, snapEdgeAt(o.end_ms + d)))) })
       }
-    }, () => { if (dragged) endTrackDrag({ kind: 'text', id: o.id }, trackNo) })
+    }, () => { if (dragged) endTrackDrag({ kind: 'text', id: o.id }, trackNo) }, true)
   }
   function handleFrameItemDown(e: React.PointerEvent, item: FrameItem, mode: 'move' | 'start' | 'end') {
     if (e.button !== 0 || !frameSeg) return
@@ -1195,6 +1532,8 @@ export function Timeline({
     if (isGapPart(seg, mainVideoId)) return null
     return (
       <div key={seg.id} className="tl2-block absolute" data-part={i + 1} data-seg-id={seg.id} data-selected={sel || undefined}
+        data-item-id={seg.id} data-pick={(onGroupSel && groupItem(seg.id)) ? '' : undefined} data-group={groupSet.has(seg.id) || undefined}
+        data-shifted={groupSet.has(seg.id) && groupShift?.dx ? '' : undefined}
         title={`${isInsert ? 'Inserted video' : 'Part'} ${i + 1} · ${name} · ${msToLabel(seg.start_ms)}–${msToLabel(seg.end_ms)} · tap to select it${onMovePart && mains.filter(m => !isTailPart(m)).length > 1 ? ', drag to move it' : ''}`}
         // (a part narrower than it is drawn lies over its neighbours: it can still be tapped)
         style={{
@@ -1202,6 +1541,8 @@ export function Timeline({
           ...(onMovePart && mains.filter(m => !isTailPart(m)).length > 1 && !seg.locked ? { cursor: 'grab' } : {}),
           // (carried: it is drawn over everything instead, following the pointer — blockGhost)
           ...(insertDrag?.id === seg.id ? { opacity: 0, cursor: 'grabbing' } : {}),
+          // (carried along with what's picked with it: drawn where it will go, placed on release)
+          ...(groupSet.has(seg.id) && groupShift?.dx ? { transform: `translateX(${groupShift.dx}px)` } : {}),
         }}>
         {insertDrag?.id === seg.id && blockGhost(seg, insertDrag, name, isInsert, url, box?.source_offset_ms ?? 0, end - start)}
         <div className="absolute inset-0 overflow-hidden" style={{ borderRadius: 8 }}>
@@ -1304,19 +1645,30 @@ export function Timeline({
 
   // ── Bars on the rows: slim, in their kind's colour; selected: taller, with grips ──
   const bar = (key: string, kind: 'video' | 'broll' | 'photo' | 'text' | 'music', start: number, end: number, sel: boolean, on: boolean,
-    st: { hidden?: boolean; muted?: boolean; locked?: boolean }, name: string, onBody: (e: React.PointerEvent) => void,
+    st: { hidden?: boolean; muted?: boolean; locked?: boolean; fixed?: boolean }, name: string, onBody: (e: React.PointerEvent) => void,
     onEdge: ((e: React.PointerEvent, edge: 'start' | 'end') => void) | null, title: string, inside?: React.ReactNode,
     keyTrim?: (edge: 'start' | 'end', deltaMs: number) => void) => {
     const color = MEDIA_COLORS[kind]
     const lifted = lift?.id === key ? lift : null
     const tip = barTip?.id === key ? barTip : null
+    // (one of several picked: ringed as selected, without grips — the group moves as one)
+    const grouped = groupSet.has(key)
+    if (grouped) sel = true
+    // (carried up or down with its group: drawn where it will land)
+    const shifted = grouped && groupShift && groupShift.dy && groupShift.family === (kind === 'music' ? 'audio' : 'visual') ? groupShift.dy : 0
+    const pick = onGroupSel && !st.locked && !st.fixed
+    // (in a made group: a link on it, as Resolve marks linked clips)
+    const linked = pick && !!madeGroupOf(key)?.length
     return (
       <Fragment key={key}>
-      <div className="tl2-bar absolute" data-sel={sel || undefined} data-kind={kind} data-item-id={key} onPointerDown={onBody} title={title}
+      <div className="tl2-bar absolute" data-sel={sel || undefined} data-group={grouped || undefined} data-shifted={shifted ? '' : undefined} data-pick={pick || undefined} data-kind={kind} data-item-id={key}
+        onPointerDown={e => { if (!groupPointer(e, key, kind)) onBody(e) }} title={linked ? `${title} · grouped (Alt + click: this one alone)` : title}
+        onContextMenu={pick && (onGroup || onUngroup) ? e => openGroupMenu(e, key) : undefined}
         style={{
           left: `${at(start)}%`, width: `max(10px, ${pct(end - start)}%)`,
           '--bar-c': color, cursor: st.locked ? 'pointer' : on ? 'grabbing' : 'grab', zIndex: sel ? 3 : 1,
           ...(st.hidden ? { opacity: 0.45 } : {}),
+          ...(shifted ? { transform: `translateY(${shifted}px)` } : {}),
           // (carried: it is drawn over everything instead, following the pointer — liftedGhost)
           ...(lifted ? { opacity: 0, cursor: 'grabbing' } : {}),
         } as React.CSSProperties}>
@@ -1329,6 +1681,11 @@ export function Timeline({
         )}
         <span className="relative flex items-center gap-1 min-w-0 pointer-events-none" style={{ paddingLeft: sel ? GRIP_W - 4 : 2, paddingRight: 6 }}>
           <MediaIcon kind={kind} />
+          {linked && (
+            <svg className="shrink-0" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" aria-label="Grouped">
+              <path d="M10 13a5 5 0 007.5.5l3-3a5 5 0 00-7-7l-1.7 1.7" /><path d="M14 11a5 5 0 00-7.5-.5l-3 3a5 5 0 007 7l1.7-1.7" />
+            </svg>
+          )}
           {kind === 'video' || kind === 'broll'
             ? <BarName id={key} name={name} short={`${kind === 'broll' ? 'B-roll' : 'Video'}${/ · (full screen|window)$/.exec(name)?.[0] ?? ''}`} />
             : <span className="truncate">{name}</span>}
@@ -1336,7 +1693,7 @@ export function Timeline({
           <StateBadges st={st} />
         </span>
         {/* the main video's grips: drag, or ← → (Shift: 1 s) */}
-        {sel && onEdge && !st.locked && (['start', 'end'] as const).map(edge => (
+        {sel && !grouped && onEdge && !st.locked && (['start', 'end'] as const).map(edge => (
           <button key={edge} type="button" className="tl2-grip absolute" data-edge={edge} data-on={dragging?.includes(`-${edge}-${key}`) || undefined}
             onPointerDown={e => { e.stopPropagation(); onEdge(e, edge) }}
             onKeyDown={e => {
@@ -1580,7 +1937,8 @@ export function Timeline({
   const musicBar = (m: (typeof musicTracks)[number]) => {
     const end = musicEnd(m)
     const sel = isSel(m.id, selectedMusicId === m.id)
-    return bar(m.id, 'music', m.start_ms, end, sel, dragging === `music-${m.id}`, m, m.original ? 'Original sound' : m.name,
+    // (the clip's own sound goes with the main video: not one of a group)
+    return bar(m.id, 'music', m.start_ms, end, sel, dragging === `music-${m.id}`, { ...m, fixed: m.original }, m.original ? 'Original sound' : m.name,
       e => handleMusicDrag(e, m), onMusicTrim ? (e, edge) => handleMusicTrim(e, m, edge) : null,
       `${m.original ? 'Original sound' : `Music · ${m.name}`} · ${msToLabel(m.start_ms)}–${msToLabel(end)} · tap to select, drag to move`,
       <Waveform url={m.url} srcKey={m.key} offsetMs={m.offset_ms ?? 0} durationMs={end - m.start_ms} />,
@@ -1711,6 +2069,12 @@ export function Timeline({
         const el = e.target as Element
         if (el.closest?.('[data-tl-head], .tl2-block, .tl2-bar, button, a, input, [role="menu"], [data-lane], [data-keep-selection]')) return
         onPickSegment?.(null)
+        // (the empty room under the rows, in the view: a box can start there too — a click there lets
+        // go of what's picked; elsewhere in the timeline's margins, a click just lets go)
+        // (the room between the rows starts its own box: contentRef's handler)
+        if (contentRef.current?.contains(el)) return
+        if (onGroupSel && viewRef.current?.contains(el)) { beginBox(e); return }
+        if (groupSel.length) onGroupSel?.([])
       }}>
       {/* ── Left column: add, the main video's sound, what each row is ── */}
       <div className="tl2-left relative shrink-0" style={{ width: laneCtl ? LEFT_W_CTL : LEFT_W }} aria-label="Timeline rows">
@@ -1767,6 +2131,28 @@ export function Timeline({
             </>
           )
         })()}
+        {groupMenu && (() => {
+          const close = () => setGroupMenu(null)
+          return (
+            <>
+              <div className="fixed inset-0" style={{ zIndex: 90 }} onClick={close} onContextMenu={e => { e.preventDefault(); close() }} aria-hidden="true" />
+              <div role="menu" aria-label="Group" className="tl2-menu fixed flex flex-col py-1.5"
+                onKeyDown={e => { if (e.key === 'Escape') { e.stopPropagation(); close() } }}
+                ref={el => { if (el && !el.dataset.focused) { el.dataset.focused = '1'; el.querySelector<HTMLElement>('[role="menuitem"]')?.focus({ preventScroll: true }) } }}
+                style={{ zIndex: 91, left: Math.min(groupMenu.x, window.innerWidth - 240), top: Math.min(groupMenu.y + 4, window.innerHeight - 130), minWidth: 220 }}>
+                <span className="tl2-menu-hint px-3 pb-1">{groupMenu.n > 1 ? `${groupMenu.n} picked` : '1 picked — Ctrl + click or drag a box to pick more'}</span>
+                {onGroup && (
+                  <button type="button" role="menuitem" disabled={!groupMenu.canGroup} style={groupMenu.canGroup ? undefined : { opacity: 0.4 }}
+                    onClick={() => { close(); onGroup() }}>Group<span className="tl2-menu-hint ml-auto pl-4">Ctrl+G</span></button>
+                )}
+                {onUngroup && (
+                  <button type="button" role="menuitem" disabled={!groupMenu.canUngroup} style={groupMenu.canUngroup ? undefined : { opacity: 0.4 }}
+                    onClick={() => { close(); onUngroup() }}>Ungroup<span className="tl2-menu-hint ml-auto pl-4">Ctrl+Shift+G</span></button>
+                )}
+              </div>
+            </>
+          )
+        })()}
         {/* "Mute clip audio" (as in CapCut), level with the main row: with the rows' own buttons, the main row's speaker is it */}
         {onToggleMainMute && !laneCtl && mainSpan && (
           <button type="button" className="tl2-mute" data-on={mainMuted || undefined} onClick={onToggleMainMute}
@@ -1809,9 +2195,22 @@ export function Timeline({
       <div className="tl2-frame relative flex-1 min-w-0">
       <div ref={viewRef} className="tl2-view" onScroll={measureLanes}
         onDragOver={onDragOver} onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) { setDropAt(null); setDropCut(null); setDropReach(null) } }} onDrop={onDrop}>
-        <div ref={el => { contentRef.current = el; trackRef.current = el }} className="relative" style={{ width: contentW, willChange: 'transform' }}>
+        <div ref={el => { contentRef.current = el; trackRef.current = el }} className="relative" style={{ width: contentW, willChange: 'transform' }}
+          // (the room between and under the rows: a box can start there too)
+          onPointerDown={e => {
+            const el = e.target as Element
+            if (!onGroupSel || e.button !== 0 || el.closest?.('[data-lane], [data-tl-head], .tl2-bar, .tl2-block, button, [role="menu"]')) return
+            beginBox(e)
+          }}>
           {/* (what's dragged in shows itself where it would go: dropGhost) */}
           {dropAt && dropGhost(dropAt)}
+          {/* The box being dragged out to pick what it touches */}
+          {box && typeof document !== 'undefined' && createPortal(
+            <div className="tl2-pickbox" aria-hidden="true" style={{ left: box.x0, top: box.y0, width: box.x1 - box.x0, height: box.y1 - box.y0 }}>
+              {groupSel.length > 1 && <span>{groupSel.length} picked</span>}
+            </div>,
+            document.body,
+          )}
           {/* The ruler: always at the top, as in Premiere, Resolve and CapCut; every row scrolls under it */}
           <div data-tl-head className="tl2-ruler" style={{ height: RULER_H }} onPointerDown={handleScrubDown}>
               {ticks.map(({ t, major }) => (

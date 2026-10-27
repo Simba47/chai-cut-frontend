@@ -9,7 +9,7 @@ import { cardAreas, cardBackgroundPixels, CARD_PATTERNS, CARD_PATTERN_SCALE, CAR
 import { templateOf, templateFontFamily } from '@/modules/captions/templates'
 import {
   LOGO_SIZE, LOGO_SECONDS, MAX_BRAND_FONTS, PROGRESS_HEIGHT, MAX_KIT_SHARES, CARD_TEXT_SIZE, type BrandCardSettings,
-  brandCaptionStyle, logoBox, showHandle, brandTextStyle, MAX_MORE_CAPTIONS, DEFAULT_BRAND_KIT, type LinkBrand, type BrandTextStyle, type BrandCaptionLook,
+  brandCaptionStyle, logoBox, showHandle, WATERMARK, isWatermark, brandProgressBar, END_CARD_SECONDS, MAX_END_VIDEO_MS, type BrandProgress, brandTextStyle, MAX_MORE_CAPTIONS, DEFAULT_BRAND_KIT, type LinkBrand, type BrandTextStyle, type BrandCaptionLook,
   type BrandKit, type BrandKitData, type BrandCaptions, type LogoCorner, type LogoShow, type ProgressBar,
 } from '@/lib/shared/brandKit'
 
@@ -529,6 +529,95 @@ function ClipProgressBar({ value, start, onChange }: { value: ProgressBar | null
   )
 }
 
+/** A kit's progress bar (Phase 4): on its clips or not, its colour — the accent colour, or its own — thickness and edge */
+function KitProgressBar({ d, onChange }: { d: BrandKitData; onChange: (p: BrandProgress) => void }) {
+  const p = d.progress_bar, shown = brandProgressBar({ ...d, progress_bar: { ...p, on: true } })!
+  return (
+    <>
+      <label className="cap-row cursor-pointer select-none">
+        <span className="flex flex-col min-w-0">
+          <span className="cap-label">On its clips</span>
+          <span className="text-[11px]" style={{ color: 'rgb(var(--ed-fg) / 0.45)' }}>A bar that fills up as the clip plays</span>
+        </span>
+        <Switch on={p.on} label="Progress bar on its clips" onChange={on => onChange({ ...p, on })} />
+      </label>
+      {p.on && (
+        <>
+          <label className="cap-row cursor-pointer select-none">
+            <span className="cap-label">Your accent colour</span>
+            <Switch on={p.color === 'accent'} label="Progress bar in your accent colour" onChange={on => onChange({ ...p, color: on ? 'accent' : d.colors.accent })} />
+          </label>
+          <ProgressBarFields value={shown} onChange={bar => onChange({ ...p, ...bar, color: bar.color === shown.color ? p.color : bar.color })} />
+        </>
+      )}
+    </>
+  )
+}
+
+/** A kit's settings with the ones added in Phase 4 filled in, should they be missing (the server fills them in as it reads a kit) */
+const withNewFields = (d: BrandKitData): BrandKitData =>
+  d.progress_bar && d.ends ? d : { ...d, progress_bar: d.progress_bar ?? DEFAULT_BRAND_KIT.progress_bar, ends: d.ends ?? DEFAULT_BRAND_KIT.ends }
+
+/** A video of the library that can open or close clips: one of the user's own, short enough */
+type EndVideoChoice = { id: string; title: string; ms: number }
+
+/**
+ * A kit's intro and outro (Phase 4): a short video of the user's library put in before their clips,
+ * and one after them (the brand engine: modules/brand/bookends.ts)
+ */
+function KitBookends({ d, onChange }: { d: BrandKitData; onChange: (ends: Partial<BrandKitData['ends']>) => void }) {
+  const [list, setList] = useState<EndVideoChoice[] | null>(null)
+  const [failed, setFailed] = useState(false)
+  useEffect(() => {
+    let live = true
+    fetch('/api/videos?assets=1')
+      .then(r => (r.ok ? r.json() : Promise.reject(new Error())))
+      .then((j: { videos: Array<{ id: string; title?: string | null; duration_ms?: number | null; status?: string; index?: number; is_asset?: boolean; is_upload_asset?: boolean }> }) => {
+        if (!live) return
+        // (the user's own videos, ready, short enough — not stock footage saved for B-roll)
+        setList(j.videos
+          .filter(v => (!v.is_asset || v.is_upload_asset) && (v.status ?? 'done') === 'done' && v.duration_ms && v.duration_ms >= 300 && v.duration_ms <= MAX_END_VIDEO_MS)
+          .map(v => ({ id: v.id, title: v.title?.trim() || `Video ${v.index ?? ''}`.trim(), ms: v.duration_ms! })))
+      })
+      .catch(() => { if (live) setFailed(true) })
+    return () => { live = false }
+  }, [])
+  const row = (which: 'intro' | 'outro', label: string, hint: string) => {
+    const cur = d.ends[which]
+    // (the one picked stays listed even when the list can't show it: renamed, or the list not read yet)
+    const options = [...(list ?? []), ...(cur && !list?.some(v => v.id === cur.id) ? [{ id: cur.id, title: cur.title || 'Your video', ms: cur.ms }] : [])]
+    return (
+      <div className="cap-row">
+        <span className="flex flex-col min-w-0">
+          <span className="cap-label">{label}</span>
+          <span className="text-[11px]" style={{ color: 'rgb(var(--ed-fg) / 0.45)' }}>{hint}</span>
+        </span>
+        <select value={cur?.id ?? ''} aria-label={label}
+          onChange={e => {
+            const v = options.find(x => x.id === e.target.value)
+            onChange({ [which]: v ? { id: v.id, ms: Math.min(MAX_END_VIDEO_MS, v.ms), title: v.title.slice(0, 80) } : null })
+          }}
+          className="h-9 px-2 rounded-lg text-xs text-[var(--ed-text)] outline-none max-w-[55%]"
+          style={{ background: 'rgb(var(--ed-fg) / 0.06)', boxShadow: 'inset 0 0 0 1px rgb(var(--ed-fg) / 0.1)' }}>
+          <option value="">None</option>
+          {options.map(v => <option key={v.id} value={v.id}>{v.title} · {Math.round(v.ms / 100) / 10} s</option>)}
+        </select>
+      </div>
+    )
+  }
+  return (
+    <>
+      {row('intro', 'Intro', 'Plays before each clip')}
+      {row('outro', 'Outro', 'Plays after each clip, after the end card')}
+      <p className="text-[11px]" style={{ color: 'rgb(var(--ed-fg) / 0.45)' }}>
+        {failed ? 'Your videos couldn’t be listed — try again in a moment.'
+          : list && !list.length ? `Upload a short video (up to ${MAX_END_VIDEO_MS / 1000} s) to use it here.`
+          : `Your own videos up to ${MAX_END_VIDEO_MS / 1000} s. Clips with videos on top get them when opened in the editor.`}
+      </p>
+    </>
+  )
+}
+
 /** A progress bar's colour, thickness and edge (the clip's, or a kit's) */
 function ProgressBarFields({ value, onChange }: { value: ProgressBar; onChange: (bar: ProgressBar) => void }) {
   return (
@@ -562,15 +651,15 @@ export function KitBadge({ kit }: { kit: BrandKit }) {
 
 // ── Workshop: the kit set up, in the video's place ─────────────────────────
 // One step at a time (user, 2026-10-20: the long page was hard to follow), the preview always in view.
-// Intro / outro / end card / kit progress bar / sound and AI voice / names & spellings were taken out
-// (user, 2026-10-20): kits keep what they had saved, unused
+// Sound and AI voice / names & spellings were taken out (user, 2026-10-20). The intro / outro, end card
+// and kit progress bar taken out then came back in brand kit Phase 4 (2026-10-27), through the brand engine
 
 type StepId = 'basics' | 'text' | 'captions' | 'card' | 'team'
 const STEPS: Array<{ id: StepId; name: string; short: string; about: string }> = [
   { id: 'basics', name: 'Basics', short: 'Logo, colours, @handle', about: 'What everything else uses: your logo, your colours and your @handle. Start from a link, your logo or a few words, then change anything.' },
   { id: 'text', name: 'Text & fonts', short: 'Titles, fonts, corners', about: 'How text on your clips looks, your own fonts, and how round your videos are in frames.' },
   { id: 'captions', name: 'Captions', short: 'Caption style', about: 'The caption look your clips get with the brand kit on.' },
-  { id: 'card', name: 'Branded card', short: 'Your own frame', about: 'Your own frame: its background, where the video sits, and your title and @handle.' },
+  { id: 'card', name: 'Branded card', short: 'Card, end card, intro', about: 'Your own frame — its background, where the video sits, your title and @handle — and how your clips start and end.' },
   { id: 'team', name: 'Team', short: 'Share with your team', about: 'Share this kit with your team, and lock its colours and fonts for them.' },
 ]
 
@@ -599,7 +688,7 @@ export function BrandKitStudio({ brand, onKitId = null, onTurnOn, onTurnOff, onC
       </div>
     )
   }
-  const d = kit.data
+  const d = withNewFields(kit.data)
   // Each change builds on the one before it, even two in a row before the screen updates (picking a
   // caption style sets the style, then its capitals): the second would otherwise undo the first
   latest.current = latest.current && latest.current.id === kit.id && latest.current.pending ? latest.current : { id: kit.id, data: d, pending: false }
@@ -608,7 +697,7 @@ export function BrandKitStudio({ brand, onKitId = null, onTurnOn, onTurnOff, onC
     queueMicrotask(() => { if (latest.current) latest.current.pending = false })
     brand.update(kit.id, { data, ...extra })
   }
-  const now = () => (latest.current?.id === kit.id ? latest.current.data : d)
+  const now = () => (latest.current?.id === kit.id ? withNewFields(latest.current.data) : d)
   const setCaptions = (c: Partial<BrandCaptions>) => { const cur = now(); set({ ...cur, captions: { ...cur.captions, ...c } }) }
   // A kit someone shared with this user: shown, not changed
   const readOnly = !!kit.shared_by
@@ -689,6 +778,22 @@ export function BrandKitStudio({ brand, onKitId = null, onTurnOn, onTurnOff, onC
                     </span>
                     <CornerSwitch value={d.logo.x !== null ? null : d.logo.corner} onChange={corner => set({ ...now(), logo: { ...now().logo, corner, x: null, y: null } })} />
                   </div>
+                  <label className="cap-row cursor-pointer select-none">
+                    <span className="flex flex-col min-w-0">
+                      <span className="cap-label">Keep clear of app buttons</span>
+                      <span className="text-[11px]" style={{ color: 'rgb(var(--ed-fg) / 0.45)' }}>Away from the header, likes and caption Reels and Shorts put on top</span>
+                    </span>
+                    <Switch on={d.logo.safe} label="Keep clear of app buttons" onChange={safe => set({ ...now(), logo: { ...now().logo, safe } })} />
+                  </label>
+                  <label className="cap-row cursor-pointer select-none">
+                    <span className="flex flex-col min-w-0">
+                      <span className="cap-label">Move off faces and captions</span>
+                      <span className="text-[11px]" style={{ color: 'rgb(var(--ed-fg) / 0.45)' }}>
+                        {d.logo.x !== null ? 'Placed by hand: it stays where you put it' : 'On each clip, the clearest corner — yours first'}
+                      </span>
+                    </span>
+                    <Switch on={d.logo.smart} label="Move off faces and captions" onChange={smart => set({ ...now(), logo: { ...now().logo, smart } })} />
+                  </label>
                   <div className="cap-row">
                     <span className="cap-label">Shows</span>
                     <div role="radiogroup" aria-label="When the logo shows" className="cap-seg">
@@ -706,6 +811,19 @@ export function BrandKitStudio({ brand, onKitId = null, onTurnOn, onTurnOff, onC
                     onChange={size => set({ ...now(), logo: { ...now().logo, size } })} />
                   <RangeRow label="Opacity" min={0.1} max={1} step={0.05} value={d.logo.opacity} text={`${Math.round(d.logo.opacity * 100)}%`}
                     onChange={opacity => set({ ...now(), logo: { ...now().logo, opacity } })} />
+                  <div className="cap-row">
+                    <span className="flex flex-col min-w-0">
+                      <span className="cap-label">Watermark</span>
+                      <span className="text-[11px]" style={{ color: 'rgb(var(--ed-fg) / 0.45)' }}>Small and faint, on the whole clip</span>
+                    </span>
+                    {isWatermark(d.logo)
+                      ? <span className="text-xs" style={{ color: 'rgb(var(--ed-fg) / 0.6)' }}>It’s a watermark</span>
+                      : <button type="button" className="text-xs font-semibold hover:underline" style={{ color: 'var(--ed-accent-text)' }}
+                          onClick={() => set({ ...now(), logo: { ...now().logo, ...WATERMARK } })}>Make it a watermark</button>}
+                  </div>
+                </Section>
+                <Section title="Progress bar">
+                  <KitProgressBar d={d} onChange={progress_bar => set({ ...now(), progress_bar })} />
                 </Section>
                 {!readOnly && (
                   <Section title="New clips">
@@ -794,6 +912,24 @@ export function BrandKitStudio({ brand, onKitId = null, onTurnOn, onTurnOff, onC
                     style={{ background: 'rgb(var(--ed-fg) / 0.06)', boxShadow: 'inset 0 0 0 1px rgb(var(--ed-fg) / 0.1)' }} />
                   <CardFields value={d.card} onChange={card => set({ ...now(), card })} />
                 </Section>
+                <Section title="End card">
+                  <label className="cap-row cursor-pointer select-none">
+                    <span className="flex flex-col min-w-0">
+                      <span className="cap-label">End clips on this card</span>
+                      <span className="text-[11px]" style={{ color: 'rgb(var(--ed-fg) / 0.45)' }}>The last seconds become this card, the video still playing in it</span>
+                    </span>
+                    <Switch on={d.ends.card} label="End clips on the Branded card" onChange={card => set({ ...now(), ends: { ...now().ends, card } })} />
+                  </label>
+                  {d.ends.card && (
+                    <RangeRow label="For" min={END_CARD_SECONDS[0]} max={END_CARD_SECONDS[1]} step={1} value={d.ends.seconds} text={`${d.ends.seconds} s`}
+                      onChange={seconds => set({ ...now(), ends: { ...now().ends, seconds } })} />
+                  )}
+                </Section>
+                {!readOnly && (
+                  <Section title="Intro and outro">
+                    <KitBookends d={d} onChange={ends => set({ ...now(), ends: { ...now().ends, ...ends } })} />
+                  </Section>
+                )}
               </>
             )}
             {cur.id === 'team' && !readOnly && (
@@ -872,7 +1008,7 @@ export function Mock({ label, children }: { label: string; children: React.React
  * top-left, shares of the frame); the app's buttons can be laid over it.
  */
 export function ClipMock({ kit, platform = 'off', onPlace }: { kit: BrandKit; platform?: Platform; onPlace?: (x: number, y: number) => void }) {
-  const d = kit.data, box = logoBox(d.logo)
+  const d = withNewFields(kit.data), box = logoBox(d.logo)
   const [drag, setDrag] = useState<{ x: number; y: number } | null>(null)
   const shown = drag ?? { x: box.x, y: box.y }
   function down(e: React.PointerEvent<HTMLImageElement>) {
@@ -904,6 +1040,7 @@ export function ClipMock({ kit, platform = 'off', onPlace }: { kit: BrandKit; pl
         Your text here
       </div>
       {d.captions.on && <CaptionSample c={d.captions} />}
+      {d.progress_bar.on && <KitBarSample d={d} />}
       {platform !== 'off' && <div className="absolute inset-0 pointer-events-none"><PlatformOverlay platform={platform} /></div>}
       {d.logo.path && kit.logo_url && (
         // eslint-disable-next-line @next/next/no-img-element
@@ -912,6 +1049,16 @@ export function ClipMock({ kit, platform = 'off', onPlace }: { kit: BrandKit; pl
           className="absolute select-none"
           style={{ left: `${shown.x * 100}%`, top: `${shown.y * 100}%`, width: `${box.w * 100}%`, height: `${box.h * 100}%`, opacity: d.logo.opacity, objectFit: 'fill', cursor: onPlace ? (drag ? 'grabbing' : 'grab') : undefined, touchAction: 'none', outline: drag ? '1.5px dashed #c8ff00' : undefined }} />
       )}
+    </div>
+  )
+}
+
+/** The kit's progress bar on the preview, part filled, at its thickness on a 1080 × 1920 frame */
+function KitBarSample({ d }: { d: BrandKitData }) {
+  const bar = brandProgressBar(d)!
+  return (
+    <div className="absolute inset-x-0 pointer-events-none" style={{ [bar.position]: 0, height: `${(bar.height / 1920) * 100}%`, minHeight: 2 }}>
+      <div style={{ width: '60%', height: '100%', background: bar.color }} />
     </div>
   )
 }
