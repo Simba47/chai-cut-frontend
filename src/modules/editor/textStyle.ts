@@ -19,6 +19,18 @@ const BASE: Required<Omit<TextStyle, 'font' | 'color'>> = {
   shadow: 'soft', shadow_color: null, animation: 'none',
 }
 
+/**
+ * A brand kit's ready text style (lib/shared/brandKit.ts brandTextStyle: title, subtitle, call to
+ * action) as a text's look (brand kit Phase 3): its font, colour, size and capitals; a background
+ * as a rounded box (no shadow); the rest as a plain text, popping in
+ */
+export function brandTextLook(st: { font: string | null; color: string; size: number; bg: string | null; uppercase: boolean }): TextStyle & { size: number } {
+  return {
+    ...BASE, font: st.font ?? 'sans-serif', color: st.color, size: st.size, uppercase: st.uppercase, animation: 'pop',
+    ...(st.bg ? { bg_color: st.bg, bg_opacity: 1, bg_radius: 14, shadow: 'none' as const } : {}),
+  }
+}
+
 export const TEXT_PRESETS: { id: string; name: string; style: TextStyle }[] = [
   { id: 'bold-pop', name: 'Bold pop', style: { ...BASE, color: '#ffffff', weight: 900, uppercase: true, stroke_color: '#000000', stroke_width: 8, animation: 'pop' } },
   { id: 'creator', name: 'Creator', style: { ...BASE, color: '#FFE600', weight: 900, uppercase: true, stroke_color: '#000000', stroke_width: 10, shadow: 'hard', shadow_color: '#000000', animation: 'pop' } },

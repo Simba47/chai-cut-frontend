@@ -121,3 +121,46 @@ test('only changes the clip shows count as the kit changing', () => {
   assert.equal(brandChanged(a, { ...a, is_default: true }), false)
   assert.equal(brandChanged(a, { ...a, colors: { ...a.colors, main: '#000001' } }), true)
 })
+
+// ── Brand kit Phase 3: the title font on frame text, ready text styles ─────────
+import { brandTextStyle, brandCaptionLooks, cleanBrandKitData } from '@/lib/shared/brandKit'
+import { brandTextLook } from '@/modules/editor/textStyle'
+import { brandCardItems } from './engine'
+
+test('frame text takes the kit\'s title font; off puts its own back', () => {
+  const k = kit()   // (title font Poppins)
+  const on = putBrandOn(clip(), k)
+  assert.equal(on.target.segments[0].frame!.items![0].font, 'Poppins')
+  const off = takeBrandOff(on.target, k.data, on.before)
+  assert.equal(off.segments[0].frame!.items![0].font ?? null, null)
+})
+
+test('a new title font reaches frame text still in the old one; a font the user picked stays', () => {
+  const k1 = kit(), on = putBrandOn(clip({ segments: [frame('f1'), frame('f2')] }), k1)
+  const mine = { ...on.target, segments: on.target.segments.map(s => (s.id === 'f2' ? { ...s, frame: { ...s.frame!, items: s.frame!.items!.map(it => ({ ...it, font: 'Anton' })) } } : s)) }
+  const t = updateBrand(mine, k1.data, kit({ title: { ...k1.data.title, font: 'Montserrat' } }))
+  assert.equal(t.segments[0].frame!.items![0].font, 'Montserrat')
+  assert.equal(t.segments[1].frame!.items![0].font, 'Anton')
+})
+
+test('a Branded card\'s new text is in the title font', () => {
+  const items = brandCardItems({ ...frame('c1'), layout: 'frame_brand_card' } as SegmentLocal, { name: 'Chai', data: { ...kit().data, handle: 'chai', card_title: 'Chai Co' } })
+  assert.ok(items.length === 2 && items.every(it => it.font === 'Poppins'))
+})
+
+test('ready text styles: the title font when they have none; the call to action\'s box in the accent colour, or none', () => {
+  const d = kit().data
+  assert.deepEqual(brandTextStyle(d, 'subtitle'), { ...d.styles.subtitle, font: 'Poppins' })
+  assert.equal(brandTextStyle(d, 'cta').bg, '#ff5500')
+  assert.equal(brandTextStyle({ ...d, styles: { ...d.styles, cta: { ...d.styles.cta, bg: null } } }, 'cta').bg, null)
+  assert.equal(brandTextStyle({ ...d, styles: { ...d.styles, cta: { ...d.styles.cta, bg: '#123456' } } }, 'cta').bg, '#123456')
+  const look = brandTextLook(brandTextStyle(d, 'cta'))
+  assert.equal(look.bg_color, '#ff5500'); assert.equal(look.uppercase, true); assert.equal(look.font, 'Poppins')
+  // (a kit saved before styles: the defaults, the call to action on the accent colour)
+  assert.equal(cleanBrandKitData({ colors: { main: '#111111', accent: '#00ff00' } }).styles.cta.bg, 'accent')
+})
+
+test('caption looks: the main one first, then the others', () => {
+  const d = cleanBrandKitData({ captions: { on: true, template: 'tpl:clean' }, more_captions: [{ id: 'hooks', name: 'Hooks', captions: { template: 'tpl:beast' } }] })
+  assert.deepEqual(brandCaptionLooks(d).map(l => [l.id, l.captions.template]), [['main', 'tpl:clean'], ['hooks', 'tpl:beast']])
+})

@@ -21,7 +21,9 @@ import { useLiveTimeMs, liveTime, usePlayerStore, LIVE_REDRAW_MS } from '@/modul
 import { addedVideoBox, isGapPart } from '@/modules/editor/visibility'
 import { trackPresentedFrame } from '@/modules/player/presentedFrame'
 import { drawWatermark } from './watermark'
-import type { ProgressBar } from '@/lib/shared/brandKit'
+import { isBrandFont, type ProgressBar } from '@/lib/shared/brandKit'
+import { VIDEO_FONTS } from '@/lib/shared/videoFonts'
+import { ensureBrandFont } from './brandFonts'
 
 const BOX_COLORS = ['#22c55e', '#3b82f6', '#f59e0b']
 // What each slot becomes in the 9:16 output, top to bottom
@@ -294,11 +296,26 @@ function photoMotion(motion: string | null | undefined, p: number): { zoom: numb
 const FRAME_TEXT_W = 0.88
 const FRAME_TEXT_LINE = 1.2
 
-/** The export's font for frame text (render.py _frame_text_font): Montserrat Bold, or the Noto font of an Indian script */
-function frameTextFont(text: string) {
-  const scripts: [string, string, string][] = [['\u0c00', '\u0c7f', 'noto-sans-telugu'], ['\u0900', '\u097f', 'noto-sans-devanagari']]
-  const hit = scripts.find(([lo, hi]) => [...text].some(c => c >= lo && c <= hi))
-  return exportFont(hit ? hit[2] : 'montserrat-bold')
+/** The Indian scripts frame text is drawn in their Noto font (render.py _frame_text_font, the same list) */
+const FRAME_SCRIPTS: [string, string, string][] = [
+  ['\u0c00', '\u0c7f', 'noto-sans-telugu'], ['\u0900', '\u097f', 'noto-sans-devanagari'], ['\u0b80', '\u0bff', 'noto-sans-tamil'],
+  ['\u0c80', '\u0cff', 'noto-sans-kannada'], ['\u0d00', '\u0d7f', 'noto-sans-malayalam'], ['\u0980', '\u09ff', 'noto-sans-bengali'],
+]
+/** Editor fonts the export has only at their regular weight (render.py _FAMILY_FILES): drawn at 400 here too, not a made-up bold */
+const REGULAR_ONLY = new Set(['Bebas Neue', 'Anton', 'Fjalla One', 'Archivo Black', 'Righteous', 'Fredoka One', 'Pacifico'])
+/**
+ * The export's font for frame text (render.py _frame_text_font): the text's own font — an editor
+ * font, or a brand kit's own (brand kit Phase 3: a kit puts its title font on frame text) — for
+ * Latin text, at the weight the export's file has; else Montserrat Bold; text in an Indian script,
+ * that script's Noto font
+ */
+function frameTextFont(text: string, family?: string | null): { family: string; weight: number } {
+  const hit = FRAME_SCRIPTS.find(([lo, hi]) => [...text].some(c => c >= lo && c <= hi))
+  if (family && !hit) {
+    if (isBrandFont(family)) { ensureBrandFont(family); return { family, weight: 400 } }
+    if (family !== 'sans-serif' && VIDEO_FONTS.some(f => f.family === family)) return { family, weight: REGULAR_ONLY.has(family) ? 400 : 700 }
+  }
+  return { family: exportFont(hit ? hit[2] : 'montserrat-bold').family, weight: 400 }
 }
 
 /**
@@ -306,7 +323,7 @@ function frameTextFont(text: string) {
  * lines), measured at the export's 1080-wide scale with the export's own font file — render.py
  * wraps by the same rule (_wrap_text_lines), so lines break in the same places in the video.
  */
-function frameTextLines(it: Pick<FrameItem, 'text' | 'size' | 'w'>, areaW = 1, ticker = false): string[] {
+function frameTextLines(it: Pick<FrameItem, 'text' | 'size' | 'w' | 'font'>, areaW = 1, ticker = false): string[] {
   const text = (it.text ?? '').trim()
   if (!text) return []
   // A ticker is one line that scrolls by
@@ -314,7 +331,8 @@ function frameTextLines(it: Pick<FrameItem, 'text' | 'size' | 'w'>, areaW = 1, t
   const ctx = measurer()
   if (!ctx) return text.split('\n')
   ctx.save()
-  ctx.font = `400 ${it.size ?? 64}px ${emojiFamily()}, "${frameTextFont(text).family}", sans-serif`
+  const f = frameTextFont(text, it.font)
+  ctx.font = `${f.weight} ${it.size ?? 64}px ${emojiFamily()}, "${f.family}", sans-serif`
   const lines = wrapTextLines(text, (it.w ?? FRAME_TEXT_W * areaW) * 1080, s => ctx.measureText(s).width)
   ctx.restore()
   while (lines.length && !lines[lines.length - 1]) lines.pop()
@@ -351,7 +369,8 @@ function paintFrameText(ctx: CanvasRenderingContext2D, it: FrameItem, fallbackBg
   if (lines.length) {
     const size = Math.round(((it.size ?? 64) / 1080) * W)
     const lh = size * FRAME_TEXT_LINE
-    ctx.font = `400 ${size}px ${emojiFamily()}, "${frameTextFont(it.text ?? '').family}", sans-serif`
+    const f = frameTextFont(it.text ?? '', it.font)
+    ctx.font = `${f.weight} ${size}px ${emojiFamily()}, "${f.family}", sans-serif`
     ctx.fillStyle = it.color || '#ffffff'
     ctx.textBaseline = 'middle'
     if (ticker) {
@@ -427,7 +446,8 @@ function FrameTextBox({ row, item, selected, editing, onSelect, onChange, onDele
   const cx = row.x + row.w * x, cy = row.y + row.h * y
   const accent = '#c8ff00'
   const fontSize = `${size / 10.8}cqw`
-  const fontFamily = `${emojiFamily()}, "${frameTextFont(item.text ?? '').family}", sans-serif`
+  const face = frameTextFont(item.text ?? '', item.font)
+  const fontFamily = `${emojiFamily()}, "${face.family}", sans-serif`
   const r3 = (v: number) => Math.round(v * 1000) / 1000
   // The whole box stays inside its area
   const clampX = (v: number) => bw >= 1 ? 0.5 : Math.max(bw / 2, Math.min(1 - bw / 2, v))
@@ -530,7 +550,7 @@ function FrameTextBox({ row, item, selected, editing, onSelect, onChange, onDele
           aria-label="Edit the text"
           spellCheck={false}
           style={{
-            fontFamily, fontWeight: 400, fontSize, lineHeight: FRAME_TEXT_LINE, color: item.color || '#ffffff', textAlign: 'center',
+            fontFamily, fontWeight: face.weight, fontSize, lineHeight: FRAME_TEXT_LINE, color: item.color || '#ffffff', textAlign: 'center',
             display: 'block', width: '100%', height: `${(textH / boxH) * 100}%`,
             whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', overflow: 'hidden', resize: 'none',
             background: 'transparent', border: 'none', outline: 'none', padding: 0, margin: 0,

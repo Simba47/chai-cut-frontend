@@ -3,7 +3,7 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 import { r2, R2_BUCKET } from '@/lib/r2'
 import sql from '@/lib/db'
 import { getUserPlan } from './quota'
-import { brandKitLimit, cleanBrandKitData, DEFAULT_BRAND_KIT, brandCaptionStyle, logoBox, logoSpan, isBrandFont, brandFontKey, MAX_KIT_SHARES, SHARE_PLANS, type BrandKit, type BrandKitData } from '@/lib/shared/brandKit'
+import { brandKitLimit, cleanBrandKitData, DEFAULT_BRAND_KIT, isBrandFont, brandFontKey, MAX_KIT_SHARES, SHARE_PLANS, type BrandKit, type BrandKitData } from '@/lib/shared/brandKit'
 import { hasColumn } from './clips'
 import { pictureColours } from './brandStyle'
 
@@ -193,39 +193,20 @@ export async function defaultBrandKit(userId: string): Promise<BrandKitData | nu
   return row ? cleanBrandKitData(row.data, userId) : null
 }
 
-/** The default kit put on clips just made (their ids and lengths in ms). Never fails the clips: a problem is only logged */
+/**
+ * The default kit put on clips just made — by hand, from Best moments or Ask AI — through the brand
+ * engine, as the editor's switch puts it on (brandApply.ts brandClip): its logo, title style, caption
+ * look (captions stay off until they're switched on: they cost money) and frames, with the kit's
+ * version kept so the clips follow it. `lengthMs` isn't needed any more (the engine reads the clip);
+ * kept for the callers. Never fails the clips: a problem is only logged.
+ */
 export async function brandNewClips(userId: string, clips: Array<{ id: string; lengthMs: number }>): Promise<void> {
   if (!clips.length) return
   try {
-    const kit = await defaultBrandKit(userId)
-    if (!kit) return
-    const [hasOpacity, hasTemplate, hasEnabled] = await Promise.all([
-      hasColumn('overlays', 'opacity'), hasColumn('caption_styles', 'template'), hasColumn('caption_styles', 'enabled'),
-    ])
-    if (kit.logo.path) {
-      const box = logoBox(kit.logo)
-      await sql`INSERT INTO overlays ${sql(clips.map(c => {
-        const [start, end] = logoSpan(kit.logo, c.lengthMs)
-        return {
-          clip_id: c.id, type: 'image', storage_path: kit.logo.path, source_video_id: null, source_offset_ms: 0,
-          x: box.x, y: box.y, w: box.w, h: box.h, start_ms: start, end_ms: end, z_index: 1,
-          ...(hasOpacity ? { opacity: kit.logo.opacity < 0.999 ? kit.logo.opacity : null } : {}),
-        }
-      }))}`
-    }
-    // Saved with the kit switched on (the editor's Brand kit switch; nothing to put back when switched off)
-    if (await hasColumn('clips', 'brand')) {
-      const [row] = await sql<{ id: string }[]>`SELECT id FROM brand_kits WHERE user_id = ${userId} AND (data->>'is_default')::boolean LIMIT 1`
-      // (with the kit's settings as they went on: when the kit changes, the clips follow it — brand engine, updateBrand)
-      if (row) await sql`UPDATE clips SET brand = ${sql.json({ kit_id: row.id, before: null, applied: kit } as never)} WHERE id = ANY(${clips.map(c => c.id)})`
-    }
-    if (kit.captions.on) {
-      const style = brandCaptionStyle(kit.captions)
-      if (!hasTemplate) delete style.template
-      await sql`INSERT INTO caption_styles ${sql(clips.map(c => ({
-        clip_id: c.id, position: 'bottom-center', ...style, ...(hasEnabled ? { enabled: false } : {}),
-      })))}`
-    }
+    const [row] = await sql<{ id: string }[]>`SELECT id FROM brand_kits WHERE user_id = ${userId} AND (data->>'is_default')::boolean LIMIT 1`.catch(() => [])
+    if (!row) return
+    const { brandClip } = await import('./brandApply')
+    for (const c of clips) await brandClip(userId, c.id, row.id).catch(e => console.error('[brand] the default kit could not be put on a new clip:', e))
   } catch (e) {
     console.error('[brand] the default kit could not be put on new clips:', e)
   }

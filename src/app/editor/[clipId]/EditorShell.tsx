@@ -39,9 +39,12 @@ import { useConfirm } from '@/components/editor/ConfirmDialog'
 import { BrandKitPanel, BrandKitStudio, useBrandKits } from '@/components/editor/BrandKit'
 import { useBrandStore, setBrandOn, type BrandOn } from '@/modules/editor/brandState'
 import { putBrandOn, takeBrandOff, brandNewFrames, updateBrand, brandChanged, fillBrandCard, type BrandTarget } from '@/modules/brand/engine'
+import { EditorBrandMenu } from '@/components/brand/EditorBrandMenu'
 import { CleanupPanel, type CleanupRow } from '@/components/editor/CleanupPanel'
 import { cleanupCards, isDeleted } from '@/modules/editor/cleanup'
-import { brandPalette, brandLockOf, type BrandKit, type ProgressBar } from '@/lib/shared/brandKit'
+import { brandPalette, brandLockOf, brandTextStyle, brandCaptionLooks, brandCaptionStyle, type BrandKit, type BrandTextKind, type ProgressBar } from '@/lib/shared/brandKit'
+import { brandTextLook } from '@/modules/editor/textStyle'
+import { BrandCaptionLooks } from '@/components/brand/BrandCaptionLooks'
 import { setBrandPalette, setBrandLock } from '@/components/editor/brandPalette'
 import { setBrandFonts, ensureBrandFont } from '@/components/editor/brandFonts'
 import { EditorTour, hasSeenEditorTour } from '@/components/editor/EditorTour'
@@ -1303,6 +1306,8 @@ export function EditorShell({
     setTextOverlays(prev => [...prev, {
       id, clip_id: clip.id, text: 'Your text', start_ms: start, end_ms: start + len,
       x: 0.1, y: 0.4, font: 'sans-serif', size: 72, color: '#ffffff',
+      // (with a brand kit: in its title style — brand kit Phase 3)
+      ...(styleKit ? brandTextLook(brandTextStyle(styleKit.data, 'title')) : {}),
     }])
     setActiveTextOverlayId(id)
     if (previewOpen) setEditTextId(id); else setFocusTextId(id)
@@ -1353,6 +1358,8 @@ export function EditorShell({
       ...s,
       crop_boxes: s.crop_boxes.map(b => ({ ...b, keyframes: (keyframes[b.id] ?? b.keyframes ?? []).map(({ t_ms, x, y, w, h }) => ({ t_ms, x, y, w, h })) })),
     })), mainVideoId, belowRowsRef.current, range[0])
+    // (the brand as sent: once saved, it's what the server has — brand kit Phase 2, the clip board check below)
+    const sentBrand = useBrandStore.getState().on
     try {
       const res = await fetch(`/api/clips/${clip.id}/save`, {
         method: 'POST',
@@ -1370,7 +1377,7 @@ export function EditorShell({
           removeFillers: removeFillersRef.current,
           originalSound: originalSoundRef.current,
           progressBar: progressBarRef.current,
-          brand: useBrandStore.getState().on,
+          brand: sentBrand,
         }),
       })
       if (!res.ok) {
@@ -1383,6 +1390,7 @@ export function EditorShell({
       if ((reply?.speedNotSaved ?? 0) > 0) notifyLocked('A part\u2019s speed isn\u2019t saved yet: restart the backend once (it updates the database)')
       // Only clear "unsaved" if nothing changed while this save was in flight
       if (editVersionRef.current === version) unsavedRef.current = false
+      serverKitRef.current = sentBrand?.kit_id ?? null
       retryDelayRef.current = 2000
       setSaveState('saved')
       saveTimerRef.current = setTimeout(() => setSaveState('idle'), 2500)
@@ -2878,6 +2886,40 @@ export function EditorShell({
   // edits — a photo, text styles, frame colours — so it shows in the Preview and the export, and
   // one Undo takes it all back.
   const brand = useBrandKits()
+  /**
+   * The brand kit the server has on this clip, as this editor last loaded or saved it (brand kit
+   * Phase 2). Back in view, a different one there means it was changed elsewhere — "Put on all" on
+   * the clip board — while this clip was open: the editor makes the same change itself (the same
+   * brand engine), so its next save keeps it instead of putting back what it had. Unsaved edits stay.
+   */
+  const serverKitRef = useRef<string | null>(initialBrand?.kit_id ?? null)
+  const brandSyncRef = useRef<{ on: (kit: BrandKit) => void; off: () => void; kits: BrandKit[] } | null>(null)
+  useEffect(() => {
+    const check = () => {
+      if (document.visibilityState !== 'visible') return
+      fetch(`/api/clips/${clip.id}/brand`).then(r => (r.ok ? r.json() : null)).then((d: { kit_id: string | null } | null) => {
+        const sync = brandSyncRef.current
+        if (!d || !sync) return
+        const there = d.kit_id ?? null
+        if (there === serverKitRef.current) return
+        const here = useBrandStore.getState().on?.kit_id ?? null
+        if (there === here) { serverKitRef.current = there; return }
+        if (!there) {
+          sync.off(); serverKitRef.current = null
+          notifyLocked('The brand was taken off this clip on the clip board', 3500)
+          return
+        }
+        // (a kit this editor doesn't list yet: tried again next time it's back in view, once the kits are read again)
+        const kit = sync.kits.find(k => k.id === there)
+        if (!kit) return
+        sync.on(kit); serverKitRef.current = there
+        notifyLocked(`${kit.name} was put on this clip on the clip board`, 3500)
+      }).catch(() => { /* checked again next time */ })
+    }
+    document.addEventListener('visibilitychange', check)
+    window.addEventListener('focus', check)
+    return () => { document.removeEventListener('visibilitychange', check); window.removeEventListener('focus', check) }
+  }, [clip.id]) // eslint-disable-line react-hooks/exhaustive-deps
   // The brand colours shown first in the colour choices: the default kit's, else the one picked
   const paletteKit = brand.kits.find(k => k.data.is_default) ?? brand.current
   const paletteKey = paletteKit ? brandPalette(paletteKit.data).join(',') : ''
@@ -2974,6 +3016,31 @@ export function EditorShell({
   // While the brand is on: every frame picked gets it (a new section, or a section given another
   // frame), and the logo keeps covering the whole clip when the kit shows it throughout. In the same
   // undo step as the pick (history.ts groups a burst of changes).
+  // The brand kit new text, its ready styles and caption looks come from (brand kit Phase 3): the one
+  // on this clip, else the account's default one
+  const styleKit = (brandOn ? brand.kits.find(k => k.id === brandOn.kit_id) : undefined) ?? brand.kits.find(k => k.data.is_default) ?? null
+  const BRAND_TEXT: Array<{ id: BrandTextKind; name: string; text: string }> = [
+    { id: 'title', name: 'Title', text: 'Your title' },
+    { id: 'subtitle', name: 'Subtitle', text: 'Your subtitle' },
+    { id: 'cta', name: 'Call to action', text: 'Follow for more' },
+  ]
+  const brandTextStyles = styleKit ? BRAND_TEXT.map(x => ({ ...x, look: brandTextLook(brandTextStyle(styleKit.data, x.id)) })) : null
+  /** The kit's title font on every text and frame text of this clip (locked ones stay): one undo step */
+  function brandFontOnAll() {
+    const font = styleKit?.data.title.font
+    if (!font) return
+    setTextOverlays(prev => prev.map(t => (t.locked ? t : { ...t, font })))
+    useEditorStore.setState(st => ({
+      segments: st.segments.map(seg => {
+        if (!isFrameLayout(seg.layout) || seg.locked) return seg
+        const f = frameOf(seg)
+        return { ...seg, frame: { ...f, items: (f.items ?? []).map(it => (it.kind === 'text' && !it.captions && !it.locked ? { ...it, font } : it)) } }
+      }),
+    }))
+    notifyLocked(`All text is in ${font} now`, 2600)
+  }
+  // (the clip board check above uses these: this render's, so never stale ones)
+  brandSyncRef.current = { on: turnBrandOn, off: turnBrandOff, kits: brand.kits }
   const kitOn = brandOn ? brand.kits.find(k => k.id === brandOn.kit_id) ?? null : null
   // The kit on this clip is gone (deleted, or no longer shared with this user): the clip keeps its
   // look, the switch goes off — it pointed at a kit no list had, so every kit said "another kit is
@@ -5517,6 +5584,9 @@ export function EditorShell({
         <div className="flex-1" />
 
         <div className="flex items-center gap-3 shrink-0">
+          {/* The brand kit on this clip, one click away (brand kit Phase 2) */}
+          <EditorBrandMenu kits={brand.kits} loading={brand.loading} onKitId={brandOn?.kit_id ?? null}
+            onTurnOn={turnBrandOn} onTurnOff={turnBrandOff} onEdit={() => openSettings('brand')} onUndo={undo} />
           <button type="button" onClick={() => setTourOpen(true)} aria-label="Show the editor tour" title="How the editor works"
             className="w-8 h-8 flex items-center justify-center rounded-full transition-colors hover:bg-[rgb(var(--ed-fg)/0.1)]"
             style={{ color: 'rgb(var(--ed-fg) / 0.7)', boxShadow: 'inset 0 0 0 1px rgb(var(--ed-fg) / 0.14)' }}>
@@ -5934,6 +6004,12 @@ export function EditorShell({
                       onClear={() => setCaptionSel([])} onFromHere={selectCaptionsFromHere} onAll={() => setCaptionSel([[0, clipLengthMs + 1]])}
                       onOneStyle={oneCaptionStyle} />
                   )}
+                  {/* (brand kit Phase 3) the kit's caption looks, one tap each */}
+                  {showCaptions && styleKit && (
+                    <BrandCaptionLooks kitName={styleKit.name} current={panelCaptionStyle}
+                      looks={brandCaptionLooks(styleKit.data).filter(l => l.id !== 'main' || styleKit.data.captions.on)}
+                      onPick={l => { changeCaptionStyle(brandCaptionStyle(l.captions)); setCaptionTextCase(l.captions.uppercase ? 'upper' : 'title') }} />
+                  )}
                   {showCaptions && (
                     <CaptionStyler
                       style={panelCaptionStyle} textCase={captionTextCase}
@@ -6145,6 +6221,7 @@ export function EditorShell({
                 onSelect={pickText}
                 onUpdate={(id, patch) => { if (!blocked({ kind: 'text', id })) updateTextOverlay(id, patch) }}
                 onRemove={askDeleteTextOverlay}
+                brand={styleKit && brandTextStyles ? { name: styleKit.name, styles: brandTextStyles, onFontAll: styleKit.data.title.font ? brandFontOnAll : undefined } : null}
               />
               </>
             )}

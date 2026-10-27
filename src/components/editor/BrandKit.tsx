@@ -9,7 +9,7 @@ import { cardAreas, cardBackgroundPixels, CARD_PATTERNS, CARD_PATTERN_SCALE, CAR
 import { templateOf, templateFontFamily } from '@/modules/captions/templates'
 import {
   LOGO_SIZE, LOGO_SECONDS, MAX_BRAND_FONTS, PROGRESS_HEIGHT, MAX_KIT_SHARES, CARD_TEXT_SIZE, type BrandCardSettings,
-  brandCaptionStyle, logoBox, showHandle, type LinkBrand,
+  brandCaptionStyle, logoBox, showHandle, brandTextStyle, MAX_MORE_CAPTIONS, DEFAULT_BRAND_KIT, type LinkBrand, type BrandTextStyle, type BrandCaptionLook,
   type BrandKit, type BrandKitData, type BrandCaptions, type LogoCorner, type LogoShow, type ProgressBar,
 } from '@/lib/shared/brandKit'
 
@@ -718,12 +718,21 @@ export function BrandKitStudio({ brand, onKitId = null, onTurnOn, onTurnOff, onC
               <>
                 <Section title="Title style">
                   <p className="text-[11px] -mt-1" style={{ color: 'rgb(var(--ed-fg) / 0.5)' }}>
-                    For text on the clip. Frame titles take this colour and keep the frame&rsquo;s own font.
+                    For text on the clip, frame titles and the Branded card: new text starts in it.
                   </p>
                   <FontPicker value={d.title.font} onChange={font => set({ ...now(), title: { ...now().title, font: font === 'sans-serif' ? null : font } })} />
                   <ColorRow label="Colour" value={d.title.color} onChange={color => set({ ...now(), title: { ...now().title, color } })} />
                   <RangeRow label="Size" min={24} max={160} step={2} value={d.title.size} text={`${d.title.size}`}
                     onChange={size => set({ ...now(), title: { ...now().title, size } })} />
+                </Section>
+                {/* (brand kit Phase 3) the other ready styles: "+ Subtitle" and "+ Call to action" in the editor's Text tool */}
+                <Section title="Subtitle style">
+                  <TextStyleEditor kind="subtitle" d={d} value={d.styles?.subtitle ?? DEFAULT_BRAND_KIT.styles.subtitle}
+                    onChange={v => set({ ...now(), styles: { ...DEFAULT_BRAND_KIT.styles, ...now().styles, subtitle: v } })} />
+                </Section>
+                <Section title="Call to action style">
+                  <TextStyleEditor kind="cta" d={d} value={d.styles?.cta ?? DEFAULT_BRAND_KIT.styles.cta}
+                    onChange={v => set({ ...now(), styles: { ...DEFAULT_BRAND_KIT.styles, ...now().styles, cta: v } })} />
                 </Section>
                 <Section title="Fonts">
                   <BrandFonts fonts={d.fonts} onChange={fonts => set({ ...now(), fonts })} />
@@ -766,6 +775,10 @@ export function BrandKitStudio({ brand, onKitId = null, onTurnOn, onTurnOff, onC
                         onEditCaptions={() => {}} onRetranscribe={() => {}} retranscribing={false} hasWords={false} />
                     </div>
                   )}
+                </Section>
+                {/* (brand kit Phase 3) more looks, switched to in one tap in the editor's Captions tool */}
+                <Section title="More caption looks">
+                  <MoreCaptionLooks d={d} onChange={more_captions => set({ ...now(), more_captions })} />
                 </Section>
               </>
             )}
@@ -1070,12 +1083,12 @@ function CardMock({ kit }: { kit: BrandKit }) {
       <canvas ref={bgRef} className="absolute inset-0 w-full h-full" />
       <div className="absolute" style={{ ...box(places.video), borderRadius: (places.video.radius ?? 0) * K, background: 'linear-gradient(160deg, #3a4150 0%, #1d2129 60%, #2c2a24 100%)' }} />
       {c.title.show && (
-        <div className="absolute flex items-center justify-center text-center px-2" style={{ ...box(places.title), fontFamily: FRAME_FONT, fontWeight: 700, fontSize: c.title.size * K, color: c.title.color, lineHeight: 1.1 }}>
+        <div className="absolute flex items-center justify-center text-center px-2" style={{ ...box(places.title), fontFamily: d.title.font ? `"${d.title.font}", ${FRAME_FONT}` : FRAME_FONT, fontWeight: 700, fontSize: c.title.size * K, color: c.title.color, lineHeight: 1.1 }}>
           {d.card_title || kit.name}
         </div>
       )}
       {c.handle.show && (
-        <div className="absolute flex items-center justify-center" style={{ ...box(places.handle), fontFamily: FRAME_FONT, fontWeight: 700, fontSize: c.handle.size * K, color: c.handle.color }}>
+        <div className="absolute flex items-center justify-center" style={{ ...box(places.handle), fontFamily: d.title.font ? `"${d.title.font}", ${FRAME_FONT}` : FRAME_FONT, fontWeight: 700, fontSize: c.handle.size * K, color: c.handle.color }}>
           {showHandle(d.handle) || '@yourchannel'}
         </div>
       )}
@@ -1158,6 +1171,89 @@ export function Section({ title, children }: { title: string; children: React.Re
       <h3 className="cap-heading">{title}</h3>
       {children}
     </section>
+  )
+}
+
+/**
+ * A kit's subtitle or call-to-action style (brand kit Phase 3): its font ("Same as title" when it has
+ * none of its own), colour, size, a background box (a call to action's is the accent colour until
+ * one is picked), capitals — and how it looks
+ */
+function TextStyleEditor({ kind, d, value, onChange }: { kind: 'subtitle' | 'cta'; d: BrandKitData; value: BrandTextStyle; onChange: (v: BrandTextStyle) => void }) {
+  const shown = brandTextStyle(d, kind)
+  const boxOn = value.bg !== null
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="bts-sample" style={{
+        fontFamily: shown.font ? `"${shown.font}", sans-serif` : undefined, color: shown.color, background: shown.bg ?? 'transparent',
+        textTransform: shown.uppercase ? 'uppercase' : undefined, fontSize: Math.max(14, Math.min(26, shown.size / 2.6)),
+      }}>{kind === 'cta' ? 'Follow for more' : 'Your subtitle here'}</div>
+      <label className="cap-row cursor-pointer select-none">
+        <span className="cap-label">Same font as the title</span>
+        <Switch on={value.font === null} label="Same font as the title" onChange={on => onChange({ ...value, font: on ? null : d.title.font ?? 'Inter' })} />
+      </label>
+      {value.font !== null && <FontPicker value={value.font} onChange={font => onChange({ ...value, font: font === 'sans-serif' ? 'Inter' : font })} />}
+      <ColorRow label="Colour" value={value.color} onChange={color => onChange({ ...value, color })} />
+      <RangeRow label="Size" min={20} max={120} step={2} value={value.size} text={`${value.size}`} onChange={size => onChange({ ...value, size })} />
+      <label className="cap-row cursor-pointer select-none">
+        <span className="flex flex-col min-w-0">
+          <span className="cap-label">Box behind it</span>
+          {value.bg === 'accent' && <span className="text-[11px]" style={{ color: 'rgb(var(--ed-fg) / 0.45)' }}>Your accent colour</span>}
+        </span>
+        <Switch on={boxOn} label="Box behind it" onChange={on => onChange({ ...value, bg: on ? 'accent' : null })} />
+      </label>
+      {boxOn && <ColorRow label="Box colour" value={shown.bg ?? d.colors.accent} onChange={bg => onChange({ ...value, bg })} />}
+      <label className="cap-row cursor-pointer select-none">
+        <span className="cap-label">Capitals</span>
+        <Switch on={value.uppercase} label="Capitals" onChange={uppercase => onChange({ ...value, uppercase })} />
+      </label>
+    </div>
+  )
+}
+
+/**
+ * A kit's caption looks besides its main one (brand kit Phase 3, up to MAX_MORE_CAPTIONS): each named
+ * ("Bold for hooks"), changed with the editor's own caption choices, or removed; a new one starts as
+ * a copy of the main look
+ */
+function MoreCaptionLooks({ d, onChange }: { d: BrandKitData; onChange: (v: BrandCaptionLook[]) => void }) {
+  const [open, setOpen] = useState<string | null>(null)
+  const looks = d.more_captions ?? []
+  const put = (id: string, patch: Partial<BrandCaptionLook>) => onChange(looks.map(l => (l.id === id ? { ...l, ...patch } : l)))
+  return (
+    <div className="flex flex-col gap-2">
+      <p className="text-[11px] -mt-1" style={{ color: 'rgb(var(--ed-fg) / 0.5)' }}>
+        Keep a few looks (one for hooks, one for talking) and switch any clip&rsquo;s captions in one tap in the editor.
+      </p>
+      {looks.map(l => (
+        <div key={l.id} className="mcl-row">
+          <div className="flex items-center gap-2">
+            <i className="mcl-dot" style={{ background: l.captions.color }} /><i className="mcl-dot" style={{ background: l.captions.highlight_color }} />
+            <input value={l.name} maxLength={30} onChange={e => put(l.id, { name: e.target.value })} aria-label="Look name"
+              onBlur={e => { if (!e.target.value.trim()) put(l.id, { name: 'Look' }) }}
+              className="flex-1 min-w-0 h-8 px-2 rounded-md text-xs text-[var(--ed-text)] outline-none" style={{ background: 'rgb(var(--ed-fg) / 0.06)' }} />
+            <button type="button" className="mcl-btn" onClick={() => setOpen(o => (o === l.id ? null : l.id))} aria-expanded={open === l.id}>{open === l.id ? 'Done' : 'Edit'}</button>
+            <button type="button" className="mcl-btn" onClick={() => onChange(looks.filter(x => x.id !== l.id))} aria-label={`Remove ${l.name}`}>Remove</button>
+          </div>
+          {open === l.id && (
+            <div className="-mx-3 -mb-3 mt-2">
+              <CaptionStyler
+                style={brandCaptionStyle(l.captions)} textCase={l.captions.uppercase ? 'upper' : 'title'}
+                onChange={u => put(l.id, { captions: { ...l.captions, ...captionPatch(u), on: true } })}
+                onTextCaseChange={(c: TextCase) => put(l.id, { captions: { ...l.captions, uppercase: c === 'upper' } })}
+                onEditCaptions={() => {}} onRetranscribe={() => {}} retranscribing={false} hasWords={false} />
+            </div>
+          )}
+        </div>
+      ))}
+      {looks.length < MAX_MORE_CAPTIONS && (
+        <button type="button" className="mcl-add" onClick={() => {
+          const id = `look-${Date.now().toString(36)}`
+          onChange([...looks, { id, name: `Look ${looks.length + 2}`, captions: { ...d.captions, on: true } }])
+          setOpen(id)
+        }}>+ Add a look</button>
+      )}
+    </div>
   )
 }
 

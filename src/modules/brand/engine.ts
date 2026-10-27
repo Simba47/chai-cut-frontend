@@ -71,8 +71,9 @@ export function brandCardItems(seg: SegmentLocal, kit: Pick<BrandKit, 'name' | '
   const d = kit.data, c = d.card, span = { start_ms: seg.start_ms, end_ms: seg.end_ms }
   const title = d.card_title.trim() || kit.name, handle = showHandle(d.handle)
   const out: FrameItem[] = []
-  if (title && c.title.show) out.push({ id: crypto.randomUUID(), lane: 'band', kind: 'text', ...span, text: title, bg: textLaneLook(seg, 'band').bg, color: c.title.color, size: c.title.size })
-  if (handle && c.handle.show) out.push({ id: crypto.randomUUID(), lane: 'band2', kind: 'text', ...span, text: handle, bg: textLaneLook(seg, 'band2').bg, color: c.handle.color, size: c.handle.size })
+  const font = d.title.font ? { font: d.title.font } : {}
+  if (title && c.title.show) out.push({ id: crypto.randomUUID(), lane: 'band', kind: 'text', ...span, text: title, bg: textLaneLook(seg, 'band').bg, color: c.title.color, size: c.title.size, ...font })
+  if (handle && c.handle.show) out.push({ id: crypto.randomUUID(), lane: 'band2', kind: 'text', ...span, text: handle, bg: textLaneLook(seg, 'band2').bg, color: c.handle.color, size: c.handle.size, ...font })
   return out
 }
 
@@ -92,9 +93,13 @@ export function brandFrame(seg: SegmentLocal, kit: Pick<BrandKit, 'name' | 'data
   const items = (f.items ?? []).map(it => {
     if (it.locked) return it
     if (it.kind === 'text' && !it.captions) {
-      before.items[it.id] = { color: it.color ?? null, bg: it.bg ?? null }
-      // (a band's text carries the band's colour: it follows it; a see-through or own colour stays)
-      return { ...it, color: itemColourOf(d, card, it.lane), ...(isTextLane(it.lane) && it.bg === band.bg ? { bg: bandBg } : {}) }
+      before.items[it.id] = { color: it.color ?? null, bg: it.bg ?? null, font: it.font ?? null }
+      // (a band's text carries the band's colour: it follows it; a see-through or own colour stays;
+      // the kit's title font when it has one — brand kit Phase 3: brand fonts on frames too)
+      return {
+        ...it, color: itemColourOf(d, card, it.lane), ...(isTextLane(it.lane) && it.bg === band.bg ? { bg: bandBg } : {}),
+        ...(d.title.font ? { font: d.title.font } : {}),
+      }
     }
     if (it.kind !== 'text') before.item_corners![it.id] = it.corners ?? null
     return it
@@ -219,7 +224,11 @@ export function takeBrandOff(t: BrandTarget, d: BrandKitData | null, b: BrandBef
     const items = (f.items ?? []).filter(it => it.locked || !added.has(it.id)).map(it => {
       if (it.locked) return it
       const w = was.items[it.id]
-      if (w) return { ...it, color: w.color ?? undefined, bg: w.bg ?? undefined }
+      if (w) {
+        // (its font back where it's still the kit's; a frame branded before fonts were kept has none to put back)
+        const font = w.font !== undefined && d && d.title.font && it.font === d.title.font ? { font: w.font } : {}
+        return { ...it, color: w.color ?? undefined, bg: w.bg ?? undefined, ...font }
+      }
       if (was.item_corners && it.id in was.item_corners) return { ...it, corners: was.item_corners[it.id] ?? undefined }
       return it
     })
@@ -314,6 +323,7 @@ export function updateBrand(t: BrandTarget, old: BrandKitData, kit: BrandKit): B
       if (it.kind === 'text' && !it.captions) {
         let next = it
         if (it.color === itemColourOf(old, card, it.lane)) next = { ...next, color: itemColourOf(n, card, it.lane) }
+        if (old.title.font !== n.title.font && n.title.font && (it.font ?? null) === (old.title.font ?? null)) next = { ...next, font: n.title.font }
         if (isTextLane(it.lane) && it.bg === oldBg) next = { ...next, bg: newBg }
         if (card && it.lane === 'band' && oldTitle && it.text === oldTitle && newTitle) next = { ...next, text: newTitle }
         if (card && it.lane === 'band2' && it.text === showHandle(old.handle) && n.handle) next = { ...next, text: showHandle(n.handle) }

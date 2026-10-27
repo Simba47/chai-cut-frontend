@@ -44,6 +44,19 @@ export interface BrandCaptions {
   words_per_line: number | null
 }
 
+/**
+ * A ready text style of a kit (brand kit rebuild, Phase 3): "+ Text" in the editor adds text in it.
+ * `font` null: the kit's title font; `bg`: a box behind it — a colour, 'accent' (the kit's accent
+ * colour, as it changes), or null: none.
+ */
+export interface BrandTextStyle { font: string | null; color: string; size: number; bg: string | null; uppercase: boolean }
+/** Which ready style: the kit's title style (`title`), or one of `styles` */
+export type BrandTextKind = 'title' | 'subtitle' | 'cta'
+
+/** A kit's caption look besides its main one (Phase 3: up to MAX_MORE_CAPTIONS), with its name */
+export interface BrandCaptionLook { id: string; name: string; captions: BrandCaptions }
+export const MAX_MORE_CAPTIONS = 2
+
 export interface BrandKitData {
   /**
    * main: the Branded card's background and frame bands; accent: the @handle on the card; extra:
@@ -77,6 +90,10 @@ export interface BrandKitData {
   handle: string
   /** Frame titles and text on the clip: font family (null = the default), colour and size (px at 1080 wide) */
   title: { font: string | null; color: string; size: number }
+  /** Its other ready text styles: a subtitle and a call to action ("Follow for more") */
+  styles: { subtitle: BrandTextStyle; cta: BrandTextStyle }
+  /** More caption looks besides `captions` ("Bold for hooks"…), switched to in one tap in the editor */
+  more_captions: BrandCaptionLook[]
   /** The Branded card's title */
   card_title: string
   /**
@@ -155,6 +172,11 @@ export const DEFAULT_BRAND_KIT: BrandKitData = {
   fonts: [],
   handle: '',
   title: { font: null, color: '#ffffff', size: 64 },
+  styles: {
+    subtitle: { font: null, color: '#ffffff', size: 44, bg: null, uppercase: false },
+    cta: { font: null, color: '#0a0a0a', size: 48, bg: 'accent', uppercase: true },
+  },
+  more_captions: [],
   card_title: '',
   card: { ...DEFAULT_CARD_LOOK, title: { show: true, color: '#ffffff', size: 64 }, handle: { show: true, color: '#c8ff00', size: 40 } },
   is_default: false,
@@ -228,6 +250,17 @@ export function cleanBrandKitData(raw: unknown, userId?: string): BrandKitData {
       color: color(d.title?.color, def.title.color),
       size: Math.round(num(d.title?.size, 24, 160, def.title.size)),
     },
+    styles: {
+      subtitle: cleanTextStyle(d.styles?.subtitle, def.styles.subtitle),
+      cta: cleanTextStyle(d.styles?.cta, def.styles.cta),
+    },
+    more_captions: (Array.isArray(d.more_captions) ? d.more_captions : [])
+      .filter((x: any) => x && typeof x === 'object')
+      .map((x: any, i: number) => ({ ...x, id: typeof x.id === 'string' && /^[\w-]{1,40}$/.test(x.id) ? x.id : `look-${i + 1}` }))
+      .filter((x: any, i: number, all: any[]) => all.findIndex(y => y.id === x.id) === i)
+      .slice(0, MAX_MORE_CAPTIONS)
+      // (named after the ones kept: the main look is the first)
+      .map((x: any, i: number): BrandCaptionLook => ({ id: x.id, name: text(x.name, 30).trim() || `Look ${i + 2}`, captions: cleanCaptions(x.captions) })),
     card_title: text(d.card_title, 80),
     // (a kit from before its card was customized: the card as it looked then — the main colour,
     // the title style's colour and size, the accent on the @handle)
@@ -243,6 +276,52 @@ export function cleanBrandKitData(raw: unknown, userId?: string): BrandKitData {
     lock: d.lock === true,
   }
 }
+
+/** A ready text style made safe; anything missing or wrong takes `fallback`'s */
+function cleanTextStyle(raw: unknown, fallback: BrandTextStyle): BrandTextStyle {
+  const t = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
+  return {
+    font: typeof t.font === 'string' && t.font.length <= 60 ? t.font : null,
+    color: color(t.color, fallback.color),
+    size: Math.round(num(t.size, 20, 160, fallback.size)),
+    // (not saved yet — a kit from before styles — the default; saved as none: none)
+    bg: t.bg === undefined ? fallback.bg : t.bg === 'accent' ? 'accent' : typeof t.bg === 'string' && HEX.test(t.bg) ? t.bg.toLowerCase() : null,
+    uppercase: typeof t.uppercase === 'boolean' ? t.uppercase : fallback.uppercase,
+  }
+}
+
+/** A caption look made safe (as a kit's main one) */
+function cleanCaptions(raw: unknown): BrandCaptions {
+  const cap = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
+  const dc = DEFAULT_BRAND_CAPTIONS
+  return {
+    on: true,
+    template: typeof cap.template === 'string' && cap.template.length <= 60 ? cap.template : null,
+    animation: ANIMATIONS.includes(cap.animation as AnimationType) ? cap.animation as AnimationType : dc.animation,
+    font: typeof cap.font === 'string' && cap.font.length <= 60 ? cap.font : null,
+    size: Math.round(num(cap.size, 20, 100, dc.size)),
+    color: color(cap.color, dc.color),
+    highlight_color: color(cap.highlight_color, dc.highlight_color),
+    uppercase: cap.uppercase === true,
+    words_per_line: typeof cap.words_per_line === 'number' ? Math.round(num(cap.words_per_line, 1, 10, 3)) : null,
+  }
+}
+
+/**
+ * A kit's ready text style as it goes on text (Phase 3): the title style, or its subtitle or call to
+ * action with their gaps filled — no font of their own: the title's; a box in the accent colour: that
+ * colour now
+ */
+export function brandTextStyle(d: BrandKitData, kind: BrandTextKind): BrandTextStyle {
+  if (kind === 'title') return { font: d.title.font, color: d.title.color, size: d.title.size, bg: null, uppercase: false }
+  // (a kit read before it had styles — an editor open since before an update — the defaults)
+  const st = d.styles?.[kind] ?? DEFAULT_BRAND_KIT.styles[kind]
+  return { ...st, font: st.font ?? d.title.font, bg: st.bg === 'accent' ? d.colors.accent : st.bg }
+}
+
+/** A kit's caption looks: its main one first (id 'main', named "Main"), then the others */
+export const brandCaptionLooks = (d: BrandKitData): BrandCaptionLook[] =>
+  [{ id: 'main', name: 'Main', captions: d.captions }, ...(d.more_captions ?? [])]
 
 /** A kit's Branded card settings made safe; anything missing or wrong takes `fallback`'s */
 function cleanCard(raw: unknown, fallback: BrandCardSettings): BrandCardSettings {

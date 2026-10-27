@@ -9,8 +9,8 @@ export interface FrameBefore {
   /** The layout it was branded as (a new layout picked there gets branded again) */
   layout: string
   band: { bg: string; color: string }
-  /** Its text items' colours */
-  items: Record<string, { color?: string | null; bg?: string | null }>
+  /** Its text items' colours, and their font (absent on frames branded before fonts were kept) */
+  items: Record<string, { color?: string | null; bg?: string | null; font?: string | null }>
   main_corners?: Record<string, CornerStyle> | null
   /** Items' own corners (photos and videos in its slots) */
   item_corners?: Record<string, CornerStyle | null>
