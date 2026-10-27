@@ -20,6 +20,11 @@ interface Props {
   /** A text just added elsewhere (the timeline's "+"): it opens and its box takes focus with the words selected */
   focusId?: string | null
   onFocused?: () => void
+  /**
+   * A brand kit's ready text styles (brand kit Phase 3: the clip's kit, else the default one): "Your
+   * brand" adds text in each; the first is how "Add" styles new text. Absent: no kit
+   */
+  brand?: { name: string; styles: Array<{ id: string; name: string; text: string; look: Partial<TextOverlay> }>; onFontAll?: () => void } | null
   /** The text picked on the timeline or the preview: it opens here */
   selectedId?: string | null
   onSelect?: (id: string) => void
@@ -36,7 +41,7 @@ const SHADOWS: { v: NonNullable<TextOverlay['shadow']>; label: string }[] = [
  * capitals, size, spacing, colour, outline, background box, shadow / glow, opacity, rotation and an
  * entrance animation. One text is open for styling at a time. (styles: .cap-* / .tx-* in globals.css)
  */
-export function TextOverlayPanel({ overlays, currentTimeMs, clipDurationMs, onAdd, onUpdate, onRemove, focusId, onFocused, selectedId = null, onSelect }: Props) {
+export function TextOverlayPanel({ overlays, currentTimeMs, clipDurationMs, onAdd, onUpdate, onRemove, focusId, onFocused, selectedId = null, onSelect, brand = null }: Props) {
   const [newText, setNewText] = useState('')
   const [openId, setOpenId] = useState<string | null>(selectedId)
   const listRef = useRef<HTMLDivElement>(null)
@@ -82,7 +87,20 @@ export function TextOverlayPanel({ overlays, currentTimeMs, clipDurationMs, onAd
       start_ms: Math.round(currentTimeMs),
       end_ms: Math.round(Math.min(currentTimeMs + 3000, clipDurationMs)),
       x: 0.1, y: 0.4, font: 'sans-serif', size: 72, color: '#ffffff',
-      ...TEXT_PRESETS[0].style,
+      // (with a brand kit: in its title style)
+      ...(brand?.styles[0]?.look ?? TEXT_PRESETS[0].style),
+    })
+    setNewText('')
+  }
+
+  /** Text in one of the brand's ready styles: what's typed, else its own example words */
+  function addBranded(st: NonNullable<Props['brand']>['styles'][number]) {
+    onAdd({
+      text: newText.trim() || st.text,
+      start_ms: Math.round(currentTimeMs),
+      end_ms: Math.round(Math.min(currentTimeMs + 3000, clipDurationMs)),
+      x: 0.1, y: st.id === 'cta' ? 0.7 : st.id === 'subtitle' ? 0.5 : 0.3, font: 'sans-serif', size: 72, color: '#ffffff',
+      ...st.look,
     })
     setNewText('')
   }
@@ -104,6 +122,26 @@ export function TextOverlayPanel({ overlays, currentTimeMs, clipDurationMs, onAd
             Add
           </button>
         </div>
+        {/* (brand kit Phase 3) the kit's ready styles, one tap each */}
+        {brand && (
+          <div className="tx-brand" role="group" aria-label={`${brand.name} text styles`}>
+            <span className="tx-brand-label">{brand.name}</span>
+            <div className="flex gap-1.5 flex-wrap">
+              {brand.styles.map(st => (
+                <button key={st.id} type="button" className="tx-brand-btn" onClick={() => addBranded(st)} title={`Add text in your ${st.name.toLowerCase()} style`}
+                  style={{ fontFamily: st.look.font && st.look.font !== 'sans-serif' ? `"${st.look.font}", sans-serif` : undefined,
+                    color: st.look.color ?? undefined, background: st.look.bg_color ?? undefined, textTransform: st.look.uppercase ? 'uppercase' : undefined }}>
+                  + {st.name}
+                </button>
+              ))}
+            </div>
+            {brand.onFontAll && overlays.length > 0 && (
+              <button type="button" className="tx-brand-all" onClick={brand.onFontAll} title="Your brand's title font on every text and frame text of this clip (locked ones stay)">
+                Use brand font on all text
+              </button>
+            )}
+          </div>
+        )}
         <p className="flex items-center gap-1.5 text-[11px]" style={{ color: 'rgb(var(--ed-fg) / 0.45)' }}>
           How it works
           <InfoTip label="How text works" size={12}>It appears at the playhead for 3 seconds. Drag it on the video to move it; drag its bar on the timeline to change when it shows.</InfoTip>

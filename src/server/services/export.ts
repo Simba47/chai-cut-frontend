@@ -14,6 +14,11 @@ export async function queueRender(userId: string, clipId: string, quality: Rende
   if (row.status === 'rendering') throw Object.assign(new Error('Already rendering'), { status: 409 })
   if (!row.storage_path) throw Object.assign(new Error('Video not ready (no storage path)'), { status: 400 })
 
+  // The clip's brand kit changed since it went on (a new logo, other colours): the clip follows it
+  // first, so a clip exported without being opened is on-brand (brandApply.ts; never fails the export)
+  const { catchUpClip } = await import('./brandApply')
+  await catchUpClip(clipId)
+
   await sql`UPDATE clips SET status = 'rendering' WHERE id = ${clipId}`
   // "Remove pauses and filler words", as the editor shows it when exporting
   if (typeof removeFillers === 'boolean') {

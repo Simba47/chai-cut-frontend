@@ -188,7 +188,7 @@ export default function DashboardPage() {
     if (!res?.ok) setVideos(prev)
   }
 
-  // Same full-screen loader as the clip board and editor (ring, glow, progress bar, tips)
+  // Same full-screen loader as the clip board and editor (ring, glow, progress bar)
   if (loading) return <BrandLoaderScreen mascot="dashboard" label="Loading your videos…" />
 
   const usagePct = planInfo ? Math.min(100, (planInfo.usage.videos / planInfo.maxVideos) * 100) : 0
@@ -217,6 +217,11 @@ export default function DashboardPage() {
           {planInfo?.plan === 'free' && (
             <a href="/pricing" className="dash-btn-fill fill-btn fill-btn-sm"><FillButtonContent>Upgrade</FillButtonContent></a>
           )}
+          {/* (the account's brand kits: set once, on every clip) */}
+          <a href="/brand" className="dash-brand-link" title="Your logo, colours and caption look — on every clip">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="13.5" cy="6.5" r="2" /><circle cx="17.5" cy="10.5" r="2" /><circle cx="8.5" cy="7.5" r="2" /><circle cx="6.5" cy="12.5" r="2" /><path d="M12 22a10 10 0 110-20 9 9 0 019 9c0 3-2 4-4 4h-2a2 2 0 00-1 3.7A2 2 0 0112 22z" /></svg>
+            <span>Brand kits</span>
+          </a>
           <ThemeSwitch />
           <AccountMenu planInfo={planInfo} />
         </div>

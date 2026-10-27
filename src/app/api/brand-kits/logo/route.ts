@@ -6,7 +6,7 @@ import { apiError } from '@/lib/api-error'
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 
-/** A logo for a brand kit (form field "file"): { path, url } */
+/** A logo for a brand kit (form field "file"): { path, url, colors } — its own colours read from it */
 export async function POST(req: NextRequest) {
   const user = await requireUser()
   const form = await req.formData().catch(() => null)

@@ -8,7 +8,9 @@
     "start": "next start -p ${PORT:-3000}",
     "lint": "next lint",
     "type-check": "tsc --noEmit",
-    "test:auto-format": "npx tsx --test src/modules/editor/autoFormat.test.ts"
+    "test:auto-format": "npx tsx --test src/modules/editor/autoFormat.test.ts",
+    "test:brand": "npx tsx --test src/modules/brand/engine.test.ts src/lib/shared/brandStyles.test.ts",
+    "test:brand-style": "npx tsx --test src/server/services/brandStyle.test.ts"
   },
   "dependencies": {
     "@auth/pg-adapter": "^1.11.3",

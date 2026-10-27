@@ -9,6 +9,7 @@ import { liveTime, usePlayerStore } from '@/modules/player/store'
 import { isFrameLayout, FRAME_TEMPLATES, frameOf, laneItems, itemBounds, MIN_ITEM_MS, isTextLane } from '@/modules/editor/frames'
 import { isShot } from '@/modules/editor/shots'
 import { isGapPart } from '@/modules/editor/visibility'
+import { goesAfterMain } from '@/modules/editor/inserts'
 import { TransitionGlyph, TRANSITION_DRAG_TYPE, TRANSITION_DEFAULT_MS, playedTransitionMs, transitionName, transitionSecs } from '../TransitionsPanel'
 import {
   VideoThumbnails, LAYOUT_COLORS, FRAME_ITEM_COLORS, frameItemColor, visibleLanes, thumbsFor, nearestThumb,
@@ -16,6 +17,9 @@ import {
   StateBadges, MediaIcon, MAX_ZOOM, STOCK_DRAG_TYPE, MEDIA_DRAG_TYPE, draggedIn, markTimelineOpened,
   type LaneCtl, type LaneCtlKey,
 } from '../SegmentTimeline'
+
+/** How near a part's end a video on a row must start to be offered a transition there (ms) */
+const JOIN_REACH_MS = 500
 
 /**
  * The editor's timeline: the whole clip across the width, the playhead line moving over it. Press
@@ -112,6 +116,8 @@ export interface TimelineProps {
   onApplyTransitionToAll?: (afterSegmentId: string) => void
   /** A tile from the Transitions panel dropped on a cut */
   onDropTransition?: (afterSegmentId: string, type: string) => void
+  /** The cut the Transition tool is on (its section id): marked on the timeline, with its transition */
+  focusCut?: string | null
   /** The transition button between two parts: open the Transition tool on that cut */
   onOpenTransition?: (afterSegmentId: string, atMs: number) => void
   onDropFiles?: (files: File[], atMs: number, lane: string | null) => void
@@ -152,7 +158,7 @@ const ADD_CHOICES: { kind: 'insert' | 'overlay' | 'music' | 'text'; label: strin
 ]
 
 const RULER_H = 26
-const BLOCK_H = 48
+const BLOCK_H = 40
 const MAIN_PAD = 6
 const VIEW_ROW_H = 20
 const ORIG_ROW_H = 24
@@ -162,7 +168,7 @@ const CAP_ROW_H = 30
 const CAPTIONS_META: LaneMeta = { label: 'Captions', color: '#e5e7eb', icon: <><rect x="2.5" y="5" width="19" height="14" rx="2.5" /><path d="M10 10.2a2.2 2.2 0 100 3.6M16.5 10.2a2.2 2.2 0 100 3.6" /></> }
 const ROW_H = 30
 /** A row of videos, photos and text: its bars as tall as the main video's parts (BLOCK_H) */
-const VIS_ROW_H = BLOCK_H + 8
+const VIS_ROW_H = BLOCK_H + 4
 const ROW_GAP = 3
 const FRAME_LANE_H = 26
 const LEFT_W = 52
@@ -228,12 +234,12 @@ export function Timeline({
   viewMarkers = [], selectedViewT = null, onSelectView, onMoveView, onRemoveView, onDuplicateView,
   onBrollChange, videoUrls = {}, mediaLengths = {}, zoom: zoomProp, onZoomChange,
   onAddKind, cutJoins = [], isStock, onDropFiles, onDropStock, onDropMedia,
-  mainMuted = false, onToggleMainMute, laneCtl, onLaneCtl, captionRow, onCaptionLineClick, onSelectCaptionRange, transitions = [], onOpenTransition, onRemoveTransition, onApplyTransitionToAll, onDropTransition,
+  mainMuted = false, onToggleMainMute, laneCtl, onLaneCtl, captionRow, onCaptionLineClick, onSelectCaptionRange, transitions = [], focusCut = null, onOpenTransition, onRemoveTransition, onApplyTransitionToAll, onDropTransition,
   onTrackDrop, belowRows = 0, onMovePart, onPlacePart, onPartToTrack, onShotToMain, maxMs, pickedSegmentId = null, selectedId, onPickSegment,
 }: TimelineProps) {
   const viewRef = useRef<HTMLDivElement>(null)        // what shows (the playhead sits in its middle)
   const contentRef = useRef<HTMLDivElement>(null)     // the layer that slides under it
-  const trackRef = useRef<HTMLDivElement>(null)       // the ruler + main row: times are measured on it
+  const trackRef = useRef<HTMLDivElement>(null)       // the whole layer (ruler on top): times and rows are measured on it
   const lineRef = useRef<HTMLDivElement>(null)
   const bubbleRef = useRef<HTMLSpanElement>(null)
   const [viewW, setViewW] = useState(0)
@@ -285,7 +291,8 @@ export function Timeline({
   /** A video on a row carried over the main row: where it would go in (it goes in there when let go) */
   const [mainDropAt, setMainDropAt] = useState<number | null>(null)
   const [addMenu, setAddMenu] = useState<DOMRect | null>(null)
-  const [dropAt, setDropAt] = useState<{ ms: number; lane: string | null; what: string; y: number } | null>(null)
+  /** `end`: a video that goes on after the main row's last part, there (goesAfterMain) */
+  const [dropAt, setDropAt] = useState<{ ms: number; lane: string | null; what: string; y: number; end?: number } | null>(null)
   /** How far what's being dragged in reaches (ms), while it reaches past the clip's end */
   const [dropReach, setDropReach] = useState<number | null>(null)
   // A transition tile dragged over the timeline: the cut it would land on
@@ -564,6 +571,24 @@ export function Timeline({
   const isInsertPart = (s: SegmentLocal) => s.video_offset_ms != null && !!s.crop_boxes[0]?.source_video_id
   /** The empty stretch after the main video (what's on top runs on there): put in, hidden — the editor makes and sizes it */
   const isTailPart = (s: SegmentLocal) => isInsertPart(s) && !!s.hidden && !!s.crop_boxes[0]?.hidden
+  /**
+   * The parts of the main row with only empty room after them and a video on a row starting at (or
+   * near) their end: a transition goes between the two there, the video staying on its row (the
+   * export plays them one after the other: EditorShell transitionJoins). Part id → that video.
+   */
+  const rowJoins = new Map<string, SegmentLocal>()
+  for (const left of mains) {
+    if (isTailPart(left) || isGapPart(left, mainVideoId)) continue
+    const next = mains.find(m => m.id !== left.id && Math.abs(m.start_ms - left.end_ms) <= 1)
+    if (next && !isTailPart(next) && !isGapPart(next, mainVideoId)) continue
+    const shot = brolls.find(b => !b.crop_boxes[0]?.hidden && Math.abs(b.start_ms - left.end_ms) <= JOIN_REACH_MS)
+    if (shot) rowJoins.set(left.id, shot)
+  }
+  /** Whether the video on a row starts exactly at that part's end (else a click lines it up first) */
+  const rowJoinExact = (leftId: string) => {
+    const left = mains.find(m => m.id === leftId), shot = rowJoins.get(leftId)
+    return !!left && !!shot && Math.abs(shot.start_ms - left.end_ms) <= 1
+  }
   // Wheel / trackpad: Ctrl + wheel or a pinch zooms (the moment under the pointer stays put);
   // sideways (or Shift) scrolls the zoomed timeline; up and down goes through the rows
   const zoomRef = useRef(zoom)
@@ -1049,7 +1074,7 @@ export function Timeline({
   const cutNear = (clientX: number) => {
     const ms = msFromClientX(clientX)
     let best: { id: string; d: number } | null = null
-    for (const { left } of junctions) {
+    for (const left of [...junctions.map(j => j.left), ...mains.filter(m => rowJoinExact(m.id))]) {
       const d = Math.abs(left.end_ms - ms) * pxPerMs
       if (d <= 24 && (!best || d < best.d)) best = { id: left.id, d }
     }
@@ -1069,11 +1094,14 @@ export function Timeline({
     e.dataTransfer.dropEffect = 'copy'
     const lane = laneAt(e.target as Element)
     const ms = Math.round(msFromClientX(e.clientX))
+    // (a video at the main video's end or past it goes on after its last part)
+    const mainEnd = Math.max(0, ...mains.filter(m => !isTailPart(m)).map(m => m.end_ms))
+    const end = (kind === 'stock' || draggedIn.current?.kind === 'video') && goesAfterMain(ms, lane, mainEnd) ? mainEnd : undefined
     // (on the main row a video goes into the clip; anywhere else it goes on top)
-    const what = lane === 'main' ? 'Insert into the main video' : lane?.startsWith('audio-') ? 'Music'
+    const what = end != null ? 'After the main video' : lane === 'main' ? 'Insert into the main video' : lane?.startsWith('audio-') ? 'Music'
       : lane === 'track-below' || (/^track-(\d+)$/.test(lane ?? '') && Number(lane!.slice(6)) < belowRows) ? 'Below the main video' : 'Above the main video'
     const y = Math.round(e.clientY)
-    setDropAt(prev => (prev && prev.ms === ms && prev.lane === lane && prev.y === y ? prev : { ms, lane, what, y }))
+    setDropAt(prev => (prev && prev.ms === ms && prev.lane === lane && prev.y === y && prev.end === end ? prev : { ms, lane, what, y, end }))
     const reach = Math.min(maxMs ?? Infinity, ms + Math.max(500, draggedIn.current?.ms ?? 0))
     if (reach > Math.max(duration, dropReach ?? 0) + 200) setDropReach(reach)
   }
@@ -1109,12 +1137,14 @@ export function Timeline({
       const cur = by.get(k)
       by.set(k, { top: Math.min(cur?.top ?? Infinity, r.top - base0), bottom: Math.max(cur?.bottom ?? -Infinity, r.bottom - base0) })
     })
-    const cover = trackRef.current ? trackRef.current.getBoundingClientRect().bottom - base0 : 0
+    // (every row scrolls, the main one too: a row scrolled up past the top — under the + button — has no icon)
     const next = [...by].map(([kind, v]) => ({ kind, top: Math.round(v.top), h: Math.round(v.bottom - v.top) }))
-      .filter(sp => sp.kind === 'main' || sp.kind === 'captions' || sp.kind === 'original' || sp.kind === 'views' || /^track-\d+$/.test(sp.kind) || sp.top + sp.h / 2 > cover)
+      .filter(sp => sp.top + sp.h / 2 > RULER_H)
     setLaneSpans(prev => (JSON.stringify(prev) === JSON.stringify(next) ? prev : next))
   }
   useLayoutEffect(measureLanes)
+  /** Where the main row is in the view now (it scrolls; absent: scrolled up under the ruler) */
+  const mainSpan = laneSpans.find(sp => sp.kind === 'main')
   const metaOf = (kind: string): LaneMeta | undefined => {
     if (kind === 'main' || kind === 'views' || kind === 'frame') return undefined
     if (kind === 'captions') return CAPTIONS_META
@@ -1334,7 +1364,7 @@ export function Timeline({
    * it — as a clip carried along the timeline shows itself (liftedGhost). On the main row a thin
    * line marks where it goes in.
    */
-  function dropGhost(d: { ms: number; lane: string | null; y: number }) {
+  function dropGhost(d: { ms: number; lane: string | null; y: number; end?: number }) {
     const layer = trackRef.current
     // (wherever the pointer is over the timeline, as a carried bar shows: not only once a row is known)
     if (!layer || typeof document === 'undefined') return null
@@ -1342,7 +1372,9 @@ export function Timeline({
     const kind = what?.kind === 'image' ? 'photo' : what?.kind === 'audio' || !!d.lane?.startsWith('audio-') ? 'music' : 'video'
     const len = Math.max(500, what?.ms ?? 5000)
     const tr = layer.getBoundingClientRect()
-    const x = tr.left + (d.ms / viewDur) * tr.width, w = Math.max(24, (len / viewDur) * tr.width)
+    // (going on after the main row's last part: there)
+    const ms = d.end ?? d.ms
+    const x = tr.left + (ms / viewDur) * tr.width, w = Math.max(24, (len / viewDur) * tr.width)
     // (as tall as a bar on the row it goes on, held at its middle: it follows the pointer up and down)
     const h = kind === 'music' ? ROW_H - 2 : BLOCK_H
     // Its pictures, as a bar on a row shows them
@@ -1352,8 +1384,8 @@ export function Timeline({
       : what?.thumb ? <div className="absolute inset-0" style={{ backgroundImage: `url("${what.thumb}")`, backgroundSize: 'auto 100%', backgroundRepeat: 'repeat-x' }} />
       : undefined
     // (named as it will be on a row: a video covers the frame)
-    const name = `${what?.name ?? 'Media'}${kind === 'video' && d.lane !== 'main' ? ' · full screen' : ''}`
-    return ghostBar({ left: x, top: d.y - h / 2, width: w, height: h }, kind, name, d.ms, what?.ms ? d.ms + len : null, inside)
+    const name = `${what?.name ?? 'Media'}${kind === 'video' && d.lane !== 'main' && d.end == null ? ' · full screen' : ''}`
+    return ghostBar({ left: x, top: d.y - h / 2, width: w, height: h }, kind, name, ms, what?.ms ? ms + len : null, inside)
   }
   /**
    * Where the carried thing was when it was picked up (screen px), kept for the whole drag: the
@@ -1664,7 +1696,7 @@ export function Timeline({
   // top, as V2 over V1 in Premiere / Resolve); music stays under it
   const aboveTracks = visualTracks.filter(t => t >= belowRows)
   const belowTracks = visualTracks.filter(t => t < belowRows)
-  const visualH = aboveTracks.length ? aboveTracks.length * VIS_ROW_H + (aboveTracks.length - 1) * ROW_GAP + 6 + 4 : 0
+  const visualH = aboveTracks.length ? aboveTracks.length * VIS_ROW_H + (aboveTracks.length - 1) * ROW_GAP + 6 + 2 : 0
   const mainTop = RULER_H + visualH
   const mainRowH = BLOCK_H + MAIN_PAD * 2
   const headH = mainTop + mainRowH + (captionRow ? CAP_ROW_H : 0) + (originals.length ? ORIG_ROW_H : 0) + (viewMarkers.length ? VIEW_ROW_H : 0)
@@ -1736,10 +1768,10 @@ export function Timeline({
           )
         })()}
         {/* "Mute clip audio" (as in CapCut), level with the main row: with the rows' own buttons, the main row's speaker is it */}
-        {onToggleMainMute && !laneCtl && (
+        {onToggleMainMute && !laneCtl && mainSpan && (
           <button type="button" className="tl2-mute" data-on={mainMuted || undefined} onClick={onToggleMainMute}
             aria-pressed={mainMuted} aria-label={mainMuted ? 'Turn the clip’s audio back on' : 'Mute clip audio'} title={mainMuted ? 'Clip audio is off — click to turn it on' : 'Mute clip audio'}
-            style={{ top: mainTop + MAIN_PAD + BLOCK_H / 2 - 20 }}>
+            style={{ top: mainSpan.top + MAIN_PAD + BLOCK_H / 2 - 20 }}>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
               {mainMuted ? <><path d="M11 5L6 9H2v6h4l5 4V5z" /><path d="M22 9l-6 6M16 9l6 6" /></> : <><path d="M11 5L6 9H2v6h4l5 4V5z" /><path d="M15.5 8.5a5 5 0 010 7M19 5a10 10 0 010 14" /></>}
             </svg>
@@ -1751,7 +1783,7 @@ export function Timeline({
           // (the main row keeps its own sound button: beside it, its lock)
           const ctl = laneCtl && (sp.kind === 'main' || /^(track|audio)-\d+$/.test(sp.kind)) ? laneCtl(sp.kind) : null
           if (!meta && !ctl) return null
-          const mid = sp.kind === 'main' ? mainTop + MAIN_PAD + BLOCK_H / 2 : sp.top + sp.h / 2
+          const mid = sp.kind === 'main' ? sp.top + MAIN_PAD + BLOCK_H / 2 : sp.top + sp.h / 2
           return (
             <Fragment key={sp.kind}>
               {meta && (
@@ -1777,12 +1809,11 @@ export function Timeline({
       <div className="tl2-frame relative flex-1 min-w-0">
       <div ref={viewRef} className="tl2-view" onScroll={measureLanes}
         onDragOver={onDragOver} onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) { setDropAt(null); setDropCut(null); setDropReach(null) } }} onDrop={onDrop}>
-        <div ref={contentRef} className="relative" style={{ width: contentW, willChange: 'transform' }}>
+        <div ref={el => { contentRef.current = el; trackRef.current = el }} className="relative" style={{ width: contentW, willChange: 'transform' }}>
           {/* (what's dragged in shows itself where it would go: dropGhost) */}
           {dropAt && dropGhost(dropAt)}
-          {/* Ruler and main row stay at the top; the rows under them scroll */}
-          <div ref={trackRef} data-tl-head className="tl2-head" style={{ height: headH }} onPointerDown={handleScrubDown}>
-            <div className="relative" style={{ height: RULER_H }}>
+          {/* The ruler: always at the top, as in Premiere, Resolve and CapCut; every row scrolls under it */}
+          <div data-tl-head className="tl2-ruler" style={{ height: RULER_H }} onPointerDown={handleScrubDown}>
               {ticks.map(({ t, major }) => (
                 <div key={t} className={major ? 'tl2-tick tl2-tick-major' : 'tl2-tick'} style={{ left: `${pct(t)}%` }}>
                   {major && <span>{tickLabel(t)}</span>}
@@ -1791,14 +1822,16 @@ export function Timeline({
               {/* While something is dragged in: drop it here to put it on top of the video (a new
                   row over the others); on the main video it goes into the clip instead */}
               {dropAt && <div data-lane="track-new" className="tl2-dropzone tl2-dropzone-top" data-on={dropAt.lane === 'track-new' || undefined} aria-label="A new row above the main video" />}
-            </div>
+          </div>
+          {/* The rows on top of the main video, the main row and its own rows (captions, sound, views) */}
+          <div data-tl-head className="tl2-head" style={{ height: headH - RULER_H }} onPointerDown={handleScrubDown}>
             {/* dragged up with no rows above yet: a new one opens here, over the main video */}
             {trackHover?.family === 'visual' && trackHover.target === 'new' && aboveTracks.length === 0 && (
-              <div className="absolute left-0 right-0 pointer-events-none rounded-full" aria-hidden="true" style={{ top: RULER_H, height: 2, zIndex: 25, background: NEW_ROW_LINE }} />
+              <div className="absolute left-0 right-0 pointer-events-none rounded-full" aria-hidden="true" style={{ top: 0, height: 2, zIndex: 25, background: NEW_ROW_LINE }} />
             )}
             {/* Rows on top of the main video: videos, photos, text */}
             {aboveTracks.length > 0 && (
-              <div className="relative flex flex-col" style={{ gap: ROW_GAP, paddingTop: 6, paddingBottom: 4 }}>
+              <div className="relative flex flex-col" style={{ gap: ROW_GAP, paddingTop: 6, paddingBottom: 2 }}>
                 {aboveTracks.map((t, i) => trackRow('visual', t, i === 0 ? 'top' : null, visual.filter(v => v.track === t).map(visualBar), true))}
               </div>
             )}
@@ -1807,12 +1840,13 @@ export function Timeline({
               {mains.map((seg, i) => mainBlock(seg, i))}
               {/* a video from a row carried over the main row: it goes in here */}
               {/* (a video carried over the main row, from a row or dragged in from a panel: where it goes in) */}
-              {(mainDropAt ?? (dropAt?.lane === 'main' ? dropAt.ms : null)) != null && (() => {
-                const t = (mainDropAt ?? dropAt!.ms)
+              {(mainDropAt ?? dropAt?.end ?? (dropAt?.lane === 'main' ? dropAt.ms : null)) != null && (() => {
+                const t = (mainDropAt ?? dropAt!.end ?? dropAt!.ms)
+                const after = mainDropAt == null && dropAt?.end != null
                 return (
                   <div className="absolute pointer-events-none" style={{ left: `${at(t)}%`, top: 0, bottom: 0, zIndex: 35 }}>
                     <div className="absolute top-0 bottom-0 rounded-full" style={{ left: -1, width: 2, background: ACCENT }} />
-                    <span className="absolute whitespace-nowrap text-[10px] font-bold px-1.5 py-0.5 rounded" style={{ top: -2, left: 6, background: ACCENT, color: '#000' }}>Insert into the main video · {clockLabel(t)}</span>
+                    <span className="absolute whitespace-nowrap text-[10px] font-bold px-1.5 py-0.5 rounded" style={{ top: -2, left: 6, background: ACCENT, color: '#000' }}>{after ? `After the main video · ${clockLabel(t)} · a transition can go between` : `Insert into the main video · ${clockLabel(t)}`}</span>
                   </div>
                 )
               })()}
@@ -1845,7 +1879,7 @@ export function Timeline({
                   </div>
                 )
               })()}
-              {!dragging && junctions.filter(j => !isTailPart(j.right) && !isGapPart(j.left, mainVideoId) && !isGapPart(j.right, mainVideoId)).map(({ left, right }) => {
+              {!dragging && junctions.filter(j => !isTailPart(j.right) && !rowJoins.has(j.left.id)).map(({ left, right }) => {
                 // A marker on every cut, as in CapCut: lime with its kind's picture when it has a
                 // transition, a grey "+" when not. Beside the selected part it moves off the cut, onto
                 // the other part, so the selected part's grip stays free to drag
@@ -1853,6 +1887,9 @@ export function Timeline({
                 const room = Math.min(left.end_ms - left.start_ms, right.end_ms - right.start_ms)
                 const tr = transitionAfter.get(left.id)
                 const on = !!tr && tr.type !== 'cut'
+                // (beside an empty stretch of the main row: only a cut with a transition, so it's seen)
+                if (!on && (isGapPart(left, mainVideoId) || isGapPart(right, mainVideoId))) return null
+                const focus = focusCut === left.id
                 // (a part too narrow on screen to hold it: a cut with a transition keeps a small dot, one
                 // without none. The dot sits just under the row, so the narrow part stays free to tap)
                 const small = room * pxPerMs < 30
@@ -1865,7 +1902,7 @@ export function Timeline({
                 const what = on ? (played ? `${name} · ${transitionSecs(played)}${played < set ? ' (a part beside it is short)' : ''}` : `${name} · a part beside it is too short: plays as a plain cut`) : ''
                 return (
                   <button key={`tr-${left.id}`} type="button" className="tl2-trans absolute" data-on={on || undefined} data-small={small || undefined}
-                    data-off={(on && !played) || undefined} data-drop={dropCut === left.id || undefined} data-kind={on ? tr!.type : undefined}
+                    data-off={(on && !played) || undefined} data-drop={dropCut === left.id || undefined} data-focus={focus || undefined} data-kind={on ? tr!.type : undefined}
                     onPointerDown={e => e.stopPropagation()}
                     onClick={e => { e.stopPropagation(); onOpenTransition?.(left.id, left.end_ms) }}
                     onContextMenu={e => {
@@ -1886,6 +1923,81 @@ export function Timeline({
                   </button>
                 )
               })}
+              {/* A video on a row starting where a part of the main row ends (rowJoins): a marker on that
+                  cut, as on any other — the transition plays from the part into the video, which stays
+                  on its row. Starting a little after the end, a click first lines it up there (on its
+                  own row: it only slides along it) */}
+              {!dragging && onOpenTransition && [...rowJoins].map(([leftId, shot]) => {
+                const left = mains.find(m => m.id === leftId)
+                if (!left) return null
+                const exact = rowJoinExact(leftId)
+                if (!exact && (shot.locked || !onBrollChange)) return null
+                const tr = transitionAfter.get(leftId)
+                const on = exact && !!tr && tr.type !== 'cut'
+                const room = Math.min(left.end_ms - left.start_ms, shot.end_ms - shot.start_ms)
+                const set = on ? (tr!.duration_ms || TRANSITION_DEFAULT_MS) : 0
+                const played = on ? playedTransitionMs(set, room) : 0
+                const what = on ? `${transitionName(tr!.type)} · ${played ? transitionSecs(played) : 'too short to show'}` : ''
+                return (
+                  <button key={`row-${leftId}`} type="button" className={`tl2-trans absolute${on ? '' : ' tl2-join'}`} data-on={on || undefined}
+                    data-off={(on && !played) || undefined} data-drop={dropCut === leftId || undefined} data-focus={focusCut === leftId || undefined} data-kind={on ? tr!.type : undefined}
+                    onPointerDown={e => e.stopPropagation()}
+                    onClick={e => {
+                      e.stopPropagation()
+                      // (a little after the part's end: slid along its own row to start right there)
+                      if (!exact) onBrollChange?.(shot.id, left.end_ms, left.end_ms + (shot.end_ms - shot.start_ms), true)
+                      onOpenTransition(leftId, left.end_ms)
+                    }}
+                    onContextMenu={e => {
+                      e.preventDefault(); e.stopPropagation()
+                      if (!on) { e.currentTarget.click(); return }
+                      setCutMenu({ afterId: leftId, at: left.end_ms, x: e.clientX, y: e.clientY })
+                    }}
+                    onKeyDown={e => {
+                      if (e.key !== 'Delete' && e.key !== 'Backspace') return
+                      e.preventDefault(); e.stopPropagation()
+                      if (on) onRemoveTransition?.(leftId)
+                    }}
+                    aria-label={on ? `Transition at ${msToLabel(left.end_ms)} into the video below: ${what}. Change it` : `Add a transition at ${msToLabel(left.end_ms)}, into the video below`}
+                    title={on ? `${what} — into the video below. Click to change it, right-click for more`
+                      : exact ? 'Add a transition from this part into the video below (it stays on its row)'
+                      : 'Add a transition into the video below: it slides to start right here, on its own row'}
+                    style={{ left: `${at(left.end_ms)}%`, top: MAIN_PAD + BLOCK_H / 2, marginLeft: -10 }}>
+                    <TransitionGlyph type={on ? tr!.type : 'cut'} size={on ? 12 : 10} />
+                  </button>
+                )
+              })}
+              {/* The cut the Transition tool is on. With a transition: a zone over the clip as wide as
+                  it plays (stripes drifting through it, fading in and out at its ends, as one shot
+                  gives way to the next) and a badge under it — its kind, its length. Without one: a
+                  dashed seam and a quiet badge */}
+              {!dragging && !dropCut && focusCut && (() => {
+                const left = junctions.find(x => x.left.id === focusCut)?.left ?? (rowJoinExact(focusCut) ? mains.find(m => m.id === focusCut) : undefined)
+                if (!left) return null
+                const right = junctions.find(x => x.left.id === focusCut)?.right ?? rowJoins.get(focusCut)
+                const tr = transitionAfter.get(focusCut)
+                const on = !!tr && tr.type !== 'cut'
+                const room = right ? Math.min(left.end_ms - left.start_ms, right.end_ms - right.start_ms) : 0
+                const played = on ? playedTransitionMs(tr!.duration_ms || TRANSITION_DEFAULT_MS, room) : 0
+                const cut = left.end_ms
+                const badge = (
+                  <span className="tl2-cutfocus-badge" data-on={on || undefined}>
+                    <TransitionGlyph type={on ? tr!.type : 'cut'} size={10} />
+                    {on ? <>{transitionName(tr!.type)}<i>{played ? transitionSecs(played) : 'too short'}</i></> : 'No transition'}
+                  </span>
+                )
+                return played ? (
+                  <div className="tl2-cutfocus-zone absolute pointer-events-none" aria-hidden="true"
+                    style={{ left: `${at(cut - played / 2)}%`, width: `max(14px, ${pct(played)}%)`, top: MAIN_PAD, height: BLOCK_H, zIndex: 5 }}>
+                    {badge}
+                  </div>
+                ) : (
+                  <div className="tl2-cutfocus-seam absolute pointer-events-none" aria-hidden="true"
+                    style={{ left: `${at(cut)}%`, top: MAIN_PAD, height: BLOCK_H, zIndex: 5 }}>
+                    {badge}
+                  </div>
+                )
+              })()}
               {/* a transition tile dragged over the timeline: the cut it will land on */}
               {dropCut && (() => {
                 const j = junctions.find(x => x.left.id === dropCut)
@@ -1971,14 +2083,14 @@ export function Timeline({
                 })}
               </div>
             )}
-            {snapLine !== null && <div className="absolute pointer-events-none" style={{ left: `${at(snapLine)}%`, top: RULER_H, bottom: 0, width: 0, borderLeft: `1.5px dashed ${ACCENT}`, zIndex: 20 }} />}
+            {snapLine !== null && <div className="absolute pointer-events-none" style={{ left: `${at(snapLine)}%`, top: 0, bottom: 0, width: 0, borderLeft: `1.5px dashed ${ACCENT}`, zIndex: 20 }} />}
             {/* a bar being dragged: where it will play */}
             {/* (a carried bar says where it goes on itself: liftedGhost) */}
           </div>
 
           {/* Rows under the main video (videos, photos and text, played over it like the rows above) */}
           {(dropAt || belowTracks.length > 0 || trackHover?.target === 'new-below') && (
-            <div className="relative flex flex-col" style={{ gap: ROW_GAP, paddingTop: 6, paddingBottom: 2 }}>
+            <div className="relative flex flex-col" style={{ gap: ROW_GAP, paddingTop: 2, paddingBottom: 2 }}>
               {belowTracks.map(t => trackRow('visual', t, null, visual.filter(v => v.track === t).map(visualBar)))}
               {dropAt && <div data-lane="track-below" className="tl2-dropzone" data-on={dropAt.lane === 'track-below' || undefined} style={{ height: VIS_ROW_H, margin: 0 }} aria-label="A new row below the main video" />}
               {trackHover?.target === 'new-below' && (

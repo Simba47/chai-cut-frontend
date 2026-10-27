@@ -194,7 +194,13 @@ export async function saveClip(userId: string, clipId: string, body: SaveClipInp
   const savesBar = bar !== undefined && await hasColumn('clips', 'progress_bar')
   // The brand kit switch (clips.brand, once the backend has added it). A huge `before` (thousands of
   // texts) is dropped rather than refused: the brand then comes off without putting styles back
-  const brandOn = body.brand === undefined ? undefined : cleanBrandOn(body.brand)
+  let brandOn = body.brand === undefined ? undefined : cleanBrandOn(body.brand)
+  // (a kit the user can't use — deleted, or no longer shared with them — isn't saved as on: the clip
+  // keeps its look, the switch off)
+  if (brandOn) {
+    const { canUseKit } = await import('./brandKits')
+    if (!(await canUseKit(userId, brandOn.kit_id))) brandOn = null
+  }
   const brandJson = brandOn && JSON.stringify(brandOn).length > 400_000 ? { ...brandOn, before: null } : brandOn
   const savesBrand = brandJson !== undefined && await hasColumn('clips', 'brand')
 
