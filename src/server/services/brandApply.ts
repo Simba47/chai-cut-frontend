@@ -2,6 +2,7 @@ import sql from '@/lib/db'
 import type { AudioTrack, BoxKeyframe, CaptionStyle, Overlay, SegmentLocal, TextOverlay, Transition } from '@chai-cut/shared'
 import { captionBand, cleanBrandKitData, cleanProgressBar, type BrandKit } from '@/lib/shared/brandKit'
 import { cleanBrandOn, type BrandOn } from '@/lib/shared/brandOn'
+import { lockHolds } from '@/lib/shared/brandTeam'
 import { brandChanged, putBrandOn, takeBrandOff, updateBrand, type BrandTarget } from '@/modules/brand/engine'
 import { isShot } from '@/modules/editor/shots'
 import { rowsToLocal } from '@/modules/editor/utils'
@@ -25,18 +26,14 @@ const err = (message: string, status: number) => Object.assign(new Error(message
 
 /** A kit the user can put on clips (their own, or one shared with them), as the engine takes it; null: none such */
 export async function usableKit(userId: string, kitId: string): Promise<BrandKit | null> {
-  if (!/^[0-9a-f-]{36}$/i.test(kitId)) return null
-  const shares = await sql<{ ok: boolean }[]>`SELECT to_regclass('public.brand_kit_shares') IS NOT NULL AS ok`.catch(() => [])
-  const [row] = await (shares[0]?.ok
-    ? sql<{ id: string; name: string; data: unknown; user_id: string }[]>`
-        SELECT bk.id, bk.name, bk.data, bk.user_id FROM brand_kits bk WHERE bk.id = ${kitId}
-          AND (bk.user_id = ${userId} OR EXISTS (SELECT 1 FROM brand_kit_shares s WHERE s.kit_id = bk.id AND s.user_id = ${userId}))`
-    : sql<{ id: string; name: string; data: unknown; user_id: string }[]>`SELECT id, name, data, user_id FROM brand_kits WHERE id = ${kitId} AND user_id = ${userId}`
-  ).catch(() => [])
+  // (their own, or one shared with them while its owner's plan shares kits: brandKits.ts kitAccess)
+  const { kitAccess, usableEnds } = await import('./brandKits')
+  const access = await kitAccess(userId, kitId)
+  if (!access) return null
+  const [row] = await sql<{ name: string }[]>`SELECT name FROM brand_kits WHERE id = ${kitId}`.catch(() => [])
   if (!row) return null
   // (a shared kit's logo is its owner's; its intro and outro are theirs too: not for this user's clips)
-  const { usableEnds } = await import('./brandKits')
-  return { id: row.id, name: row.name, data: await usableEnds(cleanBrandKitData(row.data, row.user_id), row.user_id, row.user_id !== userId) }
+  return { id: kitId, name: row.name, data: await usableEnds(access.data, access.ownerId, access.role !== 'owner') }
 }
 
 /** A clip as the brand engine takes it, and what the writing back needs */
@@ -242,6 +239,12 @@ export async function brandClip(userId: string, clipId: string, kitId: string | 
   const kit = kitId ? await usableKit(userId, kitId) : null
   if (kitId && !kit) throw err('That brand kit isn’t yours to use', 403)
   if (kit && l.brand?.kit_id === kit.id) return true
+  // (a locked team kit on it stays on: only its owner, or someone who can edit it, takes it off — Phase 6)
+  if (l.brand) {
+    const { kitAccess } = await import('./brandKits')
+    const on = await kitAccess(userId, l.brand.kit_id)
+    if (on && lockHolds(on.data, on.role)) throw err('This clip has a locked team brand kit on: only its owner can take it off.', 403)
+  }
   let t = l.target
   if (l.brand) {
     // (the kit on now, else — deleted since — as it was when it went on)

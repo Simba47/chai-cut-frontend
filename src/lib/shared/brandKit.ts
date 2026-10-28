@@ -161,8 +161,10 @@ export interface BrandKit {
   data: BrandKitData
   /** A signed link to the logo — for showing it only, never saved */
   logo_url?: string | null
-  /** A kit someone shared with this user: who (their name or email). They can use it, not change it. */
+  /** A kit someone shared with this user: who (their name or email) */
   shared_by?: string | null
+  /** A shared kit: what this user can do with it (Phase 6, brandTeam.ts) — use it on clips, or change it too */
+  role?: 'use' | 'edit'
 }
 
 /** How many brand kits each plan can have (user, 2026-10-17); a plan not listed gets the Free count */
@@ -182,9 +184,6 @@ export const brandFontKey = (userId: string, family: string) => `brand/${userId}
 
 /** The logo shown only at the start or end: for this long (s) */
 export const LOGO_SECONDS: [number, number] = [1, 15]
-/** How many people one kit can be shared with, and the plans that can share (user's plan names) */
-export const MAX_KIT_SHARES = 10
-export const SHARE_PLANS = ['agency']
 /** A progress bar's thickness (px on a 1080 × 1920 frame) */
 export const PROGRESS_HEIGHT: [number, number] = [4, 40]
 /** More brand colours besides the main and accent */

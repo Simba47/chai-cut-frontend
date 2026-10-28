@@ -166,6 +166,8 @@ const PRESETS: Array<{ id: AnimationType; label: string }> = [
   { id: 'none', label: 'None' },
 ]
 const CLASSIC = 'Classic'
+/** The tab with every style: the classic animations, then every ready-made look */
+const ALL_STYLES = 'All'
 const ANIMATED = ['karaoke', 'hormozi', 'box', 'glow', 'pop', 'highlight', 'bounce', 'word']
 const HIGHLIGHT_COLORS = ['#FFE700', '#c8ff00', '#22d3ee', '#ec4899', '#f97316', '#8b5cf6']
 
@@ -508,6 +510,19 @@ export function CaptionStyler({
   const tpl = templateOf(style)
   // The kind of style shown: the picked caption style's own; otherwise Classic (the plain animations)
   const [group, setGroup] = useState(tpl?.group ?? CLASSIC)
+  /** A ready-made look's tile: its own font; picking it sets its colours too (change them below) */
+  const templateTile = (t: CaptionTemplate) => {
+    const on = tpl?.id === t.id
+    return (
+      <button key={t.id} aria-pressed={on} className="cap-tile" data-on={on || undefined} title={t.label}
+        onClick={() => { onChange(applyTemplate(t)); onTextCaseChange(t.upper ? 'upper' : 'title') }}>
+        <span className="cap-tile-screen" style={{ height: 56, overflow: 'hidden' }}>
+          {t.look ? <CreatorDemo t={t} /> : <TemplateDemo t={t} />}
+        </span>
+        <span className="cap-tile-name">{t.label}</span>
+      </button>
+    )
+  }
 
   return (
     <div className="flex flex-col gap-5 px-4 pb-5 pt-1">
@@ -547,9 +562,9 @@ export function CaptionStyler({
       {/* ── Style: each tile is a little dark "screen" playing the animation, its name below ── */}
       <section className="flex flex-col gap-2.5">
         <h3 className="cap-heading">Style</h3>
-        {/* The kinds of style; "Classic" holds the plain animations */}
+        {/* The kinds of style; "All" every one of them, "Classic" the plain animations */}
         <div role="tablist" aria-label="Kinds of caption style" className="flex flex-wrap gap-1.5">
-          {[CLASSIC, ...TEMPLATE_GROUPS].map(g => (
+          {[ALL_STYLES, CLASSIC, ...TEMPLATE_GROUPS].map(g => (
             <button key={g} role="tab" aria-selected={group === g} onClick={() => setGroup(g)}
               className="px-2.5 h-7 rounded-full text-[11.5px] font-semibold transition-colors"
               style={group === g
@@ -559,7 +574,7 @@ export function CaptionStyler({
             </button>
           ))}
         </div>
-        {group === CLASSIC ? (
+        {group === ALL_STYLES || group === CLASSIC ? (
           <div className="grid grid-cols-2 gap-2">
             {PRESETS.map(p => {
               const on = !tpl && animation === p.id
@@ -576,22 +591,12 @@ export function CaptionStyler({
                 </button>
               )
             })}
+            {group === ALL_STYLES && CAPTION_TEMPLATE_LIST.map(t => templateTile(t))}
           </div>
         ) : (
           // Ready-made looks: each has its own font; picking one sets its colours too (change them below)
           <div className="grid grid-cols-2 gap-2">
-            {CAPTION_TEMPLATE_LIST.filter(t => t.group === group).map(t => {
-              const on = tpl?.id === t.id
-              return (
-                <button key={t.id} aria-pressed={on} className="cap-tile" data-on={on || undefined} title={t.label}
-                  onClick={() => { onChange(applyTemplate(t)); onTextCaseChange(t.upper ? 'upper' : 'title') }}>
-                  <span className="cap-tile-screen" style={{ height: 56, overflow: 'hidden' }}>
-                    {t.look ? <CreatorDemo t={t} /> : <TemplateDemo t={t} />}
-                  </span>
-                  <span className="cap-tile-name">{t.label}</span>
-                </button>
-              )
-            })}
+            {CAPTION_TEMPLATE_LIST.filter(t => t.group === group).map(t => templateTile(t))}
           </div>
         )}
       </section>

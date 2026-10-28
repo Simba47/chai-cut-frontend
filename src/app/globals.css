@@ -103,6 +103,7 @@ body {
 .no-scrollbar::-webkit-scrollbar {
   display: none;
 }
+.no-scrollbar { scrollbar-width: none; }
 
 /* Custom scrollbar */
 ::-webkit-scrollbar {
@@ -1689,20 +1690,59 @@ body {
 .bk-empty h2 { margin: 4px 0 0; font-size: 22px; font-weight: 800; color: #fff; }
 .bk-empty p { margin: 0 0 8px; max-width: 460px; font-size: 14px; line-height: 1.6; color: rgba(244,244,245,0.6); }
 .bk-empty-ico { width: 60px; height: 60px; display: grid; place-items: center; border-radius: 18px; color: #c8ff00; background: rgba(200,255,0,0.1); }
-.bk-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 14px; }
-.bk-card { display: flex; flex-direction: column; border-radius: 16px; overflow: hidden; background: rgba(255,255,255,0.035); box-shadow: inset 0 0 0 1px rgba(255,255,255,0.08); transition: box-shadow .15s; }
-.bk-card:hover { box-shadow: inset 0 0 0 1px rgba(255,255,255,0.18); }
-.bk-card[data-default] { box-shadow: inset 0 0 0 1.5px rgba(200,255,0,0.55); }
-.bk-card-face { display: flex; align-items: center; gap: 14px; padding: 16px; text-align: left; }
-.bk-card-logo { width: 64px; height: 64px; flex-shrink: 0; display: grid; place-items: center; border-radius: 14px; overflow: hidden; box-shadow: inset 0 0 0 1px rgba(255,255,255,0.12); }
-.bk-card-logo img { max-width: 78%; max-height: 78%; object-fit: contain; }
-.bk-card-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
-.bk-card-name { font-size: 15px; font-weight: 800; color: #fff; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* the kits: cards with their brand as a cover (user, 2026-10-28: "design it properly") */
+.bk-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+.bk-card {
+  display: flex; flex-direction: column; border-radius: 18px; overflow: hidden; background: #141416;
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.07), 0 18px 40px -28px rgba(0,0,0,0.9);
+  transition: box-shadow .2s, transform .2s;
+}
+.bk-card:hover { transform: translateY(-2px); box-shadow: inset 0 0 0 1px rgba(255,255,255,0.14), 0 24px 48px -26px rgba(0,0,0,0.95); }
+.bk-card[data-default] { box-shadow: inset 0 0 0 1px rgba(200,255,0,0.4), 0 18px 40px -28px rgba(0,0,0,0.9); }
+.bk-card-face { display: flex; flex-direction: column; text-align: left; }
+.bk-card-cover {
+  position: relative; height: 128px; display: grid; place-items: center; overflow: hidden;
+  background: radial-gradient(120% 120% at 100% 0%, color-mix(in srgb, var(--accent) 38%, transparent), transparent 55%), var(--main);
+}
+.bk-card-cover::after { content: ''; position: absolute; inset: 0; background: linear-gradient(180deg, transparent 55%, rgba(0,0,0,0.28)); pointer-events: none; }
+.bk-card-logo {
+  position: relative; z-index: 1; width: 64px; height: 64px; display: grid; place-items: center; border-radius: 16px; overflow: hidden;
+  background: rgba(255,255,255,0.1); box-shadow: inset 0 0 0 1px rgba(255,255,255,0.16), 0 10px 24px -10px rgba(0,0,0,0.6);
+  backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); transition: transform .25s;
+}
+.bk-card:hover .bk-card-logo { transform: scale(1.05); }
+.bk-card-logo img { width: 100%; height: 100%; object-fit: cover; }
+.bk-card-initial { font-size: 26px; font-weight: 800; color: var(--accent); }
+.bk-card-handle {
+  position: absolute; z-index: 1; left: 12px; bottom: 10px; max-width: 70%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 11.5px; font-weight: 700; color: var(--accent);
+}
+.bk-card-cover .bk-tag { position: absolute; z-index: 1; top: 10px; right: 10px; }
+.bk-card-body { display: flex; flex-direction: column; gap: 4px; padding: 14px 16px 12px; min-width: 0; }
+.bk-card-name { font-size: 15.5px; font-weight: 800; letter-spacing: -0.01em; color: #fff; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bk-card-meta { font-size: 12px; color: rgba(244,244,245,0.5); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.bk-card-colors { display: flex; gap: 4px; margin-top: 4px; }
-.bk-card-colors i { width: 16px; height: 16px; border-radius: 5px; box-shadow: inset 0 0 0 1px rgba(255,255,255,0.18); }
-.bk-card-foot { display: flex; align-items: center; gap: 12px; padding: 10px 16px; border-top: 1px solid rgba(255,255,255,0.06); }
+.bk-card-colors { display: flex; align-items: center; gap: 0; margin-top: 8px; min-width: 0; }
+.bk-card-colors i { width: 18px; height: 18px; border-radius: 50%; margin-right: -5px; box-shadow: 0 0 0 2px #141416, inset 0 0 0 1px rgba(255,255,255,0.18); }
+.bk-card-chips { display: flex; gap: 5px; margin-left: 14px; min-width: 0; overflow: hidden; }
+.bk-card-chips span { height: 20px; padding: 0 7px; display: inline-flex; align-items: center; border-radius: 6px; font-size: 10.5px; font-weight: 600; white-space: nowrap; color: rgba(244,244,245,0.6); background: rgba(255,255,255,0.06); }
+.bk-card-foot { display: flex; align-items: center; gap: 10px; padding: 10px 12px 12px 16px; }
 .bk-tag { height: 22px; padding: 0 9px; display: inline-flex; align-items: center; border-radius: 999px; font-size: 11px; font-weight: 800; color: #0a0a0a; background: #c8ff00; }
+.bk-tag-quiet { color: #fff; background: rgba(0,0,0,0.45); backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); }
+.bk-edit { height: 32px; padding: 0 16px; border-radius: 9px; font-size: 12.5px; font-weight: 700; color: #fff; background: rgba(255,255,255,0.08); box-shadow: inset 0 0 0 1px rgba(255,255,255,0.1); transition: background-color .15s; }
+.bk-edit:hover { background: rgba(255,255,255,0.14); }
+.bk-icon-btn { width: 32px; height: 32px; display: grid; place-items: center; border-radius: 9px; color: rgba(244,244,245,0.45); transition: color .15s, background-color .15s; }
+.bk-icon-btn:hover { color: #fca5a5; background: rgba(239,68,68,0.1); }
+/* the "new brand kit" tile */
+.bk-add {
+  min-height: 248px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; border-radius: 18px;
+  color: rgba(244,244,245,0.7); border: 1.5px dashed rgba(255,255,255,0.14); background: rgba(255,255,255,0.015); transition: border-color .2s, background-color .2s, color .2s;
+}
+.bk-add:hover:not(:disabled) { color: #fff; border-color: rgba(200,255,0,0.5); background: rgba(200,255,0,0.03); }
+.bk-add:disabled { opacity: .5; cursor: default; }
+.bk-add-ico { width: 44px; height: 44px; display: grid; place-items: center; border-radius: 14px; margin-bottom: 4px; color: #c8ff00; background: rgba(200,255,0,0.1); }
+.bk-add-title { font-size: 14px; font-weight: 700; }
+.bk-add-sub { font-size: 12px; color: rgba(244,244,245,0.45); }
+.bk-count b { color: #fff; font-weight: 700; }
 .bk-link { font-size: 12.5px; font-weight: 600; color: rgba(244,244,245,0.75); }
 .bk-link:hover { color: #fff; text-decoration: underline; }
 .bk-link-strong { color: #c8ff00; font-weight: 700; }
@@ -1758,6 +1798,12 @@ body {
 .bw-link { flex-shrink: 0; font-size: 11.5px; font-weight: 600; color: rgb(var(--ed-fg) / 0.55); }
 .bw-link:hover { color: var(--ed-text); text-decoration: underline; }
 .bw-chip:focus-visible, .bw-tag button:focus-visible, .bw-add:focus-visible, .bw-link:focus-visible { outline: 2px solid rgba(200,255,0,0.7); outline-offset: 2px; }
+/* (brand kit Phase 6) invites to other people's kits, on the Brand kits page */
+.bk-invites { display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.bk-invite { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 14px 16px; border-radius: 14px; background: rgb(var(--ed-fg) / 0.04); box-shadow: inset 0 0 0 1px rgb(var(--ed-fg) / 0.1); }
+.bk-invite[data-linked] { box-shadow: inset 0 0 0 1.5px rgba(200,255,0,0.55); background: rgba(200,255,0,0.05); }
+.bk-invite strong { display: block; font-size: 14px; color: var(--ed-text); }
+.bk-invite span span, .bk-invite strong + span { display: block; font-size: 12px; color: rgb(var(--ed-fg) / 0.55); }
 .tx-brand-all { align-self: flex-start; font-size: 11px; font-weight: 600; color: rgb(var(--ed-fg) / 0.6); }
 .tx-brand-all:hover { color: var(--ed-text); text-decoration: underline; }
 .bcl { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; margin: 0 16px 4px; border-radius: 12px; background: rgba(200,255,0,0.05); box-shadow: inset 0 0 0 1px rgba(200,255,0,0.22); }
@@ -2516,7 +2562,9 @@ body {
 :root { --cb-fg: 255 255 255; --cb-text: #fff; --cb-pop: #161616; }
 [data-theme="light"] {
   color-scheme: light;
-  --cb-fg: 12 12 14; --cb-text: #0c0c0e; --cb-pop: #ffffff;
+  --cb-fg: 12 12 14; --cb-text: #0c0c0e; --cb-pop: #f5f5f3;
+  /* (user, 2026-10-28) no pure white in light mode: surfaces are a smoky white, what's behind them a step darker */
+  --smoke: #f5f5f3; --smoke-2: #ededea; --smoke-bg: #e8e8e5;
 }
 
 /* the top bars stay black: the dark colours again, inside them */
@@ -2531,41 +2579,41 @@ body {
 }
 
 /* ── clip board: dark mode's look, every surface flipped (as the dashboard) ── */
-[data-theme="light"] .cb-page { background: radial-gradient(1200px 420px at 50% -220px, rgba(200, 255, 0, 0.12), transparent 70%), #f4f5f7; color: #0c0c0e; }
-[data-theme="light"] .cb-panel { border-color: rgba(12, 12, 14, 0.07); background: #ffffff;
+[data-theme="light"] .cb-page { background: radial-gradient(1200px 420px at 50% -220px, rgba(200, 255, 0, 0.12), transparent 70%), var(--smoke-bg); color: #0c0c0e; }
+[data-theme="light"] .cb-panel { border-color: rgba(12, 12, 14, 0.07); background: var(--smoke);
   box-shadow: 0 1px 2px rgba(12, 12, 14, 0.04), 0 18px 40px -28px rgba(12, 12, 14, 0.25); }
 /* (dark mode's thin light along the top edge: a faint lime one here) */
 [data-theme="light"] .cb-panel::before { background: linear-gradient(90deg, transparent, rgba(143, 184, 0, 0.35), transparent); }
 [data-theme="light"] .cb-player { border-color: rgba(12, 12, 14, 0.06); box-shadow: 0 22px 46px -28px rgba(12, 12, 14, 0.5); }
 /* Video / Clip preview: a white knob with deep lime on it (dark mode: a black knob with lime) */
-[data-theme="light"] .view-switch { background: #f1f2f4; box-shadow: inset 0 0 0 1px rgba(12, 12, 14, 0.07), inset 0 1px 2px rgba(12, 12, 14, 0.05); }
-[data-theme="light"] .view-switch-knob { background: #ffffff; box-shadow: inset 0 0 0 1px rgba(143, 184, 0, 0.45), 0 2px 8px -3px rgba(12, 12, 14, 0.3); }
+[data-theme="light"] .view-switch { background: var(--smoke-2); box-shadow: inset 0 0 0 1px rgba(12, 12, 14, 0.07), inset 0 1px 2px rgba(12, 12, 14, 0.05); }
+[data-theme="light"] .view-switch-knob { background: var(--smoke); box-shadow: inset 0 0 0 1px rgba(143, 184, 0, 0.45), 0 2px 8px -3px rgba(12, 12, 14, 0.3); }
 [data-theme="light"] .view-switch-opt { color: rgba(12, 12, 14, 0.55); }
 [data-theme="light"] .view-switch-opt:hover:not([data-on]) { color: #0c0c0e; }
 [data-theme="light"] .view-switch-opt[data-on] { color: #4d6400; }
 /* the new-clip box */
-[data-theme="light"] .cb-form { border-color: rgba(12, 12, 14, 0.07); background: #f8f9fa; box-shadow: inset 0 1px 0 #ffffff; }
+[data-theme="light"] .cb-form { border-color: rgba(12, 12, 14, 0.07); background: var(--smoke-2); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.5); }
 [data-theme="light"] .cb-label { color: rgba(12, 12, 14, 0.5); }
-[data-theme="light"] .cb-input { background: #ffffff; border-color: rgba(12, 12, 14, 0.1); box-shadow: 0 1px 2px rgba(12, 12, 14, 0.04); }
+[data-theme="light"] .cb-input { background: var(--smoke); border-color: rgba(12, 12, 14, 0.1); box-shadow: 0 1px 2px rgba(12, 12, 14, 0.04); }
 [data-theme="light"] .cb-input:hover { border-color: rgba(12, 12, 14, 0.18); }
 [data-theme="light"] :is(.cb-input:focus, .cb-input:focus-within) { border-color: rgba(143, 184, 0, 0.7); box-shadow: 0 0 0 3px rgba(200, 255, 0, 0.22); }
 /* Create & edit: the one black button (as Upload video on the dashboard); lime on hover */
 [data-theme="light"] .cb-cta { background: #0c0c0e; color: #ffffff; border-color: #0c0c0e; box-shadow: 0 8px 18px -10px rgba(12, 12, 14, 0.55); }
 [data-theme="light"] .cb-cta:hover:not(:disabled) { background: #0c0c0e; border-color: #0c0c0e; color: #c8ff00; }
-[data-theme="light"] .cb-ghost { color: #0c0c0e; border-color: rgba(12, 12, 14, 0.12); background: #ffffff; box-shadow: 0 1px 2px rgba(12, 12, 14, 0.04); }
-[data-theme="light"] .cb-ghost:hover:not(:disabled) { background: #f4f5f7; border-color: rgba(12, 12, 14, 0.22); }
+[data-theme="light"] .cb-ghost { color: #0c0c0e; border-color: rgba(12, 12, 14, 0.12); background: var(--smoke); box-shadow: 0 1px 2px rgba(12, 12, 14, 0.04); }
+[data-theme="light"] .cb-ghost:hover:not(:disabled) { background: var(--smoke-2); border-color: rgba(12, 12, 14, 0.22); }
 /* the Clipboard: the picked tab a soft grey pill (as dark mode's soft white one) */
-[data-theme="light"] .cb-tab { border-color: rgba(12, 12, 14, 0.09); background: #ffffff; }
-[data-theme="light"] .cb-tab:hover { background: #f4f5f7; }
+[data-theme="light"] .cb-tab { border-color: rgba(12, 12, 14, 0.09); background: var(--smoke); }
+[data-theme="light"] .cb-tab:hover { background: var(--smoke-2); }
 [data-theme="light"] .cb-tab[aria-selected="true"] { color: #0c0c0e; background: rgba(12, 12, 14, 0.07); border-color: rgba(12, 12, 14, 0.16); }
-[data-theme="light"] .cb-card { border-color: rgba(12, 12, 14, 0.08); background: #ffffff; box-shadow: 0 1px 2px rgba(12, 12, 14, 0.04); }
+[data-theme="light"] .cb-card { border-color: rgba(12, 12, 14, 0.08); background: var(--smoke); box-shadow: 0 1px 2px rgba(12, 12, 14, 0.04); }
 [data-theme="light"] :is(.cb-card:hover, .cb-card:focus-within) { border-color: rgba(143, 184, 0, 0.55); box-shadow: 0 16px 32px -20px rgba(120, 160, 0, 0.4); }
 [data-theme="light"] .cb-card[data-playing] { border-color: rgba(143, 184, 0, 0.5); box-shadow: inset 2px 0 0 #8fb800; }
 [data-theme="light"] .cb-card[data-on] { border-color: #8fb800; }
 [data-theme="light"] .cb-sheen::after { background: linear-gradient(105deg, transparent 35%, rgba(255, 255, 255, 0.85) 48%, rgba(255, 255, 255, 0.3) 55%, transparent 65%); }
 [data-theme="light"] .cb-thumb { box-shadow: 0 0 0 1px rgba(12, 12, 14, 0.06), 0 6px 14px -8px rgba(12, 12, 14, 0.45); }
-[data-theme="light"] .cb-act { color: #0c0c0e; border-color: rgba(12, 12, 14, 0.12); background: #ffffff; }
-[data-theme="light"] .cb-act:hover:not(:disabled) { background: #f4f5f7; border-color: rgba(12, 12, 14, 0.22); }
+[data-theme="light"] .cb-act { color: #0c0c0e; border-color: rgba(12, 12, 14, 0.12); background: var(--smoke); }
+[data-theme="light"] .cb-act:hover:not(:disabled) { background: var(--smoke-2); border-color: rgba(12, 12, 14, 0.22); }
 [data-theme="light"] .cb-act[data-tone="danger"] { color: #dc2626; border-color: rgba(220, 38, 38, 0.3); background: rgba(220, 38, 38, 0.05); }
 [data-theme="light"] .cb-act[data-tone="danger"]:hover:not(:disabled) { color: #fff; background: #dc2626; border-color: #dc2626; }
 [data-theme="light"] .cb-tool { color: rgba(12, 12, 14, 0.45); }
@@ -2582,7 +2630,7 @@ body {
 
 /* ── dashboard: dark mode's look, every surface flipped ── */
 [data-theme="light"] .dash {
-  --bg: #f4f5f7; --surface: #ffffff; --surface-2: #f4f5f7; --hover: rgba(12,12,14,0.05);
+  --bg: var(--smoke-bg); --surface: var(--smoke); --surface-2: var(--smoke-2); --hover: rgba(12,12,14,0.05);
   --border: rgba(12,12,14,0.08); --border-strong: rgba(12,12,14,0.12);
   --text: #0c0c0e; --text-muted: rgba(12,12,14,0.55); --text-dim: rgba(12,12,14,0.35);
   --accent: #a8d900;
@@ -2603,29 +2651,30 @@ body {
 /* the video cards: white, a soft shadow, the lime edge and glow on hover as in dark mode */
 [data-theme="light"] .dash .vcard { border-color: rgba(12, 12, 14, 0.08); box-shadow: 0 1px 2px rgba(12, 12, 14, 0.04), 0 14px 30px -24px rgba(12, 12, 14, 0.35); }
 [data-theme="light"] .dash .vcard.is-ready:hover { border-color: rgba(143, 184, 0, 0.7); box-shadow: 0 22px 46px -24px rgba(120, 160, 0, 0.45); }
-[data-theme="light"] .dash .vcard-thumb { background: #e9ebef; }
+[data-theme="light"] .dash .vcard-thumb { background: #dfdfdc; }
 [data-theme="light"] .dash .vcard-open { border-color: rgba(12, 12, 14, 0.14); }
 
 /* ── editor (its colours live on .editor-theme) ── */
 [data-theme="light"] .editor-theme {
   color-scheme: light;
-  --bg: #eef0f3; --surface: #ffffff;
-  --border: rgba(12,12,14,0.08); --border-strong: rgba(12,12,14,0.16);
-  --text: #0c0c0e; --text-muted: rgba(12,12,14,0.58); --text-dim: rgba(12,12,14,0.36);
-  --ed-fg: 12 12 14;
-  --ed-text: #0c0c0e;
-  --ed-app: #eef0f3;
-  --ed-panel: #ffffff;
-  --ed-canvas: #e3e5e9;
-  --ed-track: #f6f7f9;
-  --ed-ruler: #f6f7f9;
-  --ed-raise: #ffffff;
-  --ed-popover: #ffffff;
-  --ed-accent-text: #4d6400;
-  --surface-2: #f1f2f4; --hover: rgba(12,12,14,0.05);
+  /* (user, 2026-10-28) neutral zinc greys, nothing near pure white: the workspace one grey, on black (the
+     top bar and the room round it, as the app's other top bars), wells (timeline tracks, inputs, segmented
+     controls) a step darker, raised things and menus lighter */
+  --bg: #c3c3c7; --surface: #d8d8dd;
+  --border: rgba(24,24,27,0.09); --border-strong: rgba(24,24,27,0.16);
+  --text: #0f0f11; --text-muted: rgba(15,15,17,0.78); --text-dim: rgba(15,15,17,0.6);
+  --ed-fg: 24 24 27;
+  --ed-text: #18181b;
+  --ed-app: #c3c3c7;
+  --ed-panel: #c3c3c7;
+  --ed-canvas: #b4b4b9;
+  --ed-track: #b7b7bc;
+  --ed-ruler: #c3c3c7;
+  --ed-raise: #d8d8dd;
+  --ed-popover: #e8e8ec;
+  --ed-accent-text: #4a6100;
+  --surface-2: #b7b7bc; --hover: rgba(15,15,17,0.08);
 }
-/* the app around the panels: the light grey of the dashboard and the clip board */
-[data-theme="light"] .editor-theme { --ed-app: #f4f5f7; }
 /* the tool rail (Format · Subjects · Frames …): dark marks on white, the picked one a soft grey tile with the lime marker */
 [data-theme="light"] .editor-theme .ed-tool { color: rgba(12, 12, 14, 0.6); }
 [data-theme="light"] .editor-theme .ed-tool[data-active] { background: rgba(12, 12, 14, 0.06); color: #0c0c0e; box-shadow: inset 0 0 0 1px rgba(12, 12, 14, 0.1); }
@@ -2648,3 +2697,678 @@ body {
 [data-theme="light"] .tl2-playhead { background: #0c0c0e; box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.7), 0 0 8px rgba(12, 12, 14, 0.2); }
 [data-theme="light"] .tl2-bubble { color: #fff; background: #0c0c0e; }
 [data-theme="light"] .tl2-grip:focus-visible { outline-color: #0c0c0e; }
+
+/* ══ Editing board, dark mode: the same placements as light mode (user, 2026-10-28) — one workspace, an
+   icon-only tool rail, the bars lined up, the video floating on its stage, the play bar balanced round
+   play, Off / Reels / Shorts on the Preview's stage. Dark mode's own colours. Desktop only (.ed-body). ══ */
+html:not([data-theme="light"]) .editor-theme {
+  --ed-hair: rgba(255, 255, 255, 0.07);
+  --ed-line: rgba(255, 255, 255, 0.11);
+}
+/* one workspace: the areas inside it split by hairlines, not boxes with gaps */
+html:not([data-theme="light"]) .editor-theme .ed-body { padding: 8px 10px 10px; }
+html:not([data-theme="light"]) .editor-theme .ed-body > .ed-top {
+  background: var(--ed-panel); border: 1px solid var(--ed-line); border-bottom: 0; border-radius: 14px 14px 0 0;
+}
+html:not([data-theme="light"]) .editor-theme .ed-body > .ed-dockpanel {
+  margin-top: 0 !important; border: 1px solid var(--ed-line) !important; border-top-color: var(--ed-hair) !important;
+  border-radius: 0 0 14px 14px !important; background: var(--ed-panel);
+}
+html:not([data-theme="light"]) .editor-theme .ed-top > .ed-card,
+html:not([data-theme="light"]) .editor-theme .ed-top > .ed-options,
+html:not([data-theme="light"]) .editor-theme .ed-top > .ed-preview-col { border: 0; border-radius: 0; margin: 0; background: transparent; }
+html:not([data-theme="light"]) .editor-theme .ed-top > .ed-rail { border-right: 1px solid var(--ed-hair); border-radius: 14px 0 0 0; }
+html:not([data-theme="light"]) .editor-theme .ed-top > .ed-options[data-open] { border-right: 1px solid var(--ed-hair); }
+html:not([data-theme="light"]) .editor-theme .ed-top > .ed-preview-col[data-open] { border-radius: 0 14px 0 0; }
+html:not([data-theme="light"]) .editor-theme .ed-top > .ed-preview-rail { border-left: 1px solid var(--ed-hair) !important; background: transparent !important; border-radius: 0 14px 0 0; }
+html:not([data-theme="light"]) .editor-theme .ed-body .ed-row-wrap { transform: none !important; }
+/* the tool rail its own card (user, 2026-10-28: "separate, like the old one"): a gap beside it; the editor
+   (options · video · preview) one surface beside it, the timeline its own card under them */
+html:not([data-theme="light"]) .editor-theme .ed-body > .ed-top { background: transparent; border: 0; border-radius: 0; }
+html:not([data-theme="light"]) .editor-theme .ed-top > .ed-rail {
+  background: var(--ed-panel); border: 1px solid var(--ed-line); border-radius: 14px; margin-right: 8px;
+}
+html:not([data-theme="light"]) .editor-theme .ed-top > :is(.ed-options, .ed-video, .ed-preview-col[data-open], .ed-preview-rail) {
+  background: var(--ed-panel); border-top: 1px solid var(--ed-line); border-bottom: 1px solid var(--ed-line);
+}
+html:not([data-theme="light"]) .editor-theme .ed-top > .ed-options:not([data-open]) { border: 0; }
+html:not([data-theme="light"]) .editor-theme .ed-rail + .ed-options[data-open],
+html:not([data-theme="light"]) .editor-theme .ed-rail + .ed-options:not([data-open]) + .ed-video { border-left: 1px solid var(--ed-line); border-radius: 14px 0 0 14px; }
+html:not([data-theme="light"]) .editor-theme .ed-top > .ed-preview-col[data-open],
+html:not([data-theme="light"]) .editor-theme .ed-top > .ed-preview-rail { border-right: 1px solid var(--ed-line) !important; border-radius: 0 14px 14px 0; }
+html:not([data-theme="light"]) .editor-theme .ed-body > .ed-dockpanel { margin-top: 8px !important; border: 1px solid var(--ed-line) !important; border-radius: 14px !important; }
+html:not([data-theme="light"]) .editor-theme .ed-body .ed-row-wrap { transform: translateY(4px) !important; }
+
+/* the tool rail: icons only, the name beside the hovered one */
+html:not([data-theme="light"]) .editor-theme .ed-rail { width: 60px !important; }
+html:not([data-theme="light"]) .editor-theme .ed-rail .ed-tool { width: 42px !important; height: clamp(32px, calc((100cqh - 16px) / 11 - 4px), 42px) !important; border-radius: 10px; }
+html:not([data-theme="light"]) .editor-theme .ed-rail .ed-tool span { display: none; }
+/* the picked tool: a soft lime tile, its icon lime — nothing sticking out of the card (user, 2026-10-28) */
+html:not([data-theme="light"]) .editor-theme .ed-rail .ed-tool { color: rgba(244, 244, 245, 0.62); }
+html:not([data-theme="light"]) .editor-theme .ed-rail .ed-tool:hover { background: rgba(255, 255, 255, 0.06); color: #f4f4f5; }
+html:not([data-theme="light"]) .editor-theme .ed-rail .ed-tool[data-active] {
+  background: rgba(200, 255, 0, 0.1); color: #c8ff00; box-shadow: inset 0 0 0 1px rgba(200, 255, 0, 0.32);
+}
+html:not([data-theme="light"]) .editor-theme .ed-rail .ed-tool[data-active]::before { display: none; }
+html:not([data-theme="light"]) .editor-theme .ed-rail .ed-tool-danger[data-active] { color: #f87171; background: rgba(239, 68, 68, 0.12); box-shadow: inset 0 0 0 1px rgba(239, 68, 68, 0.3); }
+html:not([data-theme="light"]) .editor-theme .ed-rail-tip {
+  display: block; position: fixed; left: 76px; translate: 0 -50%; z-index: 90; pointer-events: none; white-space: nowrap;
+  padding: 5px 9px; border-radius: 7px; font-size: 11.5px; font-weight: 600; color: #0a0a0a; background: #f4f4f5;
+  box-shadow: 0 8px 20px -8px rgba(0, 0, 0, 0.7); animation: ed-rail-tip .14s ease-out both;
+}
+
+/* the format bar and the Preview's header the same height: their lines run straight across */
+html:not([data-theme="light"]) .editor-theme .ed-canvas-bar { min-height: 56px !important; border-bottom-color: var(--ed-hair) !important; }
+html:not([data-theme="light"]) .editor-theme .ed-preview-inner > div:first-child { height: 56px !important; border-bottom-color: var(--ed-hair) !important; box-shadow: inset 1px 0 0 var(--ed-hair); }
+
+/* the stage: the video floating on it, soft corners, a deep shadow; the play bar part of it */
+html:not([data-theme="light"]) .editor-theme .ed-stage-box { inset: 14px 18px !important; border: 0 !important; border-radius: 0 !important; }
+html:not([data-theme="light"]) .editor-theme .ed-body .ed-vp { background: transparent !important; padding: 2px 2px 14px; }
+html:not([data-theme="light"]) .editor-theme .ed-body .ed-vp-frame { border-radius: 10px; box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.07), 0 22px 48px -20px rgba(0, 0, 0, 0.9); }
+html:not([data-theme="light"]) .editor-theme .ed-player { background: var(--ed-canvas) !important; border-top: 0 !important; height: 56px !important; }
+
+/* the play bar balanced round play: the time on its left, the length on its right */
+html:not([data-theme="light"]) .editor-theme .ed-player { display: flex !important; align-items: center; justify-content: center; gap: 18px; }
+html:not([data-theme="light"]) .editor-theme .ed-player > div:first-child,
+html:not([data-theme="light"]) .editor-theme .ed-player .ed-transport-time { display: contents; }
+html:not([data-theme="light"]) .editor-theme .ed-player .ed-transport-time > span:first-child { order: 1; min-width: 64px; text-align: right; font-size: 12.5px; color: #f4f4f5 !important; font-weight: 600 !important; }
+html:not([data-theme="light"]) .editor-theme .ed-player > div:nth-child(2) { order: 2; }
+html:not([data-theme="light"]) .editor-theme .ed-player .ed-transport-total { order: 3; min-width: 64px; text-align: left; font-size: 12.5px; color: rgba(244, 244, 245, 0.5) !important; font-weight: 500; }
+html:not([data-theme="light"]) .editor-theme .ed-player .ed-transport-slash { display: none; }
+html:not([data-theme="light"]) .editor-theme .ed-player > div:last-child:empty { display: none; }
+
+/* the Preview: Off / Reels / Shorts on its stage, the video centred, the full-view button a glass circle */
+html:not([data-theme="light"]) .editor-theme .ed-preview-inner > div:nth-child(2) { background: var(--ed-canvas); padding-top: 14px !important; box-shadow: inset 1px 0 0 var(--ed-hair); }
+html:not([data-theme="light"]) .editor-theme .ed-preview-inner > .flex-1 { background: var(--ed-canvas); box-shadow: inset 1px 0 0 var(--ed-hair); }
+html:not([data-theme="light"]) .editor-theme .ed-pv-box:not([data-full-view]) { align-items: center !important; }
+html:not([data-theme="light"]) .editor-theme .ed-pv-box:not([data-full-view]) > div > .relative > :first-child {
+  border-color: rgba(255, 255, 255, 0.07) !important; box-shadow: 0 22px 48px -20px rgba(0, 0, 0, 0.9) !important;
+}
+html:not([data-theme="light"]) .editor-theme .ed-fullview-btn { width: 30px; height: 30px; border-radius: 50%; opacity: .85; transition: opacity .15s, transform .15s; }
+html:not([data-theme="light"]) .editor-theme .ed-fullview-btn:hover { opacity: 1; transform: scale(1.05); }
+
+/* the timeline's bar part of the panel, a hairline under it */
+html:not([data-theme="light"]) .editor-theme .ed-transport { background: transparent !important; border-bottom: 1px solid var(--ed-hair); }
+html:not([data-theme="light"]) .editor-theme [data-layout-panel="Editing panel"] { background: var(--ed-panel) !important; border-top: 0 !important; }
+
+/* ══ Editing board, light mode (user, 2026-10-28: "a premium feel", Cardboard as the reference) ══════════
+   One workspace instead of five boxes: the page a cool neutral grey; the editor one rounded surface on
+   it, its areas (tools · options · video · preview, the timeline below) split by hairlines, not gaps;
+   quiet chrome — icon-only tool rail, thin lines, muted labels; the video the hero, floating on its stage
+   with soft corners; times with fixed-width digits. Neutral zinc greys, nothing near pure white, lime used rarely.
+   Desktop editor only (.ed-body is EditorShell's); dark mode untouched. */
+[data-theme="light"] .editor-theme {
+  --ed-hair: rgba(15, 15, 17, 0.14);
+  --ed-line: rgba(15, 15, 17, 0.2);
+  --ed-shadow-soft: 0 1px 2px rgba(24, 24, 27, 0.05);
+  --ed-lime-text: #4a6100;
+  --ed-lime-mark: #9bcb00;
+}
+
+/* ── The workspace ── */
+[data-theme="light"] .editor-theme .ed-body { padding: 8px 10px 10px; }
+[data-theme="light"] .editor-theme .ed-body > .ed-top,
+[data-theme="light"] .editor-theme .ed-body > .ed-dockpanel { background: var(--ed-panel); }
+[data-theme="light"] .editor-theme .ed-body > .ed-top {
+  border: 0; border-radius: 14px 14px 0 0;
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.35) inset;
+}
+[data-theme="light"] .editor-theme .ed-body > .ed-dockpanel {
+  margin-top: 0 !important; border: 0 !important; border-top: 1px solid var(--ed-hair) !important;
+  border-radius: 0 0 14px 14px !important; box-shadow: none;
+}
+/* the timeline hidden: the top area closes the workspace itself */
+[data-theme="light"] .editor-theme .ed-body > .ed-top:has(+ .ed-dockpanel) { border-bottom: 0; }
+/* the areas inside: no boxes of their own — a hairline between them */
+[data-theme="light"] .editor-theme .ed-top > .ed-card,
+[data-theme="light"] .editor-theme .ed-top > .ed-options,
+[data-theme="light"] .editor-theme .ed-top > .ed-preview-col { border: 0; border-radius: 0; margin: 0; background: transparent; }
+[data-theme="light"] .editor-theme .ed-top > .ed-rail { border-right: 1px solid var(--ed-hair); border-radius: 14px 0 0 0; }
+[data-theme="light"] .editor-theme .ed-top > .ed-options[data-open] { border-right: 1px solid var(--ed-hair); }
+/* (one dark stage across the viewer and the Preview: no light seam between them — a hairline beside the
+   Preview's header, the faintest dark one beside its video) */
+[data-theme="light"] .editor-theme .ed-top > .ed-preview-col[data-open] { border-left: 0; border-radius: 0 14px 0 0; }
+[data-theme="light"] .editor-theme .ed-preview-inner > div:first-child { box-shadow: inset 1px 0 0 var(--ed-hair); }
+[data-theme="light"] .editor-theme .ed-preview-inner > :is(div:nth-child(2), .flex-1) { box-shadow: inset 1px 0 0 var(--ed-hair); }
+[data-theme="light"] .editor-theme .ed-top > .ed-preview-rail { border-left: 1px solid var(--ed-hair) !important; background: transparent !important; border-radius: 0 14px 0 0; }
+[data-theme="light"] .editor-theme .ed-body .ed-row-wrap { transform: none !important; }
+[data-theme="light"] .editor-theme .ed-row-handle::after { background: var(--ed-lime-mark); }
+
+/* ── Top bar: the page's grey too (user, 2026-10-28: "the background the same, not black"), a hairline under it ── */
+[data-theme="light"] .editor-theme > .app-nav {
+  color-scheme: light;
+  --bg: var(--ed-app); --nav: var(--ed-app); --surface: var(--ed-raise);
+  --border: var(--ed-hair); --border-strong: var(--ed-line);
+  --text: #18181b; --text-muted: rgba(24, 24, 27, 0.7); --text-dim: rgba(24, 24, 27, 0.5); --accent: #a8d900;
+  --cb-fg: 24 24 27; --cb-text: #18181b; --cb-pop: var(--ed-popover);
+  --ed-fg: 24 24 27; --ed-text: #18181b; --ed-panel: #c3c3c7; --ed-raise: #d8d8dd; --ed-popover: #e8e8ec; --ed-track: #b7b7bc; --ed-accent-text: #4a6100;
+  background: var(--ed-app) !important; color: #18181b; border-bottom: 1px solid var(--ed-hair) !important;
+}
+[data-theme="light"] .editor-theme > .app-nav .ebm-pill,
+[data-theme="light"] .editor-theme > .app-nav > div:last-child > button[aria-label="Show the editor tour"] {
+  height: 32px; border-radius: 10px; background: var(--ed-raise); box-shadow: inset 0 0 0 1px var(--ed-line), var(--ed-shadow-soft) !important; color: #27272a !important;
+}
+[data-theme="light"] .editor-theme > .app-nav > div:last-child > button[aria-label="Show the editor tour"] { width: 32px; }
+[data-theme="light"] .editor-theme > .app-nav .ebm-pill:hover,
+[data-theme="light"] .editor-theme > .app-nav > div:last-child > button[aria-label="Show the editor tour"]:hover { background: var(--ed-popover); color: #0f0f11 !important; }
+[data-theme="light"] .editor-theme > .app-nav .ebm-pill[data-on] { box-shadow: inset 0 0 0 1px rgba(110, 150, 0, 0.6), var(--ed-shadow-soft) !important; }
+[data-theme="light"] .editor-theme > .app-nav button[role="switch"] {
+  height: 32px !important; width: 60px !important; background: var(--ed-track) !important; border: 0 !important; box-shadow: inset 0 0 0 1px var(--ed-line) !important;
+}
+[data-theme="light"] .editor-theme > .app-nav button[role="switch"] > span:first-child { display: none; }
+[data-theme="light"] .editor-theme > .app-nav button[role="switch"] > span.z-10 {
+  width: 24px !important; height: 24px !important; background: var(--ed-raise) !important; border: 0 !important;
+  box-shadow: 0 1px 2px rgba(24, 24, 27, 0.18), inset 0 0 0 1px var(--ed-line) !important;
+}
+[data-theme="light"] .editor-theme > .app-nav .acct-btn { height: 32px; padding: 0 12px 0 5px; border-radius: 10px; background: var(--ed-raise); border-color: var(--ed-line); box-shadow: var(--ed-shadow-soft); }
+[data-theme="light"] .editor-theme > .app-nav .acct-name { font-size: 13.5px; background-image: linear-gradient(110deg, #18181b 0%, #18181b 40%, #5a7a00 50%, #18181b 60%, #18181b 100%); }
+[data-theme="light"] .editor-theme > .app-nav .acct-avatar { width: 24px; height: 24px; box-shadow: 0 0 0 1px rgba(24, 24, 27, 0.12); }
+/* the letter's circle: charcoal, a white letter (not the lime: user, 2026-10-28) — the menu's larger one too */
+[data-theme="light"] .editor-theme > .app-nav .acct-avatar { background: #27272a; color: #fafafa; }
+/* the profile menu: the light raised surface */
+[data-theme="light"] .editor-theme > .app-nav .am-menu { background: var(--ed-popover); border-color: var(--ed-line); box-shadow: 0 18px 44px -18px rgba(24, 24, 27, 0.4); }
+[data-theme="light"] .editor-theme > .app-nav .am-name { color: #18181b; }
+[data-theme="light"] .editor-theme > .app-nav :is(.am-email, .am-usage-count, .am-legal) { color: #52525b; }
+[data-theme="light"] .editor-theme > .app-nav .am-usage { background: var(--ed-track); box-shadow: inset 0 0 0 1px var(--ed-hair); }
+[data-theme="light"] .editor-theme > .app-nav :is(.am-usage-plan, .am-usage-count b) { color: #18181b; }
+[data-theme="light"] .editor-theme > .app-nav .am-bar { background: rgba(24, 24, 27, 0.1); }
+[data-theme="light"] .editor-theme > .app-nav .am-cta-ghost { color: #18181b; background: var(--ed-raise); box-shadow: inset 0 0 0 1px var(--ed-line); }
+[data-theme="light"] .editor-theme > .app-nav .am-group { border-top-color: var(--ed-hair); }
+[data-theme="light"] .editor-theme > .app-nav .am-item { color: #27272a; }
+[data-theme="light"] .editor-theme > .app-nav .am-item svg:first-child { color: #52525b; }
+[data-theme="light"] .editor-theme > .app-nav .am-item:hover:not([aria-disabled="true"]) { background: rgba(24, 24, 27, 0.07); color: #0f0f11; }
+[data-theme="light"] .editor-theme > .app-nav .am-item:hover:not([aria-disabled="true"]) svg:first-child { color: #4a6100; }
+[data-theme="light"] .editor-theme > .app-nav .am-item[aria-disabled="true"] { color: #71717a; }
+[data-theme="light"] .editor-theme > .app-nav :is(.am-soon, .am-kbd) { color: #3f3f46; background: rgba(24, 24, 27, 0.08); box-shadow: none; }
+[data-theme="light"] .editor-theme > .app-nav .am-dot { background: #7fa800; box-shadow: none; }
+[data-theme="light"] .editor-theme > .app-nav .am-signout:hover:not([aria-disabled="true"]) { color: #b91c1c !important; background: rgba(239, 68, 68, 0.1) !important; }
+[data-theme="light"] .editor-theme > .app-nav .am-signout:hover svg:first-child { color: #b91c1c !important; }
+/* (the workspace's edge on the same grey: a hairline round it) */
+[data-theme="light"] .editor-theme .ed-body > .ed-top { border: 1px solid var(--ed-line) !important; border-bottom: 0 !important; }
+[data-theme="light"] .editor-theme .ed-body > .ed-dockpanel { border: 1px solid var(--ed-line) !important; border-top-color: var(--ed-hair) !important; box-shadow: 0 18px 40px -28px rgba(24, 24, 27, 0.4) !important; }
+
+/* Export: solid lime, no dark frame, no lift — the one bright button */
+[data-theme="light"] .editor-theme .ed-export.sbb { padding: 0; border-radius: 10px; box-shadow: 0 1px 2px rgba(24, 24, 27, 0.15), inset 0 0 0 1px rgba(0, 0, 0, 0.06); }
+[data-theme="light"] .editor-theme .ed-export.sbb:hover:not(:disabled) { transform: none; box-shadow: 0 4px 12px -4px rgba(120, 160, 0, 0.55); }
+[data-theme="light"] .editor-theme .ed-export :is(.sbb-rest, .sbb-beam) { display: none; }
+[data-theme="light"] .editor-theme .ed-export .sbb-surface { border-radius: 10px; background: #c8ff00; box-shadow: none; }
+[data-theme="light"] .editor-theme .ed-export.sbb:hover .sbb-surface { background: #d2ff33; }
+
+/* ── Tool rail: icons only, the name beside the hovered one ── */
+[data-theme="light"] .editor-theme .ed-rail { width: 60px !important; }
+[data-theme="light"] .editor-theme .ed-rail .ed-tool { width: 42px !important; height: clamp(32px, calc((100cqh - 16px) / 11 - 4px), 42px) !important; border-radius: 10px; color: #232327; }
+[data-theme="light"] .editor-theme .ed-rail .ed-tool span { display: none; }
+[data-theme="light"] .editor-theme .ed-rail .ed-tool:hover { background: rgba(24, 24, 27, 0.05); color: #18181b; }
+[data-theme="light"] .editor-theme .ed-rail .ed-tool:hover svg { scale: 1.06; }
+[data-theme="light"] .editor-theme .ed-rail .ed-tool[data-active] { background: var(--ed-raise); color: #18181b; box-shadow: inset 0 0 0 1px var(--ed-line), var(--ed-shadow-soft); }
+[data-theme="light"] .editor-theme .ed-rail .ed-tool[data-active]::before { left: -9px; width: 2.5px; height: 20px; background: var(--ed-lime-mark); }
+[data-theme="light"] .editor-theme .ed-rail .ed-tool:focus-visible { outline-color: var(--ed-lime-mark); }
+.ed-rail-tip { display: none; }
+[data-theme="light"] .editor-theme .ed-rail-tip {
+  display: block; position: fixed; left: 76px; translate: 0 -50%; z-index: 90; pointer-events: none; white-space: nowrap;
+  padding: 5px 9px; border-radius: 7px; font-size: 11.5px; font-weight: 600; color: #fafafa; background: #18181b;
+  box-shadow: 0 8px 20px -8px rgba(24, 24, 27, 0.5); animation: ed-rail-tip .14s ease-out both;
+}
+@keyframes ed-rail-tip { from { opacity: 0; translate: -4px -50%; } to { opacity: 1; translate: 0 -50%; } }
+/* the "more tools" arrows fade into the rail's own colour */
+[data-theme="light"] .editor-theme .ed-rail > button { color: #232327 !important; }
+
+/* ── Format bar and the docks: sunken wells, the picked choice a raised pill (no glow, no lime fill) ── */
+[data-theme="light"] .editor-theme .ed-canvas-bar { border-bottom-color: var(--ed-hair) !important; min-height: 56px !important; }
+[data-theme="light"] .editor-theme .ed-dock {
+  background: var(--ed-track); box-shadow: inset 0 0 0 1px var(--ed-hair); border-radius: 11px; padding: 3px;
+}
+[data-theme="light"] .editor-theme .ed-dock-btn { height: 32px; border-radius: 8px; color: #232327; font-size: 12.5px; }
+[data-theme="light"] .editor-theme .ed-dock-btn:hover:not(:disabled):not([data-on]) { color: #18181b; background: rgba(24, 24, 27, 0.05); }
+[data-theme="light"] .editor-theme .ed-dock-choice[data-on] { color: #18181b; font-weight: 600; }
+[data-theme="light"] .editor-theme .ed-dock-choice[data-on] svg { color: var(--ed-lime-text); }
+[data-theme="light"] .editor-theme .ed-dock-glider {
+  top: 3px; bottom: 3px; border-radius: 8px; background: var(--ed-raise);
+  box-shadow: inset 0 0 0 1px var(--ed-line), 0 1px 2px rgba(24, 24, 27, 0.08);
+}
+[data-theme="light"] .editor-theme .ed-dock-btn[data-rec] { color: #b91c1c; background: rgba(239, 68, 68, 0.1); box-shadow: inset 0 0 0 1px rgba(239, 68, 68, 0.35); }
+[data-theme="light"] .editor-theme .ed-dock-btn:focus-visible { outline-color: var(--ed-lime-mark); }
+[data-theme="light"] .editor-theme .ed-applies { color: #1f1f23 !important; font-weight: 500; }
+[data-theme="light"] .editor-theme .ed-applies > span:first-child { color: #2a2a2f !important; letter-spacing: 0.08em; }
+
+/* ── The video: on a dark stage (user, 2026-10-28: the controls light, where the video plays dark — as
+   Final Cut / Premiere do in light mode: the video the brightest thing on screen), soft corners, a deep shadow ── */
+[data-theme="light"] .editor-theme .ed-stage { background: var(--ed-canvas) !important; }
+[data-theme="light"] .editor-theme .ed-stage-box { inset: 14px 18px !important; border: 0 !important; border-radius: 0 !important; }
+[data-theme="light"] .editor-theme .ed-body .ed-vp { background: transparent !important; padding: 2px 2px 14px; }
+[data-theme="light"] .editor-theme .ed-body .ed-vp-frame {
+  border-radius: 10px; box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.06), 0 20px 44px -20px rgba(0, 0, 0, 0.85);
+}
+[data-theme="light"] .editor-theme .ed-pv-tag { background: rgba(10, 10, 12, 0.55); color: #fafafa; backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); }
+
+/* ── The stage, as a cinema (user, 2026-10-28: "creative, premium"): a spotlight — lighter behind the video,
+   falling to near-black at the edges — a fine film grain, and the video's own colours glowing softly behind it
+   (EditorShell AmbientGlow). The viewer and its play bar one surface; the Preview's stage the same. ── */
+.ed-ambient { display: none; }
+[data-theme="light"] .editor-theme .ed-video {
+  background:
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 .05 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E"),
+    radial-gradient(75% 65% at 50% 46%, #c6c6cb 0%, #babac0 55%, #b0b0b6 100%) !important;
+}
+[data-theme="light"] .editor-theme .ed-preview-inner {
+  background:
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 .05 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E"),
+    radial-gradient(90% 60% at 50% 55%, #c6c6cb 0%, #babac0 55%, #b0b0b6 100%);
+}
+/* (the light bars on top of them keep the panel colour) */
+[data-theme="light"] .editor-theme .ed-video > .ed-canvas-bar,
+[data-theme="light"] .editor-theme .ed-preview-inner > div:first-child { background: var(--ed-panel); }
+[data-theme="light"] .editor-theme :is(.ed-stage, .ed-player, .ed-preview-inner > div:nth-child(2), .ed-preview-inner > .flex-1) { background: transparent !important; }
+[data-theme="light"] .editor-theme .ed-ambient {
+  display: none; position: absolute; left: 6%; top: 2%; width: 88%; height: 92%;
+  /* (user, 2026-10-28: "decrease the white, add grey" — a faint hint of the video's colour, the stage staying a calm dark grey) */
+  filter: blur(90px) saturate(.85) brightness(.7); opacity: .3; pointer-events: none; z-index: 0;
+  transform: scale(1.08); transition: opacity .6s ease;
+}
+[data-theme="light"] .editor-theme .ed-preview-inner > .flex-1 { position: relative; }
+/* (the viewer's glow runs behind its stage and play bar, under the light bar above it) */
+[data-theme="light"] .editor-theme .ed-video > .ed-ambient { left: 4%; top: 64px; width: 92%; height: calc(100% - 64px); }
+[data-theme="light"] .editor-theme .ed-video > .ed-canvas-bar { position: relative; z-index: 2; }
+[data-theme="light"] .editor-theme .ed-video > :is(.ed-stage, .ed-player) { position: relative; z-index: 1; }
+[data-theme="light"] .editor-theme .ed-preview-inner > .flex-1 > .ed-ambient { left: 6%; top: 6%; width: 88%; height: 88%; opacity: .26; }
+[data-theme="light"] .editor-theme .ed-pv-box { position: relative; z-index: 1; }
+[data-theme="light"] .editor-theme .ed-stage-box { z-index: 1; }
+/* the frames: a fine light edge on top, a deep soft shadow under — they sit on the light */
+[data-theme="light"] .editor-theme .ed-body .ed-vp-frame,
+[data-theme="light"] .editor-theme .ed-pv-box:not([data-full-view]) > div > .relative > :first-child {
+  box-shadow: 0 0 0 1px rgba(15, 15, 17, 0.08), 0 22px 44px -22px rgba(15, 15, 17, 0.55) !important;
+}
+
+/* ── The viewer: the play bar part of the dark stage — one screen, the video and its controls together
+   (as the Preview column, dark down to the timeline). What's on the dark takes light ink. ── */
+/* (dark ink on the grey stage) */
+[data-theme="light"] .editor-theme .ed-player { background: var(--ed-canvas) !important; border-top: 0 !important; height: 56px !important; }
+[data-theme="light"] .editor-theme .ed-transport-time { font-size: 12px; font-weight: 500; letter-spacing: 0.01em; background: none !important; padding: 0 !important; box-shadow: none !important; }
+[data-theme="light"] .editor-theme .ed-transport-time > span:first-child { color: #18181b !important; font-weight: 600 !important; }
+[data-theme="light"] .editor-theme .ed-transport-total { color: #4a4a51 !important; font-weight: 500; }
+[data-theme="light"] .editor-theme .ed-player .ed-tl-btn { color: #2a2a2f; }
+[data-theme="light"] .editor-theme .ed-player .ed-tl-btn:hover:not(:disabled) { color: #0f0f11; background: rgba(15, 15, 17, 0.07); }
+/* play: dark, a lime triangle — the one strong control */
+[data-theme="light"] .editor-theme .ed-player .ed-play { background: #18181b; box-shadow: 0 8px 18px -8px rgba(15, 15, 17, 0.55); }
+[data-theme="light"] .editor-theme .ed-player .ed-play:hover { background: #27272a; }
+/* the bar balanced round play: the time on its left, the length on its right, centred under the video */
+[data-theme="light"] .editor-theme .ed-player { display: flex !important; align-items: center; justify-content: center; gap: 18px; }
+[data-theme="light"] .editor-theme .ed-player > div:first-child,
+[data-theme="light"] .editor-theme .ed-player .ed-transport-time { display: contents; }
+[data-theme="light"] .editor-theme .ed-player .ed-transport-time > span:first-child { order: 1; min-width: 64px; text-align: right; font-size: 12.5px; }
+[data-theme="light"] .editor-theme .ed-player > div:nth-child(2) { order: 2; }
+[data-theme="light"] .editor-theme .ed-player .ed-transport-total { order: 3; min-width: 64px; text-align: left; font-size: 12.5px; }
+[data-theme="light"] .editor-theme .ed-player .ed-transport-slash { display: none; }
+[data-theme="light"] .editor-theme .ed-player > div:last-child:empty { display: none; }
+[data-theme="light"] .editor-theme .ed-play { background: #18181b; box-shadow: 0 6px 16px -8px rgba(24, 24, 27, 0.55); }
+
+/* ── Preview column: the video centred in its room, a soft shadow, the full-view button a small glass circle in its corner ── */
+[data-theme="light"] .editor-theme .ed-preview-inner > div:first-child { border-bottom-color: var(--ed-hair) !important; height: 56px !important; }
+[data-theme="light"] .editor-theme .ed-preview-inner > div:nth-child(2) { background: var(--ed-canvas); padding-top: 14px !important; }
+[data-theme="light"] .editor-theme .ed-preview-inner > div:nth-child(2) [role="radiogroup"] { background: rgba(15, 15, 17, 0.06) !important; border-color: rgba(15, 15, 17, 0.1) !important; }
+[data-theme="light"] .editor-theme .ed-preview-inner > div:nth-child(2) [role="radio"][aria-checked="true"] { background: var(--ed-raise) !important; box-shadow: inset 0 0 0 1px var(--ed-line), 0 1px 2px rgba(15, 15, 17, 0.1) !important; }
+[data-theme="light"] .editor-theme .ed-pv-box:not([data-full-view]) { align-items: center !important; }
+/* (its video plays on the same dark stage as the main one, under the light header and Off / Reels / Shorts) */
+[data-theme="light"] .editor-theme .ed-preview-inner > .flex-1 { background: var(--ed-canvas); }
+[data-theme="light"] .editor-theme .ed-pv-box:not([data-full-view]) > div > .relative > :first-child {
+  border-color: rgba(255, 255, 255, 0.06) !important; box-shadow: 0 20px 44px -20px rgba(0, 0, 0, 0.85) !important;
+}
+[data-theme="light"] .editor-theme .ed-fullview-btn {
+  width: 30px; height: 30px; border-radius: 50%; background: rgba(10, 10, 12, 0.5) !important; border-color: rgba(255, 255, 255, 0.18) !important;
+  opacity: .85; transition: opacity .15s, background-color .15s, transform .15s;
+}
+[data-theme="light"] .editor-theme .ed-fullview-btn:hover { opacity: 1; transform: scale(1.05); }
+/* the timeline's add button: solid lime, a black plus; the main row's mark in ink-lime */
+[data-theme="light"] .editor-theme .tl2-add { background: #c8ff00 !important; color: #0a0a0a !important; border: 0 !important; box-shadow: 0 1px 2px rgba(24, 24, 27, 0.15), inset 0 0 0 1px rgba(0, 0, 0, 0.06) !important; }
+[data-theme="light"] .editor-theme .tl2-add:hover { background: #d4ff33 !important; }
+[data-theme="light"] .editor-theme .tl2-row-ico { color: var(--ed-lime-text) !important; }
+
+/* ── Buttons that fold panels, timeline buttons, the time ── */
+[data-theme="light"] .editor-theme .ed-fold { color: #232327; }
+[data-theme="light"] .editor-theme .ed-fold:hover { color: #18181b; background: rgba(24, 24, 27, 0.05); }
+[data-theme="light"] .editor-theme .ed-fold[data-active] { background: var(--ed-raise); box-shadow: inset 0 0 0 1px var(--ed-line); }
+[data-theme="light"] .editor-theme .ed-tl-btn { color: #232327; }
+[data-theme="light"] .editor-theme .ed-tl-btn:hover:not(:disabled) { color: #18181b; background: rgba(24, 24, 27, 0.05); }
+[data-theme="light"] .editor-theme .ed-tl-btn:disabled { opacity: 1; color: rgba(15, 15, 17, 0.3); }
+[data-theme="light"] .editor-theme .ed-tl-btn[data-active] { color: var(--ed-lime-text); background: rgba(155, 203, 0, 0.14); }
+[data-theme="light"] .editor-theme .ed-tl-btn.ed-tl-fold { background: var(--ed-raise); box-shadow: inset 0 0 0 1px var(--ed-line), var(--ed-shadow-soft); }
+[data-theme="light"] .editor-theme .ed-tl-sep { background: var(--ed-hair); }
+[data-theme="light"] .editor-theme .ed-time { font-weight: 500 !important; color: #26262b !important; }
+[data-theme="light"] .editor-theme .ed-time > span { color: #18181b !important; }
+[data-theme="light"] .editor-theme .ed-transport { background: transparent !important; border-bottom: 1px solid var(--ed-hair); }
+[data-theme="light"] .editor-theme .ed-tip::after { color: #fafafa; background: #18181b; box-shadow: 0 8px 20px -8px rgba(24, 24, 27, 0.5); }
+
+/* ── Timeline: the working well ── */
+[data-theme="light"] .editor-theme [data-layout-panel="Editing panel"] { background: var(--ed-panel) !important; border-top: 0 !important; }
+[data-theme="light"] .editor-theme .tl2-frame { border-color: var(--ed-hair); background: #b7b7bc; box-shadow: inset 0 1px 3px rgba(24, 24, 27, 0.1); }
+[data-theme="light"] .editor-theme .tl2-ruler { background: var(--ed-panel); box-shadow: 0 1px 0 var(--ed-hair); }
+[data-theme="light"] .editor-theme .tl2-tick { background: rgba(24, 24, 27, 0.26); }
+[data-theme="light"] .editor-theme .tl2-tick-major { background: rgba(24, 24, 27, 0.4); }
+[data-theme="light"] .editor-theme .tl2-tick span { font-size: 10px; font-weight: 500; color: #1f1f23; font-variant-numeric: tabular-nums; }
+[data-theme="light"] .editor-theme .tl2-bubble { font-variant-numeric: tabular-nums; }
+[data-theme="light"] .editor-theme .tl2-block { box-shadow: inset 0 0 0 1px rgba(24, 24, 27, 0.14); }
+[data-theme="light"] .editor-theme .lane-ctl { color: #2e2e33; }
+[data-theme="light"] .editor-theme .lane-ctl:not(:disabled):hover { color: #18181b; background: rgba(24, 24, 27, 0.06); }
+[data-theme="light"] .editor-theme .lane-ctl[data-on] { color: #b91c1c; background: rgba(239, 68, 68, 0.1); }
+
+/* ── Scrollbars: thin, quiet ── */
+/* (zero specificity: the rail and the timeline, which hide theirs, keep them hidden) */
+:where([data-theme="light"] .editor-theme *) { scrollbar-color: rgba(24, 24, 27, 0.22) transparent; scrollbar-width: thin; }
+
+/* ══ Editing board: the video bigger, and the play bar a floating glass dock (user, 2026-10-28: "creative",
+   "the video looks small") — both modes, desktop only (.ed-body). Last in the file: it wins over the above. ══ */
+/* less room round the video: it grows */
+html .editor-theme .ed-body .ed-stage-box { inset: 8px 10px !important; }
+html .editor-theme .ed-body .ed-vp { padding: 0 0 4px !important; }
+/* the dock: one capsule — the time · ⏮ ▶ ⏭ · the length — floating under the video */
+html .editor-theme .ed-body .ed-player {
+  align-self: center; width: auto !important; height: 46px !important; margin: 2px auto 12px; padding: 0 8px 0 18px;
+  gap: 10px !important; border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06) !important; border: 1px solid rgba(255, 255, 255, 0.09) !important;
+  box-shadow: 0 12px 30px -14px rgba(0, 0, 0, 0.8), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+}
+html .editor-theme .ed-body .ed-player .ed-transport-time > span:first-child { min-width: 0 !important; text-align: left !important; font-size: 13px !important; letter-spacing: 0.01em; }
+html .editor-theme .ed-body .ed-player .ed-transport-total { min-width: 0 !important; padding-right: 10px; font-size: 13px !important; }
+/* thin dividers either side of the controls */
+html .editor-theme .ed-body .ed-player > div:nth-child(2) { position: relative; padding: 0 12px; gap: 6px !important; }
+html .editor-theme .ed-body .ed-player > div:nth-child(2)::before,
+html .editor-theme .ed-body .ed-player > div:nth-child(2)::after {
+  content: ''; position: absolute; top: 50%; width: 1px; height: 18px; translate: 0 -50%; background: rgba(255, 255, 255, 0.12);
+}
+html .editor-theme .ed-body .ed-player > div:nth-child(2)::before { left: 0; }
+html .editor-theme .ed-body .ed-player > div:nth-child(2)::after { right: 0; }
+html .editor-theme .ed-body .ed-player .ed-tl-btn { width: 32px; min-width: 32px; height: 32px; border-radius: 999px; }
+/* play: the lime button, a dark triangle, a soft glow */
+html .editor-theme .ed-body .ed-player .ed-play {
+  width: 36px !important; height: 36px !important; background: #c8ff00 !important; border: 0 !important;
+  box-shadow: 0 6px 18px -6px rgba(200, 255, 0, 0.55), inset 0 -1px 0 rgba(0, 0, 0, 0.12) !important;
+  transition: transform .15s, box-shadow .2s;
+}
+html .editor-theme .ed-body .ed-player .ed-play:hover { transform: scale(1.06); box-shadow: 0 8px 24px -6px rgba(200, 255, 0, 0.7), inset 0 -1px 0 rgba(0, 0, 0, 0.12) !important; }
+html .editor-theme .ed-body .ed-player .ed-play svg { fill: #0a0a0a !important; }
+/* (round the dock, the stage's own colour: no strip of the panel showing) */
+html:not([data-theme="light"]) .editor-theme .ed-body .ed-video { background: var(--ed-canvas) !important; }
+html:not([data-theme="light"]) .editor-theme .ed-body .ed-video > .ed-canvas-bar { background: var(--ed-panel); }
+/* light mode: the dock in ink on the grey */
+html[data-theme="light"] .editor-theme .ed-body .ed-player {
+  background: rgba(255, 255, 255, 0.35) !important; border-color: rgba(15, 15, 17, 0.1) !important;
+  box-shadow: 0 12px 28px -16px rgba(15, 15, 17, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.5);
+}
+html[data-theme="light"] .editor-theme .ed-body .ed-player > div:nth-child(2)::before,
+html[data-theme="light"] .editor-theme .ed-body .ed-player > div:nth-child(2)::after { background: rgba(15, 15, 17, 0.14); }
+html[data-theme="light"] .editor-theme .ed-body .ed-player .ed-play { box-shadow: 0 6px 16px -6px rgba(110, 150, 0, 0.6), inset 0 -1px 0 rgba(0, 0, 0, 0.12) !important; }
+
+/* the dock: the controls only — the time lives in the timeline's bar (user, 2026-10-28) */
+html .editor-theme .ed-body .ed-player { padding: 0 6px !important; }
+html .editor-theme .ed-body .ed-player > div:first-child { display: none !important; }
+html .editor-theme .ed-body .ed-player > div:nth-child(2) { padding: 0 !important; }
+html .editor-theme .ed-body .ed-player > div:nth-child(2)::before,
+html .editor-theme .ed-body .ed-player > div:nth-child(2)::after { display: none; }
+/* (user, 2026-10-28) a smaller dock, and the room it gave to the video */
+html .editor-theme .ed-body .ed-stage-box { inset: 4px 6px !important; }
+html .editor-theme .ed-body .ed-player { height: 34px !important; margin: 2px auto 8px; padding: 0 4px !important; }
+html .editor-theme .ed-body .ed-player > div:nth-child(2) { gap: 2px !important; }
+html .editor-theme .ed-body .ed-player .ed-tl-btn { width: 26px; min-width: 26px; height: 26px; }
+html .editor-theme .ed-body .ed-player .ed-tl-btn svg { width: 13px; height: 13px; }
+html .editor-theme .ed-body .ed-player .ed-play { width: 28px !important; height: 28px !important; box-shadow: 0 4px 12px -4px rgba(200, 255, 0, 0.5), inset 0 -1px 0 rgba(0, 0, 0, 0.12) !important; }
+html .editor-theme .ed-body .ed-player .ed-play svg { width: 11px; height: 11px; }
+
+/* ══ The play control, creative (user, 2026-10-28): no capsule — the play button wears a ring that fills
+   in lime as the clip plays (EditorShell PlayRing), ⏮ ⏭ quiet icons either side ══ */
+.ed-play-ring { display: none; }
+html .editor-theme .ed-body .ed-player {
+  height: 52px !important; margin: 0 auto 4px !important; padding: 0 !important; gap: 0 !important;
+  background: none !important; border: 0 !important; box-shadow: none !important; backdrop-filter: none; -webkit-backdrop-filter: none;
+}
+html .editor-theme .ed-body .ed-player > div:nth-child(2) { gap: 14px !important; }
+html .editor-theme .ed-body .ed-player .ed-tl-btn { width: 28px; min-width: 28px; height: 28px; opacity: .6; transition: opacity .15s, transform .15s; }
+html .editor-theme .ed-body .ed-player .ed-tl-btn:hover:not(:disabled) { opacity: 1; background: none !important; transform: scale(1.1); }
+html .editor-theme .ed-body .ed-player .ed-tl-btn svg { width: 14px; height: 14px; }
+html .editor-theme .ed-body .ed-player .ed-play {
+  position: relative; width: 38px !important; height: 38px !important; background: #141416 !important;
+  box-shadow: 0 6px 18px -6px rgba(0, 0, 0, 0.8) !important;
+}
+html .editor-theme .ed-body .ed-player .ed-play:hover { transform: scale(1.06); box-shadow: 0 0 0 4px rgba(200, 255, 0, 0.08), 0 8px 22px -6px rgba(200, 255, 0, 0.35) !important; }
+html .editor-theme .ed-body .ed-player .ed-play svg { width: 12px; height: 12px; fill: #c8ff00 !important; }
+html .editor-theme .ed-body .ed-player .ed-play-ring {
+  display: block; position: absolute; inset: -4px; border-radius: 50%; pointer-events: none;
+  background: conic-gradient(#c8ff00 var(--p, 0deg), rgba(255, 255, 255, 0.12) 0);
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 2.5px), #000 calc(100% - 2px));
+  mask: radial-gradient(farthest-side, transparent calc(100% - 2.5px), #000 calc(100% - 2px));
+  filter: drop-shadow(0 0 4px rgba(200, 255, 0, 0.35));
+}
+/* light mode: the same, the ring's track in ink */
+html[data-theme="light"] .editor-theme .ed-body .ed-player { background: none !important; border: 0 !important; box-shadow: none !important; }
+html[data-theme="light"] .editor-theme .ed-body .ed-player .ed-play { background: #18181b !important; box-shadow: 0 6px 16px -6px rgba(15, 15, 17, 0.55) !important; }
+html[data-theme="light"] .editor-theme .ed-body .ed-player .ed-play-ring { background: conic-gradient(#8fc400 var(--p, 0deg), rgba(15, 15, 17, 0.14) 0); filter: none; }
+/* (user, 2026-10-28) no lime glow round the play button: just the ring */
+html .editor-theme .ed-body .ed-player .ed-play-ring { filter: none !important; }
+html .editor-theme .ed-body .ed-player .ed-play,
+html .editor-theme .ed-body .ed-player .ed-play:hover,
+html .editor-theme .ed-body .ed-player .ed-play:focus-visible { box-shadow: 0 4px 12px -6px rgba(0, 0, 0, 0.6) !important; }
+html .editor-theme .ed-body .ed-player .ed-play:hover { background: #1c1c1f !important; }
+html[data-theme="light"] .editor-theme .ed-body .ed-player .ed-play:hover { background: #27272a !important; }
+html .editor-theme .ed-body .ed-player .ed-play::before,
+html .editor-theme .ed-body .ed-player .ed-play::after { display: none !important; }
+
+/* ══ Light mode: the same placements as dark mode (user, 2026-10-28) — the tool rail its own card with a gap,
+   the editor (options · video · preview) one surface beside it, the timeline its own card under them;
+   the picked tool a soft lime tile ══ */
+html[data-theme="light"] .editor-theme .ed-body > .ed-top { background: transparent !important; border: 0 !important; border-radius: 0 !important; box-shadow: none !important; }
+html[data-theme="light"] .editor-theme .ed-top > .ed-rail {
+  background: var(--ed-panel); border: 1px solid var(--ed-line) !important; border-radius: 14px !important; margin-right: 8px;
+}
+html[data-theme="light"] .editor-theme .ed-top > :is(.ed-options, .ed-video, .ed-preview-col[data-open], .ed-preview-rail) {
+  border-top: 1px solid var(--ed-line); border-bottom: 1px solid var(--ed-line);
+}
+html[data-theme="light"] .editor-theme .ed-top > :is(.ed-options, .ed-preview-col[data-open], .ed-preview-rail) { background: var(--ed-panel) !important; }
+html[data-theme="light"] .editor-theme .ed-top > .ed-options:not([data-open]) { border: 0; }
+html[data-theme="light"] .editor-theme .ed-rail + .ed-options[data-open],
+html[data-theme="light"] .editor-theme .ed-rail + .ed-options:not([data-open]) + .ed-video { border-left: 1px solid var(--ed-line); border-radius: 14px 0 0 14px; }
+html[data-theme="light"] .editor-theme .ed-top > .ed-preview-col[data-open],
+html[data-theme="light"] .editor-theme .ed-top > .ed-preview-rail { border-right: 1px solid var(--ed-line) !important; border-radius: 0 14px 14px 0 !important; }
+html[data-theme="light"] .editor-theme .ed-body > .ed-dockpanel { margin-top: 8px !important; border: 1px solid var(--ed-line) !important; border-radius: 14px !important; }
+html[data-theme="light"] .editor-theme .ed-body .ed-row-wrap { transform: translateY(4px) !important; }
+/* the picked tool */
+html[data-theme="light"] .editor-theme .ed-rail .ed-tool[data-active] {
+  background: rgba(155, 203, 0, 0.2); color: #3d5200; box-shadow: inset 0 0 0 1px rgba(110, 150, 0, 0.45);
+}
+html[data-theme="light"] .editor-theme .ed-rail .ed-tool[data-active]::before { display: none; }
+/* (user, 2026-10-28) light mode: the picked tool a little darker than the rail */
+html[data-theme="light"] .editor-theme .ed-rail .ed-tool:hover { background: rgba(15, 15, 17, 0.07); color: #0f0f11; }
+html[data-theme="light"] .editor-theme .ed-rail .ed-tool[data-active] {
+  background: rgba(15, 15, 17, 0.14); color: #0f0f11; box-shadow: inset 0 0 0 1px rgba(15, 15, 17, 0.16);
+}
+/* (user, 2026-10-28) the tool rail a little bigger: wider tiles, larger icons — both modes */
+html .editor-theme .ed-body .ed-rail { width: 66px !important; }
+html .editor-theme .ed-body .ed-rail .ed-tool { width: 48px !important; height: clamp(34px, calc((100cqh - 16px) / 11 - 4px), 46px) !important; border-radius: 12px; }
+html .editor-theme .ed-body .ed-rail .ed-tool svg { width: 23px; height: 23px; }
+html .editor-theme .ed-rail-tip { left: 82px !important; }
+/* (10 tools now — Brand kit is in the top bar): each a share of the rail's height, all in view */
+html .editor-theme .ed-body .ed-rail .ed-tool { height: clamp(34px, calc((100cqh - 16px) / 10 - 6px), 46px) !important; }
+html .editor-theme .ed-body .ed-rail > div { justify-content: safe center; gap: 8px !important; }
+/* (the 10 tools and the 9 gaps between them always fit the rail: no scrolling, no arrows) */
+html .editor-theme .ed-body .ed-rail > div { gap: 6px !important; overflow: hidden !important; }
+html .editor-theme .ed-body .ed-rail .ed-tool { height: clamp(28px, calc((100cqh - 16px - 54px) / 10), 46px) !important; }
+html .editor-theme .ed-body .ed-rail > button { display: none !important; }
+
+/* ══ (user, 2026-10-28) the video and the Preview two cards, a gap between them — both modes ══ */
+html:is([data-theme="light"], :not([data-theme="light"])) .editor-theme .ed-top > .ed-video {
+  border-right: 1px solid var(--ed-line) !important; border-radius: 0 14px 14px 0 !important;
+}
+html:is([data-theme="light"], :not([data-theme="light"])) .editor-theme .ed-rail + .ed-options:not([data-open]) + .ed-video {
+  border-left: 1px solid var(--ed-line) !important; border-radius: 14px !important;
+}
+html:is([data-theme="light"], :not([data-theme="light"])) .editor-theme .ed-top > :is(.ed-preview-col[data-open], .ed-preview-rail) {
+  margin-left: 8px !important; border: 1px solid var(--ed-line) !important; border-radius: 14px !important;
+}
+html:is([data-theme="light"], :not([data-theme="light"])) .editor-theme .ed-preview-inner > :is(div:first-child, div:nth-child(2), .flex-1) { box-shadow: none !important; }
+
+/* ══ (user, 2026-10-28) each card one surface: the format bar on the video's own background, no line under
+   it; the Preview's header the same — both modes ══ */
+html:is([data-theme="light"], :not([data-theme="light"])) .editor-theme .ed-video > .ed-canvas-bar,
+html:is([data-theme="light"], :not([data-theme="light"])) .editor-theme .ed-preview-inner > div:first-child {
+  background: transparent !important; border-bottom: 0 !important; box-shadow: none !important;
+}
+html:not([data-theme="light"]) .editor-theme .ed-body .ed-video,
+html:not([data-theme="light"]) .editor-theme .ed-top > .ed-preview-col[data-open] { background: var(--ed-canvas) !important; }
+html:not([data-theme="light"]) .editor-theme .ed-preview-inner > :is(div:nth-child(2), .flex-1) { background: transparent !important; }
+html[data-theme="light"] .editor-theme .ed-preview-inner > :is(div:nth-child(2), .flex-1) { background: transparent !important; }
+/* (user, 2026-10-28) no white circle round play: no outline or edge — keyboard focus brightens the ring instead */
+html .editor-theme .ed-body .ed-player .ed-play,
+html .editor-theme .ed-body .ed-player .ed-play:focus,
+html .editor-theme .ed-body .ed-player .ed-play:focus-visible { outline: none !important; border: 0 !important; }
+html .editor-theme .ed-body .ed-player .ed-play:focus-visible .ed-play-ring { filter: brightness(1.4) !important; }
+/* (user, 2026-10-28) the profile button's letter circle: neutral, not lime (a photo shows as it is) */
+.acct-avatar { background: #2a2a2e; color: #f4f4f5; box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.12); }
+/* (user, 2026-10-28) lime only on the main actions: the covers, the add tile and the Default badge neutral */
+.bk-card-cover { background: radial-gradient(120% 120% at 100% 0%, rgba(255,255,255,0.1), transparent 55%), var(--main); }
+.bk-card[data-default] { box-shadow: inset 0 0 0 1px rgba(255,255,255,0.16), 0 18px 40px -28px rgba(0,0,0,0.9); }
+.bk-card-cover .bk-tag:not(.bk-tag-quiet) { color: #fff; background: rgba(0,0,0,0.5); box-shadow: inset 0 0 0 1px rgba(255,255,255,0.14); backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); }
+.bk-card-initial { color: rgba(255,255,255,0.9); }
+.bk-card-handle { color: rgba(255,255,255,0.85); }
+.bk-add-ico { color: rgba(244,244,245,0.75); background: rgba(255,255,255,0.07); }
+.bk-add:hover:not(:disabled) { border-color: rgba(255,255,255,0.3); background: rgba(255,255,255,0.03); }
+.bk-add:hover:not(:disabled) .bk-add-ico { color: #fff; background: rgba(255,255,255,0.12); }
+/* ── Brand kit cards, alive (user, 2026-10-28): they rise in one by one; a card leans toward the pointer,
+   a light sweeps its cover, its logo floats, its colours fan out; the add tile's + turns ── */
+.bk-grid > * { animation: bk-in .55s cubic-bezier(.2,.8,.2,1) both; }
+.bk-grid > :nth-child(2) { animation-delay: .07s; }
+.bk-grid > :nth-child(3) { animation-delay: .14s; }
+.bk-grid > :nth-child(4) { animation-delay: .21s; }
+.bk-grid > :nth-child(n+5) { animation-delay: .28s; }
+@keyframes bk-in { from { opacity: 0; transform: translateY(14px) scale(.98); } to { opacity: 1; transform: none; } }
+.bk-card {
+  --rx: 0deg; --ry: 0deg;
+  transform: perspective(900px) rotateX(var(--rx)) rotateY(var(--ry));
+  transition: transform .25s cubic-bezier(.2,.8,.2,1), box-shadow .25s;
+}
+.bk-card:hover { transform: perspective(900px) rotateX(var(--rx)) rotateY(var(--ry)) translateY(-3px); }
+/* the light across the cover */
+.bk-card-cover::before {
+  content: ''; position: absolute; inset: 0; z-index: 2; pointer-events: none;
+  background: linear-gradient(105deg, transparent 35%, rgba(255,255,255,0.18) 48%, rgba(255,255,255,0.05) 56%, transparent 66%);
+  transform: translateX(-110%);
+}
+.bk-card:hover .bk-card-cover::before { transform: translateX(110%); transition: transform .9s cubic-bezier(.2,.8,.2,1); }
+/* the logo floats */
+.bk-card:hover .bk-card-logo { animation: bk-float 2.4s ease-in-out infinite; }
+@keyframes bk-float { 0%, 100% { transform: translateY(0) scale(1.05); } 50% { transform: translateY(-5px) scale(1.05); } }
+/* the colours fan out */
+.bk-card-colors i { transition: margin .3s cubic-bezier(.2,.8,.2,1), transform .3s; }
+.bk-card:hover .bk-card-colors i { margin-right: 4px; }
+.bk-card:hover .bk-card-colors i:hover { transform: scale(1.2); }
+/* the add tile */
+.bk-add { transition: border-color .2s, background-color .2s, color .2s, transform .25s cubic-bezier(.2,.8,.2,1); }
+.bk-add:hover:not(:disabled) { transform: translateY(-3px); }
+.bk-add-ico svg { transition: transform .35s cubic-bezier(.34,1.56,.64,1); }
+.bk-add:hover:not(:disabled) .bk-add-ico svg { transform: rotate(90deg); }
+@media (prefers-reduced-motion: reduce) {
+  .bk-grid > *, .bk-card:hover .bk-card-logo { animation: none; }
+  .bk-card, .bk-card:hover { transform: none; }
+  .bk-card:hover .bk-card-cover::before { transition: none; transform: translateX(-110%); }
+  .bk-add:hover:not(:disabled), .bk-add:hover:not(:disabled) .bk-add-ico svg { transform: none; }
+}
+/* (the rise-in uses translate / scale, not transform: the card's lean keeps working after it) */
+@keyframes bk-in { from { opacity: 0; translate: 0 14px; scale: .98; } to { opacity: 1; translate: 0 0; scale: 1; } }
+
+/* ══ Dashboard and clip board, light mode: the Editing board's look (user, 2026-10-28) — one neutral grey,
+   panels and cards a step lighter with a fine edge, wells a step darker, ink text, the top bar the page's
+   grey too, lime only on the main actions. (The tokens above: --smoke panels, --smoke-2 wells, --smoke-bg page) ══ */
+[data-theme="light"] {
+  --smoke: #d0d0d4; --smoke-2: #bcbcc1; --smoke-bg: #c3c3c7;
+  --cb-pop: #e2e2e6;
+}
+[data-theme="light"] .dash {
+  --border: rgba(15,15,17,0.14); --border-strong: rgba(15,15,17,0.22);
+  --text: #18181b; --text-muted: rgba(24,24,27,0.64); --text-dim: rgba(24,24,27,0.44);
+  --hover: rgba(15,15,17,0.06);
+  background: var(--smoke-bg) !important;
+}
+[data-theme="light"] .cb-page { background: var(--smoke-bg) !important; color: #18181b; }
+[data-theme="light"] :is(.cb-panel, .cb-card, .cb-tab, .cb-input, .cb-ghost, .cb-act) { border-color: rgba(15,15,17,0.14) !important; box-shadow: none !important; }
+[data-theme="light"] .cb-panel::before { display: none; }
+[data-theme="light"] .dash .vcard { border-color: rgba(15,15,17,0.14); box-shadow: 0 10px 26px -22px rgba(15,15,17,0.45); }
+[data-theme="light"] .dash .vcard.is-ready:hover { border-color: rgba(15,15,17,0.3); box-shadow: 0 18px 36px -22px rgba(15,15,17,0.5); }
+[data-theme="light"] .dash .vcard-thumb { background: var(--smoke-2); }
+[data-theme="light"] .dash .dash-drop { border-color: rgba(15,15,17,0.22); box-shadow: none; }
+[data-theme="light"] .dash .dash-drop-icon { background: rgba(15,15,17,0.08); color: #3f3f46; }
+[data-theme="light"] .dash .dash-select-toggle.is-on { color: #18181b; border-color: rgba(15,15,17,0.4); }
+[data-theme="light"] .view-switch-knob { box-shadow: inset 0 0 0 1px rgba(15,15,17,0.16), 0 2px 6px -3px rgba(15,15,17,0.3); }
+[data-theme="light"] .view-switch-opt[data-on] { color: #18181b; }
+[data-theme="light"] :is(.cb-card:hover, .cb-card:focus-within) { border-color: rgba(15,15,17,0.3) !important; }
+[data-theme="light"] .cb-card[data-playing] { border-color: rgba(15,15,17,0.32) !important; }
+
+/* the top bar: the page's grey, a hairline under it, ink text — as on the Editing board */
+[data-theme="light"] .app-nav {
+  color-scheme: light;
+  --bg: #c3c3c7; --nav: #c3c3c7; --surface: #d8d8dd;
+  --border: rgba(15,15,17,0.13); --border-strong: rgba(15,15,17,0.2);
+  --text: #18181b; --text-muted: rgba(24,24,27,0.66); --text-dim: rgba(24,24,27,0.46); --accent: #a8d900;
+  --cb-fg: 24 24 27; --cb-text: #18181b; --cb-pop: #e2e2e6;
+  --ed-fg: 24 24 27; --ed-text: #18181b; --ed-panel: #c3c3c7; --ed-raise: #d8d8dd; --ed-popover: #e8e8ec; --ed-accent-text: #4a6100;
+  background: #c3c3c7 !important; color: #18181b; border-bottom: 1px solid rgba(15,15,17,0.13) !important;
+}
+[data-theme="light"] .app-nav .dash-brand-link { background: #d8d8dd; border-color: rgba(15,15,17,0.18); color: #18181b; }
+[data-theme="light"] .app-nav .dash-brand-link:hover { background: #e2e2e6; }
+[data-theme="light"] .app-nav .acct-btn { height: 34px; padding: 0 12px 0 5px; border-radius: 10px; background: #d8d8dd; border-color: rgba(15,15,17,0.18); }
+[data-theme="light"] .app-nav .acct-name { background-image: linear-gradient(110deg, #18181b 0%, #18181b 40%, #5a7a00 50%, #18181b 60%, #18181b 100%); }
+[data-theme="light"] .app-nav .acct-avatar { width: 24px; height: 24px; background: #27272a; color: #fafafa; box-shadow: 0 0 0 1px rgba(24,24,27,0.12); }
+[data-theme="light"] .app-nav button[role="switch"] { background: #b7b7bc !important; border: 0 !important; box-shadow: inset 0 0 0 1px rgba(15,15,17,0.2) !important; }
+[data-theme="light"] .app-nav button[role="switch"] > span:first-child { display: none; }
+[data-theme="light"] .app-nav button[role="switch"] > span.z-10 { background: #d8d8dd !important; border: 0 !important; box-shadow: 0 1px 2px rgba(24,24,27,0.18), inset 0 0 0 1px rgba(15,15,17,0.2) !important; }
+[data-theme="light"] .app-nav .dash-usage-bar { background: rgba(15,15,17,0.14); }
+/* its menus: the light raised surface, ink text */
+[data-theme="light"] .app-nav .am-menu { background: #e8e8ec; border-color: rgba(15,15,17,0.2); box-shadow: 0 18px 44px -18px rgba(24,24,27,0.4); }
+[data-theme="light"] .app-nav .am-name { color: #18181b; }
+[data-theme="light"] .app-nav :is(.am-email, .am-usage-count, .am-legal) { color: #52525b; }
+[data-theme="light"] .app-nav .am-usage { background: #b7b7bc; box-shadow: inset 0 0 0 1px rgba(15,15,17,0.12); }
+[data-theme="light"] .app-nav :is(.am-usage-plan, .am-usage-count b) { color: #18181b; }
+[data-theme="light"] .app-nav .am-bar { background: rgba(24,24,27,0.12); }
+[data-theme="light"] .app-nav .am-cta-ghost { color: #18181b; background: #d8d8dd; box-shadow: inset 0 0 0 1px rgba(15,15,17,0.2); }
+[data-theme="light"] .app-nav .am-group { border-top-color: rgba(15,15,17,0.12); }
+[data-theme="light"] .app-nav .am-item { color: #27272a; }
+[data-theme="light"] .app-nav .am-item svg:first-child { color: #52525b; }
+[data-theme="light"] .app-nav .am-item:hover:not([aria-disabled="true"]) { background: rgba(24,24,27,0.07); color: #0f0f11; }
+[data-theme="light"] .app-nav .am-item:hover:not([aria-disabled="true"]) svg:first-child { color: #4a6100; }
+[data-theme="light"] .app-nav .am-item[aria-disabled="true"] { color: #71717a; }
+[data-theme="light"] .app-nav :is(.am-soon, .am-kbd) { color: #3f3f46; background: rgba(24,24,27,0.08); box-shadow: none; }
+[data-theme="light"] .app-nav .am-dot { background: #7fa800; box-shadow: none; }
+[data-theme="light"] .app-nav .am-signout:hover:not([aria-disabled="true"]) { color: #b91c1c !important; background: rgba(239,68,68,0.1) !important; }
+[data-theme="light"] .app-nav .crumbs-divider { background: rgba(15,15,17,0.16); }
+[data-theme="light"] .app-nav .crumbs-chevron { color: rgba(24,24,27,0.4); }
+[data-theme="light"] .app-nav .crumbs-link { color: rgba(24,24,27,0.6); }
+[data-theme="light"] .app-nav .crumbs-link:hover { color: #18181b; }
+[data-theme="light"] .app-nav .crumbs-current { color: #18181b; }
+/* the clip board's clip count: ink on a quiet grey pill in light mode */
+[data-theme="light"] .cb-count { color: #18181b !important; background: rgba(15,15,17,0.08) !important; border-color: rgba(15,15,17,0.14) !important; }
+
+/* the clip board's brand kit picker (ClipBoardBrand KitPick): a designed menu, both modes */
+.cbb-pick { position: relative; flex: 1; min-width: 0; }
+.cbb-pick-btn {
+  width: 100%; height: 30px; display: flex; align-items: center; gap: 8px; padding: 0 10px; border-radius: 8px;
+  font-size: 12px; font-weight: 600; color: rgb(var(--cb-fg) / 0.92); background: rgb(var(--cb-fg) / 0.06);
+  border: 1px solid rgb(var(--cb-fg) / 0.12); transition: border-color .15s, background-color .15s;
+}
+.cbb-pick-btn:hover:not(:disabled), .cbb-pick-btn[aria-expanded="true"] { border-color: rgb(var(--cb-fg) / 0.25); background: rgb(var(--cb-fg) / 0.09); }
+.cbb-pick-btn:disabled { opacity: .5; }
+.cbb-pick-btn:focus-visible { outline: 2px solid rgba(200,255,0,0.6); outline-offset: 2px; }
+.cbb-pick-name { flex: 1; min-width: 0; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cbb-pick-def { flex-shrink: 0; height: 18px; padding: 0 6px; display: inline-flex; align-items: center; border-radius: 5px; font-size: 10px; font-weight: 700; color: rgb(var(--cb-fg) / 0.6); background: rgb(var(--cb-fg) / 0.08); }
+.cbb-pick-chev { flex-shrink: 0; color: rgb(var(--cb-fg) / 0.5); transition: transform .2s; }
+.cbb-pick-btn[aria-expanded="true"] .cbb-pick-chev { transform: rotate(180deg); }
+.cbb-pick-list {
+  position: absolute; z-index: 60; top: calc(100% + 6px); left: 0; right: 0; min-width: 200px; margin: 0; padding: 5px; list-style: none;
+  border-radius: 12px; background: var(--cb-pop); border: 1px solid rgb(var(--cb-fg) / 0.12);
+  box-shadow: 0 18px 40px -16px rgba(0,0,0,0.6); animation: cbb-pick-in .16s cubic-bezier(.2,.8,.2,1);
+}
+@keyframes cbb-pick-in { from { opacity: 0; transform: translateY(-4px) scale(.98); } to { opacity: 1; transform: none; } }
+.cbb-pick-item { display: flex; align-items: center; gap: 8px; height: 34px; padding: 0 9px; border-radius: 8px; cursor: pointer; font-size: 12.5px; font-weight: 500; color: rgb(var(--cb-fg) / 0.85); }
+.cbb-pick-item[data-active] { background: rgb(var(--cb-fg) / 0.07); color: var(--cb-text); }
+.cbb-pick-item[aria-selected="true"] { font-weight: 700; color: var(--cb-text); }
+.cbb-pick-check { flex-shrink: 0; color: var(--cb-text); }
+.cbb-pick-foot { margin-top: 4px; padding: 6px 9px 3px; border-top: 1px solid rgb(var(--cb-fg) / 0.08); }
+.cbb-pick-foot a { font-size: 11.5px; font-weight: 600; color: rgb(var(--cb-fg) / 0.55); text-decoration: none; }
+.cbb-pick-foot a:hover { color: var(--cb-text); }
+@media (prefers-reduced-motion: reduce) { .cbb-pick-list { animation: none; } }

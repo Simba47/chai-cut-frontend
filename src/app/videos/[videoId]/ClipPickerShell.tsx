@@ -1662,7 +1662,7 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
             </svg>
             <h2 className="text-[15px] font-semibold text-white tracking-tight">Clipboard</h2>
             {(
-              <span className="text-[11px] font-bold px-2 py-0.5 rounded-full" style={{ color: ACCENT, background: 'rgba(200,255,0,0.1)', border: '1px solid rgba(200,255,0,0.25)' }}>
+              <span className="cb-count text-[11px] font-bold px-2 py-0.5 rounded-full" style={{ color: ACCENT, background: 'rgba(200,255,0,0.1)', border: '1px solid rgba(200,255,0,0.25)' }}>
                 {badgeCount} clip{badgeCount === 1 ? '' : 's'}
               </span>
             )}

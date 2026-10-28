@@ -81,6 +81,12 @@ export function VideoPreview({
   const currentTimeMs = live ? liveMs : timeProp
   const activeSegment = live && segmentAt ? segmentAt(liveMs) : segmentProp
   const [mainAR, setVideoAR] = useState<number | null>(null)
+  // (a video already loaded before the page was ready — a cached one — had its size known before
+  // onLoadedMetadata could hear it: read it here then)
+  useEffect(() => {
+    const v = videoRef.current
+    if (!mainAR && v?.videoWidth && v.videoHeight) setVideoAR(v.videoWidth / v.videoHeight)
+  }) // eslint-disable-line react-hooks/exhaustive-deps
   const maskId = `crop-mask-${useId().replace(/:/g, '')}`
 
   // ── A video on top playing here: this view shows it (and its crop box is framed on it) ──
@@ -121,13 +127,13 @@ export function VideoPreview({
 
   return (
     <div
-      className="flex-1 flex items-center justify-center overflow-hidden"
+      className="ed-vp flex-1 flex items-center justify-center overflow-hidden"
       style={{ background: '#0a0a0a' }}
     >
       {/* For horizontal layout: fill full width so any source AR looks as large as possible.
           The AR prop still controls height, and maxHeight prevents overflow. */}
       <div
-        className="relative overflow-hidden"
+        className="ed-vp-frame relative overflow-hidden"
         style={
           isHorizontal
             ? { width: '100%', ...(videoAR ? { aspectRatio: String(videoAR) } : { height: '100%' }), maxHeight: '100%', background: '#000', flexShrink: 0 }

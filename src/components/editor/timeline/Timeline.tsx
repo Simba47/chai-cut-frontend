@@ -163,6 +163,11 @@ export interface TimelineProps {
   onGroupRows?: (ids: string[], delta: number, family: 'visual' | 'audio') => void
   /** The main video's parts among what's picked, carried along: each goes exactly there (or none, if one has no room) */
   onGroupParts?: (moves: { id: string; startMs: number }[]) => void
+  /**
+   * How tall the timeline is with just the ruler, the main video and its own rows (captions, sound,
+   * views), px: the editor opens it this tall — the other rows scroll inside until it's dragged taller
+   */
+  onBaseHeight?: (px: number) => void
 }
 
 /** What the + adds (at the playhead) */
@@ -256,7 +261,7 @@ export function Timeline({
   onAddKind, cutJoins = [], isStock, onDropFiles, onDropStock, onDropMedia,
   mainMuted = false, onToggleMainMute, laneCtl, onLaneCtl, captionRow, onCaptionLineClick, onSelectCaptionRange, transitions = [], focusCut = null, onOpenTransition, onRemoveTransition, onApplyTransitionToAll, onDropTransition,
   onTrackDrop, belowRows = 0, onMovePart, onPlacePart, onPartToTrack, onShotToMain, maxMs, pickedSegmentId = null, selectedId, onPickSegment,
-  groupSel = [], onGroupSel, groups = [], onGroup, onUngroup, onGroupRows, onGroupParts,
+  groupSel = [], onGroupSel, groups = [], onGroup, onUngroup, onGroupRows, onGroupParts, onBaseHeight,
 }: TimelineProps) {
   const viewRef = useRef<HTMLDivElement>(null)        // what shows (the playhead sits in its middle)
   const contentRef = useRef<HTMLDivElement>(null)     // the layer that slides under it
@@ -2058,6 +2063,22 @@ export function Timeline({
   const mainTop = RULER_H + visualH
   const mainRowH = BLOCK_H + MAIN_PAD * 2
   const headH = mainTop + mainRowH + (captionRow ? CAP_ROW_H : 0) + (originals.length ? ORIG_ROW_H : 0) + (viewMarkers.length ? VIEW_ROW_H : 0)
+  // (the rows that always show, and the frame's border round them: onBaseHeight)
+  const baseH = headH - visualH + 2
+  useLayoutEffect(() => { onBaseHeight?.(baseH) }, [baseH]) // eslint-disable-line react-hooks/exhaustive-deps
+  // Opened with rows over the main video: the view starts at the main video (those rows are a scroll up)
+  // — once, as the clip opens, and only while it hasn't been scrolled by hand
+  const openedAt = useRef(typeof performance !== 'undefined' ? performance.now() : 0)
+  const startedAtMain = useRef(false)
+  // (each render until then: the panel may only now have its opening height, so only now scroll)
+  useLayoutEffect(() => {
+    const v = viewRef.current
+    if (startedAtMain.current || !v || !visualH || performance.now() - openedAt.current > 4000) return
+    // (the panel at its opening height first — not still at the size it had before saying it — and rows to scroll)
+    if (v.clientHeight > baseH + 2 || v.scrollHeight <= v.clientHeight + 1) return
+    startedAtMain.current = true
+    if (v.scrollTop < visualH / 2) v.scrollTop = visualH
+  })
 
   return (
     <div className="tl2 flex items-stretch flex-auto min-h-0 select-none"

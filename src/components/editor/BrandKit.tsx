@@ -6,10 +6,11 @@ import { PlatformOverlay, PLATFORM_SAFE, type Platform } from './PlatformOverlay
 import { ensureBrandFont } from './brandFonts'
 import { BrandStart, BrandCard, type Found } from '@/components/brand/BrandMaker'
 import { KitWords, WordsPreview } from '@/components/brand/BrandWordsEditor'
+import { inviteLink, ROLE_NAMES, type KitInviteIn, type KitInviteOut, type KitMember, type KitRole, type KitTeam as KitTeamState } from '@/lib/shared/brandTeam'
 import { cardAreas, cardBackgroundPixels, CARD_PATTERNS, CARD_PATTERN_SCALE, CARD_VIDEO_WIDTH, type CardPattern } from '@/lib/shared/brandCard'
 import { templateOf, templateFontFamily } from '@/modules/captions/templates'
 import {
-  LOGO_SIZE, LOGO_SECONDS, MAX_BRAND_FONTS, PROGRESS_HEIGHT, MAX_KIT_SHARES, CARD_TEXT_SIZE, type BrandCardSettings,
+  LOGO_SIZE, LOGO_SECONDS, MAX_BRAND_FONTS, PROGRESS_HEIGHT, CARD_TEXT_SIZE, type BrandCardSettings,
   brandCaptionStyle, logoBox, showHandle, WATERMARK, isWatermark, brandProgressBar, END_CARD_SECONDS, MAX_END_VIDEO_MS, type BrandProgress, brandTextStyle, MAX_MORE_CAPTIONS, DEFAULT_BRAND_KIT, type LinkBrand, type BrandTextStyle, type BrandCaptionLook,
   type BrandKit, type BrandKitData, type BrandCaptions, type LogoCorner, type LogoShow, type ProgressBar,
 } from '@/lib/shared/brandKit'
@@ -43,6 +44,10 @@ export interface BrandKits {
   remove: (id: string) => Promise<void>
   /** Stop using a kit someone shared with you */
   leave: (id: string) => Promise<void>
+  /** Invites to other people's kits waiting for this account (Phase 6) */
+  invites: KitInviteIn[]
+  /** Accept an invite (the kit is added and picked) or decline it */
+  answerInvite: (id: string, accept: boolean) => Promise<BrandKit | null>
   /** A logo for a kit, stored; `colors`: its own brand colours, read from it (null: they couldn't be) */
   uploadLogo: (file: File) => Promise<{ path: string; url: string | null; ratio: number; colors: { main: string; accent: string | null } | null }>
   /** A brand read from a website or profile link (server services/brandFromLink.ts) */
@@ -84,6 +89,7 @@ export function useBrandKits(): BrandKits {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [currentId, setCurrentId] = useState<string | null>(null)
+  const [invites, setInvites] = useState<KitInviteIn[]>([])
   const [saveState, setSaveState] = useState<SaveState>('saved')
   const [saveError, setSaveError] = useState<string | null>(null)
   const timers = useRef(new Map<string, ReturnType<typeof setTimeout>>())
@@ -96,9 +102,9 @@ export function useBrandKits(): BrandKits {
 
   const load = useCallback(() => {
     setLoading(true); setError(null)
-    fetch('/api/brand-kits').then(r => json<{ kits: BrandKit[]; limit: number; plan: string }>(r))
+    fetch('/api/brand-kits').then(r => json<{ kits: BrandKit[]; limit: number; plan: string; invites?: KitInviteIn[] }>(r))
       .then(d => {
-        setKits(d.kits); setLimit(d.limit); setPlan(d.plan)
+        setKits(d.kits); setLimit(d.limit); setPlan(d.plan); setInvites(d.invites ?? [])
         let saved: string | null = null
         try { saved = localStorage.getItem(CURRENT_KEY) } catch { /* private window */ }
         setCurrentId(d.kits.some(k => k.id === saved) ? saved : d.kits[0]?.id ?? null)
@@ -112,10 +118,10 @@ export function useBrandKits(): BrandKits {
   useEffect(() => {
     const again = () => {
       if (document.visibilityState !== 'visible' || pending.current.size || timers.current.size || sending.current.size) return
-      fetch('/api/brand-kits').then(r => json<{ kits: BrandKit[]; limit: number; plan: string }>(r))
+      fetch('/api/brand-kits').then(r => json<{ kits: BrandKit[]; limit: number; plan: string; invites?: KitInviteIn[] }>(r))
         .then(d => {
           if (pending.current.size || timers.current.size) return
-          setKits(d.kits); setLimit(d.limit); setPlan(d.plan)
+          setKits(d.kits); setLimit(d.limit); setPlan(d.plan); setInvites(d.invites ?? [])
           setCurrentId(cur => (d.kits.some(k => k.id === cur) ? cur : d.kits[0]?.id ?? null))
         })
         .catch(() => { /* kept as it is */ })
@@ -142,7 +148,12 @@ export function useBrandKits(): BrandKits {
       // (the saved kit's logo link; what's on screen stays as typed meanwhile)
       .then(d => {
         tries.current.delete(id)
-        setKits(ks => ks.map(k => (k.id === id ? { ...k, logo_url: d.kit.logo_url ?? k.logo_url } : k)))
+        setKits(ks => ks.map(k => (k.id !== id ? k : {
+          ...k, logo_url: d.kit.logo_url ?? k.logo_url,
+          // (someone who can edit a team's kit: the logo they uploaded is kept in the owner's folder now)
+          ...(k.role === 'edit' && d.kit.data.logo.path !== k.data.logo.path && !pending.current.has(id)
+            ? { data: { ...k.data, logo: { ...k.data.logo, path: d.kit.data.logo.path, ratio: d.kit.data.logo.ratio } } } : {}),
+        })))
         if (!timers.current.size && !pending.current.size) { setSaveState('saved'); setSaveError(null) }
       })
       .catch(e => {
@@ -247,8 +258,16 @@ export function useBrandKits(): BrandKits {
     })
   }, [])
 
+  const answerInvite = useCallback(async (id: string, accept: boolean) => {
+    const { kit } = await fetch(`/api/brand-kits/invites/${id}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ accept }) })
+      .then(r => json<{ kit: BrandKit | null }>(r))
+    setInvites(list => list.filter(i => i.id !== id))
+    if (kit) { setKits(ks => [...ks.filter(k => k.id !== kit.id), kit]); select(kit.id) }
+    return kit
+  }, [select])
+
   const current = kits.find(k => k.id === currentId) ?? null
-  return { kits, limit, plan, loading, error, current, select, create, update, remove, leave, uploadLogo, fromLink, saveState, saveError, reload: load }
+  return { kits, limit, plan, loading, error, current, select, create, update, remove, leave, invites, answerInvite, uploadLogo, fromLink, saveState, saveError, reload: load }
 }
 
 /**
@@ -344,7 +363,7 @@ export function BrandKitPanel({ brand, onKitId, onTurnOn, onTurnOff, onDelete, p
                   )}
                 </span>
                 <span className="text-[11px] truncate" style={{ color: 'rgb(var(--ed-fg) / 0.5)' }}>
-                  {k.shared_by ? `Shared by ${k.shared_by}${k.data.lock ? ' · brand lock' : ''}` : showHandle(k.data.handle) || 'No @handle yet'}
+                  {k.shared_by ? `Shared by ${k.shared_by}${k.role === 'edit' ? ' · can edit' : ''}${k.data.lock ? ' · brand lock' : ''}` : showHandle(k.data.handle) || 'No @handle yet'}
                 </span>
               </span>
               <span className="flex gap-1 shrink-0" aria-hidden="true">
@@ -383,7 +402,7 @@ export function BrandKitPanel({ brand, onKitId, onTurnOn, onTurnOff, onDelete, p
                 ? { color: 'rgb(var(--ed-fg) / 0.55)', background: 'transparent', boxShadow: 'inset 0 0 0 1px rgb(var(--ed-fg) / 0.1)' }
                 : { color: '#0a0a0a', background: '#c8ff00' }}>
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 013 3L7 19l-4 1 1-4z" /></svg>
-              {editing ? 'Editing it on the right' : brand.current.shared_by ? 'See the kit' : 'Edit kit'}
+              {editing ? 'Editing it on the right' : brand.current.shared_by && brand.current.role !== 'edit' ? 'See the kit' : 'Edit kit'}
             </button>
           )}
           {onProgressBarChange && (
@@ -432,85 +451,162 @@ export function urlRatio(url: string): Promise<number | null> {
 }
 
 
-type KitShare = { user_id: string; name: string | null; email: string | null }
-
-/** Who the kit is shared with (Agency), adding and taking people off, and its brand lock */
+/** Who the kit is shared with (Agency) and as what, the invites out, and its brand lock (Phase 6) */
 function KitTeam({ kitId, lock, onLock }: { kitId: string; lock: boolean; onLock: (on: boolean) => void }) {
-  const [state, setState] = useState<{ people: KitShare[]; can_share: boolean } | null>(null)
+  const [state, setState] = useState<KitTeamState | null>(null)
   const [email, setEmail] = useState('')
+  const [role, setRole] = useState<KitRole>('use')
   const [busy, setBusy] = useState(false)
   const [note, setNote] = useState<string | null>(null)
+  const [done, setDone] = useState<string | null>(null)
+  const [copied, setCopied] = useState<string | null>(null)
+  const url = `/api/brand-kits/${kitId}/share`
+  function send<T>(method: string, body: unknown): Promise<T> {
+    return fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(r => json<T>(r))
+  }
   useEffect(() => {
     let live = true
-    setState(null); setNote(null)
-    fetch(`/api/brand-kits/${kitId}/share`).then(r => json<{ people: KitShare[]; can_share: boolean }>(r))
+    setState(null); setNote(null); setDone(null)
+    fetch(url).then(r => json<KitTeamState>(r))
       .then(s => { if (live) setState(s) }).catch(e => { if (live) setNote(e instanceof Error ? e.message : String(e)) })
     return () => { live = false }
-  }, [kitId])
-  async function add() {
-    if (!email.trim() || busy) return
-    setBusy(true); setNote(null)
+  }, [url])
+  const fail = (e: unknown) => setNote(e instanceof Error ? e.message : String(e))
+  async function copyLink(id: string) {
+    const link = inviteLink(window.location.origin, id)
     try {
-      const { person } = await fetch(`/api/brand-kits/${kitId}/share`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: email.trim() }) })
-        .then(r => json<{ person: KitShare }>(r))
-      setState(s => s && { ...s, people: [...s.people.filter(p => p.user_id !== person.user_id), person] })
+      await navigator.clipboard.writeText(link)
+      setCopied(id)
+      setTimeout(() => setCopied(c => (c === id ? null : c)), 1600)
+    } catch { setNote(`Copy is blocked by the browser — the link: ${link}`) }
+  }
+  async function invite(to = email.trim(), as: KitRole = role) {
+    if (!to || busy) return
+    setBusy(true); setNote(null); setDone(null)
+    try {
+      const r = await send<{ person?: KitMember; invite?: KitInviteOut }>('POST', { email: to, role: as })
+      setState(s => s && {
+        ...s,
+        people: r.person ? s.people.map(p => (p.user_id === r.person!.user_id ? r.person! : p)) : s.people,
+        invites: r.invite ? [...s.invites.filter(i => i.email !== r.invite!.email), r.invite] : s.invites,
+      })
+      setDone(r.person
+        ? `${r.person.name || r.person.email} ${r.person.role === 'edit' ? 'can edit it' : 'can use it'} now.`
+        : `Invite ready for ${to}. Its link is copied — send it to them.`)
+      if (r.invite) await copyLink(r.invite.id)
       setEmail('')
-    } catch (e) { setNote(e instanceof Error ? e.message : String(e)) } finally { setBusy(false) }
+    } catch (e) { fail(e) } finally { setBusy(false) }
+  }
+  async function changeRole(userId: string, r: KitRole) {
+    setNote(null); setDone(null)
+    try {
+      await send('PATCH', { user_id: userId, role: r })
+      setState(s => s && { ...s, people: s.people.map(p => (p.user_id === userId ? { ...p, role: r } : p)) })
+    } catch (e) { fail(e) }
   }
   async function removePerson(userId: string) {
-    setNote(null)
+    setNote(null); setDone(null)
     try {
-      await fetch(`/api/brand-kits/${kitId}/share`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ user_id: userId }) }).then(r => json(r))
+      await send('DELETE', { user_id: userId })
       setState(s => s && { ...s, people: s.people.filter(p => p.user_id !== userId) })
-    } catch (e) { setNote(e instanceof Error ? e.message : String(e)) }
+    } catch (e) { fail(e) }
+  }
+  async function takeBack(id: string) {
+    setNote(null); setDone(null)
+    try {
+      await send('DELETE', { invite_id: id })
+      setState(s => s && { ...s, invites: s.invites.filter(i => i.id !== id) })
+    } catch (e) { fail(e) }
   }
   if (!state) return <p className="text-[11px]" style={{ color: note ? '#fca5a5' : 'rgb(var(--ed-fg) / 0.45)' }}>{note ?? 'Loading…'}</p>
   if (!state.can_share) {
     return (
       <p className="text-[11px] leading-relaxed" style={{ color: 'rgb(var(--ed-fg) / 0.55)' }}>
-        Share this kit with your team so everyone&rsquo;s clips look the same — on the Agency plan.{' '}
+        Share this kit with your team so everyone&rsquo;s clips look the same — on the Agency plan.
+        {state.people.length > 0 && ` The ${state.people.length === 1 ? 'person' : `${state.people.length} people`} you shared it with can use it again once your plan shares kits.`}{' '}
         <a href="/pricing" className="font-semibold hover:underline" style={{ color: 'var(--ed-accent-text)' }}>Upgrade</a>
       </p>
     )
   }
+  const open = state.invites.filter(i => !i.expired).length
+  const used = state.people.length + open
+  const full = used >= state.seats
+  const muted = { color: 'rgb(var(--ed-fg) / 0.45)' }
   return (
     <div className="flex flex-col gap-3">
-      <p className="text-[11px] -mt-1" style={{ color: 'rgb(var(--ed-fg) / 0.5)' }}>
-        People you share it with can put it on their clips; only you can change it. Up to {MAX_KIT_SHARES} people.
+      <p className="text-[11px] -mt-1 leading-relaxed" style={{ color: 'rgb(var(--ed-fg) / 0.5)' }}>
+        Invite people by email. They accept it on their Brand kits page: copy the invite&rsquo;s link and send it to them. {used} of {state.seats} places used.
       </p>
       <div className="flex gap-2">
-        <input value={email} onChange={e => setEmail(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') add() }} type="email" maxLength={200}
-          placeholder="Their Shortcut email" aria-label="Email to share the kit with"
+        <input value={email} onChange={e => setEmail(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') invite() }} type="email" maxLength={200}
+          placeholder="Their email" aria-label="Email to invite"
           className="flex-1 min-w-0 h-9 px-3 rounded-lg text-sm text-[var(--ed-text)] outline-none"
           style={{ background: 'rgb(var(--ed-fg) / 0.06)', boxShadow: 'inset 0 0 0 1px rgb(var(--ed-fg) / 0.1)' }} />
-        <button type="button" onClick={add} disabled={busy || !email.trim() || state.people.length >= MAX_KIT_SHARES}
-          className="h-9 px-3 rounded-lg text-xs font-semibold disabled:opacity-50"
-          style={{ color: 'var(--ed-text)', background: 'rgb(var(--ed-fg) / 0.08)', boxShadow: 'inset 0 0 0 1px rgb(var(--ed-fg) / 0.12)' }}>
-          {busy ? 'Sharing…' : 'Share'}
+        <RolePick value={role} onChange={setRole} label="What they can do" />
+        <button type="button" onClick={() => invite()} disabled={busy || !email.trim() || full} className="bw-add">
+          {busy ? 'Inviting…' : 'Invite'}
         </button>
       </div>
-      {note && <p role="alert" className="text-[11px]" style={{ color: '#fca5a5' }}>{note}</p>}
+      <p className="text-[11px] leading-relaxed -mt-1" style={muted}>Can use: puts the kit on their clips. Can edit: changes the kit too — not its team or brand lock.</p>
+      {full && <p className="text-[11px]" style={{ color: '#fbbf24' }}>All {state.seats} places are taken: remove someone or take back an invite first.</p>}
+      {note && <p role="alert" className="text-[11px] break-words" style={{ color: '#fca5a5' }}>{note}</p>}
+      {done && !note && <p role="status" className="text-[11px]" style={{ color: 'var(--ed-accent-text)' }}>{done}</p>}
       {state.people.length > 0 && (
-        <ul className="flex flex-col gap-1" aria-label="Shared with">
-          {state.people.map(p => (
-            <li key={p.user_id} className="flex items-center justify-between gap-2 text-xs">
-              <span className="truncate text-[var(--ed-text)]">{p.name || p.email}{p.name && p.email ? <span style={{ color: 'rgb(var(--ed-fg) / 0.45)' }}> · {p.email}</span> : null}</span>
-              <button type="button" onClick={() => removePerson(p.user_id)} aria-label={`Stop sharing with ${p.email ?? p.name}`}
-                className="text-[11px] shrink-0 hover:underline" style={{ color: 'rgb(var(--ed-fg) / 0.5)' }}>Remove</button>
-            </li>
-          ))}
-        </ul>
+        <div className="flex flex-col gap-1.5">
+          <span className="cap-label">Team</span>
+          <ul className="flex flex-col gap-1.5" aria-label="Shared with">
+            {state.people.map(p => (
+              <li key={p.user_id} className="flex items-center gap-2 text-xs">
+                <span className="flex-1 min-w-0 truncate text-[var(--ed-text)]">{p.name || p.email}{p.name && p.email ? <span style={muted}> · {p.email}</span> : null}</span>
+                <RolePick value={p.role} onChange={r => changeRole(p.user_id, r)} label={`What ${p.name || p.email} can do`} />
+                <button type="button" onClick={() => removePerson(p.user_id)} aria-label={`Remove ${p.email ?? p.name}`}
+                  className="text-[11px] shrink-0 hover:underline" style={{ color: 'rgb(var(--ed-fg) / 0.5)' }}>Remove</button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {state.invites.length > 0 && (
+        <div className="flex flex-col gap-1.5">
+          <span className="cap-label">Invited</span>
+          <ul className="flex flex-col gap-1.5" aria-label="Invited">
+            {state.invites.map(i => (
+              <li key={i.id} className="flex items-center gap-2 text-xs">
+                <span className="flex-1 min-w-0 truncate text-[var(--ed-text)]">{i.email}<span style={muted}> · {ROLE_NAMES[i.role]} · {i.expired ? 'expired' : 'waiting'}</span></span>
+                {i.expired
+                  ? <button type="button" className="text-[11px] font-semibold shrink-0 hover:underline" style={{ color: 'var(--ed-accent-text)' }} onClick={() => invite(i.email, i.role)}>Invite again</button>
+                  : <button type="button" className="text-[11px] font-semibold shrink-0 hover:underline" style={{ color: copied === i.id ? '#4ade80' : 'var(--ed-accent-text)' }} onClick={() => copyLink(i.id)}>{copied === i.id ? 'Link copied' : 'Copy link'}</button>}
+                <button type="button" onClick={() => takeBack(i.id)} aria-label={`Take back the invite to ${i.email}`}
+                  className="text-[11px] shrink-0 hover:underline" style={{ color: 'rgb(var(--ed-fg) / 0.5)' }}>Take back</button>
+              </li>
+            ))}
+          </ul>
+        </div>
       )}
       <label className="cap-row cursor-pointer select-none">
         <span className="flex flex-col min-w-0">
           <span className="cap-label">Brand lock</span>
           <span className="text-[11px]" style={{ color: 'rgb(var(--ed-fg) / 0.45)' }}>
-            {lock ? 'Your team can pick only this kit\u2019s colours and fonts' : 'Off: your team picks any colour and font'}
+            {lock
+              ? 'On clips with this kit, people who can use it keep to its colours and fonts, and can’t take it off'
+              : 'Off: your team picks any colour and font'}
           </span>
         </span>
         <Switch on={lock} label="Brand lock" onChange={onLock} />
       </label>
     </div>
+  )
+}
+
+/** "Can use" or "Can edit" */
+function RolePick({ value, onChange, label }: { value: KitRole; onChange: (r: KitRole) => void; label: string }) {
+  return (
+    <select value={value} onChange={e => onChange(e.target.value === 'edit' ? 'edit' : 'use')} aria-label={label}
+      className="h-9 px-2 rounded-lg text-xs text-[var(--ed-text)] outline-none shrink-0"
+      style={{ background: 'rgb(var(--ed-fg) / 0.06)', boxShadow: 'inset 0 0 0 1px rgb(var(--ed-fg) / 0.1)' }}>
+      <option value="use">{ROLE_NAMES.use}</option>
+      <option value="edit">{ROLE_NAMES.edit}</option>
+    </select>
   )
 }
 
@@ -703,10 +799,12 @@ export function BrandKitStudio({ brand, onKitId = null, onTurnOn, onTurnOff, onC
   }
   const now = () => (latest.current?.id === kit.id ? withNewFields(latest.current.data) : d)
   const setCaptions = (c: Partial<BrandCaptions>) => { const cur = now(); set({ ...cur, captions: { ...cur.captions, ...c } }) }
-  // A kit someone shared with this user: shown, not changed
-  const readOnly = !!kit.shared_by
+  // A kit someone shared with this user: shown, not changed — unless they can edit it (Phase 6: then all
+  // but its team, brand lock, default mark and intro / outro, which are the owner's)
+  const shared = !!kit.shared_by
+  const readOnly = shared && kit.role !== 'edit'
 
-  const steps = STEPS.filter(x => x.id !== 'team' || !readOnly)
+  const steps = STEPS.filter(x => x.id !== 'team' || !shared)
   const at = Math.max(0, steps.findIndex(x => x.id === step))
   const cur = steps[at]
   return (
@@ -723,9 +821,12 @@ export function BrandKitStudio({ brand, onKitId = null, onTurnOn, onTurnOff, onC
             {saveLabel(brand)}
           </span>}
         {onTurnOn && onTurnOff && <div className="shrink-0"><BrandOnSwitch kit={kit} onKitId={onKitId} onTurnOn={onTurnOn} onTurnOff={onTurnOff} compact /></div>}
-        <button type="button" onClick={onClose} aria-label={closeLabel} title={closeLabel}
-          className="w-8 h-8 flex items-center justify-center rounded-lg shrink-0 transition-colors hover:bg-[rgb(var(--ed-fg)/0.1)]" style={{ color: 'rgb(var(--ed-fg) / 0.6)' }}>
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
+        {/* (a clear way out: "Done", and Esc in the editor — user, 2026-10-28) */}
+        <button type="button" onClick={onClose} aria-label={closeLabel} title={`${closeLabel} (Esc)`}
+          className="h-8 px-3.5 flex items-center gap-1.5 rounded-lg shrink-0 text-xs font-bold transition-colors hover:brightness-95"
+          style={{ background: '#c8ff00', color: '#0a0a0a' }}>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5" /></svg>
+          Done
         </button>
       </div>
 
@@ -757,10 +858,12 @@ export function BrandKitStudio({ brand, onKitId = null, onTurnOn, onTurnOff, onC
               <h2 className="text-lg font-bold text-[var(--ed-text)]">{cur.name}</h2>
               <p className="text-xs leading-relaxed" style={{ color: 'rgb(var(--ed-fg) / 0.55)' }}>{cur.about}</p>
             </div>
-            {readOnly && (
-              <p className="text-xs leading-relaxed p-3 rounded-lg" style={{ background: 'rgba(200,255,0,0.08)', color: 'rgb(var(--ed-fg) / 0.75)' }}>
-                {kit.shared_by} shared this kit with you: {onTurnOn ? 'switch it on for your clips' : 'pick it for a clip in the editor'}. Only they can change it.
-                {d.lock && ' Brand lock is on: your colour and font choices are its colours and fonts.'}
+            {shared && (
+              <p className="text-xs leading-relaxed p-3 rounded-lg" style={{ background: 'rgb(var(--ed-fg) / 0.05)', color: 'rgb(var(--ed-fg) / 0.75)' }}>
+                {readOnly
+                  ? <>{kit.shared_by} shared this kit with you: {onTurnOn ? 'switch it on for your clips' : 'pick it for a clip in the editor'}. Only they can change it.
+                    {d.lock && ' Brand lock is on: on clips with this kit, your colours and fonts are its own, and only they can take it off.'}</>
+                  : <>{kit.shared_by} shared this kit with you, and you can edit it: changes reach everyone&rsquo;s clips with it. Its team, brand lock and intro / outro stay theirs.</>}
               </p>
             )}
             <div className="flex flex-col gap-5" inert={readOnly || undefined} style={readOnly ? { opacity: 0.6 } : undefined}>
@@ -829,7 +932,7 @@ export function BrandKitStudio({ brand, onKitId = null, onTurnOn, onTurnOff, onC
                 <Section title="Progress bar">
                   <KitProgressBar d={d} onChange={progress_bar => set({ ...now(), progress_bar })} />
                 </Section>
-                {!readOnly && (
+                {!shared && (
                   <Section title="New clips">
                     <DefaultSwitch kit={kit} onChange={on => set({ ...now(), is_default: on })} />
                   </Section>
@@ -932,14 +1035,14 @@ export function BrandKitStudio({ brand, onKitId = null, onTurnOn, onTurnOff, onC
                       onChange={seconds => set({ ...now(), ends: { ...now().ends, seconds } })} />
                   )}
                 </Section>
-                {!readOnly && (
+                {!shared && (
                   <Section title="Intro and outro">
                     <KitBookends d={d} onChange={ends => set({ ...now(), ends: { ...now().ends, ...ends } })} />
                   </Section>
                 )}
               </>
             )}
-            {cur.id === 'team' && !readOnly && (
+            {cur.id === 'team' && !shared && (
               <>
                   <Section title="Team">
                     <KitTeam kitId={kit.id} lock={d.lock} onLock={lock => set({ ...now(), lock })} />

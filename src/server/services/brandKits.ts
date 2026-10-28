@@ -1,9 +1,10 @@
-import { PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3'
+import { PutObjectCommand, GetObjectCommand, CopyObjectCommand } from '@aws-sdk/client-s3'
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 import { r2, R2_BUCKET } from '@/lib/r2'
 import sql from '@/lib/db'
 import { getUserPlan } from './quota'
-import { brandKitLimit, cleanBrandKitData, DEFAULT_BRAND_KIT, isBrandFont, brandFontKey, MAX_KIT_SHARES, SHARE_PLANS, type BrandKit, type BrandKitData } from '@/lib/shared/brandKit'
+import { brandKitLimit, cleanBrandKitData, DEFAULT_BRAND_KIT, isBrandFont, brandFontKey, type BrandKit, type BrandKitData } from '@/lib/shared/brandKit'
+import { cleanRole, INVITE_DAYS, TEAM_PLANS, teamSeats, type KitInviteIn, type KitInviteOut, type KitMember, type KitRole, type KitTeam } from '@/lib/shared/brandTeam'
 import { hasColumn } from './clips'
 import { pictureColours } from './brandStyle'
 import { cleanBrandWords, type BrandWords } from '@/lib/brandWords'
@@ -36,12 +37,15 @@ async function signLogo(path: string | null): Promise<string | null> {
 }
 
 type Row = { id: string; name: string; data: unknown }
-/** A kit as the editor gets it. `ownerId`: whose kit it is (its files are theirs); `sharedBy`: shared with this user by them */
-async function toKit(row: Row, ownerId: string, sharedBy: string | null = null): Promise<BrandKit> {
+/**
+ * A kit as the editor gets it. `ownerId`: whose kit it is (its files are theirs); `sharedBy`: shared with
+ * this user by them, as `role` (Phase 6: "Can use" or "Can edit")
+ */
+async function toKit(row: Row, ownerId: string, sharedBy: string | null = null, role: KitRole = 'use'): Promise<BrandKit> {
   const data = await usableEnds(cleanBrandKitData(row.data, ownerId), ownerId, sharedBy !== null)
   // (someone else's default is not this user's)
   if (sharedBy !== null) data.is_default = false
-  return { id: row.id, name: row.name, data, logo_url: await signLogo(data.logo.path), ...(sharedBy !== null ? { shared_by: sharedBy } : {}) }
+  return { id: row.id, name: row.name, data, logo_url: await signLogo(data.logo.path), ...(sharedBy !== null ? { shared_by: sharedBy, role } : {}) }
 }
 
 /**
@@ -66,18 +70,43 @@ async function sharesReady(): Promise<boolean> {
   return !!row?.ok
 }
 
+/** Is the invites table there yet (Phase 6: the backend makes it when it starts)? */
+async function invitesReady(): Promise<boolean> {
+  const [row] = await sql<{ ok: boolean }[]>`SELECT to_regclass('public.brand_kit_invites') IS NOT NULL AS ok`.catch(() => [])
+  return !!row?.ok
+}
+
 /**
- * Whether the user can put this kit on their clips: their own, or one shared with them. The one check
- * every place that takes a kit's id uses (Make my clips, saving a clip with its brand switch on).
+ * What the user can do with a kit (Phase 6): 'owner' — it's theirs; 'edit' or 'use' — it's shared with
+ * them, as the owner said; null — nothing (not theirs, not shared with them, or its owner's plan no
+ * longer shares kits: their team's access waits until it does again). `data`: the kit's settings.
  */
-export async function canUseKit(userId: string, kitId: string): Promise<boolean> {
-  if (!/^[0-9a-f-]{36}$/i.test(kitId)) return false
+export async function kitAccess(userId: string, kitId: string): Promise<{ role: 'owner' | KitRole; ownerId: string; data: BrandKitData } | null> {
+  if (!/^[0-9a-f-]{36}$/i.test(kitId)) return null
   const shares = await sharesReady()
   const [row] = await (shares
-    ? sql`SELECT 1 FROM brand_kits bk WHERE bk.id = ${kitId}
-        AND (bk.user_id = ${userId} OR EXISTS (SELECT 1 FROM brand_kit_shares s WHERE s.kit_id = bk.id AND s.user_id = ${userId}))`
-    : sql`SELECT 1 FROM brand_kits WHERE id = ${kitId} AND user_id = ${userId}`).catch(() => [])
-  return !!row
+    ? sql<{ owner: string; data: unknown; member: boolean; role: string | null; plan: string | null }[]>`
+        SELECT bk.user_id AS owner, bk.data, s.user_id IS NOT NULL AS member, to_jsonb(s)->>'role' AS role, o.plan
+        FROM brand_kits bk LEFT JOIN users o ON o.id = bk.user_id
+        LEFT JOIN brand_kit_shares s ON s.kit_id = bk.id AND s.user_id = ${userId}
+        WHERE bk.id = ${kitId}`
+    : sql<{ owner: string; data: unknown; member: boolean; role: string | null; plan: string | null }[]>`
+        SELECT user_id AS owner, data, false AS member, null AS role, null AS plan FROM brand_kits WHERE id = ${kitId}`
+  ).catch(() => [])
+  if (!row) return null
+  const data = cleanBrandKitData(row.data, row.owner)
+  if (row.owner === userId) return { role: 'owner', ownerId: row.owner, data }
+  if (!row.member || !teamSeats(row.plan)) return null
+  return { role: cleanRole(row.role), ownerId: row.owner, data }
+}
+
+/**
+ * Whether the user can put this kit on their clips: their own, or one shared with them (its owner's plan
+ * still sharing). The one check every place that takes a kit's id uses (Make my clips, saving a clip with
+ * its brand switch on).
+ */
+export async function canUseKit(userId: string, kitId: string): Promise<boolean> {
+  return !!(await kitAccess(userId, kitId))
 }
 
 /**
@@ -93,27 +122,54 @@ async function releaseClips(kitId: string, ownerId?: string): Promise<void> {
     : sql`UPDATE clips SET brand = NULL WHERE brand->>'kit_id' = ${kitId}`)
 }
 
-/** The user's kits, oldest first, then the kits shared with them, and how many of their own their plan allows */
-export async function listBrandKits(userId: string): Promise<{ kits: BrandKit[]; limit: number; plan: string }> {
-  await tableReady()
-  const [rows, plan, shared] = await Promise.all([
-    sql<Row[]>`SELECT id, name, data FROM brand_kits WHERE user_id = ${userId} ORDER BY created_at, id`,
-    getUserPlan(userId),
-    (async (): Promise<Array<Row & { owner: string; by: string | null }>> => (!(await sharesReady()) ? [] : sql<(Row & { owner: string; by: string | null })[]>`
-      SELECT bk.id, bk.name, bk.data, bk.user_id AS owner, COALESCE(NULLIF(u.name, ''), u.email) AS by
-      FROM brand_kit_shares s JOIN brand_kits bk ON bk.id = s.kit_id JOIN users u ON u.id = bk.user_id
-      WHERE s.user_id = ${userId} ORDER BY s.created_at, bk.id`))(),
-  ])
-  const kits = await Promise.all([...rows.map(r => toKit(r, userId)), ...shared.map(r => toKit(r, r.owner, r.by ?? 'a teammate'))])
-  return { kits, limit: brandKitLimit(plan), plan }
+
+/** The user's email (lower case), for the invites sent to it */
+async function emailOf(userId: string): Promise<string | null> {
+  const [row] = await sql<{ email: string | null }[]>`SELECT email FROM users WHERE id = ${userId}`
+  return row?.email ? row.email.trim().toLowerCase() : null
 }
 
-// ── Sharing a kit (Agency) ─────────────────────────────────────────────────────
-// The owner shares a kit with other Shortcut accounts by their email: they see it in their Brand kit
-// tool and on the clip board, and can put it on their clips, not change it. With its brand lock on,
-// their editor offers only its colours and fonts (lib/shared/brandKit.ts brandLockOf).
+/** Invites waiting for the user (to their email; not expired; the inviter's plan still sharing) */
+async function invitesFor(userId: string): Promise<KitInviteIn[]> {
+  if (!(await invitesReady())) return []
+  const email = await emailOf(userId)
+  if (!email) return []
+  const rows = await sql<{ id: string; kit_name: string; by: string | null; role: string; plan: string | null }[]>`
+    SELECT i.id, bk.name AS kit_name, COALESCE(NULLIF(o.name, ''), o.email) AS by, i.role, o.plan
+    FROM brand_kit_invites i JOIN brand_kits bk ON bk.id = i.kit_id JOIN users o ON o.id = bk.user_id
+    WHERE i.email = ${email} AND bk.user_id <> ${userId} AND i.created_at > now() - make_interval(days => ${INVITE_DAYS})
+    ORDER BY i.created_at`
+  return rows.filter(r => teamSeats(r.plan) > 0).map(r => ({ id: r.id, kit_name: r.kit_name, by: r.by ?? 'A teammate', role: cleanRole(r.role) }))
+}
 
-export type KitShare = { user_id: string; name: string | null; email: string | null }
+/**
+ * The user's kits, oldest first, then the kits shared with them (their owner's plan still sharing), how
+ * many of their own their plan allows, and the invites waiting for them
+ */
+export async function listBrandKits(userId: string): Promise<{ kits: BrandKit[]; limit: number; plan: string; invites: KitInviteIn[] }> {
+  await tableReady()
+  const [rows, plan, shared, invites] = await Promise.all([
+    sql<Row[]>`SELECT id, name, data FROM brand_kits WHERE user_id = ${userId} ORDER BY created_at, id`,
+    getUserPlan(userId),
+    (async (): Promise<Array<Row & { owner: string; by: string | null; role: string | null }>> => (!(await sharesReady()) ? [] : sql<(Row & { owner: string; by: string | null; role: string | null })[]>`
+      SELECT bk.id, bk.name, bk.data, bk.user_id AS owner, COALESCE(NULLIF(u.name, ''), u.email) AS by, to_jsonb(s)->>'role' AS role
+      FROM brand_kit_shares s JOIN brand_kits bk ON bk.id = s.kit_id JOIN users u ON u.id = bk.user_id
+      WHERE s.user_id = ${userId} AND u.plan = ANY(${TEAM_PLANS}) ORDER BY s.created_at, bk.id`))(),
+    invitesFor(userId).catch(() => []),
+  ])
+  const kits = await Promise.all([...rows.map(r => toKit(r, userId)), ...shared.map(r => toKit(r, r.owner, r.by ?? 'a teammate', cleanRole(r.role)))])
+  return { kits, limit: brandKitLimit(plan), plan, invites }
+}
+
+// ── Teams (Phase 6) ────────────────────────────────────────────────────────────
+// The owner invites people by email — an account or not yet — as "Can use" (put it on their clips) or
+// "Can edit" (change it too). They accept or decline in the app (Brand kits page); no email is sent —
+// it costs nothing — the owner can copy a link to the invite and send it however they like. How many
+// people a kit can have depends on the owner's plan (brandTeam.ts TEAM_SEATS); while their plan doesn't
+// share, their team's access waits (kitAccess). With the kit's brand lock on, people who can only use
+// it keep to its colours and fonts on clips it's on (clips.ts saveClip; the editor shows the same).
+
+type KitShare = KitMember
 
 async function ownKit(userId: string, kitId: string) {
   await tableReady()
@@ -121,31 +177,108 @@ async function ownKit(userId: string, kitId: string) {
   if (!kit) throw err('Brand kit not found', 404)
 }
 
-/** Who the owner's kit is shared with, and whether their plan can share */
-export async function listKitShares(userId: string, kitId: string): Promise<{ people: KitShare[]; can_share: boolean }> {
+/** The owner's kit's team: who it's shared with and as what, the invites out, and how many people the plan allows */
+export async function listKitShares(userId: string, kitId: string): Promise<KitTeam> {
   await ownKit(userId, kitId)
-  const plan = await getUserPlan(userId)
-  if (!(await sharesReady())) return { people: [], can_share: false }
-  const people = await sql<KitShare[]>`
-    SELECT u.id AS user_id, u.name, u.email FROM brand_kit_shares s JOIN users u ON u.id = s.user_id
-    WHERE s.kit_id = ${kitId} ORDER BY s.created_at`
-  return { people, can_share: SHARE_PLANS.includes(plan ?? 'free') }
+  const seats = teamSeats(await getUserPlan(userId))
+  if (!(await sharesReady())) return { people: [], invites: [], can_share: false, seats }
+  const [people, invites] = await Promise.all([
+    sql<(Omit<KitShare, 'role'> & { role: string | null })[]>`
+      SELECT u.id AS user_id, u.name, u.email, to_jsonb(s)->>'role' AS role FROM brand_kit_shares s JOIN users u ON u.id = s.user_id
+      WHERE s.kit_id = ${kitId} ORDER BY s.created_at`,
+    (async () => (!(await invitesReady()) ? [] : sql<{ id: string; email: string; role: string; expired: boolean }[]>`
+      SELECT id, email, role, created_at <= now() - make_interval(days => ${INVITE_DAYS}) AS expired
+      FROM brand_kit_invites WHERE kit_id = ${kitId} ORDER BY created_at`))(),
+  ])
+  return {
+    people: people.map(p => ({ ...p, role: cleanRole(p.role) })),
+    invites: invites.map(i => ({ id: i.id, email: i.email, role: cleanRole(i.role), expired: i.expired })),
+    can_share: seats > 0, seats,
+  }
 }
 
-/** The owner shares their kit with the account that has this email */
-export async function shareKit(userId: string, kitId: string, email: unknown): Promise<KitShare> {
+/** Places taken on the kit's team: its people and the invites still open */
+async function seatsTaken(kitId: string): Promise<number> {
+  const [{ n }] = await sql<{ n: number }[]>`SELECT count(*)::int AS n FROM brand_kit_shares WHERE kit_id = ${kitId}`
+  if (!(await invitesReady())) return n
+  const [{ m }] = await sql<{ m: number }[]>`
+    SELECT count(*)::int AS m FROM brand_kit_invites WHERE kit_id = ${kitId} AND created_at > now() - make_interval(days => ${INVITE_DAYS})`
+  return n + m
+}
+
+/**
+ * The owner invites the person with this email to their kit, as `role`. Someone already on its team just
+ * gets the new role; an invite sent before is sent again (a new link's time, the new role).
+ */
+export async function inviteToKit(userId: string, kitId: string, email: unknown, role: unknown): Promise<{ person?: KitShare; invite?: KitInviteOut }> {
   await ownKit(userId, kitId)
-  if (!SHARE_PLANS.includes((await getUserPlan(userId)) ?? 'free')) throw err('Sharing brand kits with your team is on the Agency plan.', 403)
-  if (!(await sharesReady())) throw err('Sharing is being set up — try again in a few minutes.', 503)
+  const seats = teamSeats(await getUserPlan(userId))
+  if (!seats) throw err('Sharing brand kits with your team is on the Agency plan.', 403)
+  if (!(await sharesReady()) || !(await invitesReady())) throw err('Teams are being set up — try again in a few minutes.', 503)
   const mail = typeof email === 'string' ? email.trim().toLowerCase() : ''
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(mail) || mail.length > 200) throw err('Type their email address', 400)
-  const [who] = await sql<KitShare[]>`SELECT id AS user_id, name, email FROM users WHERE lower(email) = ${mail} LIMIT 1`
-  if (!who) throw err('No Shortcut account uses that email. Ask them to sign up first.', 404)
-  if (who.user_id === userId) throw err('That’s you — the kit is already yours.', 400)
-  const [{ n }] = await sql<{ n: number }[]>`SELECT count(*)::int AS n FROM brand_kit_shares WHERE kit_id = ${kitId}`
-  if (n >= MAX_KIT_SHARES) throw err(`A kit can be shared with up to ${MAX_KIT_SHARES} people.`, 403)
-  await sql`INSERT INTO brand_kit_shares (kit_id, user_id) VALUES (${kitId}, ${who.user_id}) ON CONFLICT DO NOTHING`
-  return who
+  if (mail === (await emailOf(userId))) throw err('That’s you — the kit is already yours.', 400)
+  const r = cleanRole(role)
+  const [member] = await sql<Omit<KitShare, 'role'>[]>`
+    SELECT u.id AS user_id, u.name, u.email FROM brand_kit_shares s JOIN users u ON u.id = s.user_id
+    WHERE s.kit_id = ${kitId} AND lower(u.email) = ${mail}`
+  if (member) {
+    await sql`UPDATE brand_kit_shares SET role = ${r} WHERE kit_id = ${kitId} AND user_id = ${member.user_id}`
+    return { person: { ...member, role: r } }
+  }
+  const [open] = await sql<{ id: string }[]>`SELECT id FROM brand_kit_invites WHERE kit_id = ${kitId} AND email = ${mail}`
+  if (!open && await seatsTaken(kitId) >= seats) throw err(`A kit can be shared with up to ${seats} people on your plan.`, 403)
+  const [row] = await sql<{ id: string }[]>`
+    INSERT INTO brand_kit_invites (kit_id, email, role, invited_by) VALUES (${kitId}, ${mail}, ${r}, ${userId})
+    ON CONFLICT (kit_id, email) DO UPDATE SET role = EXCLUDED.role, created_at = now()
+    RETURNING id`
+  return { invite: { id: row.id, email: mail, role: r, expired: false } }
+}
+
+/** The owner takes back an invite */
+export async function cancelInvite(userId: string, kitId: string, inviteId: string): Promise<void> {
+  await ownKit(userId, kitId)
+  if (!(await invitesReady())) return
+  await sql`DELETE FROM brand_kit_invites WHERE id = ${inviteId} AND kit_id = ${kitId}`
+}
+
+/** The owner changes what someone on the kit's team can do */
+export async function setMemberRole(userId: string, kitId: string, memberId: string, role: unknown): Promise<KitRole> {
+  await ownKit(userId, kitId)
+  const r = cleanRole(role)
+  const rows = await sql`UPDATE brand_kit_shares SET role = ${r} WHERE kit_id = ${kitId} AND user_id = ${memberId} RETURNING user_id`
+  if (!rows.length) throw err('They’re not on this kit’s team', 404)
+  return r
+}
+
+/**
+ * The person invited accepts (they join the kit's team, as the invite says) or declines (the invite
+ * goes). Only an invite to their own email, not expired, from someone whose plan still shares kits.
+ */
+export async function answerInvite(userId: string, inviteId: string, accept: boolean): Promise<BrandKit | null> {
+  await tableReady()
+  if (!(await invitesReady())) throw err('Invite not found', 404)
+  const email = await emailOf(userId)
+  const [inv] = await sql<{ id: string; kit_id: string; role: string; owner: string; plan: string | null; expired: boolean }[]>`
+    SELECT i.id, i.kit_id, i.role, bk.user_id AS owner, o.plan, i.created_at <= now() - make_interval(days => ${INVITE_DAYS}) AS expired
+    FROM brand_kit_invites i JOIN brand_kits bk ON bk.id = i.kit_id JOIN users o ON o.id = bk.user_id
+    WHERE i.id = ${inviteId} AND i.email = ${email ?? ''}`
+  if (!inv) throw err('This invite isn’t for this account — sign in with the email it was sent to.', 404)
+  if (!accept) { await sql`DELETE FROM brand_kit_invites WHERE id = ${inv.id}`; return null }
+  if (inv.expired) throw err('This invite has expired — ask for a new one.', 410)
+  const seats = teamSeats(inv.plan)
+  if (!seats) throw err('This team’s plan doesn’t share brand kits right now.', 403)
+  if (inv.owner === userId) { await sql`DELETE FROM brand_kit_invites WHERE id = ${inv.id}`; throw err('That’s your own kit.', 400) }
+  await sql.begin(async tx => {
+    const [{ n }] = await tx<{ n: number }[]>`SELECT count(*)::int AS n FROM brand_kit_shares WHERE kit_id = ${inv.kit_id} AND user_id <> ${userId}`
+    if (n >= seats) throw err('This kit’s team is full — ask its owner to make room.', 403)
+    await tx`INSERT INTO brand_kit_shares (kit_id, user_id, role) VALUES (${inv.kit_id}, ${userId}, ${cleanRole(inv.role)})
+      ON CONFLICT (kit_id, user_id) DO UPDATE SET role = EXCLUDED.role`
+    await tx`DELETE FROM brand_kit_invites WHERE id = ${inv.id}`
+  })
+  const [row] = await sql<(Row & { by: string | null })[]>`
+    SELECT bk.id, bk.name, bk.data, COALESCE(NULLIF(u.name, ''), u.email) AS by FROM brand_kits bk JOIN users u ON u.id = bk.user_id WHERE bk.id = ${inv.kit_id}`
+  return row ? toKit(row, inv.owner, row.by ?? 'a teammate', cleanRole(inv.role)) : null
 }
 
 /** Stops sharing: the owner takes someone off, or someone leaves a kit shared with them */
@@ -174,27 +307,77 @@ export async function createBrandKit(userId: string, body: { name?: unknown; dat
   return toKit(row, userId)
 }
 
+/**
+ * A kit's name or settings changed: by its owner, or (Phase 6) by someone it's shared with as "Can edit" —
+ * not its brand lock or default mark (the owner's), and a logo or font they uploaded is copied into the
+ * owner's folder, where the kit's files are kept (and the export looks for them)
+ */
 export async function updateBrandKit(userId: string, kitId: string, body: { name?: unknown; data?: unknown }): Promise<BrandKit> {
   await tableReady()
   const name = body.name === undefined ? null : cleanName(body.name)
   if (name === '') throw err('Give the kit a name', 400)
-  const [cur] = await sql<Row[]>`SELECT id, name, data FROM brand_kits WHERE id = ${kitId} AND user_id = ${userId}`
+  const access = await kitAccess(userId, kitId)
+  if (!access) throw err('Brand kit not found', 404)
+  if (access.role === 'use') throw err('Only its owner, or someone who can edit it, can change this kit.', 403)
+  const owner = access.ownerId
+  const [cur] = await sql<Row[]>`SELECT id, name, data FROM brand_kits WHERE id = ${kitId} AND user_id = ${owner}`
   if (!cur) throw err('Brand kit not found', 404)
-  const data = cleanBrandKitData(body.data === undefined ? cur.data : body.data, userId)
+  const editor = access.role === 'edit'
+  const raw = body.data === undefined ? cur.data : editor ? await intoOwnerFiles(body.data, userId, owner, cur.data) : body.data
+  const data = cleanBrandKitData(raw, owner)
+  if (editor) {
+    const was = cleanBrandKitData(cur.data, owner)
+    data.lock = was.lock
+    data.is_default = was.is_default
+  }
   const row = await sql.begin(async tx => {
     // One default kit per account: marking this one unmarks the others
-    if (data.is_default) {
+    if (data.is_default && !editor) {
       await tx`UPDATE brand_kits SET data = jsonb_set(data, '{is_default}', 'false'::jsonb), updated_at = now()
-        WHERE user_id = ${userId} AND id <> ${kitId} AND (data->>'is_default')::boolean`
+        WHERE user_id = ${owner} AND id <> ${kitId} AND (data->>'is_default')::boolean`
     }
     const [r] = await tx<Row[]>`
       UPDATE brand_kits SET name = ${name ?? cur.name}, data = ${tx.json(data as never)}, updated_at = now()
-      WHERE id = ${kitId} AND user_id = ${userId}
+      WHERE id = ${kitId} AND user_id = ${owner}
       RETURNING id, name, data`
     return r
   })
   if (!row) throw err('Brand kit not found', 404)
-  return toKit(row, userId)
+  if (!editor) return toKit(row, userId)
+  const [by] = await sql<{ by: string | null }[]>`SELECT COALESCE(NULLIF(name, ''), email) AS by FROM users WHERE id = ${owner}`
+  return toKit(row, owner, by?.by ?? 'a teammate', 'edit')
+}
+
+/**
+ * A kit's settings from someone who can edit it, with the logo and fonts they uploaded (kept in their own
+ * folder, brand/<them>/) copied into the owner's — the kit's files are the owner's. A file that can't be
+ * copied is left out (the kit keeps what it had).
+ */
+async function intoOwnerFiles(raw: unknown, editorId: string, ownerId: string, curRaw: unknown): Promise<unknown> {
+  if (!raw || typeof raw !== 'object') return raw
+  const d = { ...(raw as Record<string, unknown>) }
+  const cur = cleanBrandKitData(curRaw, ownerId)
+  const copy = (from: string, to: string) =>
+    r2.send(new CopyObjectCommand({ Bucket: R2_BUCKET, Key: to, CopySource: `${R2_BUCKET}/${from}` })).then(() => true, e => { console.warn('[brand] a file could not be copied for a kit:', e); return false })
+  const logo = d.logo && typeof d.logo === 'object' ? { ...(d.logo as Record<string, unknown>) } : null
+  const mine = `brand/${editorId}/`
+  if (logo && typeof logo.path === 'string' && logo.path.startsWith(mine) && !logo.path.includes('..')) {
+    const to = `brand/${ownerId}/${logo.path.slice(mine.length)}`
+    if (await copy(logo.path, to)) logo.path = to
+    else { logo.path = cur.logo.path; logo.ratio = cur.logo.ratio }
+    d.logo = logo
+  }
+  if (Array.isArray(d.fonts)) {
+    const had = new Set(cur.fonts.map(f => f.family))
+    const fonts: unknown[] = []
+    for (const f of d.fonts) {
+      const family = (f as { family?: unknown })?.family
+      if (typeof family !== 'string' || !isBrandFont(family) || had.has(family)) { fonts.push(f); continue }
+      if (await copy(brandFontKey(editorId, family), brandFontKey(ownerId, family))) fonts.push(f)
+    }
+    d.fonts = fonts
+  }
+  return d
 }
 
 // ── The default kit on new clips ───────────────────────────────────────────────
@@ -228,7 +411,8 @@ export async function brandWordsFor(userId: string, clipId: string | null): Prom
       ? sql<{ words: unknown }[]>`
           SELECT bk.data->'words' AS words FROM clips c JOIN videos v ON v.id = c.video_id
           JOIN brand_kits bk ON (bk.id::text = to_jsonb(c)->'brand'->>'kit_id'
-              AND (bk.user_id = v.user_id OR EXISTS (SELECT 1 FROM brand_kit_shares s WHERE s.kit_id = bk.id AND s.user_id = v.user_id)))
+              AND (bk.user_id = v.user_id OR (EXISTS (SELECT 1 FROM brand_kit_shares s WHERE s.kit_id = bk.id AND s.user_id = v.user_id)
+                AND EXISTS (SELECT 1 FROM users o WHERE o.id = bk.user_id AND o.plan = ANY(${TEAM_PLANS})))))
             OR (bk.user_id = v.user_id AND (bk.data->>'is_default')::boolean)
           WHERE c.id = ${clipId} AND v.user_id = ${userId}
           ORDER BY (bk.id::text = to_jsonb(c)->'brand'->>'kit_id') DESC LIMIT 1`

@@ -45,6 +45,7 @@ import { cleanupCards, isDeleted } from '@/modules/editor/cleanup'
 import { brandPalette, brandLockOf, brandTextStyle, brandCaptionLooks, brandCaptionStyle, captionBand, sameEndVideo, type FrameRect, type BrandKit, type BrandTextKind, type ProgressBar } from '@/lib/shared/brandKit'
 import { brandTextLook } from '@/modules/editor/textStyle'
 import { brandCaptionWords, type BrandWords } from '@/lib/brandWords'
+import { lockClipLook, lockHolds, lockSetOf, type LockSet } from '@/lib/shared/brandTeam'
 import { BrandCaptionLooks } from '@/components/brand/BrandCaptionLooks'
 import { setBrandPalette, setBrandLock } from '@/components/editor/brandPalette'
 import { setBrandFonts, ensureBrandFont } from '@/components/editor/brandFonts'
@@ -120,17 +121,20 @@ const LAYOUTS: { id: LayoutType; label: string }[] = [
 // Stand-in format for time no format covers: centred Vertical, the same default render.py uses
 const PLATFORM_OPTIONS: { id: Platform; label: string; icon: React.ReactNode }[] = [
   { id: 'off', label: 'Off', icon: <><rect x="6" y="2.5" width="12" height="19" rx="2.5" /><path d="M10 18.5h4" /></> },
-  { id: 'instagram', label: 'Instagram', icon: <><rect x="3" y="3" width="18" height="18" rx="5" /><circle cx="12" cy="12" r="4" /><path d="M17.5 6.5h.01" /></> },
-  { id: 'youtube', label: 'YouTube', icon: <><rect x="2.5" y="5" width="19" height="14" rx="4" /><path d="M10 9.2v5.6l4.8-2.8z" fill="currentColor" /></> },
+  { id: 'instagram', label: 'Reels', icon: <><rect x="3" y="3" width="18" height="18" rx="5" /><circle cx="12" cy="12" r="4" /><path d="M17.5 6.5h.01" /></> },
+  { id: 'youtube', label: 'Shorts', icon: <><rect x="2.5" y="5" width="19" height="14" rx="4" /><path d="M10 9.2v5.6l4.8-2.8z" fill="currentColor" /></> },
 ]
 // Options sidebar width (px)
 const OPTIONS_W = 272
-const PREVIEW_W = 360
-// The editing panel (timeline) opens just as tall as what is on it — the ruler, the clip's strip
-// and any media lanes — so a clip with nothing added leaves the room to the video. It grows as
-// lanes are added, up to this, then its lanes scroll (dragging the line above the play bar sets a
-// height for that visit; a double-click goes back to fitting)
+// The Preview column opens at its smallest (user, 2026-10-28): wider only when its edge is dragged
+const PREVIEW_W = 260
+// The editing panel (timeline) opens just as tall as its ruler, the clip's strip and the strip's own
+// rows (user, 2026-10-28: the same on every clip, the video and preview never squeezed): rows of
+// media, text and music scroll inside it. Dragging the line above the play bar makes it taller for
+// that visit; a double-click goes back. Until the timeline has said how tall that is: up to this
 const TIMELINE_MAX_H = '28vh'
+/** The timeline panel's own padding round the timeline (pt-3 pb-4) */
+const TIMELINE_PAD_Y = 28
 // How wide the side columns can be dragged
 const OPTIONS_RANGE: [number, number] = [220, 520]
 const PREVIEW_RANGE: [number, number] = [260, 620]
@@ -452,6 +456,14 @@ export function EditorShell({
   // opens it again. Closing the options sidebar leaves it open
   const [kitStudio, setKitStudio] = useState(true)
   useEffect(() => { if (tool === 'brand') setKitStudio(true) }, [tool])
+  // What was open before the Brand kit (user, 2026-10-28: closing it goes back there — Brand kit isn't on
+  // the rail any more, so nothing else would close its panel)
+  const beforeBrandRef = useRef<{ tool: Tool; open: boolean }>({ tool: 'format', open: false })
+  const lastToolRef = useRef<{ tool: Tool; open: boolean }>({ tool: 'format', open: false })
+  useEffect(() => {
+    if (tool === 'brand') { if (lastToolRef.current.tool !== 'brand') beforeBrandRef.current = lastToolRef.current }
+    lastToolRef.current = { tool, open: optionsOpen }
+  }, [tool, optionsOpen])
   // The Preview column on the right: can be closed for more room to edit
   const [previewOpen, setPreviewOpen] = useState(true)
   // Full view: the preview big, to check it properly. The browser's fullscreen when it allows it,
@@ -491,6 +503,8 @@ export function EditorShell({
   const [resizing, setResizing] = useState<'options' | 'preview' | 'timeline' | null>(null)
   // The timeline's height, dragged at the line above the play bar (null = its usual size; this visit only)
   const [timelineH, setTimelineH] = useState<number | null>(null)
+  // How tall the timeline is with just its ruler and the clip's strip (Timeline onBaseHeight)
+  const [timelineBaseH, setTimelineBaseH] = useState<number | null>(null)
   const timelineRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
     // Sizes an older version remembered in this browser: gone, so every visit opens the usual way
@@ -753,6 +767,39 @@ export function EditorShell({
   // The timeline always opens at 1x, the whole clip across it (zoom in with + or a pinch)
   const [timelineZoom, setTimelineZoom] = useState(1)
   const [timelineHidden, setTimelineHidden] = useState(false)
+  // The kit's workshop open: the timeline tucked away for its room (the ⌃ in the timeline bar brings it
+  // back); closed, the timeline as it was (user, 2026-10-28)
+  const studioShown = tool === 'brand' && kitStudio
+  const timelineBeforeStudio = useRef<boolean | null>(null)
+  useEffect(() => {
+    if (studioShown) {
+      if (timelineBeforeStudio.current === null) { timelineBeforeStudio.current = timelineHidden; setTimelineHidden(true) }
+    } else if (timelineBeforeStudio.current !== null) {
+      setTimelineHidden(timelineBeforeStudio.current)
+      timelineBeforeStudio.current = null
+    }
+  }, [studioShown]) // eslint-disable-line react-hooks/exhaustive-deps
+  /** The kit's workshop closed: back to what was open before the Brand kit */
+  function closeKitStudio() {
+    setKitStudio(false)
+    const was = beforeBrandRef.current
+    setTool(was.tool === 'brand' ? 'format' : was.tool)
+    setOptionsOpen(was.open && was.tool !== 'brand')
+  }
+  // Esc closes it (not while typing in a field of it)
+  useEffect(() => {
+    if (!studioShown) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return
+      const t = e.target as HTMLElement | null
+      // (a field being typed in, or a menu / dialog open: Esc is theirs first)
+      if (t?.closest('input, textarea, select, [contenteditable="true"]') || document.querySelector('[role="menu"], [role="dialog"], [role="alertdialog"]')) return
+      closeKitStudio()
+    }
+    // (before the editor's other Esc handlers, which let go of what's picked)
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [studioShown]) // eslint-disable-line react-hooks/exhaustive-deps
   // Cleanup: the list of cuts can be folded away
   const [cutsOpen, setCutsOpen] = useState(true)
   // Lengths of music files added in this session (read from the file), so their timeline bars
@@ -2940,17 +2987,26 @@ export function EditorShell({
   const paletteKey = paletteKit ? brandPalette(paletteKit.data).join(',') : ''
   useEffect(() => { setBrandPalette(paletteKey ? paletteKey.split(',') : []) }, [paletteKey])
   useEffect(() => () => setBrandPalette([]), [])
-  // Brand lock: kits shared with this user whose owner locked them — the colour and font choices
-  // offer only theirs (all such kits together)
-  const lockKey = JSON.stringify(brand.kits.filter(k => k.shared_by && k.data.lock).map(k => ({ by: k.shared_by!, ...brandLockOf(k.data) })))
-  useEffect(() => {
-    const locks = JSON.parse(lockKey) as Array<{ by: string; colors: string[]; fonts: string[] }>
-    setBrandLock(locks.length ? {
-      by: [...new Set(locks.map(l => l.by))].join(', '),
-      colors: [...new Set(locks.flatMap(l => l.colors))], fonts: [...new Set(locks.flatMap(l => l.fonts))],
-    } : null)
-  }, [lockKey])
+  // Brand lock (brand kit Phase 6): the kit on this clip, shared with this user to use (not to edit) and
+  // locked by its owner — the colour and font choices offer only its own, the clip keeps to them (below,
+  // as the server does when it's saved: brandTeam.ts lockClipLook), and only the owner takes it off
+  const lockKit = brandOn ? brand.kits.find(k => k.id === brandOn.kit_id && !!k.shared_by && lockHolds(k.data, k.role ?? 'use')) ?? null : null
+  const lockKey = lockKit ? JSON.stringify({ by: lockKit.shared_by!, ...brandLockOf(lockKit.data) }) : ''
+  useEffect(() => { setBrandLock(lockKey ? JSON.parse(lockKey) as { by: string; colors: string[]; fonts: string[] } : null) }, [lockKey])
   useEffect(() => () => setBrandLock(null), [])
+  const lockSetKey = lockKit ? JSON.stringify(lockSetOf(lockKit.data)) : ''
+  const lockParts = useCaptionStore(st => st.captionParts)
+  useEffect(() => {
+    if (!lockSetKey) return
+    const set = JSON.parse(lockSetKey) as LockSet
+    const cap = useCaptionStore.getState()
+    const kept = lockClipLook({ texts: useMediaStore.getState().textOverlays, caption: cap.captionStyle, parts: cap.captionParts, segments: useEditorStore.getState().segments }, set)
+    if (!kept.changed) return
+    if (kept.texts.some((t, i) => t !== useMediaStore.getState().textOverlays[i])) setTextOverlays(kept.texts)
+    if (kept.caption !== cap.captionStyle) useCaptionStore.setState({ captionStyle: kept.caption })
+    if (kept.parts.some((x, i) => x !== cap.captionParts[i])) cap.setCaptionParts(kept.parts)
+    if (kept.segments.some((x, i) => x !== useEditorStore.getState().segments[i])) useEditorStore.setState({ segments: kept.segments })
+  }, [lockSetKey, textOverlays, captionStyle, lockParts, segments]) // eslint-disable-line react-hooks/exhaustive-deps
   // Every kit's own fonts in the font pickers (and loaded, so text in them draws)
   const fontsKey = brand.kits.flatMap(k => k.data.fonts.map(f => `${f.family}=${f.name}`)).join('|')
   useEffect(() => {
@@ -3044,9 +3100,18 @@ export function EditorShell({
     if (!same(t.progressBar, was.progressBar)) { progressBarRef.current = t.progressBar; setProgressBar(t.progressBar) }
   }
 
+  /** A locked team kit is on this clip (Phase 6): it stays — said why */
+  function lockedOn(): boolean {
+    if (!lockKit) return false
+    notifyLocked(`${lockKit.shared_by} locked “${lockKit.name}”: only they can take it off this clip`, 3200)
+    return true
+  }
+
   /** The brand kit switched on for this clip (user, 2026-10-19): a different kit on before comes off first. One undo step. */
   function turnBrandOn(kit: BrandKit) {
-    if (useBrandStore.getState().on) turnBrandOff()
+    const cur = useBrandStore.getState().on
+    if (cur && cur.kit_id !== kit.id && lockedOn()) return
+    if (cur) turnBrandOff()
     const was = brandTarget()
     const r = putBrandOn(was, kit)
     writeBrand(was, r.target)
@@ -3062,7 +3127,7 @@ export function EditorShell({
    */
   function turnBrandOff() {
     const on = useBrandStore.getState().on
-    if (!on) return
+    if (!on || lockedOn()) return
     const kit = brand.kits.find(k => k.id === on.kit_id) ?? null
     // (the kit as it is, else — deleted since — as it was when it last went on: its text and caption
     // styles still come off)
@@ -5796,8 +5861,8 @@ export function EditorShell({
 
       {/* ── Body: [tools + options · player · preview] on top, the timeline full width below. Each
           area is a card of its own (.ed-card), with a gap round and between them ── */}
-      <div className="flex flex-col flex-1 min-h-0 overflow-hidden p-2">
-      <div className="flex flex-1 min-h-0 overflow-hidden">
+      <div className="ed-body flex flex-col flex-1 min-h-0 overflow-hidden p-2">
+      <div className="ed-top flex flex-1 min-h-0 overflow-hidden">
 
         {/* Tool rail: always there, down the left (open or closed, the options panel sits beside it) */}
         <ToolRail tool={tool} open={optionsOpen}
@@ -6414,12 +6479,12 @@ export function EditorShell({
         </aside>
 
         {/* The player: format bar, the video, play controls */}
-        <main data-layout-panel="Video view" className="ed-card relative flex flex-col flex-1 min-w-0 min-h-0">
+        <main data-layout-panel="Video view" className="ed-card ed-video relative flex flex-col flex-1 min-w-0 min-h-0">
           {/* Brand kit: its workshop in the video's place (the video stays underneath: the Preview plays from it) */}
           {/* (not tied to the options sidebar: closing that leaves the workshop open — user, 2026-10-20) */}
           {tool === 'brand' && kitStudio && (
             <div className="absolute inset-0 overflow-hidden" style={{ zIndex: 30, borderRadius: 'inherit', background: 'var(--ed-panel)' }}>
-              <BrandKitStudio brand={brand} onKitId={brandOn?.kit_id ?? null} onTurnOn={turnBrandOn} onTurnOff={turnBrandOff} onClose={() => setKitStudio(false)} />
+              <BrandKitStudio brand={brand} onKitId={brandOn?.kit_id ?? null} onTurnOn={turnBrandOn} onTurnOff={turnBrandOff} onClose={closeKitStudio} />
             </div>
           )}
           {/* Canvas toolbar: two docks, centred — Layout (a segmented switch with a sliding lime
@@ -6460,8 +6525,10 @@ export function EditorShell({
             </div>
           </div>
 
-          <div className="relative flex-1 min-h-0" style={{ background: 'var(--ed-canvas)' }}>
-            <div className="absolute flex flex-col rounded-xl overflow-hidden" style={{ inset: 8, border: '1px solid rgb(var(--ed-fg) / 0.1)' }}>
+          {/* (behind the stage and the play bar together) */}
+          <AmbientGlow videoRef={videoRef} />
+          <div className="ed-stage relative flex-1 min-h-0" style={{ background: 'var(--ed-canvas)' }}>
+            <div className="ed-stage-box absolute flex flex-col rounded-xl overflow-hidden" style={{ inset: 8, border: '1px solid rgb(var(--ed-fg) / 0.1)' }}>
               <VideoPreview live segmentAt={viewAt} overlaySource={brollSource} mainVideoId={mainVideoId}
                 videoRef={videoRef} videoUrl={clipVideoUrl} currentTimeMs={currentTimeMs}
                 activeSegment={viewSegment} getPositionAt={viewGetPositionAt}
@@ -6489,7 +6556,7 @@ export function EditorShell({
             <div className="justify-self-start min-w-0">
               <span className="ed-transport-time shrink-0 whitespace-nowrap text-[11px] tabular-nums" aria-label={`${msToClock(currentTimeMs)} of ${msToClock(clipDurationMs)}`}>
                 <span className="font-semibold" style={{ color: 'rgb(var(--ed-fg) / 0.85)' }}><LiveTime /></span>
-                <span className="ed-transport-total" style={{ color: 'rgb(var(--ed-fg) / 0.38)' }}> / {msToLabel(clipDurationMs)}</span>
+                <span className="ed-transport-total" style={{ color: 'rgb(var(--ed-fg) / 0.38)' }}><span className="ed-transport-slash"> / </span>{msToLabel(clipDurationMs)}</span>
               </span>
             </div>
             {/* Centre: previous section · play · next section (the play button sits exactly in the middle) */}
@@ -6502,6 +6569,7 @@ export function EditorShell({
               <button onClick={togglePlay} aria-label={playing ? 'Pause' : 'Play'} title={`${playing ? 'Pause' : 'Play'} (Space)`}
                 data-playing={playing || undefined}
                 className="ed-play w-10 h-10 flex items-center justify-center rounded-full shrink-0">
+                <PlayRing lengthMs={clipDurationMs} />
                 <span key={playing ? 'pause' : 'play'} className="ed-play-icon flex">
                   {playing
                     ? <svg width="13" height="13" viewBox="0 0 12 12" fill={ACCENT}><rect x="2" y="1.5" width="3" height="9" rx="1"/><rect x="7" y="1.5" width="3" height="9" rx="1"/></svg>
@@ -6599,14 +6667,16 @@ export function EditorShell({
 
           {/* How the reel looks inside each app */}
           <div className="shrink-0 px-4 pt-3">
+            {/* (short names — Off, Reels, Shorts — so the three sit evenly even in the narrowest preview) */}
             <div role="radiogroup" aria-label="Show preview as" className="grid grid-cols-3 gap-1 p-1 rounded-xl"
               style={{ background: 'rgb(var(--ed-fg) / 0.04)', border: '1px solid rgb(var(--ed-fg) / 0.07)' }}>
               {PLATFORM_OPTIONS.map(({ id, label, icon }) => {
                 const on = platform === id
                 return (
                   <button key={id} role="radio" aria-checked={on} onClick={() => setPlatform(id)}
+                    aria-label={id === 'off' ? 'Plain preview' : `${PLATFORM_SAFE[id].name} ${label}`}
                     title={id === 'off' ? 'Plain preview' : `See how it looks on ${PLATFORM_SAFE[id].name}`}
-                    className="flex items-center justify-center gap-1.5 h-8 rounded-lg text-xs font-medium transition-colors"
+                    className="flex items-center justify-center gap-1.5 h-8 min-w-0 px-1.5 rounded-lg text-xs font-medium transition-colors hover:text-[var(--ed-text)]"
                     style={on
                       ? { background: 'rgb(var(--ed-fg) / 0.12)', color: 'var(--ed-text)', boxShadow: 'inset 0 0 0 1px rgb(var(--ed-fg) / 0.1)' }
                       : { color: 'rgb(var(--ed-fg) / 0.5)' }}>
@@ -6614,7 +6684,7 @@ export function EditorShell({
                       style={{ color: on && id !== 'off' ? 'var(--ed-accent-text)' : undefined }}>
                       {icon}
                     </svg>
-                    {label}
+                    <span className="truncate">{label}</span>
                   </button>
                 )
               })}
@@ -6623,7 +6693,8 @@ export function EditorShell({
 
           {/* Preview fills the column: as wide as it can be while the full 9:16 frame fits the height */}
           <div className="flex-1 min-h-0 p-3 overflow-hidden">
-            <div ref={fullViewRef} className="h-full w-full flex justify-center" data-full-view={fullView || undefined}
+            <AmbientGlow videoRef={videoRef} />
+            <div ref={fullViewRef} className="ed-pv-box h-full w-full flex justify-center" data-full-view={fullView || undefined}
               style={fullView
                 ? { containerType: 'size', alignItems: 'center', background: '#000', padding: '24px 24px 84px', boxSizing: 'border-box',
                     ...(fullViewFallback ? { position: 'fixed', inset: 0, zIndex: 200, width: '100vw', height: '100vh' } : {}) }
@@ -6691,6 +6762,16 @@ export function EditorShell({
                 />
               )}
               {!rendering && <PlatformOverlay platform={platform} />}
+              {/* Full view: in the preview video's own bottom-right corner */}
+              {!fullView && !rendering && (
+                <button onClick={openFullView} aria-label="Full view: see the preview big" title="Full view (Esc to leave)"
+                  className="ed-fullview-btn absolute w-8 h-8 flex items-center justify-center rounded-lg transition-colors hover:bg-black/80"
+                  style={{ right: 10, bottom: 10, zIndex: 20, color: '#fff', background: 'rgba(0,0,0,0.6)', border: '1px solid rgba(255,255,255,0.14)', backdropFilter: 'blur(4px)' }}>
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" />
+                  </svg>
+                </button>
+              )}
               </div>
             </div>
             {fullView && (
@@ -6698,16 +6779,6 @@ export function EditorShell({
             )}
             </div>
           </div>
-          {/* Full view: in the preview box's bottom-right corner */}
-          {!fullView && (
-            <button onClick={openFullView} aria-label="Full view: see the preview big" title="Full view (Esc to leave)"
-              className="absolute w-8 h-8 flex items-center justify-center rounded-lg transition-colors hover:bg-black/80"
-              style={{ right: 12, bottom: 12, zIndex: 20, color: '#fff', background: 'rgba(0,0,0,0.6)', border: '1px solid rgba(255,255,255,0.14)', backdropFilter: 'blur(4px)' }}>
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                <path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" />
-              </svg>
-            </button>
-          )}
 
           </div>
         </aside>
@@ -6715,7 +6786,7 @@ export function EditorShell({
 
       {/* The line between the video and the play bar: drag to resize (double-click resets) */}
       {!timelineHidden && (
-        <div className="relative shrink-0" style={{ height: 0, zIndex: 30, transform: 'translateY(4px)' }}>
+        <div className="ed-row-wrap relative shrink-0" style={{ height: 0, zIndex: 30, transform: 'translateY(4px)' }}>
           <div role="separator" aria-orientation="horizontal" aria-label="Drag to resize the video and the timeline. Double-click to reset."
             title="Drag to resize · double-click to reset" className="ed-row-handle" data-on={resizing === 'timeline' || undefined}
             onPointerDown={startTimelineResize} onDoubleClick={resetTimelineHeight} />
@@ -6724,7 +6795,7 @@ export function EditorShell({
       {/* The editing panel: its bar and the timeline, one card. Nothing is clipped at its edges
           (overflow visible): the bar's "Reset all edits?" box and its labels open above it — the
           bar and the timeline round their own corners instead */}
-      <div className="ed-card shrink-0 flex flex-col" style={{ marginTop: 8, overflow: 'visible' }}>
+      <div className="ed-card ed-dockpanel shrink-0 flex flex-col" style={{ marginTop: 8, overflow: 'visible' }}>
       {/* The timeline's own bar, full width: trim · delete · hide / mute / lock · reset … undo / redo · zoom */}
       <div className="ed-transport shrink-0 flex items-center gap-2 px-3"
         style={{ height: 46, background: 'var(--ed-panel)', borderRadius: timelineHidden ? 11 : '11px 11px 0 0' }}>
@@ -6819,7 +6890,7 @@ export function EditorShell({
         <span className="ed-tl-sep" aria-hidden="true" />
         <UndoRedo />
         <div className="flex-1" />
-        {/* Where the playhead is, and how long the clip is (as in CapCut) */}
+        {/* Where the playhead is, and how long the clip is — the one clock (user, 2026-10-28: here, not under the video) */}
         <ClipClock lengthMs={clipLengthMs} />
         <div className="flex-1" />
         <div className="ml-auto shrink-0 flex items-center gap-1">
@@ -6861,8 +6932,9 @@ export function EditorShell({
       {/* Timeline (hidden with "Hide timeline") */}
       {/* (it doesn't scroll as a whole: the ruler and the main video stay, the tracks under them scroll) */}
       <div ref={timelineRef} data-tour="timeline" data-layout-panel="Editing panel" hidden={timelineHidden} className="shrink-0 flex flex-col overflow-hidden px-4 pt-3 pb-4"
-        style={{ ...(timelineH != null ? { height: timelineH } : { maxHeight: TIMELINE_MAX_H }), background: 'var(--ed-track)', borderTop: '1px solid rgb(var(--ed-fg) / 0.06)', borderRadius: '0 0 11px 11px' }}>
+        style={{ ...(timelineH != null ? { height: timelineH } : timelineBaseH != null ? { height: timelineBaseH + TIMELINE_PAD_Y } : { maxHeight: TIMELINE_MAX_H }), background: 'var(--ed-track)', borderTop: '1px solid rgb(var(--ed-fg) / 0.06)', borderRadius: '0 0 11px 11px' }}>
         <Timeline
+          onBaseHeight={setTimelineBaseH}
           selectedMusicId={pickedMusicId} onSelectMusic={id => pickMusicTrack(id, doubleTap(`m${id}`))}
           photos={overlays.filter(o => o.type === 'image' || (o.type === 'video' && o.source_video_id)).map(o => ({
             id: o.id, start_ms: o.start_ms, end_ms: o.end_ms, url: o.preview_url, hidden: o.hidden, locked: isLocked({ kind: 'photo', id: o.id }), track: o.track, full: o.x <= 0.001 && o.y <= 0.001 && o.w >= 0.999 && o.h >= 0.999,
@@ -7448,6 +7520,13 @@ function msToClock(ms: number) {
 }
 
 /** Timeline zoom as − 1x +: each press one step (1x → 1.25x → 1.5x → 2x → 3x → 4x); click the value for 1x */
+/** How far the clip has played, as an arc round the play button (globals.css .ed-play-ring: the desktop editor shows it) */
+function PlayRing({ lengthMs }: { lengthMs: number }) {
+  const now = useLiveTimeMs()
+  const p = lengthMs > 0 ? Math.min(1, Math.max(0, now / lengthMs)) : 0
+  return <span className="ed-play-ring" aria-hidden="true" style={{ ['--p' as string]: `${(p * 360).toFixed(1)}deg` }} />
+}
+
 /** The playhead's time / the clip's length, over the timeline: 0:12.4 / 1:43 */
 function ClipClock({ lengthMs }: { lengthMs: number }) {
   const now = useLiveTimeMs()
@@ -7457,7 +7536,7 @@ function ClipClock({ lengthMs }: { lengthMs: number }) {
     return `${m}:${s < 10 ? '0' : ''}${tenths ? s.toFixed(1) : Math.floor(s)}`
   }
   return (
-    <span className="shrink-0 tabular-nums text-[12px] font-semibold" aria-label="Playhead and clip length" style={{ color: 'rgb(var(--ed-fg) / 0.5)' }}>
+    <span className="ed-time shrink-0 tabular-nums text-[12px] font-semibold" aria-label="Playhead and clip length" style={{ color: 'rgb(var(--ed-fg) / 0.5)' }}>
       <span style={{ color: 'var(--ed-text)' }}>{fmt(now, true)}</span> / {fmt(lengthMs, false)}
     </span>
   )
@@ -7504,9 +7583,39 @@ function formatElapsed(sec: number) {
  * screen is too short for them all, the rail scrolls: an arrow at the bottom shows there are more
  * below (click: scroll down), one at the top once scrolled down. The open tool is kept in view.
  */
+/**
+ * A soft glow of the video's own colours behind it (light mode's stage, user 2026-10-28 — "premium": as
+ * YouTube's ambient mode): the playing frame drawn a few times a second into a tiny canvas, which CSS
+ * blows up and blurs (globals.css .ed-ambient). Drawn only while it shows (dark mode hides it); nothing
+ * is read back from the canvas, so a video from another site is fine too.
+ */
+function AmbientGlow({ videoRef }: { videoRef: React.RefObject<HTMLVideoElement | null> }) {
+  const ref = useRef<HTMLCanvasElement>(null)
+  useEffect(() => {
+    let raf = 0, last = 0, drawnAt = -1
+    const draw = (now: number) => {
+      raf = requestAnimationFrame(draw)
+      if (now - last < 150) return
+      last = now
+      const v = videoRef.current, c = ref.current
+      // (hidden — dark mode, a closed panel — or nothing new to draw)
+      if (!v || !c || !c.offsetParent || v.readyState < 2 || v.currentTime === drawnAt) return
+      try { c.getContext('2d')?.drawImage(v, 0, 0, c.width, c.height); drawnAt = v.currentTime } catch { /* not ready */ }
+    }
+    raf = requestAnimationFrame(draw)
+    return () => cancelAnimationFrame(raf)
+  }, [videoRef])
+  return <canvas ref={ref} width={32} height={18} className="ed-ambient" aria-hidden="true" />
+}
+
+/** The tools down the rail: all but Brand kit — it's in the top bar's Brand menu (its Edit opens it): user, 2026-10-28 */
+const RAIL_TOOLS = TOOLS.filter(t => t.id !== 'brand')
+
 function ToolRail({ tool, open, onPick }: { tool: Tool; open: boolean; onPick: (t: Tool) => void }) {
   const ref = useRef<HTMLDivElement>(null)
   const [more, setMore] = useState({ up: false, down: false })
+  // The hovered tool's name, beside the rail (shown where the rail is icons only: light mode)
+  const [tip, setTip] = useState<{ label: string; top: number } | null>(null)
   useEffect(() => {
     const el = ref.current
     if (!el) return
@@ -7539,19 +7648,24 @@ function ToolRail({ tool, open, onPick }: { tool: Tool; open: boolean; onPick: (
     </button>
   )
   return (
-    <nav aria-label="Editor tools" data-tour="tools" className="ed-card relative shrink-0 flex flex-col mr-2" style={{ width: 72 }}>
+    <nav aria-label="Editor tools" data-tour="tools" className="ed-card ed-rail relative shrink-0 flex flex-col mr-2" style={{ width: 72 }}
+      onMouseLeave={() => setTip(null)}>
+      {tip && <span className="ed-rail-tip" role="tooltip" style={{ top: tip.top }}>{tip.label}</span>}
       {more.up && arrow(-1)}
       <div ref={ref} className="flex-1 min-h-0 overflow-y-auto no-scrollbar flex flex-col items-center py-2"
         style={{ containerType: 'size', gap: 'clamp(2px, 0.8cqh, 4px)' }}>
-        {TOOLS.map(t => {
+        {RAIL_TOOLS.map(t => {
           const active = tool === t.id && open
           return (
-            <button key={t.id} type="button" onClick={() => onPick(t.id)}
+            <button key={t.id} type="button" onClick={() => { setTip(null); onPick(t.id) }}
+              onMouseEnter={e => { const r = e.currentTarget.getBoundingClientRect(); setTip({ label: t.label, top: r.top + r.height / 2 }) }}
+              onFocus={e => { const r = e.currentTarget.getBoundingClientRect(); setTip({ label: t.label, top: r.top + r.height / 2 }) }}
+              onBlur={() => setTip(null)}
               aria-pressed={active}
               title={active ? `Hide ${t.label.toLowerCase()} options` : t.title}
               className="ed-tool shrink-0" data-active={active || undefined}
               // Each tool a share of the rail's height: full size when there's room, never smaller than 48 px
-              style={{ width: 60, height: `clamp(48px, calc((100cqh - 16px) / ${TOOLS.length} - 4px), 58px)`, gap: 'clamp(2px, 0.6cqh, 4px)' }}>
+              style={{ width: 60, height: `clamp(48px, calc((100cqh - 16px) / ${RAIL_TOOLS.length} - 4px), 58px)`, gap: 'clamp(2px, 0.6cqh, 4px)' }}>
               <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true">{t.icon}</svg>
               <span className="text-[11px] font-medium">{t.label}</span>
             </button>
