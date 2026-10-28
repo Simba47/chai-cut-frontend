@@ -6,6 +6,7 @@ import { getUserPlan } from './quota'
 import { brandKitLimit, cleanBrandKitData, DEFAULT_BRAND_KIT, isBrandFont, brandFontKey, MAX_KIT_SHARES, SHARE_PLANS, type BrandKit, type BrandKitData } from '@/lib/shared/brandKit'
 import { hasColumn } from './clips'
 import { pictureColours } from './brandStyle'
+import { cleanBrandWords, type BrandWords } from '@/lib/brandWords'
 
 /**
  * Brand kits (lib/shared/brandKit.ts): a user's saved looks, kept in brand_kits (the backend creates
@@ -207,6 +208,40 @@ export async function defaultBrandKit(userId: string): Promise<BrandKitData | nu
   const [row] = await sql<{ data: unknown }[]>`
     SELECT data FROM brand_kits WHERE user_id = ${userId} AND (data->>'is_default')::boolean LIMIT 1`.catch(() => [])
   return row ? cleanBrandKitData(row.data, userId) : null
+}
+
+/**
+ * The brand words a clip's words are read with (Phase 5, lib/brandWords.ts): those of the kit switched on
+ * for it (one its owner can still use), else of the owner's default kit; without a clip (`clipId` null),
+ * the user's default kit's. Null: none — or no table yet, or a hiccup: the words are then shown as they are.
+ */
+export async function brandWordsFor(userId: string, clipId: string | null): Promise<BrandWords | null> {
+  try {
+    if (!clipId) {
+      const [row] = await sql<{ words: unknown }[]>`
+        SELECT data->'words' AS words FROM brand_kits WHERE user_id = ${userId} AND (data->>'is_default')::boolean LIMIT 1`
+      return row ? cleanBrandWords(row.words) : null
+    }
+    const shares = await sharesReady()
+    // (the clip's own kit first, else the default)
+    const [row] = await (shares
+      ? sql<{ words: unknown }[]>`
+          SELECT bk.data->'words' AS words FROM clips c JOIN videos v ON v.id = c.video_id
+          JOIN brand_kits bk ON (bk.id::text = to_jsonb(c)->'brand'->>'kit_id'
+              AND (bk.user_id = v.user_id OR EXISTS (SELECT 1 FROM brand_kit_shares s WHERE s.kit_id = bk.id AND s.user_id = v.user_id)))
+            OR (bk.user_id = v.user_id AND (bk.data->>'is_default')::boolean)
+          WHERE c.id = ${clipId} AND v.user_id = ${userId}
+          ORDER BY (bk.id::text = to_jsonb(c)->'brand'->>'kit_id') DESC LIMIT 1`
+      : sql<{ words: unknown }[]>`
+          SELECT bk.data->'words' AS words FROM clips c JOIN videos v ON v.id = c.video_id
+          JOIN brand_kits bk ON bk.user_id = v.user_id AND (bk.id::text = to_jsonb(c)->'brand'->>'kit_id' OR (bk.data->>'is_default')::boolean)
+          WHERE c.id = ${clipId} AND v.user_id = ${userId}
+          ORDER BY (bk.id::text = to_jsonb(c)->'brand'->>'kit_id') DESC LIMIT 1`)
+    return row ? cleanBrandWords(row.words) : null
+  } catch (e) {
+    console.warn('[brand] the brand words could not be read:', e instanceof Error ? e.message : e)
+    return null
+  }
 }
 
 /**

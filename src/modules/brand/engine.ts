@@ -403,9 +403,12 @@ export function takeBrandOff(t0: BrandTarget, d: BrandKitData | null, b: BrandBe
 
 // ── Live ──────────────────────────────────────────────────────────────────────
 
-/** Whether a kit's settings changed in a way the clip shows (its name and default mark don't) */
+/**
+ * Whether a kit's settings changed in a way the clip's parts show (its name and default mark don't; nor
+ * its words: they're applied as the clip's words are read — lib/brandWords.ts)
+ */
 export function brandChanged(a: BrandKitData, b: BrandKitData): boolean {
-  const shown = (d: BrandKitData) => ({ ...d, is_default: false, lock: false })
+  const shown = (d: BrandKitData) => ({ ...d, is_default: false, lock: false, words: null })
   return !sameJson(shown(a), shown(b))
 }
 

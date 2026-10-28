@@ -5,6 +5,7 @@ import { CaptionStyler, FontPicker, loadVideoFonts, type TextCase } from './Capt
 import { PlatformOverlay, PLATFORM_SAFE, type Platform } from './PlatformOverlay'
 import { ensureBrandFont } from './brandFonts'
 import { BrandStart, BrandCard, type Found } from '@/components/brand/BrandMaker'
+import { KitWords, WordsPreview } from '@/components/brand/BrandWordsEditor'
 import { cardAreas, cardBackgroundPixels, CARD_PATTERNS, CARD_PATTERN_SCALE, CARD_VIDEO_WIDTH, type CardPattern } from '@/lib/shared/brandCard'
 import { templateOf, templateFontFamily } from '@/modules/captions/templates'
 import {
@@ -554,9 +555,10 @@ function KitProgressBar({ d, onChange }: { d: BrandKitData; onChange: (p: BrandP
   )
 }
 
-/** A kit's settings with the ones added in Phase 4 filled in, should they be missing (the server fills them in as it reads a kit) */
+/** A kit's settings with the ones added in Phases 4 and 5 filled in, should they be missing (the server fills them in as it reads a kit) */
 const withNewFields = (d: BrandKitData): BrandKitData =>
-  d.progress_bar && d.ends ? d : { ...d, progress_bar: d.progress_bar ?? DEFAULT_BRAND_KIT.progress_bar, ends: d.ends ?? DEFAULT_BRAND_KIT.ends }
+  d.progress_bar && d.ends && d.words ? d
+    : { ...d, progress_bar: d.progress_bar ?? DEFAULT_BRAND_KIT.progress_bar, ends: d.ends ?? DEFAULT_BRAND_KIT.ends, words: d.words ?? DEFAULT_BRAND_KIT.words }
 
 /** A video of the library that can open or close clips: one of the user's own, short enough */
 type EndVideoChoice = { id: string; title: string; ms: number }
@@ -652,13 +654,15 @@ export function KitBadge({ kit }: { kit: BrandKit }) {
 // ── Workshop: the kit set up, in the video's place ─────────────────────────
 // One step at a time (user, 2026-10-20: the long page was hard to follow), the preview always in view.
 // Sound and AI voice / names & spellings were taken out (user, 2026-10-20). The intro / outro, end card
-// and kit progress bar taken out then came back in brand kit Phase 4 (2026-10-27), through the brand engine
+// and kit progress bar taken out then came back in brand kit Phase 4 (2026-10-27), through the brand engine;
+// names & spellings came back in Phase 5 (2026-10-28) as the kit's Words, with no paid AI behind them
 
-type StepId = 'basics' | 'text' | 'captions' | 'card' | 'team'
+type StepId = 'basics' | 'text' | 'captions' | 'words' | 'card' | 'team'
 const STEPS: Array<{ id: StepId; name: string; short: string; about: string }> = [
   { id: 'basics', name: 'Basics', short: 'Logo, colours, @handle', about: 'What everything else uses: your logo, your colours and your @handle. Start from a link, your logo or a few words, then change anything.' },
   { id: 'text', name: 'Text & fonts', short: 'Titles, fonts, corners', about: 'How text on your clips looks, your own fonts, and how round your videos are in frames.' },
   { id: 'captions', name: 'Captions', short: 'Caption style', about: 'The caption look your clips get with the brand kit on.' },
+  { id: 'words', name: 'Words', short: 'Spellings, lines, hashtags', about: 'How your brand writes: names spelled your way in captions, words you never show, your tone, your lines and hashtags. On clips with this kit on (your default kit’s: on clips with none).' },
   { id: 'card', name: 'Branded card', short: 'Card, end card, intro', about: 'Your own frame — its background, where the video sits, your title and @handle — and how your clips start and end.' },
   { id: 'team', name: 'Team', short: 'Share with your team', about: 'Share this kit with your team, and lock its colours and fonts for them.' },
 ]
@@ -900,6 +904,9 @@ export function BrandKitStudio({ brand, onKitId = null, onTurnOn, onTurnOff, onC
                 </Section>
               </>
             )}
+            {cur.id === 'words' && (
+              <KitWords w={d.words} onChange={words => set({ ...now(), words })} />
+            )}
             {cur.id === 'card' && (
               <>
                 <Section title="Branded card">
@@ -967,6 +974,8 @@ export function BrandKitStudio({ brand, onKitId = null, onTurnOn, onTurnOff, onC
             <Mock label="Branded card">
               <CardMock kit={kit} />
             </Mock>
+          ) : cur.id === 'words' ? (
+            <WordsPreview w={d.words} />
           ) : (
             <>
               <Mock label="On your clip">

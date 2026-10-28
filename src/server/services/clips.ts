@@ -633,10 +633,14 @@ export async function regenerateClipText(userId: string, clipId: string) {
   if (!words.length) throw Object.assign(new Error('This clip has no captions yet, so there is nothing to write from'), { status: 400 })
 
   const { generateClipText } = await import('@/lib/clipText')
-  // (no brand voice: taken out of brand kits — user, 2026-10-20)
+  // The brand's words (brand kit Phase 5): names spelled its way, its tone, words it hides, its
+  // hashtags and closing line — rules on the one call made anyway, nothing more paid for
+  const { brandWordsFor } = await import('./brandKits')
+  const { brandCaptionWords, brandClipText, brandVoice } = await import('@/lib/brandWords')
+  const brandWords = await brandWordsFor(userId, clipId)
   let text
   try {
-    text = await generateClipText(words, clip.video_title ?? null, prompt => askGemini(prompt), 'roman', null)
+    text = brandClipText(await generateClipText(brandCaptionWords(words, brandWords), clip.video_title ?? null, prompt => askGemini(prompt), 'roman', brandVoice(brandWords)), brandWords)
   } catch (e) {
     console.error('[ai-text] Gemini error:', e)
     throw Object.assign(new Error('AI could not write the text right now. Try again in a moment.'), { status: 502 })

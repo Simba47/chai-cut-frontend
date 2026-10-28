@@ -44,6 +44,7 @@ import { CleanupPanel, type CleanupRow } from '@/components/editor/CleanupPanel'
 import { cleanupCards, isDeleted } from '@/modules/editor/cleanup'
 import { brandPalette, brandLockOf, brandTextStyle, brandCaptionLooks, brandCaptionStyle, captionBand, sameEndVideo, type FrameRect, type BrandKit, type BrandTextKind, type ProgressBar } from '@/lib/shared/brandKit'
 import { brandTextLook } from '@/modules/editor/textStyle'
+import { brandCaptionWords, type BrandWords } from '@/lib/brandWords'
 import { BrandCaptionLooks } from '@/components/brand/BrandCaptionLooks'
 import { setBrandPalette, setBrandLock } from '@/components/editor/brandPalette'
 import { setBrandFonts, ensureBrandFont } from '@/components/editor/brandFonts'
@@ -304,11 +305,16 @@ export function EditorShell({
     setRetranscribing, setRetranscribeElapsed, setRetranscribeError,
   } = useCaptionStore()
 
+  // The words as the brand writes them (brand kit Phase 5: the kit's spellings, its hidden words — set
+  // below from the kit on the clip, else the default one). They came that way; this keeps them so live
+  // as the kit changes. (Nothing is changed where they're saved: the export spells them the same.)
+  const [captionBrandWords, setCaptionBrandWords] = useState<BrandWords | null>(null)
+  const brandedWords = useMemo(() => brandCaptionWords(sourceWords, captionBrandWords), [sourceWords, captionBrandWords])
   // Words where they are heard in the clip as it plays (those in removed parts are left out; after
   // a video put in between, later by its length)
   const words = useMemo(
-    () => (trimmed ? wordsOnTimeline(sourceWords, trim, rawClip.start_ms, rawClip.end_ms)
-      : piecesOn ? sourceWords.flatMap(w => {
+    () => (trimmed ? wordsOnTimeline(brandedWords, trim, rawClip.start_ms, rawClip.end_ms)
+      : piecesOn ? brandedWords.flatMap(w => {
         const s0 = w.start_ms - rawClip.start_ms
         if (s0 < 0) return [w]
         // Where the word is heard on the timeline; a word in video cut out is gone
@@ -318,8 +324,8 @@ export function EditorShell({
         const a = timelineAtPieces(pieces, s0), b = Math.max(a + 1, timelineAtPieces(pieces, w.end_ms - rawClip.start_ms))
         return a === s0 && b === w.end_ms - rawClip.start_ms ? [w] : [{ ...w, start_ms: rawClip.start_ms + a, end_ms: rawClip.start_ms + b }]
       })
-      : sourceWords),
-    [sourceWords, trimmed, trim, rawClip.start_ms, rawClip.end_ms, piecesOn, pieces],
+      : brandedWords),
+    [brandedWords, trimmed, trim, rawClip.start_ms, rawClip.end_ms, piecesOn, pieces],
   )
 
   const {
@@ -3072,10 +3078,14 @@ export function EditorShell({
   // The brand kit new text, its ready styles and caption looks come from (brand kit Phase 3): the one
   // on this clip, else the account's default one
   const styleKit = (brandOn ? brand.kits.find(k => k.id === brandOn.kit_id) : undefined) ?? brand.kits.find(k => k.data.is_default) ?? null
+  // (its words on the captions: the same kit — brandedWords above)
+  const styleWordsKey = JSON.stringify(styleKit?.data.words ?? null)
+  useEffect(() => { setCaptionBrandWords(styleKit?.data.words ?? null) }, [styleWordsKey]) // eslint-disable-line react-hooks/exhaustive-deps
   const BRAND_TEXT: Array<{ id: BrandTextKind; name: string; text: string }> = [
     { id: 'title', name: 'Title', text: 'Your title' },
     { id: 'subtitle', name: 'Subtitle', text: 'Your subtitle' },
-    { id: 'cta', name: 'Call to action', text: 'Follow for more' },
+    // (the kit's own main line, brand kit Phase 5)
+    { id: 'cta', name: 'Call to action', text: styleKit?.data.words?.lines[0] ?? 'Follow for more' },
   ]
   const brandTextStyles = styleKit ? BRAND_TEXT.map(x => ({ ...x, look: brandTextLook(brandTextStyle(styleKit.data, x.id)) })) : null
   /** The kit's title font on every text and frame text of this clip (locked ones stay): one undo step */
@@ -6394,7 +6404,7 @@ export function EditorShell({
                 onSelect={pickText}
                 onUpdate={(id, patch) => { if (!blocked({ kind: 'text', id })) updateTextOverlay(id, patch) }}
                 onRemove={askDeleteTextOverlay}
-                brand={styleKit && brandTextStyles ? { name: styleKit.name, styles: brandTextStyles, onFontAll: styleKit.data.title.font ? brandFontOnAll : undefined } : null}
+                brand={styleKit && brandTextStyles ? { name: styleKit.name, styles: brandTextStyles, lines: styleKit.data.words?.lines ?? [], onFontAll: styleKit.data.title.font ? brandFontOnAll : undefined } : null}
               />
               </>
             )}
