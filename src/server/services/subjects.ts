@@ -127,8 +127,9 @@ export async function addSubject(userId: string, clipId: string, body: { mark_ms
         ? await tx<{ label: string; color: string; group: boolean; mark_ms: number; mark_x: number; mark_y: number; status: string }[]>`SELECT label, color, shot IS NOT NULL AS "group", mark_ms, mark_x, mark_y, status FROM clip_subjects WHERE clip_id = ${clipId}`
         : (await tx<{ label: string; color: string; mark_ms: number; mark_x: number; mark_y: number; status: string }[]>`SELECT label, color, mark_ms, mark_x, mark_y, status FROM clip_subjects WHERE clip_id = ${clipId}`).map(r => ({ ...r, group: false }))
       const same = existing.filter(s => s.group === !!shot)
-      // The same person marked again at the same moment and place (a second tap; a mark that failed can be made again)
-      const twice = !shot && same.find(s => s.status !== 'failed' && Math.abs(Number(s.mark_ms) - t) <= 300 && Math.abs(Number(s.mark_x) - x) <= 0.02 && Math.abs(Number(s.mark_y) - y) <= 0.02)
+      // The same person marked again at the same moment and place (a second tap; a mark that failed can be
+      // made again) — about a face apart (user, 2026-10-29: two clicks on one man, 3% apart down, made F and G)
+      const twice = !shot && same.find(s => s.status !== 'failed' && Math.abs(Number(s.mark_ms) - t) <= 1000 && Math.abs(Number(s.mark_x) - x) <= 0.05 && Math.abs(Number(s.mark_y) - y) <= 0.08)
       if (twice) throw Object.assign(new Error(`They are marked already, as ${twice.label}.`), { status: 409 })
       if (shot && same.length >= MAX_SHOTS) throw Object.assign(new Error(`Up to ${MAX_SHOTS} group subjects per clip`), { status: 400 })
       if (!shot && same.length >= MAX_SUBJECTS) throw Object.assign(new Error(`Up to ${MAX_SUBJECTS} subjects per clip`), { status: 400 })

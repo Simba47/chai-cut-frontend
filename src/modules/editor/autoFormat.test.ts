@@ -296,3 +296,39 @@ test('holdAtLeast: a short stretch is kept when nobody else is in the picture th
   const first = holdAtLeast([{ from: 0, to: 800, id: 'B' }, { from: 800, to: 9000, id: 'A' }], 2000, () => true)
   assert.deepEqual(first, [{ from: 0, to: 9000, id: 'A' }])
 })
+
+// ── People added by hand (+ Add) join their scene (angles.ts angleRows; the user, 2026-10-29: a listener
+// sitting still was read as a picture, and adding him changed nothing — the scene stayed "1 person") ──
+import { angleRows, type Angle, type AngleSubject } from './angles'
+
+const same2 = (t: number) => t
+// Scene 3 of the user's clip: the scan found only C (right); the man on the left (L) sat still beside him
+const scene3: Angle = { people: 1, at: 16350, faces: [{ x: 0.722, y: 0.2, w: 0.106, h: 0.2, person: 4 }], spans: [[14120, 18320]] }
+const markL = { id: 'f', label: 'F', color: '#fb923c', mark_ms: 16350, mark_x: 0.25, mark_y: 0.3 }
+/** L followed: seen at x 0.25–0.34 through the scene */
+const pathL = Array.from({ length: 17 }, (_, i) => [14200 + i * 250, 0.245, 0.22, 0.09, 0.17, 0] as SubjectPoint)
+
+test('+ Add: a person marked by hand and found joins the scene — counted, and Auto format splits it', () => {
+  const [row] = angleRows([scene3], [{ ...markL, status: 'done', path: pathL } as AngleSubject], [], same2, 210000)
+  assert.equal(row.people, 2)
+  assert.deepEqual(row.faces.map(f => [f.subject?.label ?? null, !!f.added]), [[null, false], ['F', true]])
+  const plan = decideFormat(row.faces.filter(f => !f.pending).map(f => f.box), null, AR)!
+  assert.equal(plan.layout, 'split')
+})
+
+test('+ Add: marked, not followed yet — shown waiting on the card, not counted, not in Auto format', () => {
+  const [row] = angleRows([scene3], [{ ...markL, status: 'new', path: null } as AngleSubject], [], same2, 210000)
+  assert.equal(row.people, 1)
+  assert.equal(row.faces.filter(f => f.pending).length, 1)
+  assert.equal(row.set, false)
+})
+
+test('+ Add: someone followed but not in this scene, or on a face the scan found, isn’t added twice', () => {
+  const elsewhere = pathL.map(p => [p[0] + 100000, ...p.slice(1)] as SubjectPoint)
+  const [a] = angleRows([scene3], [{ ...markL, status: 'done', path: elsewhere } as AngleSubject], [], same2, 210000)
+  assert.equal(a.people, 1)
+  const onC = pathL.map(p => [p[0], 0.73, 0.21, 0.1, 0.19, 0] as SubjectPoint)
+  const [b] = angleRows([scene3], [{ ...markL, mark_x: 0.77, status: 'done', path: onC } as AngleSubject], [], same2, 210000)
+  assert.equal(b.people, 1)
+  assert.equal(b.faces.length, 1)
+})
