@@ -1,4 +1,4 @@
-import type { CaptionStyle, CornerStyle } from './types'
+import type { BoxKeyframe, CaptionStyle, CornerStyle, SegmentLocal, Transition } from './types'
 import { cleanBrandKitData, type BrandKitData, type ProgressBar } from './brandKit'
 
 // A clip's brand kit, on or off (user, 2026-10-19): what the editor keeps (modules/editor/brandState.ts)
@@ -26,8 +26,28 @@ export interface BrandBefore {
   text_case: string | null
   progress_bar: ProgressBar | null
   frames: Record<string, FrameBefore>
-  /** The end card section the brand made, if it made one */
-  end_card: string | null
+  /** The end card the brand made, if it made one (modules/brand/endCard.ts) */
+  end_card: EndCardBefore | null
+  /** The intro and outro videos the brand put in (modules/brand/bookends.ts); absent on clips from before them */
+  intro?: InsertBefore | null
+  outro?: InsertBefore | null
+}
+
+/** A video the brand put in: the part showing it, which video, how long */
+export interface InsertBefore { id: string; video: string; ms: number }
+
+/**
+ * The end card the brand made, and what was there before, to put back when it comes off: the card
+ * (its id, where it starts), the part cut short for it (`cut`: its id and where it ended), the parts
+ * it took the place of with their views, and the transitions after them
+ */
+export interface EndCardBefore {
+  id: string
+  at: number
+  cut: { id: string; end_ms: number } | null
+  replaced: SegmentLocal[]
+  keyframes: Record<string, BoxKeyframe[]>
+  transitions: Transition[]
 }
 
 export interface BrandOn {
@@ -40,6 +60,26 @@ export interface BrandOn {
    * editor takes the kit as it is then, and follows it from there.
    */
   applied?: BrandKitData | null
+}
+
+function cleanInsert(raw: unknown): InsertBefore | null {
+  const r = raw && typeof raw === 'object' ? raw as Partial<InsertBefore> : null
+  return r && typeof r.id === 'string' && typeof r.video === 'string' && typeof r.ms === 'number' ? { id: r.id, video: r.video, ms: r.ms } : null
+}
+
+/** A saved end card record; one from before Phase 4 (just the card's id) has nothing to put back */
+function cleanEndCard(raw: unknown): EndCardBefore | null {
+  if (typeof raw === 'string') return /^[0-9a-f-]{36}$/i.test(raw) ? { id: raw, at: -1, cut: null, replaced: [], keyframes: {}, transitions: [] } : null
+  if (!raw || typeof raw !== 'object') return null
+  const e = raw as Partial<EndCardBefore>
+  if (typeof e.id !== 'string' || typeof e.at !== 'number') return null
+  return {
+    id: e.id, at: e.at,
+    cut: e.cut && typeof e.cut.id === 'string' && typeof e.cut.end_ms === 'number' ? { id: e.cut.id, end_ms: e.cut.end_ms } : null,
+    replaced: Array.isArray(e.replaced) ? e.replaced : [],
+    keyframes: e.keyframes && typeof e.keyframes === 'object' ? e.keyframes : {},
+    transitions: Array.isArray(e.transitions) ? e.transitions : [],
+  }
 }
 
 /** A saved clip's brand state made safe (clips.brand); null when off or not one */
@@ -58,7 +98,9 @@ export function cleanBrandOn(raw: unknown): BrandOn | null {
       text_case: typeof b.text_case === 'string' ? b.text_case : null,
       progress_bar: b.progress_bar && typeof b.progress_bar === 'object' ? b.progress_bar as ProgressBar : null,
       frames: b.frames && typeof b.frames === 'object' ? b.frames : {},
-      end_card: typeof b.end_card === 'string' ? b.end_card : null,
+      end_card: cleanEndCard(b.end_card),
+      intro: cleanInsert(b.intro),
+      outro: cleanInsert(b.outro),
     } : null,
   }
 }

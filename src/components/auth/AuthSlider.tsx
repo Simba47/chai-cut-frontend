@@ -7,6 +7,7 @@ import Link from 'next/link'
 import { Eye, EyeOff, Lock, Mail } from 'lucide-react'
 import { BRAND_BOTTOM, BRAND_TOP, BrandLogo } from '@/components/ui/brand-logo'
 import { FillButtonContent } from '@/components/ui/fill-button'
+import { keepNextPath, takeNextPath } from '@/lib/nextPath'
 
 type Mode = 'signin' | 'signup'
 
@@ -21,6 +22,8 @@ const SIGNED_OUT_NOTE = 'signed_out'
  */
 export function AuthSlider({ initialMode }: { initialMode: Mode }) {
   const [mode, setMode] = useState<Mode>(initialMode)
+  // (the page that sent them here — a brand kit invite link — is where signing in or up ends)
+  useEffect(() => { keepNextPath() }, [])
 
   const switchTo = (next: Mode) => {
     setMode(next)
@@ -88,7 +91,7 @@ function SignInForm({ onSwitch }: { onSwitch: () => void }) {
       setLoading(false)
       return
     }
-    router.push('/dashboard')
+    router.push(takeNextPath())
   }
 
   return (

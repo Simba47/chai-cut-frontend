@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { requireUser } from '@/server/auth'
 import sql from '@/lib/db'
+import { brandCaptionWords } from '@/lib/brandWords'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -52,6 +53,9 @@ export async function GET(req: NextRequest) {
 
   if (!rows.length) return NextResponse.json({ words: null, video_status: video.status, pending, failed })
 
-  const words = await sql`SELECT * FROM transcript_words WHERE transcript_id = ${rows[0].id} ORDER BY start_ms`
+  const raw = await sql<{ word: string; word_roman: string | null; start_ms: number; end_ms: number }[]>`SELECT * FROM transcript_words WHERE transcript_id = ${rows[0].id} ORDER BY start_ms`
+  // As the brand writes them (its spellings, its hidden words): the clip's kit, else the default one
+  const { brandWordsFor } = await import('@/server/services/brandKits')
+  const words = brandCaptionWords([...raw], await brandWordsFor(user.id, clipId && /^[0-9a-f-]{36}$/i.test(clipId) ? clipId : null))
   return NextResponse.json({ words, video_status: video.status, pending })
 }

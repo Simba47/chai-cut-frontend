@@ -1,8 +1,11 @@
-import type { CaptionStyle, FrameItem, FrameSettings, Overlay, SegmentLocal, TextOverlay } from '@chai-cut/shared'
-import { brandCaptionStyle, cardLookOf, isBrandLogo, logoBox, logoSpan, showHandle, type BrandKit, type BrandKitData } from '@/lib/shared/brandKit'
+import type { AudioTrack, BoxKeyframe, CaptionStyle, FrameItem, FrameSettings, Overlay, SegmentLocal, TextOverlay, Transition } from '@chai-cut/shared'
+import { brandCaptionStyle, brandLogoBox, brandProgressBar, cardLookOf, isBrandLogo, logoBox, logoSpan, showHandle, type BrandKit, type BrandKitData, type FrameRect, type LogoCorner, type ProgressBar } from '@/lib/shared/brandKit'
 import type { BrandBefore, FrameBefore } from '@/lib/shared/brandOn'
 import { DEFAULT_BAND, frameOf, frameSlotCount, isFrameLayout, isTextLane, newItemCorners, textLaneLook } from '@/modules/editor/frames'
 import { isShot } from '@/modules/editor/shots'
+import { makeEndCard, removeEndCard, type CardTimeline } from './endCard'
+import { bookendOf, putBookend, takeBookend, type InsertTimeline } from './bookends'
+import { insertsOf, isInsert, videoAt } from '@/modules/editor/inserts'
 
 /**
  * The brand engine (brand kit rebuild, Phase 0, 2026-10-27): the one place that says what a brand
@@ -10,7 +13,7 @@ import { isShot } from '@/modules/editor/shots'
  * server use the same rules.
  *
  *  - putBrandOn: the kit goes on (its logo, title style on text, caption look, frame colours and
- *    corners, Branded cards), and what it changed is kept to put back
+ *    corners, Branded cards, its progress bar, its end card, intro and outro), and what it changed is kept to put back
  *  - brandNewFrames: while it's on, frames picked later get it too
  *  - takeBrandOff: it comes off; what it changed goes back where the user hasn't changed it since
  *  - updateBrand: the kit changed since it went on (a new logo, other colours): the clip follows it
@@ -31,6 +34,29 @@ export interface BrandTarget {
   /** The captions' letter case ('upper', 'title', …) */
   textCase: string
   segments: SegmentLocal[]
+  /** The clip's progress bar (clips.progress_bar); null: none */
+  progressBar: ProgressBar | null
+  /** The views of its parts' boxes (box id → keyframes) and its transitions: an end card changes them */
+  keyframes: Record<string, BoxKeyframe[]>
+  transitions: Transition[]
+  /**
+   * Whether the brand may cut and re-lay the clip's parts here (its end card): the editor always; the
+   * server only when no video is on top (its saved parts and the editor's note of the layers beside
+   * them must keep matching: shots.ts restoreLayers) — else the editor does it when the clip is opened
+   */
+  timelineEdits: boolean
+  /** Its music and sounds: an intro or outro moves them along */
+  audioTracks: AudioTrack[]
+  /**
+   * Whether the brand may put videos in here (its intro and outro): as timelineEdits, and not on a clip
+   * with parts removed the older way (trims: the editor first makes it pieces) — nor, on the server,
+   * one with parts played faster or slower (where the main video is at a moment is the editor's to say)
+   */
+  canInsert: boolean
+  /** Where the main video is at timeline `t` (clip ms of it); by default as the videos put in between say */
+  videoAt?: (t: number) => number
+  /** What the logo keeps off on this clip (Phase 4, kit logo.smart): its captions, the faces in it */
+  avoid?: FrameRect[]
 }
 
 export const NO_BEFORE: BrandBefore = { texts: {}, caption: null, text_case: null, progress_bar: null, frames: {}, end_card: null }
@@ -118,17 +144,127 @@ export function brandFrame(seg: SegmentLocal, kit: Pick<BrandKit, 'name' | 'data
 /** The frames the brand goes on: frame sections that aren't locked and aren't videos on a row */
 const brandable = (seg: SegmentLocal, mainVideoId: string | null) => isFrameLayout(seg.layout) && !seg.locked && !isShot(seg, mainVideoId)
 
+// ── Intro and outro ──────────────────────────────────────────────────────────
+
+const insertsOfT = (t: BrandTarget): InsertTimeline => ({
+  segments: t.segments, keyframes: t.keyframes, overlays: t.overlays, textOverlays: t.texts, audioTracks: t.audioTracks,
+  transitions: t.transitions, lengthMs: t.lengthMs, mainVideoId: t.mainVideoId,
+})
+const withInserts = (t: BrandTarget, st: InsertTimeline): BrandTarget => ({
+  ...t, segments: st.segments, keyframes: st.keyframes, overlays: st.overlays, texts: st.textOverlays, audioTracks: st.audioTracks,
+  transitions: st.transitions, lengthMs: st.lengthMs,
+})
+
+/** The clip's own part, between the brand's intro and outro: [start, end] on the timeline */
+function mainSpan(t: BrandTarget, b: BrandBefore | null): [number, number] {
+  const st = insertsOfT(t)
+  const intro = b?.intro ? bookendOf(st, b.intro) : null, outro = b?.outro ? bookendOf(st, b.outro) : null
+  return [intro ? intro.end_ms : 0, outro ? outro.start_ms : t.lengthMs]
+}
+
+/**
+ * The clip's intro and outro as the kit has them: put in where the kit has one and the brand hasn't yet;
+ * taken out when the kit has none now or another video (and that one put in). One the user took out
+ * stays out until the kit picks another; one they changed (moved, cut, locked) is theirs. Outro first:
+ * the intro then moves it along with everything else.
+ */
+function syncBookends(t: BrandTarget, kit: Pick<BrandKit, 'data'>, before: BrandBefore):
+  { target: BrandTarget; before: BrandBefore; note?: string } {
+  if (!t.canInsert) return { target: t, before }
+  let target = t, b = before, note: string | undefined
+  for (const which of ['outro', 'intro'] as const) {
+    const want = kit.data.ends[which], rec = b[which] ?? null
+    if (rec) {
+      const there = target.segments.some(s => s.id === rec.id)
+      if (!there) {
+        // (taken out by the user: stays out, unless the kit's is another video now)
+        if (want && want.id === rec.video) continue
+        b = { ...b, [which]: null }
+      } else if (want && want.id === rec.video && Math.abs(want.ms - rec.ms) <= 1) {
+        continue
+      } else {
+        const back = takeBookend(insertsOfT(target), rec)
+        b = { ...b, [which]: null }
+        if (!back) continue
+        target = withInserts(target, back)
+      }
+    }
+    if (!want || b[which]) continue
+    // (an outro after the clip's own end: before the hidden room kept for what's on top, if there is one)
+    const tail = target.segments.find(s => isInsert(s, target.mainVideoId) && s.hidden && s.crop_boxes[0]?.hidden)
+    const at = which === 'intro' ? 0 : tail ? tail.start_ms : target.lengthMs
+    const hold = (target.videoAt ?? (x => videoAt(insertsOf(target.segments, target.mainVideoId), x)))(at)
+    const put = putBookend(insertsOfT(target), at, hold, want)
+    if ('skip' in put) { note = put.skip; continue }
+    target = withInserts(target, put.state)
+    b = { ...b, [which]: put.rec }
+  }
+  return { target, before: b, ...(note ? { note } : {}) }
+}
+
+// ── The end card ─────────────────────────────────────────────────────────────
+
+const timelineOf = (t: BrandTarget): CardTimeline =>
+  ({ segments: t.segments, keyframes: t.keyframes, transitions: t.transitions, lengthMs: t.lengthMs, mainVideoId: t.mainVideoId })
+const withTimeline = (t: BrandTarget, tl: CardTimeline): BrandTarget =>
+  ({ ...t, segments: tl.segments, keyframes: tl.keyframes, transitions: tl.transitions })
+
+/**
+ * The clip's end card as the kit has it (`old`: the kit's settings before, when it changed): made when
+ * the kit has one and the brand hasn't made it yet; taken off when the kit hasn't, or made again at its
+ * new length. One the user took out stays out; one they changed is theirs. `note`: why it couldn't be made.
+ */
+function syncEndCard(t: BrandTarget, kit: Pick<BrandKit, 'name' | 'data'>, before: BrandBefore, old: BrandKitData | null):
+  { target: BrandTarget; before: BrandBefore; note?: string } {
+  if (!t.timelineEdits) return { target: t, before }
+  const want = kit.data.ends.card, rec = before.end_card
+  let target = t, b = before
+  if (rec) {
+    if (!t.segments.some(s => s.id === rec.id)) return { target, before: want ? b : { ...b, end_card: null } }
+    const redo = want && !!old && old.ends.card && old.ends.seconds !== kit.data.ends.seconds
+    if (!want || redo) {
+      const back = removeEndCard(timelineOf(target), rec)
+      const { [rec.id]: _, ...frames } = b.frames
+      if (!back) return { target, before: want ? b : { ...b, end_card: null, frames } }
+      target = withTimeline(target, back)
+      b = { ...b, end_card: null, frames }
+    }
+  }
+  if (!want || b.end_card) return { target, before: b }
+  // (before the kit's outro, when the clip ends with it)
+  const made = makeEndCard(timelineOf(target), kit.data.ends.seconds, undefined, mainSpan(target, b)[1])
+  if ('skip' in made) return { target, before: b, note: made.skip }
+  // (the card is branded as any Branded card is)
+  const r = brandFrame(made.timeline.segments.find(s => s.id === made.rec.id)!, kit)
+  return {
+    target: { ...withTimeline(target, made.timeline), segments: made.timeline.segments.map(s => (s.id === made.rec.id ? r.seg : s)) },
+    before: { ...b, end_card: made.rec, frames: { ...b.frames, [made.rec.id]: r.before } },
+  }
+}
+
+/**
+ * The kit's settings as the clip got them (kept with it: BrandOn.applied): where the end card couldn't
+ * be made or changed here (the server, with a video on top), as it was — so when the clip is next
+ * opened, the editor sees the kit has changed and does it
+ */
+function appliedOf(t: BrandTarget, d: BrandKitData, old: BrandKitData | null): BrandKitData {
+  let ends = d.ends
+  if (!t.timelineEdits) ends = { ...ends, card: old ? old.ends.card : false, seconds: old ? old.ends.seconds : d.ends.seconds }
+  if (!t.canInsert) ends = { ...ends, intro: old ? old.ends.intro : null, outro: old ? old.ends.outro : null }
+  return ends === d.ends ? d : { ...d, ends }
+}
+
 // ── On ────────────────────────────────────────────────────────────────────────
 
 /** The kit's logo as a photo on the clip (where and when the kit says), on top of everything */
-function logoOverlay(t: BrandTarget, kit: Pick<BrandKit, 'data' | 'logo_url'>, rest: Overlay[]): Overlay | null {
+function logoOverlay(t: BrandTarget, kit: Pick<BrandKit, 'data' | 'logo_url'>, rest: Overlay[], span: [number, number] = [0, t.lengthMs]): Overlay | null {
   const d = kit.data
   if (!d.logo.path) return null
-  const [start, end] = logoSpan(d.logo, t.lengthMs)
+  const [start, end] = logoSpan(d.logo, span[1] - span[0]).map(x => x + span[0])
   return {
     id: crypto.randomUUID(), clip_id: t.clipId, type: 'image',
     storage_path: d.logo.path, preview_url: kit.logo_url ?? undefined,
-    source_video_id: null, source_offset_ms: 0, ...logoBox(d.logo),
+    source_video_id: null, source_offset_ms: 0, ...brandLogoBox(d.logo, t.avoid),
     start_ms: start, end_ms: end, z_index: Math.max(0, ...rest.map(o => o.z_index)) + 1,
     created_at: new Date().toISOString(), opacity: d.logo.opacity < 0.999 ? d.logo.opacity : null,
   }
@@ -137,15 +273,18 @@ function logoOverlay(t: BrandTarget, kit: Pick<BrandKit, 'data' | 'logo_url'>, r
 /**
  * The kit put on the clip: its logo (in place of a kit's logo put on before), its title font, colour
  * and size on the clip's text, its caption look when its captions are on (the captions themselves
- * aren't switched on or made), the brand on every frame. Returns what it changed, to put back.
+ * aren't switched on or made), the brand on every frame, its progress bar and end card. Returns what it
+ * changed, to put back, and the kit's settings as the clip got them (appliedOf).
  */
-export function putBrandOn(t: BrandTarget, kit: BrandKit): { target: BrandTarget; before: BrandBefore } {
+export function putBrandOn(t: BrandTarget, kit: BrandKit): { target: BrandTarget; before: BrandBefore; applied: BrandKitData; note?: string } {
   const d = kit.data
   const before: BrandBefore = {
     ...NO_BEFORE,
     texts: Object.fromEntries(t.texts.filter(x => !x.locked).map(x => [x.id, { font: x.font ?? null, color: x.color ?? null, size: x.size ?? null }])),
     caption: d.captions.on ? Object.fromEntries(Object.keys(brandCaptionStyle(d.captions)).map(k => [k, (t.caption as unknown as Record<string, unknown>)[k] ?? null])) as Partial<CaptionStyle> : null,
     text_case: d.captions.on ? t.textCase : null,
+    // (the bar it had, to put back: kept only when the kit has one)
+    progress_bar: d.progress_bar.on ? t.progressBar : null,
     frames: {},
   }
   const rest = t.overlays.filter(o => !brandLogos(o))
@@ -156,17 +295,20 @@ export function putBrandOn(t: BrandTarget, kit: BrandKit): { target: BrandTarget
     before.frames[seg.id] = r.before
     return r.seg
   })
-  return {
-    target: {
-      ...t,
-      overlays: logo ? [...rest, logo] : rest,
-      texts: t.texts.map(x => (x.locked ? x : { ...x, font: titleFont(d), color: d.title.color, size: d.title.size })),
-      caption: d.captions.on ? { ...t.caption, ...brandCaptionStyle(d.captions) } : t.caption,
-      textCase: d.captions.on ? caseOf(d) : t.textCase,
-      segments,
-    },
-    before,
+  const on: BrandTarget = {
+    ...t,
+    overlays: logo ? [...rest, logo] : rest,
+    texts: t.texts.map(x => (x.locked ? x : { ...x, font: titleFont(d), color: d.title.color, size: d.title.size })),
+    caption: d.captions.on ? { ...t.caption, ...brandCaptionStyle(d.captions) } : t.caption,
+    textCase: d.captions.on ? caseOf(d) : t.textCase,
+    segments,
+    progressBar: brandProgressBar(d) ?? t.progressBar,
   }
+  // (the intro moves what's on along: the logo, over the clip's own part, goes with it)
+  const ends = syncBookends(on, kit, before)
+  const card = syncEndCard(ends.target, kit, ends.before, null)
+  const note = ends.note ?? card.note
+  return { target: card.target, before: card.before, applied: appliedOf(t, d, null), ...(note ? { note } : {}) }
 }
 
 /**
@@ -185,8 +327,10 @@ export function brandNewFrames(t: BrandTarget, kit: BrandKit, before: BrandBefor
   })
   let overlays = t.overlays
   if (kit.data.logo.show === 'all') {
-    const short = overlays.find(o => brandLogos(o) && (Math.abs(o.start_ms) > 1 || Math.abs(o.end_ms - t.lengthMs) > 1))
-    if (short) overlays = overlays.map(o => (o.id === short.id ? { ...o, start_ms: 0, end_ms: t.lengthMs } : o))
+    // (the clip's own part: not over the kit's intro and outro)
+    const [a, z] = mainSpan(t, before)
+    const short = overlays.find(o => brandLogos(o) && (Math.abs(o.start_ms - a) > 1 || Math.abs(o.end_ms - z) > 1))
+    if (short) overlays = overlays.map(o => (o.id === short.id ? { ...o, start_ms: a, end_ms: z } : o))
   }
   if (!Object.keys(add).length && overlays === t.overlays) return null
   return { target: { ...t, segments, overlays }, before: { ...(before ?? NO_BEFORE), frames: { ...known, ...add } } }
@@ -197,13 +341,26 @@ export function brandNewFrames(t: BrandTarget, kit: BrandKit, before: BrandBefor
 /**
  * The brand taken off: its logo comes off; text, captions, frame colours and corners go back as they
  * were — each only where it's still as the brand left it, so the user's changes since are kept; the
- * Branded card text it added goes. `d`: the kit's settings when it was on (null: the kit is gone — the
- * logo and frames still come off, texts and captions stay). (An end card made by an older kit is the
+ * Branded card text it added goes; its progress bar gives way to the one the clip had; what its end card
+ * took the place of comes back (one the user changed stays). `d`: the kit's
+ * settings when it was on (null: the kit is gone — the logo and frames still come off, texts, captions
+ * and the bar stay). (An end card made by an older kit is the
  * editor's to turn back: it needs the editor's layouts.)
  */
-export function takeBrandOff(t: BrandTarget, d: BrandKitData | null, b: BrandBefore | null): BrandTarget {
+export function takeBrandOff(t0: BrandTarget, d: BrandKitData | null, b: BrandBefore | null): BrandTarget {
+  // The end card first: the frames below then come back as they were on the parts it gave back
+  const back = b?.end_card && t0.timelineEdits ? removeEndCard(timelineOf(t0), b.end_card) : null
+  let t = back ? withTimeline(t0, back) : t0
+  // The intro and outro it put in come out (one the user changed stays)
+  if (b && t.canInsert) for (const rec of [b.intro, b.outro]) {
+    const gone = rec ? takeBookend(insertsOfT(t), rec) : null
+    if (gone) t = withInserts(t, gone)
+  }
   const overlays = t.overlays.filter(o => !brandLogos(o))
-  let texts = t.texts, caption = t.caption, textCase = t.textCase
+  let texts = t.texts, caption = t.caption, textCase = t.textCase, progressBar = t.progressBar
+  // (still the kit's: the bar the clip had, or none; one the user changed since stays)
+  const kitBar = d ? brandProgressBar(d) : null
+  if (kitBar && sameJson(t.progressBar, kitBar)) progressBar = b?.progress_bar ?? null
   if (d && b) {
     texts = t.texts.map(x => {
       const was = b.texts[x.id]
@@ -241,15 +398,25 @@ export function takeBrandOff(t: BrandTarget, d: BrandKitData | null, b: BrandBef
       },
     }
   })
-  return { ...t, overlays, texts, caption, textCase, segments }
+  return { ...t, overlays, texts, caption, textCase, segments, progressBar }
 }
 
 // ── Live ──────────────────────────────────────────────────────────────────────
 
-/** Whether a kit's settings changed in a way the clip shows (its name and default mark don't) */
+/**
+ * Whether a kit's settings changed in a way the clip's parts show (its name and default mark don't; nor
+ * its words: they're applied as the clip's words are read — lib/brandWords.ts)
+ */
 export function brandChanged(a: BrandKitData, b: BrandKitData): boolean {
-  const shown = (d: BrandKitData) => ({ ...d, is_default: false, lock: false })
+  const shown = (d: BrandKitData) => ({ ...d, is_default: false, lock: false, words: null })
   return !sameJson(shown(a), shown(b))
+}
+
+/** Every place a kit's logo could have been put on a clip */
+function brandSpots(logo: BrandKitData['logo']): FrameRect[] {
+  if (logo.x !== null) return [logoBox(logo)]
+  const corners: LogoCorner[] = ['tl', 'tr', 'bl', 'br']
+  return [true, false].flatMap(safe => corners.map(c => logoBox({ ...logo, safe }, 1080, 1920, c)))
 }
 
 /**
@@ -260,22 +427,30 @@ export function brandChanged(a: BrandKitData, b: BrandKitData): boolean {
  *  - text: the new title font, colour and size where it still has the old ones
  *  - captions: the new look's fields where they're still the old look's
  *  - frames: band colour, text colours, corners and the Branded card's look and words, likewise
+ *  - the progress bar: the new one where the clip still has the old — or, the kit's first, where it has none
+ *  - the intro and outro: put in, taken out, or swapped for the kit's new ones (syncBookends)
+ *  - the end card: made, taken off, or made again at its new length (syncEndCard)
+ * Returns the clip, the brand's record of what it changed (`before`), and the kit's settings as the clip got them.
  */
-export function updateBrand(t: BrandTarget, old: BrandKitData, kit: BrandKit): BrandTarget {
+export function updateBrand(t: BrandTarget, old: BrandKitData, kit: BrandKit, before: BrandBefore | null):
+  { target: BrandTarget; before: BrandBefore | null; applied: BrandKitData; note?: string } {
   const n = kit.data
 
-  // The logo
+  // The logo (over the clip's own part, between the brand's intro and outro)
+  const [a, z] = mainSpan(t, before)
   let overlays = t.overlays
   const had = t.overlays.filter(brandLogos)
   if (had.length) {
     overlays = n.logo.path ? t.overlays.map(o => {
       if (!brandLogos(o)) return o
-      const was = logoBox(old.logo), box = logoBox(n.logo)
-      const placed = near(o.x, was.x) && near(o.y, was.y) && near(o.w, was.w) && near(o.h, was.h)
+      // (where the brand put it: any corner — a smart spot moves it — kept clear of the apps' buttons
+      // or, a kit from before that, not)
+      const placed = brandSpots(old.logo).some(was => near(o.x, was.x) && near(o.y, was.y) && near(o.w, was.w) && near(o.h, was.h))
+      const box = brandLogoBox(n.logo, t.avoid)
       const h = Math.min(0.9, (o.w * 1080 * (n.logo.ratio ?? 1)) / 1920)
-      const [s0, e0] = logoSpan(old.logo, t.lengthMs)
+      const [s0, e0] = logoSpan(old.logo, z - a).map(x => x + a)
       const timed = Math.abs(o.start_ms - s0) <= 1 && Math.abs(o.end_ms - e0) <= 1
-      const [s1, e1] = logoSpan(n.logo, t.lengthMs)
+      const [s1, e1] = logoSpan(n.logo, z - a).map(x => x + a)
       const oldOpacity = old.logo.opacity < 0.999 ? old.logo.opacity : null
       return {
         ...o, storage_path: n.logo.path, preview_url: kit.logo_url ?? o.preview_url,
@@ -286,7 +461,7 @@ export function updateBrand(t: BrandTarget, old: BrandKitData, kit: BrandKit): B
     }) : t.overlays.filter(o => !brandLogos(o))
   } else if (!old.logo.path && n.logo.path) {
     // (the kit had no logo when it went on: its new one goes on now)
-    const logo = logoOverlay(t, kit, t.overlays)
+    const logo = logoOverlay(t, kit, t.overlays, [a, z])
     if (logo) overlays = [...t.overlays, logo]
   }
 
@@ -345,5 +520,16 @@ export function updateBrand(t: BrandTarget, old: BrandKitData, kit: BrandKit): B
     return sameJson(frame, f) ? seg : { ...seg, frame }
   })
 
-  return { ...t, overlays, texts, caption, textCase, segments }
+  // The progress bar
+  const oldBar = brandProgressBar(old)
+  const progressBar = (oldBar ? sameJson(t.progressBar, oldBar) : !t.progressBar) ? brandProgressBar(n) : t.progressBar
+
+  const next: BrandTarget = { ...t, overlays, texts, caption, textCase, segments, progressBar }
+  // (a clip on since it was made has no record yet: one starts with its end card)
+  const ends = syncBookends(next, kit, before ?? NO_BEFORE)
+  const card = syncEndCard(ends.target, kit, ends.before, old)
+  // (a clip on since it was made has no record yet: one starts with what the brand put in)
+  const recorded = before || card.before.end_card || card.before.intro || card.before.outro ? card.before : before
+  const note = ends.note ?? card.note
+  return { target: card.target, before: recorded, applied: appliedOf(t, n, old), ...(note ? { note } : {}) }
 }

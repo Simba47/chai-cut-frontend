@@ -4,7 +4,7 @@ import { InfoTip } from '@/components/ui/info-tip'
 import { musicGainAt, speechRangesInVideo, speechRanges, heardSpeech, type Range as SpeechRange } from '@/modules/editor/musicGain'
 import { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback } from 'react'
 import type { Clip, Segment, CropBox, BoxKeyframe, CaptionStyle, TextOverlay, AudioTrack, Transition, TranscriptWord, LayoutType, Overlay } from '@chai-cut/shared'
-import { VideoPreview, OutputCanvas, buildCaptionChunks, captionWordsPerLine } from '@/components/editor/VideoPreview'
+import { VideoPreview, OutputCanvas, buildCaptionChunks, captionWordsPerLine, captionDefaultY } from '@/components/editor/VideoPreview'
 import { withoutRanges } from '@/lib/cuts'
 import { cleanTrims, trimMap, addTrim, wordsOnTimeline, MAX_CLIP_MS, MIN_CLIP_MS } from '@/lib/trims'
 import { toTimelineState, toSourceState, rippleDelete, rippleStretch, lockedInRange, insertAtStart, extendEnd, type TimedState } from '@/modules/editor/trimState'
@@ -42,8 +42,10 @@ import { putBrandOn, takeBrandOff, brandNewFrames, updateBrand, brandChanged, fi
 import { EditorBrandMenu } from '@/components/brand/EditorBrandMenu'
 import { CleanupPanel, type CleanupRow } from '@/components/editor/CleanupPanel'
 import { cleanupCards, isDeleted } from '@/modules/editor/cleanup'
-import { brandPalette, brandLockOf, brandTextStyle, brandCaptionLooks, brandCaptionStyle, type BrandKit, type BrandTextKind, type ProgressBar } from '@/lib/shared/brandKit'
+import { brandPalette, brandLockOf, brandTextStyle, brandCaptionLooks, brandCaptionStyle, captionBand, sameEndVideo, type FrameRect, type BrandKit, type BrandTextKind, type ProgressBar } from '@/lib/shared/brandKit'
 import { brandTextLook } from '@/modules/editor/textStyle'
+import { brandCaptionWords, type BrandWords } from '@/lib/brandWords'
+import { lockClipLook, lockHolds, lockSetOf, type LockSet } from '@/lib/shared/brandTeam'
 import { BrandCaptionLooks } from '@/components/brand/BrandCaptionLooks'
 import { setBrandPalette, setBrandLock } from '@/components/editor/brandPalette'
 import { setBrandFonts, ensureBrandFont } from '@/components/editor/brandFonts'
@@ -56,6 +58,7 @@ import { PlatformOverlay, PLATFORM_SAFE, type Platform } from '@/components/edit
 // ── Domain stores ──────────────────────────────────────────────────────────────
 import { useEditorStore, MIN_FORMAT_MS, type KeyframeMap } from '@/modules/editor/store'
 import { startHistory, undo, redo, useHistory, editableSnapshot, sameEditable, type EditableSnapshot } from '@/modules/editor/history'
+import { useGroupStore, cleanGroups, joinGroup, splitGroups, groupOf, type Groups } from '@/modules/editor/groups'
 import { usePlayerStore, liveTime, useLiveTimeMs } from '@/modules/player/store'
 import { trackPresentedFrame } from '@/modules/player/presentedFrame'
 import { useVideoSync } from '@/modules/player/useSync'
@@ -118,17 +121,20 @@ const LAYOUTS: { id: LayoutType; label: string }[] = [
 // Stand-in format for time no format covers: centred Vertical, the same default render.py uses
 const PLATFORM_OPTIONS: { id: Platform; label: string; icon: React.ReactNode }[] = [
   { id: 'off', label: 'Off', icon: <><rect x="6" y="2.5" width="12" height="19" rx="2.5" /><path d="M10 18.5h4" /></> },
-  { id: 'instagram', label: 'Instagram', icon: <><rect x="3" y="3" width="18" height="18" rx="5" /><circle cx="12" cy="12" r="4" /><path d="M17.5 6.5h.01" /></> },
-  { id: 'youtube', label: 'YouTube', icon: <><rect x="2.5" y="5" width="19" height="14" rx="4" /><path d="M10 9.2v5.6l4.8-2.8z" fill="currentColor" /></> },
+  { id: 'instagram', label: 'Reels', icon: <><rect x="3" y="3" width="18" height="18" rx="5" /><circle cx="12" cy="12" r="4" /><path d="M17.5 6.5h.01" /></> },
+  { id: 'youtube', label: 'Shorts', icon: <><rect x="2.5" y="5" width="19" height="14" rx="4" /><path d="M10 9.2v5.6l4.8-2.8z" fill="currentColor" /></> },
 ]
 // Options sidebar width (px)
 const OPTIONS_W = 272
-const PREVIEW_W = 360
-// The editing panel (timeline) opens just as tall as what is on it — the ruler, the clip's strip
-// and any media lanes — so a clip with nothing added leaves the room to the video. It grows as
-// lanes are added, up to this, then its lanes scroll (dragging the line above the play bar sets a
-// height for that visit; a double-click goes back to fitting)
+// The Preview column opens at its smallest (user, 2026-10-28): wider only when its edge is dragged
+const PREVIEW_W = 260
+// The editing panel (timeline) opens just as tall as its ruler, the clip's strip and the strip's own
+// rows (user, 2026-10-28: the same on every clip, the video and preview never squeezed): rows of
+// media, text and music scroll inside it. Dragging the line above the play bar makes it taller for
+// that visit; a double-click goes back. Until the timeline has said how tall that is: up to this
 const TIMELINE_MAX_H = '28vh'
+/** The timeline panel's own padding round the timeline (pt-3 pb-4) */
+const TIMELINE_PAD_Y = 28
 // How wide the side columns can be dragged
 const OPTIONS_RANGE: [number, number] = [220, 520]
 const PREVIEW_RANGE: [number, number] = [260, 620]
@@ -308,11 +314,16 @@ export function EditorShell({
     setRetranscribing, setRetranscribeElapsed, setRetranscribeError,
   } = useCaptionStore()
 
+  // The words as the brand writes them (brand kit Phase 5: the kit's spellings, its hidden words — set
+  // below from the kit on the clip, else the default one). They came that way; this keeps them so live
+  // as the kit changes. (Nothing is changed where they're saved: the export spells them the same.)
+  const [captionBrandWords, setCaptionBrandWords] = useState<BrandWords | null>(null)
+  const brandedWords = useMemo(() => brandCaptionWords(sourceWords, captionBrandWords), [sourceWords, captionBrandWords])
   // Words where they are heard in the clip as it plays (those in removed parts are left out; after
   // a video put in between, later by its length)
   const words = useMemo(
-    () => (trimmed ? wordsOnTimeline(sourceWords, trim, rawClip.start_ms, rawClip.end_ms)
-      : piecesOn ? sourceWords.flatMap(w => {
+    () => (trimmed ? wordsOnTimeline(brandedWords, trim, rawClip.start_ms, rawClip.end_ms)
+      : piecesOn ? brandedWords.flatMap(w => {
         const s0 = w.start_ms - rawClip.start_ms
         if (s0 < 0) return [w]
         // Where the word is heard on the timeline; a word in video cut out is gone
@@ -322,8 +333,8 @@ export function EditorShell({
         const a = timelineAtPieces(pieces, s0), b = Math.max(a + 1, timelineAtPieces(pieces, w.end_ms - rawClip.start_ms))
         return a === s0 && b === w.end_ms - rawClip.start_ms ? [w] : [{ ...w, start_ms: rawClip.start_ms + a, end_ms: rawClip.start_ms + b }]
       })
-      : sourceWords),
-    [sourceWords, trimmed, trim, rawClip.start_ms, rawClip.end_ms, piecesOn, pieces],
+      : brandedWords),
+    [brandedWords, trimmed, trim, rawClip.start_ms, rawClip.end_ms, piecesOn, pieces],
   )
 
   const {
@@ -417,6 +428,8 @@ export function EditorShell({
 
     // The clip as loaded: the auto-save stays quiet until the state differs from this
     setBrandOn(initialBrand ?? null)
+    // Its groups on the timeline (groups.ts), saved beside the rows
+    useGroupStore.setState({ groups: cleanGroups((savedClip as unknown as { layers?: { groups?: unknown } | null }).layers?.groups) })
     loadedStateRef.current = editableSnapshot()
 
     // Undo/redo records from here on: the loaded clip is the starting point
@@ -438,7 +451,7 @@ export function EditorShell({
   const [isFreePlan, setIsFreePlan] = useState(false)
   /** The Free plan's watermark shows on the preview, where the export will put it */
   const showWatermark = useFreeWatermark()
-  const [tool, setTool] = useState<Tool>('format')
+  const [tool, setTool] = useState<Tool>('subjects')
   // The editor always opens the same way — a new clip, a refresh, or coming from any board: the
   // tool rail with the options panel closed (a tool opens it), the video, the Preview column on the
   // right at its usual width (Off) and the timeline at its usual height. Sizes dragged while editing
@@ -448,6 +461,14 @@ export function EditorShell({
   // opens it again. Closing the options sidebar leaves it open
   const [kitStudio, setKitStudio] = useState(true)
   useEffect(() => { if (tool === 'brand') setKitStudio(true) }, [tool])
+  // What was open before the Brand kit (user, 2026-10-28: closing it goes back there — Brand kit isn't on
+  // the rail any more, so nothing else would close its panel)
+  const beforeBrandRef = useRef<{ tool: Tool; open: boolean }>({ tool: 'subjects', open: false })
+  const lastToolRef = useRef<{ tool: Tool; open: boolean }>({ tool: 'subjects', open: false })
+  useEffect(() => {
+    if (tool === 'brand') { if (lastToolRef.current.tool !== 'brand') beforeBrandRef.current = lastToolRef.current }
+    lastToolRef.current = { tool, open: optionsOpen }
+  }, [tool, optionsOpen])
   // The Preview column on the right: can be closed for more room to edit
   const [previewOpen, setPreviewOpen] = useState(true)
   // Full view: the preview big, to check it properly. The browser's fullscreen when it allows it,
@@ -487,6 +508,8 @@ export function EditorShell({
   const [resizing, setResizing] = useState<'options' | 'preview' | 'timeline' | null>(null)
   // The timeline's height, dragged at the line above the play bar (null = its usual size; this visit only)
   const [timelineH, setTimelineH] = useState<number | null>(null)
+  // How tall the timeline is with just its ruler and the clip's strip (Timeline onBaseHeight)
+  const [timelineBaseH, setTimelineBaseH] = useState<number | null>(null)
   const timelineRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
     // Sizes an older version remembered in this browser: gone, so every visit opens the usual way
@@ -749,6 +772,39 @@ export function EditorShell({
   // The timeline always opens at 1x, the whole clip across it (zoom in with + or a pinch)
   const [timelineZoom, setTimelineZoom] = useState(1)
   const [timelineHidden, setTimelineHidden] = useState(false)
+  // The kit's workshop open: the timeline tucked away for its room (the ⌃ in the timeline bar brings it
+  // back); closed, the timeline as it was (user, 2026-10-28)
+  const studioShown = tool === 'brand' && kitStudio
+  const timelineBeforeStudio = useRef<boolean | null>(null)
+  useEffect(() => {
+    if (studioShown) {
+      if (timelineBeforeStudio.current === null) { timelineBeforeStudio.current = timelineHidden; setTimelineHidden(true) }
+    } else if (timelineBeforeStudio.current !== null) {
+      setTimelineHidden(timelineBeforeStudio.current)
+      timelineBeforeStudio.current = null
+    }
+  }, [studioShown]) // eslint-disable-line react-hooks/exhaustive-deps
+  /** The kit's workshop closed: back to what was open before the Brand kit */
+  function closeKitStudio() {
+    setKitStudio(false)
+    const was = beforeBrandRef.current
+    setTool(was.tool === 'brand' || was.tool === 'format' ? 'subjects' : was.tool)
+    setOptionsOpen(was.open && was.tool !== 'brand')
+  }
+  // Esc closes it (not while typing in a field of it)
+  useEffect(() => {
+    if (!studioShown) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return
+      const t = e.target as HTMLElement | null
+      // (a field being typed in, or a menu / dialog open: Esc is theirs first)
+      if (t?.closest('input, textarea, select, [contenteditable="true"]') || document.querySelector('[role="menu"], [role="dialog"], [role="alertdialog"]')) return
+      closeKitStudio()
+    }
+    // (before the editor's other Esc handlers, which let go of what's picked)
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [studioShown]) // eslint-disable-line react-hooks/exhaustive-deps
   // Cleanup: the list of cuts can be folded away
   const [cutsOpen, setCutsOpen] = useState(true)
   // Lengths of music files added in this session (read from the file), so their timeline bars
@@ -769,7 +825,7 @@ export function EditorShell({
     editVersionRef.current++
     autoSaveTimerRef.current = setTimeout(() => latestHandleSaveRef.current(), 2500)
   }, [originalVolume, originalMuted]) // eslint-disable-line react-hooks/exhaustive-deps
-  // The clip's progress bar (Brand kit panel; a kit's Apply puts its own on): drawn on the preview,
+  // The clip's progress bar (Brand kit panel; a kit with one puts it on: modules/brand/engine.ts): drawn on the preview,
   // saved with the clip, drawn by the export (render.py)
   const [progressBar, setProgressBar] = useState<ProgressBar | null>(initialProgressBar ?? null)
   // The brand kit switched on for this clip (modules/editor/brandState.ts)
@@ -988,6 +1044,11 @@ export function EditorShell({
   // Music track selected on the timeline (Trim / Delete act on it). Only one thing is selected:
   // picking a video section clears the music, a photo and a text, and the other way round
   const [pickedMusicId, setPickedMusicId] = useState<string | null>(null)
+  // Several things picked on the timeline at once (a box dragged over them, or Ctrl / Shift + click):
+  // videos and photos on rows, text, music. They move together; Delete takes them all (one undo step)
+  const [groupPick, setGroupPick] = useState<string[]>([])
+  // Groups made of them (as Resolve's Link Clips): picked and moved as one from then on (groups.ts)
+  const groups = useGroupStore(st => st.groups)
   const setPickedSegId = (id: string | null) => {
     setPickedSegIdState(id); setPickedMusicId(null)
     if (id) { setActiveOverlayId(null); setActiveTextOverlayId(null); setLastPick('section') }
@@ -1255,7 +1316,7 @@ export function EditorShell({
     autoSaveTimerRef.current = setTimeout(() => latestHandleSaveRef.current(), 2500)
     return () => { if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current) }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [segments, keyframes, trims, clipRange, captionStyle, textOverlays, audioTracks, transitions, filters, overlays, brandOn])
+  }, [segments, keyframes, trims, clipRange, captionStyle, textOverlays, audioTracks, transitions, filters, overlays, brandOn, groups])
 
   // The social media preview: Off each time the editor opens (part of its usual layout)
   const [platform, setPlatform] = useState<Platform>('off')
@@ -1371,7 +1432,8 @@ export function EditorShell({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           segments: saved.rows,
-          layers: withCaptionParts(withLanes(saved.layers, [...overlays, ...textOverlays, ...audioTracks], belowRowsRef.current), useCaptionStore.getState().captionParts),
+          layers: withGroupsSaved(withCaptionParts(withLanes(saved.layers, [...overlays, ...textOverlays, ...audioTracks], belowRowsRef.current), useCaptionStore.getState().captionParts),
+            cleanGroups(useGroupStore.getState().groups, id => editor.segments.some(s => s.id === id) || [...overlays, ...textOverlays, ...audioTracks].some(x => x.id === id))),
           captionStyle, textOverlays, audioTracks, transitions, filters,
           // A photo on a higher track is drawn over one on a lower track (the export orders photos by z_index)
           overlays: overlays.map(o => (o.type === 'image' && o.track != null ? { ...o, z_index: o.track + 1 } : o)),
@@ -3003,17 +3065,26 @@ export function EditorShell({
   const paletteKey = paletteKit ? brandPalette(paletteKit.data).join(',') : ''
   useEffect(() => { setBrandPalette(paletteKey ? paletteKey.split(',') : []) }, [paletteKey])
   useEffect(() => () => setBrandPalette([]), [])
-  // Brand lock: kits shared with this user whose owner locked them — the colour and font choices
-  // offer only theirs (all such kits together)
-  const lockKey = JSON.stringify(brand.kits.filter(k => k.shared_by && k.data.lock).map(k => ({ by: k.shared_by!, ...brandLockOf(k.data) })))
-  useEffect(() => {
-    const locks = JSON.parse(lockKey) as Array<{ by: string; colors: string[]; fonts: string[] }>
-    setBrandLock(locks.length ? {
-      by: [...new Set(locks.map(l => l.by))].join(', '),
-      colors: [...new Set(locks.flatMap(l => l.colors))], fonts: [...new Set(locks.flatMap(l => l.fonts))],
-    } : null)
-  }, [lockKey])
+  // Brand lock (brand kit Phase 6): the kit on this clip, shared with this user to use (not to edit) and
+  // locked by its owner — the colour and font choices offer only its own, the clip keeps to them (below,
+  // as the server does when it's saved: brandTeam.ts lockClipLook), and only the owner takes it off
+  const lockKit = brandOn ? brand.kits.find(k => k.id === brandOn.kit_id && !!k.shared_by && lockHolds(k.data, k.role ?? 'use')) ?? null : null
+  const lockKey = lockKit ? JSON.stringify({ by: lockKit.shared_by!, ...brandLockOf(lockKit.data) }) : ''
+  useEffect(() => { setBrandLock(lockKey ? JSON.parse(lockKey) as { by: string; colors: string[]; fonts: string[] } : null) }, [lockKey])
   useEffect(() => () => setBrandLock(null), [])
+  const lockSetKey = lockKit ? JSON.stringify(lockSetOf(lockKit.data)) : ''
+  const lockParts = useCaptionStore(st => st.captionParts)
+  useEffect(() => {
+    if (!lockSetKey) return
+    const set = JSON.parse(lockSetKey) as LockSet
+    const cap = useCaptionStore.getState()
+    const kept = lockClipLook({ texts: useMediaStore.getState().textOverlays, caption: cap.captionStyle, parts: cap.captionParts, segments: useEditorStore.getState().segments }, set)
+    if (!kept.changed) return
+    if (kept.texts.some((t, i) => t !== useMediaStore.getState().textOverlays[i])) setTextOverlays(kept.texts)
+    if (kept.caption !== cap.captionStyle) useCaptionStore.setState({ captionStyle: kept.caption })
+    if (kept.parts.some((x, i) => x !== cap.captionParts[i])) cap.setCaptionParts(kept.parts)
+    if (kept.segments.some((x, i) => x !== useEditorStore.getState().segments[i])) useEditorStore.setState({ segments: kept.segments })
+  }, [lockSetKey, textOverlays, captionStyle, lockParts, segments]) // eslint-disable-line react-hooks/exhaustive-deps
   // Every kit's own fonts in the font pickers (and loaded, so text in them draws)
   const fontsKey = brand.kits.flatMap(k => k.data.fonts.map(f => `${f.family}=${f.name}`)).join('|')
   useEffect(() => {
@@ -3043,8 +3114,46 @@ export function EditorShell({
     return {
       clipId: clip.id, lengthMs: clipLengthMs, mainVideoId: mainVideoId ?? null,
       overlays: m.overlays, texts: m.textOverlays, caption: c.captionStyle, textCase: c.captionTextCase,
-      segments: useEditorStore.getState().segments,
+      segments: useEditorStore.getState().segments, progressBar: progressBarRef.current, avoid: brandAvoid(),
+      keyframes: useEditorStore.getState().keyframes, transitions: m.transitions, timelineEdits: true,
+      // (removed parts the older way: the clip first becomes pieces — brandNeedsPieces — then the intro and outro go in)
+      audioTracks: m.audioTracks, canInsert: !trimmed, videoAt: t => videoAtPieces(allPieces, t),
     }
+  }
+  /**
+   * The kit has an intro or outro the clip couldn't take yet (its parts removed the older way): the
+   * clip becomes pieces, and once it has, the brand follows the kit again (the effect below)
+   */
+  function brandNeedsPieces(kit: BrandKit, applied: BrandKit['data']) {
+    if (trimmed && (!sameEndVideo(kit.data.ends.intro, applied.ends.intro) || !sameEndVideo(kit.data.ends.outro, applied.ends.outro))) trimsToPieces()
+  }
+  /**
+   * What the kit's logo keeps off on this clip (brand kit Phase 4, smart spot): the captions' band, and
+   * the tracked faces in its full-frame parts (one view of the main video), about once a second — a
+   * face seen longer weighs more
+   */
+  function brandAvoid(): FrameRect[] {
+    const c = useCaptionStore.getState(), { segments: segs, keyframes: kfs } = useEditorStore.getState()
+    const out: FrameRect[] = []
+    if (c.captionStyle.enabled !== false) out.push(captionBand(c.captionStyle.position_y ?? captionDefaultY(c.captionStyle)))
+    const tracked = subjects.filter(s => s.status === 'done' && !s.shot && s.path?.length) as Array<SubjectRow & { path: SubjectPoint[] }>
+    if (!tracked.length) return out
+    const cuts = subjectCuts(tracked)
+    for (const seg of segs) {
+      const box = seg.crop_boxes.length === 1 ? seg.crop_boxes[0] : null
+      if (seg.layout !== 'vertical' || !box || box.image_path || (box.source_video_id && box.source_video_id !== mainVideoId)) continue
+      for (let t = seg.start_ms; t < seg.end_ms; t += 1000) {
+        const v = getBoxPositionAtLerp(t, kfs[box.id] ?? box.keyframes ?? [])
+        if (v.w <= 0 || v.h <= 0) continue
+        for (const p of tracked) {
+          const f = subjectBoxAt(p.path, trim.toSource(t), cuts)
+          if (!f) continue
+          const x = (f.x - v.x) / v.w, y = (f.y - v.y) / v.h, w = f.w / v.w, h = f.h / v.h
+          if (x + w > 0 && x < 1 && y + h > 0 && y < 1) out.push({ x, y, w, h })
+        }
+      }
+    }
+    return out
   }
   /** What the brand engine gave, written back: only the parts it changed (one undo step with the rest of the change) */
   function writeBrand(was: BrandTarget, t: BrandTarget) {
@@ -3055,39 +3164,54 @@ export function EditorShell({
     const patch = Object.fromEntries(Object.keys(next).filter(k => !same(next[k], cur[k])).map(k => [k, next[k]])) as Partial<CaptionStyle>
     if (Object.keys(patch).length) updateCaptionStyle(patch)
     if (t.textCase !== was.textCase) setCaptionTextCase(t.textCase as typeof captionTextCase)
-    if (!same(t.segments, was.segments)) useEditorStore.setState({ segments: t.segments })
+    // (an end card, intro or outro changes the parts, their views and the transitions together; an intro
+    // or outro taken out leaves the clip as long as its video again — as removeInsert does)
+    if (t.keyframes !== was.keyframes) {
+      const editor = useEditorStore.getState()
+      const fewer = insertsOf(t.segments, mainVideoId).length < insertsOf(was.segments, mainVideoId).length
+      skipCanvasTransitionRef.current = true
+      editor.applyTrim(t.segments, t.keyframes, editor.trims, fewer ? rangeAfterPieces(t.segments) : undefined)
+    } else if (!same(t.segments, was.segments)) useEditorStore.setState({ segments: t.segments })
+    if (t.transitions !== was.transitions) useMediaStore.getState().setTransitions(t.transitions)
+    if (t.audioTracks !== was.audioTracks) useMediaStore.setState({ audioTracks: t.audioTracks })
+    // (the bar isn't in Undo: it's changed back in the Brand kit panel)
+    if (!same(t.progressBar, was.progressBar)) { progressBarRef.current = t.progressBar; setProgressBar(t.progressBar) }
+  }
+
+  /** A locked team kit is on this clip (Phase 6): it stays — said why */
+  function lockedOn(): boolean {
+    if (!lockKit) return false
+    notifyLocked(`${lockKit.shared_by} locked “${lockKit.name}”: only they can take it off this clip`, 3200)
+    return true
   }
 
   /** The brand kit switched on for this clip (user, 2026-10-19): a different kit on before comes off first. One undo step. */
   function turnBrandOn(kit: BrandKit) {
-    if (useBrandStore.getState().on) turnBrandOff()
+    const cur = useBrandStore.getState().on
+    if (cur && cur.kit_id !== kit.id && lockedOn()) return
+    if (cur) turnBrandOff()
     const was = brandTarget()
     const r = putBrandOn(was, kit)
     writeBrand(was, r.target)
     // (the kit's settings as they went on: when they change, the clip follows — updateBrand)
-    setBrandOn({ kit_id: kit.id, before: r.before, applied: kit.data })
+    setBrandOn({ kit_id: kit.id, before: r.before, applied: r.applied })
+    if (r.note) notifyLocked(r.note)
+    brandNeedsPieces(kit, r.applied)
   }
 
   /**
    * The brand kit switched off (the brand engine's takeBrandOff): what it put on comes off and what
-   * it changed goes back where the user hasn't changed it since; here also (on clips it was switched
-   * on for before kits stopped holding them) its progress bar and end card. One undo step.
+   * it changed goes back where the user hasn't changed it since — its end card too. One undo step.
    */
   function turnBrandOff() {
     const on = useBrandStore.getState().on
-    if (!on) return
+    if (!on || lockedOn()) return
     const kit = brand.kits.find(k => k.id === on.kit_id) ?? null
     // (the kit as it is, else — deleted since — as it was when it last went on: its text and caption
     // styles still come off)
     const d = kit?.data ?? on.applied ?? null, b = on.before
     const was = brandTarget()
     writeBrand(was, takeBrandOff(was, d, b))
-    if (d && b) setProgressBar(b.progress_bar)
-    // The end card it made goes back to a plain part
-    const endCard = b?.end_card ? useEditorStore.getState().segments.find(x => x.id === b.end_card) : undefined
-    if (endCard && endCard.layout === 'frame_brand_card' && !endCard.locked) {
-      applyLayout(endCard.id, 'vertical', getVideoAR(), neighbourFraming('vertical', endCard.start_ms, endCard.end_ms, endCard.id))
-    }
     setBrandOn(null)
   }
 
@@ -3097,10 +3221,14 @@ export function EditorShell({
   // The brand kit new text, its ready styles and caption looks come from (brand kit Phase 3): the one
   // on this clip, else the account's default one
   const styleKit = (brandOn ? brand.kits.find(k => k.id === brandOn.kit_id) : undefined) ?? brand.kits.find(k => k.data.is_default) ?? null
+  // (its words on the captions: the same kit — brandedWords above)
+  const styleWordsKey = JSON.stringify(styleKit?.data.words ?? null)
+  useEffect(() => { setCaptionBrandWords(styleKit?.data.words ?? null) }, [styleWordsKey]) // eslint-disable-line react-hooks/exhaustive-deps
   const BRAND_TEXT: Array<{ id: BrandTextKind; name: string; text: string }> = [
     { id: 'title', name: 'Title', text: 'Your title' },
     { id: 'subtitle', name: 'Subtitle', text: 'Your subtitle' },
-    { id: 'cta', name: 'Call to action', text: 'Follow for more' },
+    // (the kit's own main line, brand kit Phase 5)
+    { id: 'cta', name: 'Call to action', text: styleKit?.data.words?.lines[0] ?? 'Follow for more' },
   ]
   const brandTextStyles = styleKit ? BRAND_TEXT.map(x => ({ ...x, look: brandTextLook(brandTextStyle(styleKit.data, x.id)) })) : null
   /** The kit's title font on every text and frame text of this clip (locked ones stay): one undo step */
@@ -3145,9 +3273,12 @@ export function EditorShell({
     if (!on.applied) { setBrandOn({ ...on, applied: kitOn.data }); return }
     if (!brandChanged(on.applied, kitOn.data)) return
     const was = brandTarget()
-    writeBrand(was, updateBrand(was, on.applied, kitOn))
-    setBrandOn({ ...on, applied: kitOn.data })
-  }, [kitOn]) // eslint-disable-line react-hooks/exhaustive-deps
+    const r = updateBrand(was, on.applied, kitOn, on.before)
+    writeBrand(was, r.target)
+    setBrandOn({ ...on, before: r.before, applied: r.applied })
+    if (r.note) notifyLocked(r.note)
+    brandNeedsPieces(kitOn, r.applied)
+  }, [kitOn, trimmed]) // eslint-disable-line react-hooks/exhaustive-deps
 
   function askDeleteBrandKit(kit: BrandKit) {
     confirm({
@@ -3720,6 +3851,51 @@ export function EditorShell({
     // (no transition joins it to the main row any more)
     useMediaStore.setState({ transitions: media.transitions.filter(t => t.after_segment_id !== seg.id && next.segments.some(x => x.id === t.after_segment_id)) })
     pickShot(seg.id)
+  }
+  /**
+   * The main video's parts picked together, carried off the main row onto a row (as in Resolve, a
+   * selection dragged from V1 to V2): each lifts onto that row at its new start (liftToRow), keeping
+   * their places to each other; where they were is left empty. All on one row: the one let go over
+   * when they all fit there, else a new one (on top, or at the bottom under the main video). One step.
+   */
+  function liftParts(moves: { id: string; startMs: number }[], target: number | 'new' | 'new-below') {
+    if (!moves.length) return
+    if (trimmed) { trimsToPieces(); notifyLocked('The clip is ready to move its parts now — move them again'); return }
+    const segs = moves.map(mv => useEditorStore.getState().segments.find(x => x.id === mv.id))
+    if (segs.some(s => !s)) return
+    if (segs.some(s => s!.locked)) { notifyLocked('A part is locked — unlock it to move it'); return }
+    if (segs.some(s => isInsert(s!, mainVideoId))) { notifyLocked('A video put in the main row is among them — move it on its own'); return }
+    const why = segs.map(s => liftBlock(s!)).find(Boolean)
+    if (why) {
+      notifyLocked(why === 'speed' ? 'A part plays faster or slower — set it back to 1× to move them to another row'
+        : 'Only parts showing the video full screen can move to another row — set their format to Full first')
+      return
+    }
+    const spans = moves.map((mv, i) => {
+      const len = segs[i]!.end_ms - segs[i]!.start_ms
+      const at = Math.round(Math.max(0, Math.min(mv.startMs, MAX_CLIP_MS - len)))
+      return { id: mv.id, at, end: at + len }
+    })
+    const items = visualItems()
+    const fitAll = (t: number) => spans.every(sp => fitsOn(items, t, sp.at, sp.end))
+    const track = target === 'new-below' ? openRowBelow()
+      : target === 'new' ? newTopTrack(items)
+      : fitAll(target) ? target
+      : target < belowRowsRef.current ? openRowBelow() : newTopTrack(items)
+    const editor = useEditorStore.getState(), media = useMediaStore.getState()
+    let segments = editor.segments, keyframes = editor.keyframes
+    for (const sp of spans) {
+      const next = liftToRow(segments, keyframes, sp.id, sp.at, track, mainVideoId, piecesOn, rawClip.start_ms)
+      if (!next) return
+      segments = next.segments; keyframes = next.keyframes
+    }
+    pause()
+    skipCanvasTransitionRef.current = true
+    seekAfterInsertRef.current = Math.min(...spans.map(sp => sp.at))
+    editor.applyTrim(segments, keyframes, editor.trims, rangeAfterPieces(segments))
+    // (no transition joins them to the main row any more)
+    const gone = new Set(spans.map(sp => sp.id))
+    useMediaStore.setState({ transitions: media.transitions.filter(t => !gone.has(t.after_segment_id) && segments.some(x => x.id === t.after_segment_id)) })
   }
   /**
    * A video on a row dragged onto the main row: it goes in there (insertVideo), showing the same part
@@ -4364,6 +4540,92 @@ export function EditorShell({
     else setAudioTracks(prev => prev.map(t => (t.id === ref.id ? { ...t, track } : t)))
   }
   /**
+   * What's picked together carried (the timeline's group drag), once let go: each of `ids` on that
+   * kind of row goes `delta` rows (as Resolve moves a selection across tracks), and where anything else
+   * is on those rows there, rows open for them in place. One locked: they stay.
+   */
+  function moveGroupRows(ids: string[], delta: number, family: 'visual' | 'audio') {
+    const m = useMediaStore.getState()
+    const all: Array<TrackItem & { ref: TrackRef }> = family === 'audio'
+      ? m.audioTracks.filter(t => !isMainAudio(t)).map(t => ({ id: t.id, start_ms: t.start_ms, end_ms: songEndMs(t), track: t.track ?? 0, ref: { kind: 'music' as const, id: t.id } }))
+      : [
+          ...useEditorStore.getState().segments.filter(s => isShot(s, mainVideoId))
+            .map(s => ({ id: s.id, start_ms: s.start_ms, end_ms: s.end_ms, track: s.track ?? 0, ref: { kind: 'shot' as const, id: s.id } })),
+          ...m.overlays.filter(o => o.type === 'image' || (o.type === 'video' && o.source_video_id))
+            .map(o => ({ id: o.id, start_ms: o.start_ms, end_ms: o.end_ms, track: o.track ?? 0, ref: { kind: 'photo' as const, id: o.id } })),
+          ...m.textOverlays.map(o => ({ id: o.id, start_ms: o.start_ms, end_ms: o.end_ms, track: o.track ?? 0, ref: { kind: 'text' as const, id: o.id } })),
+        ]
+    const moving = all.filter(i => ids.includes(i.id))
+    if (!moving.length) return
+    const ctlOf = (r: TrackRef): CtlTarget => (r.kind === 'shot' ? { kind: 'broll', id: r.id } : { kind: r.kind, id: r.id })
+    if (moving.some(i => blocked(ctlOf(i.ref)))) return
+    const stay = all.filter(i => !ids.includes(i.id))
+    // (videos, photos and text carried under the bottom row: new rows open there for them, as for one
+    // thing let go under the lowest row)
+    const under = family === 'visual' ? Math.max(0, -Math.min(...moving.map(i => (i.track ?? 0) + delta))) : 0
+    if (family === 'audio' && moving.some(i => (i.track ?? 0) + delta < 0)) return
+    const clash = moving.some(i => {
+      const t = (i.track ?? 0) + delta
+      return stay.some(o => (o.track ?? 0) === t && o.start_ms < i.end_ms && o.end_ms > i.start_ms)
+    })
+    if (!delta && !clash) return
+    for (let k = 0; k < under; k++) openRowBelow()
+    const want = new Map(moving.map(i => [i.id, (i.track ?? 0) + delta + under]))
+    // Something else on the rows they land on there (as CapCut and Premiere do): rows open right there
+    // for them — carried up, just above what's there; down, just below it — the rest moving out of the
+    // way. Under the main video and above it separately, so none crosses over it
+    if (clash) {
+      const lift = delta >= 0 ? 1 : 0
+      const below = family === 'visual' ? belowRowsRef.current : 0
+      const ts = [...want.values()]
+      const low = ts.filter(t => t < below), high = ts.filter(t => t >= below)
+      const lowN = low.length ? Math.max(...low) - Math.min(...low) + 1 : 0
+      const highN = high.length ? Math.max(...high) - Math.min(...high) + 1 : 0
+      const lowAt = low.length ? Math.min(...low) + lift : 0, highAt = high.length ? Math.min(...high) + lift : 0
+      const ids = new Set(moving.map(i => i.id))
+      for (const o of family === 'audio'
+        ? useMediaStore.getState().audioTracks.filter(t => !isMainAudio(t) && !ids.has(t.id)).map(t => ({ ref: { kind: 'music' as const, id: t.id }, track: t.track ?? 0 }))
+        : visualItems().filter(i => !ids.has(i.id))) {
+        const t = o.track ?? 0
+        const by = (lowN && t >= lowAt ? lowN : 0) + (highN && t >= highAt ? highN : 0)
+        if (by) setTrackOf(o.ref, t + by)
+      }
+      // (the ones above the main video go up past the rows opened under it)
+      for (const [id, t] of want) want.set(id, t + lift + (lowN && t >= below ? lowN : 0))
+      if (lowN) { belowRowsRef.current += lowN; setBelowRows(n => n + lowN) }
+    }
+    for (const i of moving) setTrackOf(i.ref, want.get(i.id)!)
+    if (family === 'visual') tidyRowsBelow()
+  }
+  /**
+   * The main video's parts among what's picked, carried along with it: each placed exactly at its new
+   * start (placeInRow, as one part let go over empty room). All or none: one with no room there (another
+   * part of the main video in the way) and they all stay, with a note.
+   */
+  function moveGroupParts(moves: { id: string; startMs: number }[]) {
+    if (!moves.length) return
+    const editor = useEditorStore.getState(), media = useMediaStore.getState()
+    if (trimmed) { trimsToPieces(); notifyLocked('The clip is ready to move its parts now — move them again'); return }
+    if (media.audioTracks.some(isMainAudio)) { notifyLocked('The main video’s sound is detached: move its parts one at a time'); return }
+    if (moves.some(mv => editor.segments.find(x => x.id === mv.id)?.locked)) { notifyLocked('A part is locked — unlock it to move it'); return }
+    // (the one going furthest first: later ones then land where the earlier ones were)
+    const ahead = moves.map(mv => ({ ...mv, from: editor.segments.find(x => x.id === mv.id)?.start_ms ?? mv.startMs }))
+    const right = ahead.some(mv => mv.startMs > mv.from)
+    ahead.sort((a, b) => (right ? b.from - a.from : a.from - b.from))
+    let segs = editor.segments, kfs = editor.keyframes, pinnedYet = piecesOn
+    for (const mv of ahead) {
+      const next = placeInRow(segs, kfs, mv.id, mv.startMs, mainVideoId, pinnedYet, MAX_CLIP_MS)
+      if (next === null) continue
+      if (next === 'between') { notifyLocked('Another part of the main video is in the way there — the parts stay where they were'); return }
+      segs = next.segments; kfs = next.keyframes; pinnedYet = true
+    }
+    if (segs === editor.segments) return
+    pause()
+    skipCanvasTransitionRef.current = true
+    editor.applyTrim(segs, kfs, editor.trims, rangeAfterPieces(segs))
+    useMediaStore.setState({ transitions: media.transitions.filter(t => segs.some(x => x.id === t.after_segment_id)) })
+  }
+  /**
    * Something dragged to a track (`'new'`: a new track over the others, or under the music), or
    * moved in time on its own: it goes on that track when it has room there. Else, like CapCut, a
    * new track opens just above that one (the tracks above move up one); music takes the next audio
@@ -4902,6 +5164,7 @@ export function EditorShell({
    * whatever is still picked, most specific first. Each asks first (except music) and can be undone.
    */
   function deleteTarget(): { label: string; run: () => void } | null {
+    if (groupLive.length > 1) return { label: `the ${groupLive.length} selected items`, run: deleteGroup }
     const music = pickedMusicId ? audioTracks.find(t => t.id === pickedMusicId) : undefined
     const overlay = activeOverlayId ? overlays.find(o => o.id === activeOverlayId) : undefined
     const text = activeTextOverlayId ? textOverlays.find(o => o.id === activeTextOverlayId) : undefined
@@ -4924,9 +5187,39 @@ export function EditorShell({
     return options.frameItem || options.music || options.overlay || options.text || options.section || null
   }
 
-  const shortcutsRef = useRef({ togglePlay, seekToMs, currentTimeMs, clipDurationMs, trimSelectedTo, splitSelected, deleteSelected: () => {} })
+  /** What's picked together made one group (Ctrl+G): a click on any of it picks it all from now on */
+  function groupPicked() {
+    if (groupLive.length < 2) { notifyLocked('Pick two or more things on the timeline first (drag a box over them, or Ctrl + click)'); return }
+    useGroupStore.setState(st => ({ groups: joinGroup(st.groups, groupLive) }))
+    notifyLocked(`Grouped ${groupLive.length} items — they move together now (Alt + click picks one alone)`, 3200)
+  }
+  /** The groups of what's picked undone (Ctrl+Shift+G): each thing is on its own again */
+  function ungroupPicked() {
+    const ids = groupLive.length ? groupLive : selTarget?.id ? [selTarget.id] : []
+    if (!ids.some(id => groupOf(groups, id))) return
+    useGroupStore.setState(st => ({ groups: splitGroups(st.groups, ids) }))
+    notifyLocked('Ungrouped', 1800)
+  }
+  /** Everything picked together taken away, at once (one undo step: one burst of changes) */
+  function deleteGroup() {
+    for (const id of groupLive) {
+      if (brollShots.some(b => b.id === id)) removeBroll(id)
+      else if (overlays.some(o => o.id === id)) askDeleteOverlay(id)
+      else if (textOverlays.some(o => o.id === id)) askDeleteTextOverlay(id)
+      else if (audioTracks.some(t => t.id === id)) deleteMusic(id)
+    }
+    // The main video's parts last, the latest first (each leaves empty space, as Delete on one does)
+    const parts = segments.filter(s => groupLive.includes(s.id) && !brollShots.some(b => b.id === s.id)).sort((a, b) => b.start_ms - a.start_ms)
+    for (const p of parts) askDeleteFormat(p.id)
+    setGroupPick([])
+  }
+
+  const shortcutsRef = useRef({ togglePlay, seekToMs, currentTimeMs, clipDurationMs, trimSelectedTo, splitSelected, deleteSelected: () => {}, letGoGroup: (): boolean => false, groupPicked: () => {}, ungroupPicked: () => {} })
   shortcutsRef.current = {
     togglePlay, seekToMs, currentTimeMs, clipDurationMs, trimSelectedTo, splitSelected,
+    // (Esc lets go of what's picked together; false: nothing was)
+    letGoGroup: () => { if (!groupLive.length) return false; setGroupPick([]); return true },
+    groupPicked, ungroupPicked,
     // Delete acts on what's selected most specifically: a view change (◆), a text overlay, then an
     // image, then the format (an overlay only counts while it's on screen at the playhead, so a
     // stale selection can't be deleted by surprise)
@@ -4993,10 +5286,19 @@ export function EditorShell({
         if (e.key.toLowerCase() === 'y' || e.shiftKey) redo(); else undo()
         return
       }
+      // Ctrl/⌘+G groups what's picked on the timeline · Ctrl/⌘+Shift+G ungroups it (as in Premiere; Resolve's Link Clips)
+      if ((e.metaKey || e.ctrlKey) && !e.altKey && (e.key === 'g' || e.key === 'G')) {
+        if (isTextEntry(target)) return
+        e.preventDefault()
+        if (e.shiftKey) shortcutsRef.current.ungroupPicked(); else shortcutsRef.current.groupPicked()
+        return
+      }
       if (e.metaKey || e.ctrlKey || e.altKey) return
       if (target?.closest('input, textarea, select, [contenteditable="true"]')) return
       const s = shortcutsRef.current
-      if (e.code === 'Space') {
+      if (e.key === 'Escape') {
+        if (s.letGoGroup()) e.preventDefault()
+      } else if (e.code === 'Space') {
         // A focused button already handles Space itself
         if (target?.closest('button, a')) return
         e.preventDefault(); s.togglePlay()
@@ -5223,7 +5525,7 @@ export function EditorShell({
     document.addEventListener('pointerdown', onDown)
     return () => document.removeEventListener('pointerdown', onDown)
   }, [])
-  function pickSection(id: string | null, open = true) {
+  function pickSection(id: string | null, _open = true) {
     setPickedSegId(id)
     if (!id) return
     setActiveSegmentId(id)
@@ -5231,7 +5533,6 @@ export function EditorShell({
     // Its group must be open for the card to be there to scroll to
     const seg = segments.find(sg => sg.id === id)
     if (seg) setOpenGroups(prev => { const g = formatLayoutOf(seg.layout); return prev.has(g) ? prev : new Set(prev).add(g) })
-    if (open) openSettings('format')
   }
   useEffect(() => {
     if (tool !== 'format' || !pickedSegId) return
@@ -5646,7 +5947,56 @@ export function EditorShell({
     : selTarget.kind === 'frameItem' ? (pickedFrameItem?.kind === 'video' ? 'the picked video' : pickedFrameItem?.kind === 'photo' ? 'the picked photo' : 'the picked text')
       : selTarget.kind === 'photo' && overlays.find(o => o.id === selTarget.id)?.type === 'video' ? 'the picked video'
         : `the picked ${selTarget.kind}`
+  // (what's still there of what was picked together)
+  const groupLive = groupPick.filter(id => segments.some(s => s.id === id) || overlays.some(o => o.id === id)
+    || textOverlays.some(o => o.id === id) || audioTracks.some(t => t.id === id))
+  // Something picked on its own (here, on the preview, in a panel): the group lets go
+  useEffect(() => { if (selTarget?.id) setGroupPick(g => (g.length ? [] : g)) }, [selTarget?.id])
+  // A click anywhere outside the timeline lets go of what's picked together too (the timeline lets
+  // go itself on a click on an empty spot) — but not its toolbar (Delete, Group act on them), a menu
+  // or a dialog
+  const hasGroupPick = groupLive.length > 0
+  useEffect(() => {
+    if (!hasGroupPick) return
+    const down = (e: PointerEvent) => {
+      const el = e.target as Element | null
+      if (!el || timelineRef.current?.contains(el) || el.closest?.('.ed-transport, [role="menu"], [role="dialog"], [data-keep-selection]')) return
+      setGroupPick([])
+    }
+    window.addEventListener('pointerdown', down)
+    return () => window.removeEventListener('pointerdown', down)
+  }, [hasGroupPick])
 
+  // Previous section · play · next section, in the timeline's bar beside the clock (user, 2026-10-29: on the
+  // picture they covered the crop boxes; under it they took the video's height). Styles: .ed-transport .ed-player
+  const playControls = (
+    <div className="ed-player" data-playing={playing || undefined}>
+      <div />
+      <div className="flex items-center gap-1.5">
+        <button onClick={jumpPrevSection} aria-label="Go to the previous section" title="Previous section"
+          className="ed-tl-btn">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="5" y="5" width="2.4" height="14" rx="1" /><path d="M19 5.8v12.4a.8.8 0 01-1.2.7L9.5 12.7a.8.8 0 010-1.4l8.3-6.2a.8.8 0 011.2.7z" /></svg>
+        </button>
+        {/* Film-reel play button (styles: .ed-play in globals.css) */}
+        <button onClick={togglePlay} aria-label={playing ? 'Pause' : 'Play'} title={`${playing ? 'Pause' : 'Play'} (Space)`}
+          data-playing={playing || undefined}
+          className="ed-play w-10 h-10 flex items-center justify-center rounded-full shrink-0">
+          <PlayRing lengthMs={clipDurationMs} />
+          <span key={playing ? 'pause' : 'play'} className="ed-play-icon flex">
+            {playing
+              ? <svg width="13" height="13" viewBox="0 0 12 12" fill={ACCENT}><rect x="2" y="1.5" width="3" height="9" rx="1"/><rect x="7" y="1.5" width="3" height="9" rx="1"/></svg>
+              : <svg width="13" height="13" viewBox="0 0 12 12" fill={ACCENT}><path d="M3.5 1.5l7.5 4.5L3.5 10.5V1.5z"/></svg>
+            }
+          </span>
+        </button>
+        <button onClick={jumpNextSection} aria-label="Go to the next section" title="Next section"
+          className="ed-tl-btn">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="16.6" y="5" width="2.4" height="14" rx="1" /><path d="M5 5.8v12.4a.8.8 0 001.2.7l8.3-6.2a.8.8 0 000-1.4L6.2 5.1A.8.8 0 005 5.8z" /></svg>
+        </button>
+      </div>
+      <div />
+    </div>
+  )
   return (
     <div className="editor-theme h-screen flex flex-col overflow-hidden" style={{ background: 'var(--ed-app)', color: 'var(--ed-text)' }}>
 
@@ -5712,8 +6062,8 @@ export function EditorShell({
 
       {/* ── Body: [tools + options · player · preview] on top, the timeline full width below. Each
           area is a card of its own (.ed-card), with a gap round and between them ── */}
-      <div className="flex flex-col flex-1 min-h-0 overflow-hidden p-2">
-      <div className="flex flex-1 min-h-0 overflow-hidden">
+      <div className="ed-body flex flex-col flex-1 min-h-0 overflow-hidden p-2">
+      <div className="ed-top flex flex-1 min-h-0 overflow-hidden">
 
         {/* Tool rail: always there, down the left (open or closed, the options panel sits beside it) */}
         <ToolRail tool={tool} open={optionsOpen}
@@ -5825,10 +6175,6 @@ export function EditorShell({
                     const shown = formatLayoutOf(seg.layout)
                     const col = LAYOUT_COLORS[shown]
                     const isActiveSeg = seg.id === activeSegment?.id
-                    const only = cropPositions.length === 1
-                    // Deleting a section cuts that part of the video out (askDeleteFormat); only the whole clip is reset instead
-                    const deleteLabel = isInsert(seg, mainVideoId) ? 'Remove this inserted video (the rest moves back)' : !cutOk ? (only ? 'Reset this format to Vertical' : `Reset format ${i + 1} to Vertical`)
-                      : clipLengthMs - (seg.end_ms - seg.start_ms) < MIN_CLIP_LEFT_MS ? 'Reset this format to Vertical' : `Delete this part of the video (${msToLabel(seg.start_ms)}–${msToLabel(seg.end_ms)})`
                     const name = LAYOUTS.find(l => l.id === shown)?.label ?? shown
                     const all = itemsBySection.get(seg.id) ?? []
                     const items = sectionFilter === 'all' ? all : all.filter(x => x.kind === sectionFilter)
@@ -5864,7 +6210,7 @@ export function EditorShell({
                                 {msToLabel(seg.start_ms)} – {msToLabel(seg.end_ms)}
                               </span>
                             </div>
-                            {/* Line 2: length and what's in it · lock · delete */}
+                            {/* Line 2: length and what's in it (lock, delete, show and sound are on the timeline: user, 2026-10-29) */}
                             <div className="flex items-center gap-1 min-w-0 h-6">
                               <span className="flex-1 min-w-0 truncate text-[11px]" style={{ color: 'rgb(var(--ed-fg) / 0.42)' }}>
                                 {[lengthLabel(seg.end_ms - seg.start_ms), ...SECTION_KINDS.flatMap(k => {
@@ -5872,16 +6218,6 @@ export function EditorShell({
                                   return c ? [`${c} ${(c === 1 ? k.one : k.plural).toLowerCase()}`] : []
                                 })].join(' · ')}
                               </span>
-                              <span className={`shrink-0 flex items-center transition-opacity ${isActiveSeg || seg.locked ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 focus-within:opacity-100'}`}>
-                                <CtlButtons size="sm" state={seg} can={['locked']} onToggle={k => toggleCtl({ kind: 'section', id: seg.id }, k)}
-                                  what={name.toLowerCase() === 'video' ? 'this video section' : 'this section'} />
-                              </span>
-                              <button onClick={e => { e.stopPropagation(); askDeleteFormat(seg.id) }}
-                                aria-label={deleteLabel} title={`${deleteLabel} (Delete)`}
-                                className={`shrink-0 w-[22px] h-[22px] flex items-center justify-center rounded-md transition-[opacity,background,color] hover:bg-[rgba(239,68,68,0.12)] hover:text-[#f87171] ${isActiveSeg ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 focus:opacity-100'}`}
-                                style={{ color: 'rgb(var(--ed-fg) / 0.5)' }}>
-                                <TrashIcon />
-                              </button>
                             </div>
                           </div>
                           {/* What's in this section: open / close its list */}
@@ -5911,8 +6247,6 @@ export function EditorShell({
                                     Main video
                                   </span>
                                 </button>
-                                <CtlButtons size="sm" state={ctlState({ kind: 'section', id: seg.id })} can={isFrameLayout(seg.layout) ? ['muted'] : ['hidden', 'muted']}
-                                  onToggle={k => { if (!blocked({ kind: 'section', id: seg.id })) toggleCtl({ kind: 'section', id: seg.id }, k) }} what="the main video here" />
                               </div>
                             )}
                             {items.length === 0 ? (
@@ -5936,7 +6270,6 @@ export function EditorShell({
                                   <span className="flex-1 min-w-0 truncate text-[11.5px] font-medium text-[var(--ed-text)]">{it.name}</span>
                                   <span className="shrink-0 text-[10px] tabular-nums opacity-0 group-hover/row:opacity-100 transition-opacity" style={{ color: 'rgb(var(--ed-fg) / 0.42)' }}>{msToLabel(it.start)}–{msToLabel(it.end)}</span>
                                 </button>
-                                {it.ctl && <CtlButtons size="sm" state={st} can={it.ctl.kind === 'broll' ? ['hidden', 'muted'] : canCtl(it.ctl)} onToggle={key => toggleCtl(it.ctl!, key)} what={`this ${k.one.toLowerCase()}`} />}
                                 </div>
                               )
                             })}
@@ -6322,7 +6655,7 @@ export function EditorShell({
                 onSelect={pickText}
                 onUpdate={(id, patch) => { if (!blocked({ kind: 'text', id })) updateTextOverlay(id, patch) }}
                 onRemove={askDeleteTextOverlay}
-                brand={styleKit && brandTextStyles ? { name: styleKit.name, styles: brandTextStyles, onFontAll: styleKit.data.title.font ? brandFontOnAll : undefined } : null}
+                brand={styleKit && brandTextStyles ? { name: styleKit.name, styles: brandTextStyles, lines: styleKit.data.words?.lines ?? [], onFontAll: styleKit.data.title.font ? brandFontOnAll : undefined } : null}
               />
               </>
             )}
@@ -6332,16 +6665,16 @@ export function EditorShell({
         </aside>
 
         {/* The player: format bar, the video, play controls */}
-        <main data-layout-panel="Video view" className="ed-card relative flex flex-col flex-1 min-w-0 min-h-0">
+        <main data-layout-panel="Video view" className="ed-card ed-video relative flex flex-col flex-1 min-w-0 min-h-0">
           {/* Brand kit: its workshop in the video's place (the video stays underneath: the Preview plays from it) */}
           {/* (not tied to the options sidebar: closing that leaves the workshop open — user, 2026-10-20) */}
           {tool === 'brand' && kitStudio && (
             <div className="absolute inset-0 overflow-hidden" style={{ zIndex: 30, borderRadius: 'inherit', background: 'var(--ed-panel)' }}>
-              <BrandKitStudio brand={brand} onKitId={brandOn?.kit_id ?? null} onTurnOn={turnBrandOn} onTurnOff={turnBrandOff} onClose={() => setKitStudio(false)} />
+              <BrandKitStudio brand={brand} onKitId={brandOn?.kit_id ?? null} onTurnOn={turnBrandOn} onTurnOff={turnBrandOff} onClose={closeKitStudio} />
             </div>
           )}
-          {/* Canvas toolbar: two docks, centred — Layout (a segmented switch with a sliding lime
-              highlight) and Tools (Split · Motion · Delete). Styles: .ed-dock* in globals.css */}
+          {/* Canvas toolbar, centred: the layouts as one sliding switch, then the Motion button.
+              Styles: .ed-fmt* and .ed-motion* at the end of globals.css */}
           <div className="ed-canvas-bar shrink-0 flex items-center justify-center gap-3 px-4" style={{ minHeight: 60, borderBottom: '1px solid rgb(var(--ed-fg) / 0.06)' }}>
             {/* (in the empty space a deleted part left: nothing here — no layout to pick) */}
             {!inGap && <>
@@ -6350,36 +6683,26 @@ export function EditorShell({
               play={formatPlay}
               onPick={id => { setFormatPlay(p => ({ id, n: (p?.n ?? 0) + 1 })); if (tool === 'subjects' && pickForScene(id)) return; handleLayoutChange(id, 'fromPlayhead') }}
             />
-            {/* Where a layout picked now goes: from the playhead to the end of this section */}
-            {frameTarget && (
-              <span className="ed-applies flex flex-col leading-tight text-[10px] tabular-nums whitespace-nowrap" style={{ color: 'rgb(var(--ed-fg) / 0.45)' }}
-                title="Pick a layout: it starts here and runs to the end of this section">
-                <span className="uppercase tracking-wider font-semibold" style={{ color: 'rgb(var(--ed-fg) / 0.35)' }}>Applies</span>
-                {frameTarget}
-              </span>
-            )}
             </>}
 
-            <div className="ed-dock" role="toolbar" aria-label="Tools">
-              <button
-                onClick={() => setMotionMode(m => !m)}
-                aria-pressed={motionMode}
-                title={motionMode
-                  ? 'Motion is on: drag the view while the video plays and it follows your hand smoothly'
-                  : 'Motion is off: moving the view changes it from the playhead on (a cut). Turn on to record a smooth follow while the video plays'}
-                className="ed-press ed-dock-btn select-none" data-rec={motionMode || undefined}
-              >
-                <span key={motionMode ? 'on' : 'off'} className={motionMode ? 'ed-rec ed-rec-on' : 'ed-rec'} style={{
-                  display: 'inline-block', width: 8, height: 8, borderRadius: '50%',
-                  background: motionMode ? '#ef4444' : 'rgb(var(--ed-fg) / 0.35)',
-                }} />
-                <span className="ed-dock-label">{motionMode ? 'Recording motion' : 'Motion'}</span>
-              </button>
-            </div>
+            {/* Motion: a button beside the layouts — a dot that goes red while it records (styles: .ed-motion) */}
+            <button
+              onClick={() => setMotionMode(m => !m)}
+              aria-pressed={motionMode}
+              title={motionMode
+                ? 'Motion is on: drag the view while the video plays and it follows your hand smoothly'
+                : 'Motion is off: moving the view changes it from the playhead on (a cut). Turn on to record a smooth follow while the video plays'}
+              className="ed-motion select-none" data-on={motionMode || undefined}
+            >
+              <span className="ed-motion-dot" aria-hidden="true" />
+              {motionMode ? 'Recording motion' : 'Motion'}
+            </button>
           </div>
 
-          <div className="relative flex-1 min-h-0" style={{ background: 'var(--ed-canvas)' }}>
-            <div className="absolute flex flex-col rounded-xl overflow-hidden" style={{ inset: 8, border: '1px solid rgb(var(--ed-fg) / 0.1)' }}>
+          {/* (behind the stage and the play bar together) */}
+          <AmbientGlow videoRef={videoRef} />
+          <div className="ed-stage relative flex-1 min-h-0" style={{ background: 'var(--ed-canvas)' }}>
+            <div className="ed-stage-box absolute flex flex-col rounded-xl overflow-hidden" style={{ inset: 8, border: '1px solid rgb(var(--ed-fg) / 0.1)' }}>
               <VideoPreview live segmentAt={viewAt} overlaySource={brollSource} mainVideoId={mainVideoId}
                 videoRef={videoRef} videoUrl={clipVideoUrl} currentTimeMs={currentTimeMs}
                 activeSegment={viewSegment} getPositionAt={viewGetPositionAt}
@@ -6402,39 +6725,6 @@ export function EditorShell({
             </div>
           </div>
 
-          {/* Under the player: the time, and previous section · play · next section */}
-          <div className="ed-player shrink-0 grid items-center gap-2 px-3" style={{ gridTemplateColumns: 'minmax(0,1fr) auto minmax(0,1fr)', height: 52, borderTop: '1px solid rgb(var(--ed-fg) / 0.06)', background: 'var(--ed-panel)' }}>
-            <div className="justify-self-start min-w-0">
-              <span className="ed-transport-time shrink-0 whitespace-nowrap text-[11px] tabular-nums" aria-label={`${msToClock(currentTimeMs)} of ${msToClock(clipDurationMs)}`}>
-                <span className="font-semibold" style={{ color: 'rgb(var(--ed-fg) / 0.85)' }}><LiveTime /></span>
-                <span className="ed-transport-total" style={{ color: 'rgb(var(--ed-fg) / 0.38)' }}> / {msToLabel(clipDurationMs)}</span>
-              </span>
-            </div>
-            {/* Centre: previous section · play · next section (the play button sits exactly in the middle) */}
-            <div className="flex items-center gap-1.5">
-              <button onClick={jumpPrevSection} aria-label="Go to the previous section" title="Previous section"
-                className="ed-tl-btn">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="5" y="5" width="2.4" height="14" rx="1" /><path d="M19 5.8v12.4a.8.8 0 01-1.2.7L9.5 12.7a.8.8 0 010-1.4l8.3-6.2a.8.8 0 011.2.7z" /></svg>
-              </button>
-              {/* Film-reel play button (styles: .ed-play in globals.css) */}
-              <button onClick={togglePlay} aria-label={playing ? 'Pause' : 'Play'} title={`${playing ? 'Pause' : 'Play'} (Space)`}
-                data-playing={playing || undefined}
-                className="ed-play w-10 h-10 flex items-center justify-center rounded-full shrink-0">
-                <span key={playing ? 'pause' : 'play'} className="ed-play-icon flex">
-                  {playing
-                    ? <svg width="13" height="13" viewBox="0 0 12 12" fill={ACCENT}><rect x="2" y="1.5" width="3" height="9" rx="1"/><rect x="7" y="1.5" width="3" height="9" rx="1"/></svg>
-                    : <svg width="13" height="13" viewBox="0 0 12 12" fill={ACCENT}><path d="M3.5 1.5l7.5 4.5L3.5 10.5V1.5z"/></svg>
-                  }
-                </span>
-              </button>
-              <button onClick={jumpNextSection} aria-label="Go to the next section" title="Next section"
-                className="ed-tl-btn">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="16.6" y="5" width="2.4" height="14" rx="1" /><path d="M5 5.8v12.4a.8.8 0 001.2.7l8.3-6.2a.8.8 0 000-1.4L6.2 5.1A.8.8 0 005 5.8z" /></svg>
-              </button>
-            </div>
-
-            <div />
-          </div>
         </main>
 
         {/* Right column: 9:16 output preview, always visible */}
@@ -6463,16 +6753,34 @@ export function EditorShell({
               onPointerDown={e => startColumnResize(e, 'preview')} onDoubleClick={() => resetColumn('preview')} />
           )}
           <div className="ed-preview-inner flex flex-col min-h-0 h-full" style={{ width: previewW }}>
-          <div className="shrink-0 px-4 flex items-center justify-between" style={{ height: 48, borderBottom: '1px solid rgb(var(--ed-fg) / 0.06)' }}>
-            <span className="flex items-center gap-1">
+          {/* One row (user, 2026-10-29: more room for the phone): close · how it looks inside each app · Export */}
+          <div className="ed-pv-head shrink-0 px-3 flex items-center gap-2" style={{ height: 52, borderBottom: '1px solid rgb(var(--ed-fg) / 0.06)' }}>
+            <span className="flex items-center shrink-0">
               {/* one chevron: sends the preview off to the right (styles: .ed-fold) */}
               <button onClick={() => togglePreview(false)} aria-label="Close the preview" title="Close the preview (more room to edit)"
-                className="ed-fold -ml-1 mr-1" data-dir="right">
+                className="ed-fold" data-dir="right">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path className="fold-arrow" d="M9.5 6.5L15 12l-5.5 5.5" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" /></svg>
               </button>
-              <span className="text-sm font-semibold text-[var(--ed-text)]">Preview</span>
+              <span className="sr-only">Preview</span>
             </span>
-            <div className="flex items-center gap-1.5">
+            {/* (short names — Off, Reels, Shorts; only their icons when the column is narrow) */}
+          <div role="radiogroup" aria-label="Show preview as" className="ed-pv-views flex-1 min-w-0 grid grid-cols-3 gap-0.5 p-[3px] rounded-full">
+            {PLATFORM_OPTIONS.map(({ id, label, icon }) => {
+              const on = platform === id
+              return (
+                <button key={id} role="radio" aria-checked={on} onClick={() => setPlatform(id)}
+                  aria-label={id === 'off' ? 'Plain preview' : `${PLATFORM_SAFE[id].name} ${label}`}
+                  title={id === 'off' ? 'Plain preview' : `See how it looks on ${PLATFORM_SAFE[id].name}`}
+                  className="ed-pv-view flex items-center justify-center gap-1.5 h-7 min-w-0 px-1.5 rounded-full text-xs font-medium" data-on={on || undefined}>
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    {icon}
+                  </svg>
+                  <span className="truncate">{label}</span>
+                </button>
+              )
+            })}
+          </div>
+            <div className="flex items-center gap-1.5 shrink-0">
               {rendering ? (
                 // While the reel renders, the Export button stays and keeps playing its download
                 // animation on a loop (.ed-export[data-busy] in globals.css) until it's done
@@ -6515,38 +6823,20 @@ export function EditorShell({
             </div>
           </div>
 
-          {/* How the reel looks inside each app */}
-          <div className="shrink-0 px-4 pt-3">
-            <div role="radiogroup" aria-label="Show preview as" className="grid grid-cols-3 gap-1 p-1 rounded-xl"
-              style={{ background: 'rgb(var(--ed-fg) / 0.04)', border: '1px solid rgb(var(--ed-fg) / 0.07)' }}>
-              {PLATFORM_OPTIONS.map(({ id, label, icon }) => {
-                const on = platform === id
-                return (
-                  <button key={id} role="radio" aria-checked={on} onClick={() => setPlatform(id)}
-                    title={id === 'off' ? 'Plain preview' : `See how it looks on ${PLATFORM_SAFE[id].name}`}
-                    className="flex items-center justify-center gap-1.5 h-8 rounded-lg text-xs font-medium transition-colors"
-                    style={on
-                      ? { background: 'rgb(var(--ed-fg) / 0.12)', color: 'var(--ed-text)', boxShadow: 'inset 0 0 0 1px rgb(var(--ed-fg) / 0.1)' }
-                      : { color: 'rgb(var(--ed-fg) / 0.5)' }}>
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"
-                      style={{ color: on && id !== 'off' ? 'var(--ed-accent-text)' : undefined }}>
-                      {icon}
-                    </svg>
-                    {label}
-                  </button>
-                )
-              })}
-            </div>
-          </div>
-
           {/* Preview fills the column: as wide as it can be while the full 9:16 frame fits the height */}
-          <div className="flex-1 min-h-0 p-3 overflow-hidden">
-            <div ref={fullViewRef} className="h-full w-full flex justify-center" data-full-view={fullView || undefined}
+          <div className="flex-1 min-h-0 px-2 py-1.5 overflow-hidden">
+            <AmbientGlow videoRef={videoRef} />
+            <div ref={fullViewRef} className="ed-pv-box h-full w-full flex justify-center" data-full-view={fullView || undefined}
               style={fullView
                 ? { containerType: 'size', alignItems: 'center', background: '#000', padding: '24px 24px 84px', boxSizing: 'border-box',
                     ...(fullViewFallback ? { position: 'fixed', inset: 0, zIndex: 200, width: '100vw', height: '100vh' } : {}) }
                 : { containerType: 'size', alignItems: 'flex-start' }}>
-            <div style={{ width: 'min(100cqw, calc(100cqh * 9 / 16))' }}>
+            {/* Not in full view: inside a phone — its status bar, the 9:16 video, its home bar (styles: .ed-phone*).
+                Everything on it is in proportion to its width (--pw), as tall as 1.86 widths: it always fits the panel */}
+            <div className={fullView ? undefined : 'ed-phone'}
+              style={fullView ? { width: 'min(100cqw, calc(100cqh * 9 / 16))' } : { ['--pw' as string]: 'min(100cqw, calc(100cqh / 1.86))', width: 'var(--pw)' }}>
+              <div className={fullView ? undefined : 'ed-phone-screen'}>
+              {!fullView && <PhoneStatusBar />}
               <div className="relative">
               {rendering ? (
                 <div className="flex flex-col items-center justify-center gap-4 rounded-xl" style={{ aspectRatio: '9/16', background: 'var(--ed-app)', border: '1px solid rgb(var(--ed-fg) / 0.08)' }}>
@@ -6609,6 +6899,18 @@ export function EditorShell({
                 />
               )}
               {!rendering && <PlatformOverlay platform={platform} />}
+              {/* Full view: in the preview video's own bottom-right corner */}
+              {!fullView && !rendering && (
+                <button onClick={openFullView} aria-label="Full view: see the preview big" title="Full view (Esc to leave)"
+                  className="ed-fullview-btn absolute w-8 h-8 flex items-center justify-center rounded-lg transition-colors hover:bg-black/80"
+                  style={{ right: 10, bottom: 10, zIndex: 20, color: '#fff', background: 'rgba(0,0,0,0.6)', border: '1px solid rgba(255,255,255,0.14)', backdropFilter: 'blur(4px)' }}>
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" />
+                  </svg>
+                </button>
+              )}
+              </div>
+              {!fullView && <div className="ed-phone-home" aria-hidden="true"><i /></div>}
               </div>
             </div>
             {fullView && (
@@ -6616,16 +6918,6 @@ export function EditorShell({
             )}
             </div>
           </div>
-          {/* Full view: in the preview box's bottom-right corner */}
-          {!fullView && (
-            <button onClick={openFullView} aria-label="Full view: see the preview big" title="Full view (Esc to leave)"
-              className="absolute w-8 h-8 flex items-center justify-center rounded-lg transition-colors hover:bg-black/80"
-              style={{ right: 12, bottom: 12, zIndex: 20, color: '#fff', background: 'rgba(0,0,0,0.6)', border: '1px solid rgba(255,255,255,0.14)', backdropFilter: 'blur(4px)' }}>
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                <path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" />
-              </svg>
-            </button>
-          )}
 
           </div>
         </aside>
@@ -6633,7 +6925,7 @@ export function EditorShell({
 
       {/* The line between the video and the play bar: drag to resize (double-click resets) */}
       {!timelineHidden && (
-        <div className="relative shrink-0" style={{ height: 0, zIndex: 30, transform: 'translateY(4px)' }}>
+        <div className="ed-row-wrap relative shrink-0" style={{ height: 0, zIndex: 30, transform: 'translateY(4px)' }}>
           <div role="separator" aria-orientation="horizontal" aria-label="Drag to resize the video and the timeline. Double-click to reset."
             title="Drag to resize · double-click to reset" className="ed-row-handle" data-on={resizing === 'timeline' || undefined}
             onPointerDown={startTimelineResize} onDoubleClick={resetTimelineHeight} />
@@ -6642,7 +6934,7 @@ export function EditorShell({
       {/* The editing panel: its bar and the timeline, one card. Nothing is clipped at its edges
           (overflow visible): the bar's "Reset all edits?" box and its labels open above it — the
           bar and the timeline round their own corners instead */}
-      <div className="ed-card shrink-0 flex flex-col" style={{ marginTop: 8, overflow: 'visible' }}>
+      <div className="ed-card ed-dockpanel shrink-0 flex flex-col" style={{ marginTop: 8, overflow: 'visible' }}>
       {/* The timeline's own bar, full width: trim · delete · hide / mute / lock · reset … undo / redo · zoom */}
       <div className="ed-transport shrink-0 flex items-center gap-2 px-3"
         style={{ height: 46, background: 'var(--ed-panel)', borderRadius: timelineHidden ? 11 : '11px 11px 0 0' }}>
@@ -6701,6 +6993,24 @@ export function EditorShell({
                 </button>
                   )
                 })()}
+                {/* Group / Ungroup what's picked on the timeline (as Resolve's Link Clips): shown while there's something to do */}
+                {(() => {
+                  const picked = groupLive.length ? groupLive : selTarget?.id ? [selTarget.id] : []
+                  const made = picked.length ? groupOf(groups, picked[0]) : null
+                  // (what's picked is exactly one group made before: Ungroup; else, two or more picked: Group)
+                  const ungroup = !!made && picked.length === made.length && picked.every(id => made.includes(id))
+                  if (!ungroup && groupLive.length < 2) return null
+                  return (
+                    <button onClick={ungroup ? ungroupPicked : groupPicked} className="ed-tl-btn" data-active={ungroup || undefined}
+                      aria-label={ungroup ? 'Ungroup' : `Group the ${groupLive.length} picked items`}
+                      title={ungroup ? 'Ungroup: each one on its own again (Ctrl+Shift+G)' : `Group the ${groupLive.length} picked items: they move together from now on (Ctrl+G)`}>
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                        <path d="M10 13a5 5 0 007.5.5l3-3a5 5 0 00-7-7l-1.7 1.7" /><path d="M14 11a5 5 0 00-7.5-.5l-3 3a5 5 0 007 7l1.7-1.7" />
+                        {ungroup && <path d="M4 4l16 16" />}
+                      </svg>
+                    </button>
+                  )
+                })()}
                 {/* Detach audio: the main video's sound onto its own Music bar */}
                 <button onClick={detachAudio}
                   aria-label={hasMainAudio ? 'Select the detached original sound' : 'Detach the audio from the main video'}
@@ -6719,7 +7029,8 @@ export function EditorShell({
         <span className="ed-tl-sep" aria-hidden="true" />
         <UndoRedo />
         <div className="flex-1" />
-        {/* Where the playhead is, and how long the clip is (as in CapCut) */}
+        {playControls}
+        {/* Where the playhead is, and how long the clip is — the one clock (user, 2026-10-28: here, not under the video) */}
         <ClipClock lengthMs={clipLengthMs} />
         <div className="flex-1" />
         <div className="ml-auto shrink-0 flex items-center gap-1">
@@ -6761,8 +7072,9 @@ export function EditorShell({
       {/* Timeline (hidden with "Hide timeline") */}
       {/* (it doesn't scroll as a whole: the ruler and the main video stay, the tracks under them scroll) */}
       <div ref={timelineRef} data-tour="timeline" data-layout-panel="Editing panel" hidden={timelineHidden} className="shrink-0 flex flex-col overflow-hidden px-4 pt-3 pb-4"
-        style={{ ...(timelineH != null ? { height: timelineH } : { maxHeight: TIMELINE_MAX_H }), background: 'var(--ed-track)', borderTop: '1px solid rgb(var(--ed-fg) / 0.06)', borderRadius: '0 0 11px 11px' }}>
+        style={{ ...(timelineH != null ? { height: timelineH } : timelineBaseH != null ? { height: timelineBaseH + TIMELINE_PAD_Y } : { maxHeight: TIMELINE_MAX_H }), background: 'var(--ed-track)', borderTop: '1px solid rgb(var(--ed-fg) / 0.06)', borderRadius: '0 0 11px 11px' }}>
         <Timeline
+          onBaseHeight={setTimelineBaseH}
           selectedMusicId={pickedMusicId} onSelectMusic={id => pickMusicTrack(id, doubleTap(`m${id}`))}
           photos={overlays.filter(o => o.type === 'image' || (o.type === 'video' && o.source_video_id)).map(o => ({
             id: o.id, start_ms: o.start_ms, end_ms: o.end_ms, url: o.preview_url, hidden: o.hidden, locked: isLocked({ kind: 'photo', id: o.id }), track: o.track, full: o.x <= 0.001 && o.y <= 0.001 && o.w >= 0.999 && o.h >= 0.999,
@@ -6816,6 +7128,8 @@ export function EditorShell({
           // (parts can be cut: an edge trims the video itself, as in InShot)
           onEdgeTrim={cutOk ? trimByEdgeLive : undefined}
           pickedSegmentId={pickedSegId}
+          groupSel={groupLive} onGroupSel={setGroupPick}
+          groups={groups} onGroup={groupPicked} onUngroup={ungroupPicked} onGroupRows={moveGroupRows} onGroupParts={moveGroupParts} onGroupPartsToRow={liftParts}
           onPickSegment={id => (!id ? clearPicksRef.current() : shots.some(x => x.id === id) ? pickShot(id, doubleTap(`s${id}`)) : pickSection(id, doubleTap(`s${id}`)))}
           textOverlays={textOverlays.map(o => o.locked || !isLocked({ kind: 'text', id: o.id }) ? o : { ...o, locked: true })} activeTextOverlayId={activeTextOverlayId}
           onSelectTextOverlay={id => { if (id) pickText(id, doubleTap(`t${id}`)); else setActiveTextOverlayId(null) }}
@@ -7048,6 +7362,12 @@ function withCaptionParts<L extends object>(layers: L | null, parts: CaptionPart
   return { ...(layers ?? { v: 1 as const, rows: [], cut: [], parts: [] }), captionParts: parts } as L & { captionParts: CaptionPart[] }
 }
 
+/** The timeline's groups saved beside the rows (clips.layers.groups: groups.ts); none: left out */
+function withGroupsSaved<L extends object>(layers: L | null, groups: Groups): L | { v: 1; rows: string[]; cut: never[]; parts: string[]; groups: Groups } | null {
+  if (!groups.length) return layers
+  return { ...(layers ?? { v: 1 as const, rows: [], cut: [], parts: [] }), groups } as L & { groups: Groups }
+}
+
 function withLanes<L extends object>(layers: L | null, items: Array<{ id: string; track?: number }>, below = 0): L | { v: 1; rows: string[]; cut: never[]; parts: string[]; lanes: Record<string, number>; below?: number } | null {
   const lanes: Record<string, number> = {}
   for (const x of items) if (x.track != null) lanes[x.id] = x.track
@@ -7084,24 +7404,21 @@ function CaptionSelectBar({ lines, styles, onClear, onFromHere, onAll, onOneStyl
   onOneStyle: () => void
 }) {
   const n = lines.length
+  // (user, 2026-10-29) no card: a row like Language above it — what's selected on the left, the quick
+  // selections on the right; the how-to moved into the label's tooltip
   return (
-    <div className="cap-apply">
-      <div className="flex items-center gap-2">
-        <span className="cap-apply-dot" data-on={n > 0 || undefined} aria-hidden="true" />
-        <span className="cap-apply-title flex-1">
-          {n === 0 ? 'Styling all captions' : `Styling ${n} caption line${n > 1 ? 's' : ''}`}
-          {n > 0 && <span className="cap-apply-when"> · {msToLabel(lines[0].start)}–{msToLabel(lines[n - 1].end)}</span>}
-        </span>
-        {n > 0 && <button type="button" className="cap-apply-link" onClick={onClear}>Clear</button>}
-      </div>
-      <span className="cap-apply-note">
-        {n === 0 ? 'To style just some captions, click their lines on the Captions row of the timeline (Shift-click or drag for more).'
-          : 'The style you pick below goes on these lines only.'}
+    <div className="cap-row cap-apply-row">
+      <span className="cap-label min-w-0 truncate"
+        title={n === 0 ? 'Styles go on every caption. To style just some, click their lines on the Captions row of the timeline (Shift-click or drag for more).'
+          : 'The style you pick below goes on these lines only.'}>
+        {n === 0 ? 'Select' : `${n} line${n > 1 ? 's' : ''}`}
+        {n > 0 && <span className="cap-apply-when"> · {msToLabel(lines[0].start)}–{msToLabel(lines[n - 1].end)}</span>}
       </span>
-      <div className="flex flex-wrap gap-1.5">
-        <button type="button" className="cap-apply-chip" onClick={onFromHere} title="Select every caption line from the playhead to the end">Select from playhead</button>
-        <button type="button" className="cap-apply-chip" onClick={onAll} title="Select every caption line">Select all</button>
-        {styles > 1 && <button type="button" className="cap-apply-chip" onClick={onOneStyle} title="Use the first line's style for every caption">Use one style ({styles} now)</button>}
+      <div className="flex flex-wrap justify-end gap-1.5">
+        {n > 0 && <button type="button" className="cap-apply-chip" onClick={onClear} title="Style every caption again">Clear</button>}
+        <button type="button" className="cap-apply-chip" onClick={onFromHere} title="Select every caption line from the playhead to the end">From playhead</button>
+        <button type="button" className="cap-apply-chip" onClick={onAll} title="Select every caption line">All</button>
+        {styles > 1 && <button type="button" className="cap-apply-chip" onClick={onOneStyle} title="Use the first line's style for every caption">One style ({styles})</button>}
       </div>
     </div>
   )
@@ -7154,8 +7471,9 @@ function SkipFiveIcon({ dir }: { dir: 'back' | 'forward' }) {
 
 /** Tiny 9:16 frame showing how a format divides the reel */
 /**
- * Layout switch for the section under the playhead: a dock of the four formats with a lime highlight
- * that slides to the picked one (measured from the buttons, so it fits any label length or language).
+ * Layout switch for the section under the playhead: the four formats in one track, a knob sliding to the
+ * picked one (measured from the options, so it fits any label length or language); each shows its phone
+ * icon and name. Styles: .ed-fmt* in globals.css.
  */
 function FormatSwitcher({ activeId, play, onPick }: {
   activeId: LayoutType | null
@@ -7163,33 +7481,28 @@ function FormatSwitcher({ activeId, play, onPick }: {
   onPick: (id: LayoutType) => void
 }) {
   const btns = useRef(new Map<LayoutType, HTMLButtonElement>())
-  const [box, setBox] = useState<{ left: number; width: number } | null>(null)
+  const [knob, setKnob] = useState<{ left: number; width: number } | null>(null)
   useLayoutEffect(() => {
     const measure = () => {
       const el = activeId ? btns.current.get(activeId) : null
-      setBox(el ? { left: el.offsetLeft, width: el.offsetWidth } : null)
+      setKnob(el ? { left: el.offsetLeft, width: el.offsetWidth } : null)
     }
     measure()
     const ro = new ResizeObserver(measure)
     for (const el of btns.current.values()) ro.observe(el)
-    window.addEventListener('resize', measure)
-    return () => { ro.disconnect(); window.removeEventListener('resize', measure) }
+    return () => ro.disconnect()
   }, [activeId])
-
   return (
-    <div role="radiogroup" aria-label="Layout" data-tour="formats" className="ed-dock relative">
-      {box && <span className="ed-dock-glider" style={{ left: box.left, width: box.width }} aria-hidden="true" />}
+    <div role="radiogroup" aria-label="Layout" data-tour="formats" className="ed-fmt">
+      {knob && <span className="ed-fmt-knob" style={{ left: knob.left, width: knob.width }} aria-hidden="true" />}
       {LAYOUTS.map(l => {
         const on = activeId === l.id
         return (
-          <button key={l.id} role="radio" aria-checked={on}
+          <button key={l.id} role="radio" aria-checked={on} onClick={() => onPick(l.id)}
             ref={el => { if (el) btns.current.set(l.id, el); else btns.current.delete(l.id) }}
-            onClick={() => onPick(l.id)}
-            title={`${l.label} layout`}
-            className="ed-press ed-dock-btn ed-dock-choice" data-on={on || undefined}>
-            <LayoutGlyph key={play?.id === l.id ? play.n : 0} layout={l.id}
-              color={on ? 'var(--ed-accent-text)' : 'rgb(var(--ed-fg) / 0.5)'} active={on} play={play?.id === l.id} />
-            <span className="ed-dock-label">{l.label}</span>
+            title={`${l.label} layout`} className="ed-fmt-opt" data-on={on || undefined}>
+            <LayoutGlyph key={play?.id === l.id ? play.n : 0} layout={l.id} color="currentColor" active={on} play={play?.id === l.id} />
+            <span>{l.id === 'split' ? 'Split' : l.label}</span>
           </button>
         )
       })}
@@ -7340,6 +7653,28 @@ function msToClock(ms: number) {
 }
 
 /** Timeline zoom as − 1x +: each press one step (1x → 1.25x → 1.5x → 2x → 3x → 4x); click the value for 1x */
+/** A phone's status bar over the Preview (the time, the camera island, signal · Wi-Fi · battery), for the look of a real phone */
+function PhoneStatusBar() {
+  return (
+    <div className="ed-phone-status" aria-hidden="true">
+      <span className="ed-phone-time">9:41</span>
+      <i className="ed-phone-island" />
+      <span className="ed-phone-icons">
+        <svg width="16" height="10" viewBox="0 0 16 10" fill="currentColor"><rect x="0" y="7" width="3" height="3" rx=".7" /><rect x="4.3" y="5" width="3" height="5" rx=".7" /><rect x="8.6" y="2.6" width="3" height="7.4" rx=".7" /><rect x="12.9" y="0" width="3" height="10" rx=".7" /></svg>
+        <svg width="14" height="10" viewBox="0 0 14 10" fill="currentColor"><path d="M7 2.2c2 0 3.8.8 5.1 2l1.1-1.1A8.8 8.8 0 007 .6 8.8 8.8 0 00.8 3.1l1.1 1.1C3.2 3 5 2.2 7 2.2zm0 3.1c1.1 0 2.2.4 3 1.2l1.1-1.1A5.8 5.8 0 007 3.7c-1.6 0-3 .6-4.1 1.7L4 6.5c.8-.8 1.9-1.2 3-1.2zm0 3.1c.4 0 .8.2 1 .5L7 10 6 8.9c.2-.3.6-.5 1-.5z" /></svg>
+        <svg width="24" height="11" viewBox="0 0 24 11" fill="none"><rect x=".5" y=".5" width="20" height="10" rx="3" stroke="currentColor" strokeOpacity=".45" /><rect x="2" y="2" width="15.5" height="7" rx="1.8" fill="currentColor" /><path d="M22 3.8v3.4c.7-.3 1.2-1 1.2-1.7s-.5-1.4-1.2-1.7z" fill="currentColor" fillOpacity=".5" /></svg>
+      </span>
+    </div>
+  )
+}
+
+/** How far the clip has played, as an arc round the play button (globals.css .ed-play-ring: the desktop editor shows it) */
+function PlayRing({ lengthMs }: { lengthMs: number }) {
+  const now = useLiveTimeMs()
+  const p = lengthMs > 0 ? Math.min(1, Math.max(0, now / lengthMs)) : 0
+  return <span className="ed-play-ring" aria-hidden="true" style={{ ['--p' as string]: `${(p * 360).toFixed(1)}deg` }} />
+}
+
 /** The playhead's time / the clip's length, over the timeline: 0:12.4 / 1:43 */
 function ClipClock({ lengthMs }: { lengthMs: number }) {
   const now = useLiveTimeMs()
@@ -7349,7 +7684,7 @@ function ClipClock({ lengthMs }: { lengthMs: number }) {
     return `${m}:${s < 10 ? '0' : ''}${tenths ? s.toFixed(1) : Math.floor(s)}`
   }
   return (
-    <span className="shrink-0 tabular-nums text-[12px] font-semibold" aria-label="Playhead and clip length" style={{ color: 'rgb(var(--ed-fg) / 0.5)' }}>
+    <span className="ed-time shrink-0 tabular-nums text-[12px] font-semibold" aria-label="Playhead and clip length" style={{ color: 'rgb(var(--ed-fg) / 0.5)' }}>
       <span style={{ color: 'var(--ed-text)' }}>{fmt(now, true)}</span> / {fmt(lengthMs, false)}
     </span>
   )
@@ -7396,9 +7731,40 @@ function formatElapsed(sec: number) {
  * screen is too short for them all, the rail scrolls: an arrow at the bottom shows there are more
  * below (click: scroll down), one at the top once scrolled down. The open tool is kept in view.
  */
+/**
+ * A soft glow of the video's own colours behind it (light mode's stage, user 2026-10-28 — "premium": as
+ * YouTube's ambient mode): the playing frame drawn a few times a second into a tiny canvas, which CSS
+ * blows up and blurs (globals.css .ed-ambient). Drawn only while it shows (dark mode hides it); nothing
+ * is read back from the canvas, so a video from another site is fine too.
+ */
+function AmbientGlow({ videoRef }: { videoRef: React.RefObject<HTMLVideoElement | null> }) {
+  const ref = useRef<HTMLCanvasElement>(null)
+  useEffect(() => {
+    let raf = 0, last = 0, drawnAt = -1
+    const draw = (now: number) => {
+      raf = requestAnimationFrame(draw)
+      if (now - last < 150) return
+      last = now
+      const v = videoRef.current, c = ref.current
+      // (hidden — dark mode, a closed panel — or nothing new to draw)
+      if (!v || !c || !c.offsetParent || v.readyState < 2 || v.currentTime === drawnAt) return
+      try { c.getContext('2d')?.drawImage(v, 0, 0, c.width, c.height); drawnAt = v.currentTime } catch { /* not ready */ }
+    }
+    raf = requestAnimationFrame(draw)
+    return () => cancelAnimationFrame(raf)
+  }, [videoRef])
+  return <canvas ref={ref} width={32} height={18} className="ed-ambient" aria-hidden="true" />
+}
+
+/** The tools down the rail: all but Brand kit — it's in the top bar's Brand menu (its Edit opens it): user, 2026-10-28 */
+// (Format isn't on the rail: user, 2026-10-29 — sections are picked and changed on the timeline and the video)
+const RAIL_TOOLS = TOOLS.filter(t => t.id !== 'brand' && t.id !== 'format')
+
 function ToolRail({ tool, open, onPick }: { tool: Tool; open: boolean; onPick: (t: Tool) => void }) {
   const ref = useRef<HTMLDivElement>(null)
   const [more, setMore] = useState({ up: false, down: false })
+  // The hovered tool's name, beside the rail (shown where the rail is icons only: light mode)
+  const [tip, setTip] = useState<{ label: string; top: number } | null>(null)
   useEffect(() => {
     const el = ref.current
     if (!el) return
@@ -7431,19 +7797,24 @@ function ToolRail({ tool, open, onPick }: { tool: Tool; open: boolean; onPick: (
     </button>
   )
   return (
-    <nav aria-label="Editor tools" data-tour="tools" className="ed-card relative shrink-0 flex flex-col mr-2" style={{ width: 72 }}>
+    <nav aria-label="Editor tools" data-tour="tools" className="ed-card ed-rail relative shrink-0 flex flex-col mr-2" style={{ width: 72 }}
+      onMouseLeave={() => setTip(null)}>
+      {tip && <span className="ed-rail-tip" role="tooltip" style={{ top: tip.top }}>{tip.label}</span>}
       {more.up && arrow(-1)}
       <div ref={ref} className="flex-1 min-h-0 overflow-y-auto no-scrollbar flex flex-col items-center py-2"
         style={{ containerType: 'size', gap: 'clamp(2px, 0.8cqh, 4px)' }}>
-        {TOOLS.map(t => {
+        {RAIL_TOOLS.map(t => {
           const active = tool === t.id && open
           return (
-            <button key={t.id} type="button" onClick={() => onPick(t.id)}
+            <button key={t.id} type="button" onClick={() => { setTip(null); onPick(t.id) }}
+              onMouseEnter={e => { const r = e.currentTarget.getBoundingClientRect(); setTip({ label: t.label, top: r.top + r.height / 2 }) }}
+              onFocus={e => { const r = e.currentTarget.getBoundingClientRect(); setTip({ label: t.label, top: r.top + r.height / 2 }) }}
+              onBlur={() => setTip(null)}
               aria-pressed={active}
               title={active ? `Hide ${t.label.toLowerCase()} options` : t.title}
               className="ed-tool shrink-0" data-active={active || undefined}
               // Each tool a share of the rail's height: full size when there's room, never smaller than 48 px
-              style={{ width: 60, height: `clamp(48px, calc((100cqh - 16px) / ${TOOLS.length} - 4px), 58px)`, gap: 'clamp(2px, 0.6cqh, 4px)' }}>
+              style={{ width: 60, height: `clamp(48px, calc((100cqh - 16px) / ${RAIL_TOOLS.length} - 4px), 58px)`, gap: 'clamp(2px, 0.6cqh, 4px)' }}>
               <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true">{t.icon}</svg>
               <span className="text-[11px] font-medium">{t.label}</span>
             </button>

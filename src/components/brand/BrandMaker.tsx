@@ -134,7 +134,7 @@ export function BrandStart({ kit, brand, now, set, onFound, compact = false }: K
           <div className="flex gap-2">
             <input value={url} onChange={e => setUrl(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') fromLink() }} maxLength={500} autoFocus={!compact}
               placeholder="yourbrand.com or instagram.com/yourbrand" aria-label="Website or profile link" className="bm-input flex-1 min-w-0" />
-            <button type="button" onClick={fromLink} disabled={busy || !url.trim()} className="bs-primary h-11 px-4 disabled:opacity-50">
+            <button type="button" onClick={fromLink} disabled={busy || !url.trim()} className="bs-primary bm-go h-11 px-4 disabled:opacity-50">
               {busy ? 'Reading…' : 'Make my brand'}
             </button>
           </div>
@@ -161,7 +161,7 @@ export function BrandStart({ kit, brand, now, set, onFound, compact = false }: K
                   <button key={x} type="button" className="bm-chip" onClick={() => setWords(x)}>{x}</button>
                 ))}
               </span>
-              <button type="button" onClick={fromWords} disabled={!words.trim()} className="bs-primary h-10 px-4 disabled:opacity-50">Make my brand</button>
+              <button type="button" onClick={fromWords} disabled={!words.trim()} className="bs-primary bm-go h-10 px-4 disabled:opacity-50">Make my brand</button>
             </div>
           </>
         )}
@@ -239,14 +239,15 @@ export function BrandCard({ kit, brand, now, set, found, readOnly = false }: Kit
       {/* Logo */}
       <div className="bm-tile">
         <span className="bm-tile-label">Logo</span>
-        <div className="flex items-center gap-3">
+        {/* (a narrow tile: its buttons go under the logo instead of out past its edge) */}
+        <div className="flex items-center gap-3 flex-wrap min-w-0">
           <div className="bm-logo">
             {d.logo.path && kit.logo_url
               // eslint-disable-next-line @next/next/no-img-element
               ? <img src={kit.logo_url} alt="Your logo" className="max-w-[85%] max-h-[85%] object-contain" />
               : <span className="text-[11px]" style={{ color: 'rgb(var(--ed-fg) / 0.4)' }}>No logo</span>}
           </div>
-          <div className="flex flex-col gap-1.5 items-start">
+          <div className="flex flex-col gap-1.5 items-start min-w-0">
             <input ref={fileRef} type="file" accept="image/png,image/jpeg,image/webp" className="hidden" onChange={e => pickLogo(e.target.files?.[0])} />
             <button type="button" onClick={() => fileRef.current?.click()} disabled={uploading} className="bm-btn">
               {uploading ? 'Uploading…' : d.logo.path ? 'Change' : 'Upload'}

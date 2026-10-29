@@ -24,7 +24,11 @@ interface Props {
    * A brand kit's ready text styles (brand kit Phase 3: the clip's kit, else the default one): "Your
    * brand" adds text in each; the first is how "Add" styles new text. Absent: no kit
    */
-  brand?: { name: string; styles: Array<{ id: string; name: string; text: string; look: Partial<TextOverlay> }>; onFontAll?: () => void } | null
+  brand?: {
+    name: string; styles: Array<{ id: string; name: string; text: string; look: Partial<TextOverlay> }>; onFontAll?: () => void
+    /** The kit's calls to action (brand kit Phase 5): each added in its call to action style in one tap */
+    lines?: string[]
+  } | null
   /** The text picked on the timeline or the preview: it opens here */
   selectedId?: string | null
   onSelect?: (id: string) => void
@@ -93,16 +97,16 @@ export function TextOverlayPanel({ overlays, currentTimeMs, clipDurationMs, onAd
     setNewText('')
   }
 
-  /** Text in one of the brand's ready styles: what's typed, else its own example words */
-  function addBranded(st: NonNullable<Props['brand']>['styles'][number]) {
+  /** Text in one of the brand's ready styles: what's typed, else its own example words (`typed` false: a kit's line as it is — what's typed stays) */
+  function addBranded(st: NonNullable<Props['brand']>['styles'][number], typed = true) {
     onAdd({
-      text: newText.trim() || st.text,
+      text: (typed && newText.trim()) || st.text,
       start_ms: Math.round(currentTimeMs),
       end_ms: Math.round(Math.min(currentTimeMs + 3000, clipDurationMs)),
       x: 0.1, y: st.id === 'cta' ? 0.7 : st.id === 'subtitle' ? 0.5 : 0.3, font: 'sans-serif', size: 72, color: '#ffffff',
       ...st.look,
     })
-    setNewText('')
+    if (typed) setNewText('')
   }
 
   return (
@@ -135,6 +139,18 @@ export function TextOverlayPanel({ overlays, currentTimeMs, clipDurationMs, onAd
                 </button>
               ))}
             </div>
+            {(() => {
+              const cta = brand.styles.find(st => st.id === 'cta')
+              return cta && brand.lines?.length ? (
+                <div className="flex gap-1.5 flex-wrap" role="group" aria-label="Your lines">
+                  {brand.lines.map(line => (
+                    <button key={line} type="button" className="tx-brand-line" onClick={() => addBranded({ ...cta, text: line }, false)} title="Add this line in your call to action style">
+                      {line}
+                    </button>
+                  ))}
+                </div>
+              ) : null
+            })()}
             {brand.onFontAll && overlays.length > 0 && (
               <button type="button" className="tx-brand-all" onClick={brand.onFontAll} title="Your brand's title font on every text and frame text of this clip (locked ones stay)">
                 Use brand font on all text

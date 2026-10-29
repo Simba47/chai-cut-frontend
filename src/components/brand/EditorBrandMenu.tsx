@@ -41,7 +41,8 @@ export function EditorBrandMenu({ kits, loading, onKitId, onTurnOn, onTurnOff, o
   }
   function pick(kit: BrandKit | null) {
     setOpen(false)
-    if (!kit) { if (on) { onTurnOff(); say(`${on.name} taken off`) } return }
+    // (taken off: no note — user, 2026-10-29)
+    if (!kit) { if (on) { onTurnOff(); say(null) } return }
     if (kit.id === onKitId) return
     onTurnOn(kit)
     const d = kit.data

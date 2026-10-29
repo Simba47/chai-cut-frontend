@@ -3,6 +3,7 @@ import { cleanTrims, trimMap, MAX_CLIP_MS, MIN_CLIP_MS } from '@/lib/trims'
 import { cleanProgressBar } from '@/lib/shared/brandKit'
 import { cleanCardLook, cleanFrameBackground } from '@/lib/shared/brandCard'
 import { cleanBrandOn } from '@/lib/shared/brandOn'
+import { lockCaption, lockClipLook, lockHolds, lockSetOf } from '@/lib/shared/brandTeam'
 import type { SegmentLocal, BoxKeyframeLocal, CaptionStyle, TextOverlay, AudioTrack, Transition, Overlay, FrameSettings, FrameItem, CornerStyle, BrollAlt, BrollPick } from '@chai-cut/shared'
 import { SPEED_MIN, SPEED_MAX } from '@chai-cut/shared'
 
@@ -70,7 +71,47 @@ interface SaveClipInput {
   layers?: unknown
 }
 
-export async function saveClip(userId: string, clipId: string, body: SaveClipInput) {
+/**
+ * The brand lock (brand kit Phase 6): on a clip with a locked team kit on — shared with the user as
+ * "Can use" — what's saved keeps to the kit's colours and fonts (as the editor shows it: brandTeam.ts
+ * lockClipLook), and the kit isn't taken off or swapped: only its owner, or someone who can edit it, can.
+ * Anyone else's save goes as it is.
+ */
+async function keptToLock(userId: string, clipId: string, body: SaveClipInput): Promise<SaveClipInput> {
+  if (!(await hasColumn('clips', 'brand'))) return body
+  const [row] = await sql<{ kit: string | null }[]>`
+    SELECT c.brand->>'kit_id' AS kit FROM clips c JOIN videos v ON v.id = c.video_id WHERE c.id = ${clipId} AND v.user_id = ${userId}`
+  if (!row) return body
+  const { kitAccess } = await import('./brandKits')
+  const now = body.brand === undefined ? row.kit : (cleanBrandOn(body.brand)?.kit_id ?? null)
+  if (row.kit && row.kit !== now) {
+    const was = await kitAccess(userId, row.kit)
+    if (was && lockHolds(was.data, was.role)) {
+      throw Object.assign(new Error('This clip has a locked team brand kit on: only its owner can take it off.'), { status: 403 })
+    }
+  }
+  if (!now) return body
+  const access = await kitAccess(userId, now)
+  if (!access || !lockHolds(access.data, access.role)) return body
+  const set = lockSetOf(access.data)
+  const kept = lockClipLook({ texts: body.textOverlays ?? [], caption: body.captionStyle ?? {}, parts: [], segments: body.segments ?? [] }, set)
+  // (its caption parts — each in its own look — saved beside the rows)
+  const layers = body.layers && typeof body.layers === 'object' ? body.layers as Record<string, unknown> : null
+  const parts = Array.isArray(layers?.captionParts)
+    ? (layers.captionParts as unknown[]).map(p => {
+      const style = p && typeof p === 'object' ? (p as { style?: unknown }).style : null
+      return style && typeof style === 'object' ? { ...(p as object), style: lockCaption(style as Partial<CaptionStyle>, set) } : p
+    })
+    : null
+  return {
+    ...body, textOverlays: kept.texts, captionStyle: kept.caption, segments: kept.segments,
+    ...(layers && parts ? { layers: { ...layers, captionParts: parts } } : {}),
+  }
+}
+
+export async function saveClip(userId: string, clipId: string, input: SaveClipInput) {
+  // (a locked team kit's colours and fonts: before anything is written)
+  const body = await keptToLock(userId, clipId, input)
   const { segments, captionStyle, textOverlays, audioTracks, transitions, overlays } = body
   const ms = (v: number) => Math.round(v)
 
@@ -655,10 +696,14 @@ export async function regenerateClipText(userId: string, clipId: string) {
   if (!words.length) throw Object.assign(new Error('This clip has no captions yet, so there is nothing to write from'), { status: 400 })
 
   const { generateClipText } = await import('@/lib/clipText')
-  // (no brand voice: taken out of brand kits — user, 2026-10-20)
+  // The brand's words (brand kit Phase 5): names spelled its way, its tone, words it hides, its
+  // hashtags and closing line — rules on the one call made anyway, nothing more paid for
+  const { brandWordsFor } = await import('./brandKits')
+  const { brandCaptionWords, brandClipText, brandVoice } = await import('@/lib/brandWords')
+  const brandWords = await brandWordsFor(userId, clipId)
   let text
   try {
-    text = await generateClipText(words, clip.video_title ?? null, prompt => askGemini(prompt), 'roman', null)
+    text = brandClipText(await generateClipText(brandCaptionWords(words, brandWords), clip.video_title ?? null, prompt => askGemini(prompt), 'roman', brandVoice(brandWords)), brandWords)
   } catch (e) {
     console.error('[ai-text] Gemini error:', e)
     throw Object.assign(new Error('AI could not write the text right now. Try again in a moment.'), { status: 502 })

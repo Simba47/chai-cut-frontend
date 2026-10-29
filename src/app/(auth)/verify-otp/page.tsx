@@ -4,6 +4,7 @@ import { useState, useEffect, Suspense } from 'react'
 import { useSearchParams, useRouter } from 'next/navigation'
 import { signIn } from 'next-auth/react'
 import { BrandLoader } from '@/components/ui/brand-loader'
+import { takeNextPath } from '@/lib/nextPath'
 
 const RESEND_COOLDOWN = 60
 
@@ -43,7 +44,7 @@ function VerifyOtpForm() {
         password: params.get('__p') ?? '',
         redirect: false,
       })
-      if (signInRes?.ok) { router.push('/dashboard'); return }
+      if (signInRes?.ok) { router.push(takeNextPath()); return }
       // Password not in URL (security) — ask user to login
       setSuccess(true)
       setLoading(false)

@@ -6,6 +6,7 @@ import { EditorShellMobile } from './EditorShellMobile'
 import sql from '@/lib/db'
 import { cleanBrandOn } from '@/lib/shared/brandOn'
 import { cleanProgressBar } from '@/lib/shared/brandKit'
+import { brandCaptionWords } from '@/lib/brandWords'
 import { r2, R2_BUCKET } from '@/lib/r2'
 import { GetObjectCommand } from '@aws-sdk/client-s3'
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
@@ -96,7 +97,9 @@ export default async function EditorPage({
     sql`SELECT * FROM overlays WHERE clip_id = ${clipId} ORDER BY z_index`,
   ])
 
-  const words: TranscriptWord[] = wordsRaw as unknown as TranscriptWord[]
+  // As the brand writes them (brand kit Phase 5: its spellings, its hidden words)
+  const { brandWordsFor } = await import('@/server/services/brandKits')
+  const words: TranscriptWord[] = brandCaptionWords([...wordsRaw] as unknown as TranscriptWord[], await brandWordsFor(user.id, clipId))
   // Only this clip's own captions are waited for: a whole-video reading (AI edit) can take many
   // minutes, and the clip's captions are made on their own, for just its stretch, when asked
   const [pendingJob] = await sql`
