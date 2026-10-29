@@ -39,7 +39,8 @@ export interface AngleItem {
   people: number
   /** A moment that shows it (the video's own time, ms): its picture, and the faces there, left to right */
   at: number
-  faces: Array<{ box: { x: number; y: number; w: number; h: number }; subject: { label: string; color: string } | null }>
+  /** `added`: marked by hand (+ Add) and found here; `pending`: marked by hand here, being looked for */
+  faces: Array<{ box: { x: number; y: number; w: number; h: number }; subject: { label: string; color: string } | null; added?: boolean; pending?: boolean }>
   /** Where the clip shows it (each a stretch of the timeline), and for how long in all */
   shown: unknown[]
   totalMs: number
@@ -514,9 +515,14 @@ function AngleFace({ videoUrl, at, face: f, onMark, saving }: { videoUrl: string
   )
   if (f.subject) {
     return (
-      <span className="flex flex-col items-center gap-1.5 w-14" title={`${f.subject.label} is marked`}>
-        {picture}
-        <span className="max-w-full truncate text-[11px] font-bold" style={{ color: f.subject.color }}>{f.subject.label}</span>
+      <span className="flex flex-col items-center gap-1.5 w-14" aria-busy={f.pending}
+        title={f.pending ? `${f.subject.label} is marked — looking for them in the clip` : f.added ? `${f.subject.label} is marked (added by you)` : `${f.subject.label} is marked`}>
+        <span className="relative rounded-full">
+          {picture}
+          {/* Added by hand, being looked for: a ring turning round them (user, 2026-10-29: + Add showed nothing) */}
+          {f.pending && <span className="absolute -inset-[3px] rounded-full animate-spin motion-reduce:animate-none" style={{ border: '2.5px solid rgba(200,255,0,0.18)', borderTopColor: '#c8ff00' }} />}
+        </span>
+        <span className="max-w-full truncate text-[11px] font-bold" style={{ color: f.subject.color }}>{f.pending ? 'Finding…' : f.subject.label}</span>
       </span>
     )
   }

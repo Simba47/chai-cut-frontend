@@ -35,8 +35,12 @@ export interface AngleSubject {
 export interface AngleRow {
   people: number
   at: number
-  /** `box.person`: who it is (as Angle's faces) — Auto format marks each person once */
-  faces: Array<{ box: { x: number; y: number; w: number; h: number; person?: number }; subject: { label: string; color: string } | null }>
+  /**
+   * `box.person`: who it is (as Angle's faces) — Auto format marks each person once. `added`: someone
+   * marked by hand (+ Add) whom the scan didn't find here, followed and seen in it — one of its people;
+   * `pending`: marked by hand here, not followed yet — shown waiting, not counted (where they are isn't known)
+   */
+  faces: Array<{ box: { x: number; y: number; w: number; h: number; person?: number }; subject: { label: string; color: string } | null; added?: boolean; pending?: boolean }>
   /** Where the clip shows it now: [start, end] ms of the timeline (removed parts left out) */
   shown: Array<[number, number]>
   /** The same stretches, each with who talks there (ms per face, as `faces`; null: not known) — Auto format decides each on its own */
@@ -124,10 +128,29 @@ export function angleRows(
       if (best >= 0) taken.set(best, s)
     }
     const g = subjects.find(s => s.shot && inAngle(s.mark_ms))
-    const faces = a.faces.map((box, k) => {
+    const faces: AngleRow['faces'] = a.faces.map((box, k) => {
       const s = taken.get(k)
       return { box, subject: s ? { label: s.label, color: s.color } : null }
     })
+    // People marked by hand (+ Add) whom the scan didn't find here (user, 2026-10-29: a listener sitting
+    // still was read as a picture, and adding him changed nothing): followed and seen in this scene, they
+    // are one of its people — on its card, in its count and in Auto format's decision; marked here and not
+    // followed yet, they show waiting
+    const sizeW = a.faces.length ? a.faces.reduce((n, f) => n + f.w, 0) / a.faces.length : 0.09
+    const sizeH = a.faces.length ? a.faces.reduce((n, f) => n + f.h, 0) / a.faces.length : 0.16
+    for (const s of people) {
+      if ([...taken.values()].includes(s)) continue
+      const subject = { label: s.label, color: s.color }
+      if (s.status === 'done' && s.path?.length) {
+        const box = seenInAngle(s.path, a, cuts)
+        // (on a face the scan found: that face is someone else's, or theirs and already shown)
+        if (!box || a.faces.some(f => Math.abs(box.x + box.w / 2 - (f.x + f.w / 2)) < f.w && Math.abs(box.y + box.h / 2 - (f.y + f.h / 2)) < f.h)) continue
+        faces.push({ box: { x: box.x, y: box.y, w: box.w, h: box.h }, subject, added: true })
+      } else if (s.status !== 'done' && inAngle(s.mark_ms)) {
+        faces.push({ box: { x: Math.max(0, s.mark_x - sizeW / 2), y: Math.max(0, s.mark_y - sizeH / 2), w: sizeW, h: sizeH }, subject, pending: true })
+      }
+    }
+    const count = a.people + faces.filter(f => f.added).length
 
     // The playhead goes to the angle's own moment where the clip still has it, else into its first stretch
     const atT = Math.round(toTimeline(a.at))
@@ -136,15 +159,26 @@ export function angleRows(
     const layouts = formatOf ? shown.map(([s, e]) => formatOf(s, e)) : []
     const formatted = layouts.length && layouts.every(Boolean) ? (new Set(layouts).size === 1 ? layouts[0] : 'mixed') : null
     return [{
-      people: a.people, at: a.at, faces, shown, places, jumpMs, formatted,
+      people: count, at: a.at, faces, shown, places, jumpMs, formatted,
       totalMs: shown.reduce((n, [s, e]) => n + e - s, 0),
       group: g ? { label: g.label, layout: g.shot!.layout, color: g.color } : null,
       // A scene of two or more is a group scene: set by a group marked on it, or by its format (Auto
       // format) — never by someone marked elsewhere (user, 2026-10-24: marking the man in his close-up
       // ticked every group scene he sits in) — each scene is its own
-      set: !!g || (a.people < 2 ? faces.some(f => f.subject) : !!formatted),
+      set: !!g || (count < 2 ? faces.some(f => f.subject && !f.pending) : !!formatted),
     }]
   })
+}
+
+/** Where a followed person is in this angle: at its own moment, else the first moment of its stretches they're seen in */
+function seenInAngle(path: readonly SubjectPoint[], a: Angle, cuts: readonly number[]) {
+  const at = subjectBoxAt(path, a.at, cuts as number[])
+  if (at) return at
+  for (const [s, e] of a.spans) for (let t = s + 250; t < e; t += 250) {
+    const box = subjectBoxAt(path, t, cuts as number[])
+    if (box) return box
+  }
+  return null
 }
 
 /** The row showing at `t` (timeline ms), or null */

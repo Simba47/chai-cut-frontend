@@ -1989,7 +1989,8 @@ export function EditorShell({
   // face made C and C — the face showed unmarked until the first was saved)
   const markingSubjectRef = useRef(false)
   /** `atSourceMs`: a moment of the source video (a face of a camera angle); else the moment on screen */
-  async function markSubject(x: number, y: number, atSourceMs?: number) {
+  /** `followNow`: + Add (a click on the video) — follow them at once, not after the rest are marked */
+  async function markSubject(x: number, y: number, atSourceMs?: number, followNow = false) {
     if (markingSubjectRef.current) return
     pause()
     setMarking(false)
@@ -2002,7 +2003,16 @@ export function EditorShell({
       setSubjects(list => [...list, { ...subject, seen: null, stale: false }])
       setSubjectsError(null)
       // Not looked for yet: everyone and every group is marked first, then Mark in the whole clip
-      // (markInWholeClip) finds them all together
+      // (markInWholeClip) finds them all together — except + Add (user, 2026-10-29: a person added by a
+      // click on the video showed nothing, and was clicked again): they are followed at once, and once
+      // found they join the scene (angles.ts angleRows). The views after it keep Auto format's rules,
+      // when it laid this clip (a view on two or more people holds)
+      if (followNow) {
+        const laid = readAutoRecord()
+        if (laid.places.length) autoFollowRef.current = laid.mode
+        setSubjectNotice(`${subject.label} is marked — following them now. They join the scene when found.`)
+        await trackSubjectsNow(false)
+      }
     } catch (e) { setSubjectsError(e instanceof Error ? e.message : 'Could not mark them') }
     finally { markingSubjectRef.current = false }
   }
@@ -2330,8 +2340,9 @@ export function EditorShell({
   }, [angleItems, clipLengthMs])
   /** A scene's views for `layout`: one person in Vertical → the view on them; else none of its own */
   function sceneFraming(row: AngleRow, layout: LayoutType): Array<BoxPosition | undefined> | undefined {
-    if (layout !== 'vertical' || row.faces.length !== 1) return undefined
-    const f = row.faces[0].box
+    const found = row.faces.filter(f => !f.pending)
+    if (layout !== 'vertical' || found.length !== 1) return undefined
+    const f = found[0].box
     return [defaultCropForSlot('vertical', 0, getVideoAR(), f.x + f.w / 2)]
   }
   /**
@@ -2497,7 +2508,7 @@ export function EditorShell({
         const boxes = [...g.shot.boxes].sort((p, q) => p.slot_index - q.slot_index)
         // (and in Vertical, a group Auto format made: a Split or Trio of its own — the user's groups stay)
         const madeByAuto = mode === 'vertical' && record.groups.includes(g.id)
-        if (!madeByAuto && !viewsOverlap(boxes) && keepsAll(g.shot.layout as LayoutType, boxes, row.faces.map(f => f.box))) continue
+        if (!madeByAuto && !viewsOverlap(boxes) && keepsAll(g.shot.layout as LayoutType, boxes, row.faces.filter(f => !f.pending).map(f => f.box))) continue
         try {
           await subjectsCall(`${subjectsUrl}?id=${encodeURIComponent(g.id)}`, { method: 'DELETE' })
           setSubjects(list => list.filter(x => x.id !== g.id))
@@ -2507,7 +2518,9 @@ export function EditorShell({
       // Each place of each scene on its own (who talks differs between them: modules/editor/autoFormat.ts),
       // all decided first, then laid at once (one undo step)
       const decided = rows.filter(r => !r.group || rebuilt.has(r)).flatMap(row => row.places.filter(pl => rebuilt.has(row) || !byHand(pl.shown)).flatMap(pl => {
-        const plan = mode === 'vertical' ? decideVertical(row.faces.map(f => f.box), pl.talk, ar) : decideFormat(row.faces.map(f => f.box), pl.talk, ar)
+        // (people marked by hand and found count too; marks not found yet don't: where they are isn't known)
+        const faces = row.faces.filter(f => !f.pending).map(f => f.box)
+        const plan = mode === 'vertical' ? decideVertical(faces, pl.talk, ar) : decideFormat(faces, pl.talk, ar)
         return plan ? [{ row, shown: pl.shown, plan }] : []
       })).sort((p, q) => p.shown[0] - q.shown[0])
       // A very short place (under SHORT_PLACE) takes the format of the place right before it, so fast
@@ -2516,7 +2529,7 @@ export function EditorShell({
       const plans = decided.map((x, i) => {
         const before = i > 0 ? decided[i - 1] : null
         const short = x.shown[1] - x.shown[0] < AUTO_FORMAT.SHORT_PLACE * 1000
-        const fits = before && keepsAll(before.plan.layout, before.plan.framing, x.row.faces.map(f => f.box))
+        const fits = before && keepsAll(before.plan.layout, before.plan.framing, x.row.faces.filter(f => !f.pending).map(f => f.box))
         return mode === 'cuts' && short && before && fits && Math.abs(before.shown[1] - x.shown[0]) <= 150 ? { ...x, plan: before.plan } : x
       })
       // A scene of two or more that gets the same format and views in every place (who talks changes
@@ -6370,7 +6383,7 @@ export function EditorShell({
                 activeBoxId={activeBoxId ?? null}
                 onSelectBox={(segId, boxId) => { setActiveSegmentId(segId); setActiveBoxId(boxId) }}
                 onBoxChange={handleBoxChange}
-                marking={marking} onMark={markSubject} subjectsAt={subjectsAt}
+                marking={marking} onMark={(x, y) => markSubject(x, y, undefined, true)} subjectsAt={subjectsAt}
               />
               {playingAdded && !playingAdded.hidden && (playingSegment && isInsert(playingSegment, mainVideoId)
                 // (a quiet see-through tag; its dot says which: lime = a video put in between, as on the film strip; orange = B-roll)
