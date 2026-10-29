@@ -2,7 +2,7 @@
 
 import { InfoTip } from '@/components/ui/info-tip'
 import { useEffect, useState } from 'react'
-import type { SegmentLocal, FrameLayout, FrameItem, FrameSettings, SlotMotion, CornerStyle } from '@chai-cut/shared'
+import type { SegmentLocal, FrameLayout, FrameItem, FrameSettings, SlotMotion, CornerStyle, BrollPick } from '@chai-cut/shared'
 import { FRAME_TEMPLATES, FRAME_LAYOUTS, isFrameLayout, frameLanes, frameOf, cornerGeometry, CORNER_MAX, mainSlotSound, frameAreas, frameBase, isTextLane } from '@/modules/editor/frames'
 import { frameItemColor, FRAME_ITEM_COLORS } from './SegmentTimeline'
 import { ItemTimeRange } from './ItemTimeRange'
@@ -35,12 +35,53 @@ interface Props {
   onUpdateFrame: (segId: string, patch: FramePatch) => void
   /** Swap an item's video or photo through the media picker */
   onReplaceMedia: (segId: string, id: string, kind: 'video' | 'photo') => void
+  /** B-roll Make my clips laid: show another of the stock videos it chose from (`index` into its broll.alts) */
+  onSwapBroll?: (segId: string, id: string, index: number) => void
+  /** The item whose B-roll is being swapped (its stock video is being added to the user's videos) */
+  swappingBroll?: string | null
   /** Turn a frame back into a plain Vertical format */
   onRemoveFrame: (segId: string) => void
   /** Take the main video out of a slot */
   onRemoveMain: (segId: string, slot: number) => void
   /** The brand kit's frames: shown first, marked as the brand's */
   brandFrames?: FrameLayout[]
+}
+
+/**
+ * B-roll Make my clips laid (user, 2026-10-29: a swap in the editor): the stock videos it looked at for
+ * this moment, the one shown marked: tap another to use it, or Swap for the next one. Pictures from
+ * the stock library, as its search shows them.
+ */
+function BrollSwap({ pick, busy, onPick }: { pick: BrollPick; busy: boolean; onPick: (index: number) => void }) {
+  const at = Math.min(pick.at, pick.alts.length - 1)
+  const providers = [...new Set(pick.alts.map(a => a.provider))].map(p => (p === 'pexels' ? 'Pexels' : p === 'coverr' ? 'Coverr' : 'Pixabay'))
+  return (
+    <div className="flex flex-col gap-1.5">
+      <div className="flex items-center gap-2">
+        <span className="text-[11px] font-medium text-[var(--ed-text)]">AI B-roll</span>
+        {pick.query && <span className="text-[10.5px] truncate flex-1 min-w-0" style={{ color: 'rgb(var(--ed-fg) / 0.45)' }} title={`Searched for \u201c${pick.query}\u201d`}>{'\u201c'}{pick.query}{'\u201d'}</span>}
+        <button onClick={() => onPick((at + 1) % pick.alts.length)} disabled={busy}
+          className="ml-auto shrink-0 h-6 px-2 rounded-md text-[11px] font-semibold disabled:opacity-50"
+          style={{ background: 'var(--ed-accent)', color: 'var(--ed-accent-ink, #0b0b0b)' }}
+          title="Show the next stock video the AI found for this moment">
+          {busy ? 'Adding\u2026' : 'Swap'}
+        </button>
+      </div>
+      <div className="flex gap-1 overflow-x-auto pb-0.5" role="group" aria-label="Stock videos for this moment">
+        {pick.alts.map((a, i) => (
+          <button key={a.ref} onClick={() => i !== at && onPick(i)} disabled={busy} aria-pressed={i === at}
+            title={`${a.title}${i === at ? ' (shown)' : ''}`}
+            className="shrink-0 w-12 h-12 rounded-md overflow-hidden disabled:opacity-60"
+            style={{ boxShadow: i === at ? '0 0 0 2px var(--ed-accent)' : 'inset 0 0 0 1px rgb(var(--ed-fg) / 0.12)' }}>
+            {a.thumb
+              ? <img src={a.thumb} alt="" loading="lazy" referrerPolicy="no-referrer" className="w-full h-full object-cover" />
+              : <span className="block w-full h-full" style={{ background: 'rgb(var(--ed-fg) / 0.08)' }} />}
+          </button>
+        ))}
+      </div>
+      <span className="text-[10px]" style={{ color: 'rgb(var(--ed-fg) / 0.4)' }}>Videos from {providers.join(' and ')}</span>
+    </div>
+  )
 }
 
 const MOTIONS: { id: SlotMotion; label: string }[] = [
@@ -128,6 +169,7 @@ function Chevron({ open }: { open: boolean }) {
 export function FramesPanel({
   frames, segment, targetLabel, currentTimeMs, videoTitles, selected, onToggleLock,
   onApply, onOpenFrame, onSelectItem, onUpdateItem, onRemoveItem, onUpdateFrame, onReplaceMedia, onRemoveFrame, onRemoveMain, brandFrames = [],
+  onSwapBroll, swappingBroll = null,
 }: Props) {
   const current = segment && isFrameLayout(segment.layout) ? segment.layout : null
   // Which frames are opened up; the one under the playhead opens by itself
@@ -247,7 +289,8 @@ export function FramesPanel({
                     onRemoveItem={id => onRemoveItem(seg.id, id)}
                     onUpdateFrame={patch => onUpdateFrame(seg.id, patch)}
                     onRemoveMain={slot => onRemoveMain(seg.id, slot)}
-                    onReplaceMedia={(id, kind) => onReplaceMedia(seg.id, id, kind)} />
+                    onReplaceMedia={(id, kind) => onReplaceMedia(seg.id, id, kind)}
+                    onSwapBroll={onSwapBroll && ((id, index) => onSwapBroll(seg.id, id, index))} swappingBroll={swappingBroll} />
                 </div>
               )}
             </div>
@@ -259,7 +302,7 @@ export function FramesPanel({
 }
 
 /** Everything in one frame — main video, videos, photos and text — each with its time, opening into its settings */
-function FrameContents({ seg, currentTimeMs, videoTitles, selected, onSelectItem, onUpdateItem, onRemoveItem, onUpdateFrame, onRemoveMain, onReplaceMedia }: {
+function FrameContents({ seg, currentTimeMs, videoTitles, selected, onSelectItem, onUpdateItem, onRemoveItem, onUpdateFrame, onRemoveMain, onReplaceMedia, onSwapBroll, swappingBroll }: {
   seg: SegmentLocal
   currentTimeMs: number
   videoTitles: Record<string, string>
@@ -270,6 +313,8 @@ function FrameContents({ seg, currentTimeMs, videoTitles, selected, onSelectItem
   onUpdateFrame: (patch: FramePatch) => void
   onRemoveMain: (slot: number) => void
   onReplaceMedia: (id: string, kind: 'video' | 'photo') => void
+  onSwapBroll?: (id: string, index: number) => void
+  swappingBroll?: string | null
 }) {
   const frame = frameOf(seg)
   const lanes = frameLanes(seg.layout as FrameLayout)
@@ -359,6 +404,9 @@ function FrameContents({ seg, currentTimeMs, videoTitles, selected, onSelectItem
                         </div>
                         <Volume volume={r.item.volume ?? 1} muted={!!r.item.muted}
                           onVolume={volume => onUpdateItem(r.id, { volume })} onMuted={muted => onUpdateItem(r.id, { muted })} />
+                        {r.item.broll && r.item.broll.alts.length > 1 && onSwapBroll && (
+                          <BrollSwap pick={r.item.broll} busy={swappingBroll === r.id} onPick={index => onSwapBroll(r.id, index)} />
+                        )}
                       </>
                     )}
                     {r.item.kind === 'photo' && (
