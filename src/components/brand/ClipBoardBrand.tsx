@@ -42,7 +42,7 @@ export function useClipBrands(videoId: string, clipIds: string[]): ClipBrands {
   const clipsKey = clipIds.join(',')
 
   const loadClips = useCallback(() => fetch(`/api/videos/${videoId}/brand`).then(r => json<{ clips: Record<string, string | null> }>(r))
-    .then(d => setOf(d.clips)).catch(() => { /* tags left as they were */ }), [videoId])
+    .then(d => setOf(d.clips ?? {})).catch(() => { /* tags left as they were */ }), [videoId])
   useEffect(() => {
     fetch('/api/brand-kits').then(r => json<{ kits: Array<{ id: string; name: string; data: { is_default?: boolean; colors: { main: string; accent: string } } }> }>(r))
       .then(d => {

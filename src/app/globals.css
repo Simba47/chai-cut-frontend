@@ -3372,3 +3372,88 @@ html .editor-theme .ed-body .ed-player .ed-play:focus-visible .ed-play-ring { fi
 .cbb-pick-foot a { font-size: 11.5px; font-weight: 600; color: rgb(var(--cb-fg) / 0.55); text-decoration: none; }
 .cbb-pick-foot a:hover { color: var(--cb-text); }
 @media (prefers-reduced-motion: reduce) { .cbb-pick-list { animation: none; } }
+
+/* ══ Clip board, premium (user, 2026-10-28) — both modes, the look only:
+   lime for the one main action (Create & edit) and the played part of the video, nothing else;
+   fewer boxes (clip rows, the brand bar, the new-clip bar flat on their panel); the player's
+   controls slim and glassy; one style for tabs and switches; a real checkbox ══ */
+.cb-page { --cbx-line: rgb(var(--cb-fg) / 0.08); --cbx-soft: rgb(var(--cb-fg) / 0.05); --cbx-hover: rgb(var(--cb-fg) / 0.06); }
+/* the page and its panels: calm, no lime light */
+.cb-page:not(.x) { background: #050505; }
+[data-theme="light"] .cb-page:not(.x) { background: var(--smoke-bg); }
+.cb-page .cb-panel { border-radius: 18px; border-color: var(--cbx-line); background: #0c0c0d; box-shadow: 0 24px 50px -36px rgba(0,0,0,0.9); }
+.cb-page .cb-panel::before { display: none; }
+[data-theme="light"] .cb-page .cb-panel { background: var(--smoke); }
+/* the panel's icon and counts: quiet */
+.cb-page .cb-head-ico { stroke: rgb(var(--cb-fg) / 0.7); }
+.cb-page .cb-count { color: rgb(var(--cb-fg) / 0.65) !important; background: var(--cbx-soft) !important; border-color: var(--cbx-line) !important; }
+
+/* Video / Clip preview: the same neutral switch as the tabs */
+.cb-page .view-switch { background: var(--cbx-soft); box-shadow: inset 0 0 0 1px var(--cbx-line); }
+.cb-page .view-switch-knob { background: rgb(var(--cb-fg) / 0.12); box-shadow: inset 0 0 0 1px rgb(var(--cb-fg) / 0.12), 0 2px 6px -3px rgba(0,0,0,0.6); }
+.cb-page .view-switch-opt { color: rgb(var(--cb-fg) / 0.55); }
+.cb-page .view-switch-opt[data-on] { color: var(--cb-text); }
+/* the Clipboard's tabs */
+.cb-page .cb-tab { border-color: transparent !important; background: transparent !important; color: rgb(var(--cb-fg) / 0.55); }
+.cb-page .cb-tab:hover { background: var(--cbx-hover) !important; color: var(--cb-text); }
+.cb-page .cb-tab[aria-selected="true"] { color: var(--cb-text); background: rgb(var(--cb-fg) / 0.1) !important; }
+
+/* the player: a slim bar, the played part lime, glass buttons */
+.cb-page .cb-player { border-color: var(--cbx-line); border-radius: 16px; overflow: hidden; box-shadow: 0 24px 50px -28px rgba(0,0,0,0.9); }
+.cb-page .sp-controls { padding: 32px 14px 8px; background: linear-gradient(to top, rgba(0,0,0,0.7), rgba(0,0,0,0.25) 65%, transparent); }
+.cb-page .sp-track { height: 3px; background: rgba(255,255,255,0.18); }
+.cb-page .sp-bar:hover .sp-track, .cb-page .sp-bar[data-drag] .sp-track { height: 5px; }
+.cb-page .sp-buf { background: rgba(255,255,255,0.22); }
+.cb-page .sp-done { background: #c8ff00; }
+.cb-page .sp-thumb { width: 11px; height: 11px; margin: -5.5px 0 0 -5.5px; background: #fff; box-shadow: 0 0 0 3px rgba(200,255,0,0.25), 0 1px 4px rgba(0,0,0,0.5); }
+.cb-page .sp-btn { width: 32px; height: 32px; border-radius: 999px; }
+.cb-page .sp-btn:hover { background: rgba(255,255,255,0.14); backdrop-filter: blur(6px); }
+.cb-page .sp-time { font-size: 12.5px; font-variant-numeric: tabular-nums; }
+
+/* the new-clip bar: flat on its panel, the inputs as quiet wells; one primary, one secondary */
+.cb-page .cb-form { border: 0; border-top: 1px solid var(--cbx-line); border-radius: 0; background: transparent; box-shadow: none; }
+.cb-page .cb-input { background: var(--cbx-soft); border-color: var(--cbx-line); border-radius: 12px; }
+.cb-page .cb-input:hover { border-color: rgb(var(--cb-fg) / 0.16); }
+.cb-page .cb-input:focus, .cb-page .cb-input:focus-within { border-color: rgb(var(--cb-fg) / 0.32); box-shadow: 0 0 0 3px rgb(var(--cb-fg) / 0.06); }
+.cb-page .cb-cta { height: 48px !important; background: #c8ff00; color: #0a0a0a; border-color: transparent; box-shadow: 0 8px 20px -12px rgba(200,255,0,0.5); }
+.cb-page .cb-cta:hover:not(:disabled) { background: #d4ff3a; border-color: transparent; color: #0a0a0a; }
+.cb-page .cb-ghost { height: 48px !important; background: var(--cbx-soft); border-color: var(--cbx-line); color: var(--cb-text); }
+.cb-page .cb-ghost:hover:not(:disabled) { background: rgb(var(--cb-fg) / 0.1); border-color: rgb(var(--cb-fg) / 0.16); }
+
+/* the brand bar: flat, no box; "Put on all" a secondary button */
+.cb-page .cbb-bar { padding: 4px 2px; background: transparent; border: 0; }
+.cb-page .cbb-btn[data-primary] { color: var(--cb-text); background: rgb(var(--cb-fg) / 0.1); border: 1px solid var(--cbx-line); }
+.cb-page .cbb-btn[data-primary]:hover:not(:disabled) { background: rgb(var(--cb-fg) / 0.15); }
+.cb-page .cbb-tag { background: var(--cbx-soft); border-color: var(--cbx-line); }
+
+/* the clips: list rows, not boxes — a soft highlight on hover, the playing one a thin edge */
+.cb-page .cb-card { border-color: transparent; background: transparent; box-shadow: none; border-radius: 12px; }
+.cb-page .cb-card:hover, .cb-page .cb-card:focus-within { transform: none; border-color: transparent; background: var(--cbx-hover); box-shadow: none; }
+.cb-page .cb-card[data-playing] { background: rgb(var(--cb-fg) / 0.07); border-color: transparent; box-shadow: inset 2px 0 0 rgb(var(--cb-fg) / 0.6); }
+.cb-page .cb-card[data-on] { border-color: rgb(var(--cb-fg) / 0.4); background: rgb(var(--cb-fg) / 0.06); }
+.cb-page .cb-thumb { border-radius: 9px; box-shadow: 0 0 0 1px var(--cbx-line); }
+.cb-page .cb-range { color: rgb(var(--cb-fg) / 0.75) !important; }
+.cb-page .cb-edited { color: rgb(var(--cb-fg) / 0.5) !important; background: var(--cbx-soft) !important; font-weight: 600 !important; letter-spacing: .04em; }
+.cb-page .cb-act { border-color: var(--cbx-line); background: var(--cbx-soft); }
+
+/* a real checkbox: a rounded box, ticked in ink */
+.cb-page .cb-check { appearance: none; -webkit-appearance: none; width: 15px; height: 15px; margin: 0; border-radius: 4px; display: grid; place-items: center;
+  border: 1.5px solid rgb(var(--cb-fg) / 0.35); background: transparent; cursor: pointer; transition: background-color .15s, border-color .15s; }
+.cb-page .cb-check:hover { border-color: rgb(var(--cb-fg) / 0.6); }
+.cb-page .cb-check:checked { background: var(--cb-text); border-color: var(--cb-text); }
+.cb-page .cb-check:checked::after { content: ''; width: 8px; height: 4px; margin-top: -2px; border-left: 2px solid #0a0a0a; border-bottom: 2px solid #0a0a0a; transform: rotate(-45deg); }
+[data-theme="light"] .cb-page .cb-check:checked::after { border-color: #fafafa; }
+.cb-page .cb-check:focus-visible { outline: 2px solid rgb(var(--cb-fg) / 0.5); outline-offset: 2px; }
+/* light mode: the clips as rows here too (over the older boxed light rules above) */
+[data-theme="light"] .cb-page .cb-card { border-color: transparent !important; background: transparent; }
+[data-theme="light"] .cb-page :is(.cb-card:hover, .cb-card:focus-within) { border-color: transparent !important; background: rgba(15,15,17,0.06); }
+[data-theme="light"] .cb-page .cb-card[data-playing] { border-color: transparent !important; background: rgba(15,15,17,0.07); box-shadow: inset 2px 0 0 rgba(15,15,17,0.55) !important; }
+[data-theme="light"] .cb-page .cb-card[data-on] { border-color: rgba(15,15,17,0.4) !important; }
+[data-theme="light"] .cb-page .cb-head-ico { stroke: rgba(24,24,27,0.7); }
+[data-theme="light"] .cb-page .cb-act { color: #18181b; background: rgba(15,15,17,0.05); }
+/* the clip's ♡ and 🗑 on hover, each acting out what it does: the bin's lid lifts, the heart beats */
+.cb-bin-lid { transform-box: fill-box; transform-origin: 0% 100%; transition: transform .22s cubic-bezier(.3,1.6,.5,1); }
+.cb-tool-bin:hover .cb-bin-lid, .cb-tool-bin[data-on] .cb-bin-lid { transform: translate(-1px, -2.5px) rotate(-16deg); }
+.cb-tool-heart:hover svg { animation: cb-beat 1s ease-in-out infinite; }
+@keyframes cb-beat { 0%, 60%, 100% { transform: scale(1); } 15% { transform: scale(1.22); } 30% { transform: scale(.94); } 45% { transform: scale(1.12); } }
+@media (prefers-reduced-motion: reduce) { .cb-bin-lid { transition: none; } .cb-tool-heart:hover svg { animation: none; } }
