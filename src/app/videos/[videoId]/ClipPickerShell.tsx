@@ -107,14 +107,13 @@ function writeSaved(key: string, data: unknown) {
 }
 const searchKey = (q: string) => q.trim().toLowerCase().replace(/\s+/g, ' ')
 
-// Make my clips: what AI adds to each clip (on by default but B-rolls; remembered per browser)
-type AutoOption = 'captions' | 'title' | 'motion' | 'layouts' | 'broll'
+// Make my clips: what AI adds to each clip (all on by default; remembered per browser)
+type AutoOption = 'captions' | 'title' | 'motion' | 'layouts'
 const AUTO_OPTIONS: Array<{ id: AutoOption; label: string; tip: string }> = [
   { id: 'captions', label: 'Captions', tip: 'Word-by-word captions at the bottom' },
   { id: 'title', label: 'Title', tip: 'A short hook as a title over the first 3 seconds' },
   { id: 'motion', label: 'Follow people', tip: 'The frame follows people as they move. Off: it holds still in each shot' },
   { id: 'layouts', label: 'Split screen', tip: 'Split and trio when 2 or more people are in the shot. Off: always vertical, on one person' },
-  { id: 'broll', label: 'B-rolls', tip: 'Free stock footage (Pixabay) on top while the speaker talks below, only where it fits what they say. You can swap each one in the editor' },
 ]
 // Each option's little picture (a 16 × 16 drawing): what it does, in one glance. The marked parts
 // (mmc-i-*) move when the tile is hovered or just ticked (styles: .mmc-opt in globals.css).
@@ -127,8 +126,6 @@ const AUTO_ICONS: Record<AutoOption, React.ReactNode> = {
   motion: <><path className="mmc-i-frame" d="M2 5V3.5A1.5 1.5 0 0 1 3.5 2H5M11 2h1.5A1.5 1.5 0 0 1 14 3.5V5M14 11v1.5a1.5 1.5 0 0 1-1.5 1.5H11M5 14H3.5A1.5 1.5 0 0 1 2 12.5V11" /><circle className="mmc-i-dot" cx="8" cy="8" r="2" fill="currentColor" stroke="none" /></>,
   // a vertical frame cut in two
   layouts: <><rect x="3.5" y="2" width="9" height="12" rx="2" /><path className="mmc-i-cut" d="M3.5 8h9" /></>,
-  // footage playing on top, the speaker below
-  broll: <><rect x="3.5" y="2" width="9" height="12" rx="2" /><path d="M3.5 8h9" /><path className="mmc-i-cut" d="M7 3.6v2.8L9.4 5z" fill="currentColor" stroke="none" /><circle cx="8" cy="11" r="1.3" /></>,
 }
 const AUTO_OPTIONS_KEY = 'clipboard.makeOptions'
 // What the captions and the title are written in (speech in an Indian language; English speech stays English)
@@ -288,7 +285,7 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
   const [autoCount, setAutoCount] = useState<number>(5)
   // What's typed in the count box (may be empty or too big while typing; settles on blur)
   const [countText, setCountText] = useState('5')
-  const [autoOpts, setAutoOpts] = useState<Record<AutoOption, boolean>>({ captions: true, title: true, motion: true, layouts: true, broll: false })
+  const [autoOpts, setAutoOpts] = useState<Record<AutoOption, boolean>>({ captions: true, title: true, motion: true, layouts: true })
   // What the captions and the title are written in (remembered per browser, like the checkboxes)
   // Make my clips: the brand kit its clips get ('default': the account's default kit; 'none'; or a kit's id)
   const [brandKits, setBrandKits] = useState<Array<{ id: string; name: string; isDefault: boolean }>>([])
@@ -328,6 +325,8 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
     setAutoCount(c)
     setCountText(String(c))
   }
+  // B-roll in Make my clips: its option was taken off the card, so clips are made without it
+  const autoBroll = false
   const [autoJob, setAutoJob] = useState<AutoJob | null>(null)
   const [autoClips, setAutoClips] = useState<AutoClip[]>([])
   const [autoStarting, setAutoStarting] = useState(false)
@@ -701,7 +700,7 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
       const res = await fetch(`/api/videos/${video.id}/auto-clips`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ clip_count: count, add_broll: autoOpts.broll, captions: autoOpts.captions, title: autoOpts.title, motion: autoOpts.motion, layouts: autoOpts.layouts, caption_language: captionLang, title_language: titleLang, brand_kit: brandPick }),
+        body: JSON.stringify({ clip_count: count, add_broll: autoBroll, ...autoOpts, caption_language: captionLang, title_language: titleLang, brand_kit: brandPick }),
       })
       if (!res.ok) throw new Error((await res.json()).error ?? 'Could not start making clips')
       await loadAutoClips()
@@ -1211,11 +1210,11 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
           </div>
         </div>
 
-        {/* What AI adds: five tiles (B-rolls across the bottom), each a checkbox — its little picture turns white and a lime tick
+        {/* What AI adds: four tiles, each a checkbox — its little picture turns white and a lime tick
             shows on the right when it's on (styles: .mmc-opt in globals.css) */}
         <div className="grid grid-cols-2 gap-1.5" role="group" aria-label="What AI adds to each clip">
           {AUTO_OPTIONS.map(o => (
-            <label key={o.id} title={o.tip} className={`mmc-opt${o.id === 'broll' ? ' col-span-2' : ''}`} data-on={autoOpts[o.id] || undefined} data-off={autoRunning || undefined}>
+            <label key={o.id} title={o.tip} className="mmc-opt" data-on={autoOpts[o.id] || undefined} data-off={autoRunning || undefined}>
               <input type="checkbox" className="sr-only" checked={autoOpts[o.id]} disabled={autoRunning}
                 onChange={() => toggleAutoOpt(o.id)} />
               <span className="mmc-opt-icon" aria-hidden="true">
@@ -1641,12 +1640,12 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
         {/* ── Right: your clips ─────────────────────────────────── */}
         <aside className="cb-panel shrink-0 flex flex-col min-h-0 overflow-hidden" style={{ width: manualOnly ? 420 : 340 }}>
           <div className="px-4 pt-4 pb-3 flex items-center gap-2 shrink-0">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={ACCENT} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <svg className="cb-head-ico" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={ACCENT} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
               <rect x="5" y="4" width="14" height="17" rx="2" /><path d="M9 4V3h6v1M9 10h6M9 14h4" />
             </svg>
             <h2 className="text-[15px] font-semibold text-white tracking-tight">Clipboard</h2>
             {(
-              <span className="text-[11px] font-bold px-2 py-0.5 rounded-full" style={{ color: ACCENT, background: 'rgba(200,255,0,0.1)', border: '1px solid rgba(200,255,0,0.25)' }}>
+              <span className="cb-count text-[11px] font-bold px-2 py-0.5 rounded-full" style={{ color: ACCENT, background: 'rgba(200,255,0,0.1)', border: '1px solid rgba(200,255,0,0.25)' }}>
                 {badgeCount} clip{badgeCount === 1 ? '' : 's'}
               </span>
             )}
@@ -1660,7 +1659,7 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
                       if (all) { stopSelecting(); return }
                       setSelecting(true); setSelected(new Set(shownClips.map(c => c.id)))
                     }}
-                    className="w-3.5 h-3.5 rounded" style={{ accentColor: ACCENT }} />
+                    className="cb-check w-3.5 h-3.5 rounded" style={{ accentColor: ACCENT }} />
                   Select all
                 </label>
               )
@@ -2359,19 +2358,19 @@ function ClipCard({ id, focused, number, origin, title, startMs, endMs, status, 
             {/* ♡ and 🗑, a pair at the top right; the bin slides in beside the heart while the card is pointed at */}
             <span className="cb-tools -mt-1 -mr-1">
               <button type="button" onClick={e => { e.stopPropagation(); setMenu(m => (m ? false : 'confirm')) }} aria-expanded={!!menu}
-                className="cb-tool cb-tool-hide" data-tone="danger" data-on={menu ? '' : undefined} aria-label="Delete clip" title="Delete clip">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v6M14 11v6" /></svg>
+                className="cb-tool cb-tool-hide cb-tool-bin" data-tone="danger" data-on={menu ? '' : undefined} aria-label="Delete clip" title="Delete clip">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path className="cb-bin-lid" d="M3 6h18M8 6V4h8v2" /><path d="M19 6l-1 14H6L5 6M10 11v6M14 11v6" /></svg>
               </button>
-              <button type="button" onClick={e => { e.stopPropagation(); onFavorite() }} aria-pressed={favorite} className="cb-tool" data-on={favorite ? '' : undefined}
+              <button type="button" onClick={e => { e.stopPropagation(); onFavorite() }} aria-pressed={favorite} className="cb-tool cb-tool-heart" data-on={favorite ? '' : undefined}
                 aria-label={favorite ? 'Remove from favorites' : 'Add to favorites'} title={favorite ? 'Remove from favorites' : 'Add to favorites'}>
                 <Heart on={favorite} />
               </button>
             </span>
           </span>
           <span className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-[11px] tabular-nums" style={{ color: 'rgb(var(--cb-fg) / 0.5)' }}>
-            <ClockIcon />{manual ? <><span style={{ color: ACCENT }}>{msToDisplay(startMs)} – {msToDisplay(endMs)}</span> · {durLabel(startMs, endMs)}</> : durLabel(startMs, endMs)}
+            <ClockIcon />{manual ? <><span className="cb-range" style={{ color: ACCENT }}>{msToDisplay(startMs)} – {msToDisplay(endMs)}</span> · {durLabel(startMs, endMs)}</> : durLabel(startMs, endMs)}
             {edited && (
-              <span className="px-1.5 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wide" style={{ color: ACCENT, background: 'rgba(200,255,0,0.12)' }}>Edited</span>
+              <span className="cb-edited px-1.5 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wide" style={{ color: ACCENT, background: 'rgba(200,255,0,0.12)' }}>Edited</span>
             )}
             {status === 'rendering' && <span className="flex items-center gap-1" style={{ color: ACCENT }}>· <Spinner /> Exporting</span>}
             {sub.busy && <SubEditInline startedAt={sub.startedAt} estimate={sub.estimate} ahead={sub.ahead} onStop={sub.stop} />}

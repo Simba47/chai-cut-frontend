@@ -10,12 +10,16 @@
  *
  * What a kit holds (decided 2026-10-27, brand kit Phase 0): colours, a logo, an @handle, fonts, a
  * title style, a caption look, the Branded card and brand corners, whether it's the default, and its
- * brand lock. The intro / outro, end card, progress bar, brand sound, brand voice and names & spellings
- * that kits held for a while (taken out of the kit's screens 2026-10-20) are gone from it too: a kit
- * saved with them loses them on its next save. (A clip's own progress bar stays: ProgressBar.)
+ * brand lock. The brand sound, brand voice and names & spellings that kits held for a while (taken out
+ * of the kit's screens 2026-10-20) are gone from it: a kit saved with them loses them on its next save.
+ * Its progress bar, end card, intro and outro came back in Phase 4 (2026-10-27), now through the brand
+ * engine like the rest — under new keys, so what an older kit kept of them doesn't come back on by itself.
+ * Its words (spellings, hidden words, lines, hashtags, tone) came in Phase 5 (2026-10-28: lib/brandWords.ts),
+ * under a new key too.
  */
 import type { CaptionStyle, AnimationType } from './types'
 import { cleanCardLook, DEFAULT_CARD_LOOK, type CardLook } from './brandCard'
+import { cleanBrandWords, NO_BRAND_WORDS, type BrandWords } from '../brandWords'
 
 export type LogoCorner = 'tl' | 'tr' | 'bl' | 'br'
 /** When the logo shows: the whole clip, or only its first / last seconds */
@@ -79,6 +83,10 @@ export interface BrandKitData {
     /** The whole clip, or only its first / last `seconds` */
     show: LogoShow
     seconds: number
+    /** In its corner, kept clear of the apps' own buttons and header (LOGO_SAFE) — Phase 4 */
+    safe: boolean
+    /** On each clip, in whichever corner is clear of its captions and faces, the kit's corner first (pickLogoCorner) — Phase 4 */
+    smart: boolean
   }
   captions: BrandCaptions
   /**
@@ -112,7 +120,33 @@ export interface BrandKitData {
   frames: { corners: number | null }
   /** Brand lock: the people the kit is shared with can pick only its colours and fonts (brandLockOf) */
   lock: boolean
+  /**
+   * The progress bar the brand puts on its clips (Phase 4) when `on`: as a clip's own (ProgressBar),
+   * its colour a colour or 'accent' — the kit's accent colour, as it changes (brandProgressBar)
+   */
+  progress_bar: BrandProgress
+  /**
+   * How the brand ends and starts its clips (Phase 4): an end card — the clip's last `seconds` made its
+   * Branded card (modules/brand/endCard.ts) — and an intro and outro: videos of the user's library put
+   * in before and after it (their ids; null: none)
+   */
+  ends: BrandEnds
+  /**
+   * How the brand writes (Phase 5, lib/brandWords.ts): names captions spell its way, words never shown,
+   * its calls to action, hashtags and tone — on the clips it's on (and, the default kit's, on clips with none)
+   */
+  words: BrandWords
 }
+
+export interface BrandEnds { card: boolean; seconds: number; intro: BrandEndVideo | null; outro: BrandEndVideo | null }
+/** An intro or outro: a video of the library, its length (ms) and its name as picked */
+export interface BrandEndVideo { id: string; ms: number; title: string }
+/** How long an end card is (s) */
+export const END_CARD_SECONDS: [number, number] = [2, 8]
+/** The longest video an intro or outro can be (ms) */
+export const MAX_END_VIDEO_MS = 30_000
+
+export interface BrandProgress { on: boolean; color: string; height: number; position: ProgressBar['position'] }
 
 /** The Branded card a kit customizes: its look, and its title's and @handle's colour, size and whether each shows */
 export interface BrandCardSettings extends CardLook {
@@ -127,8 +161,10 @@ export interface BrandKit {
   data: BrandKitData
   /** A signed link to the logo — for showing it only, never saved */
   logo_url?: string | null
-  /** A kit someone shared with this user: who (their name or email). They can use it, not change it. */
+  /** A kit someone shared with this user: who (their name or email) */
   shared_by?: string | null
+  /** A shared kit: what this user can do with it (Phase 6, brandTeam.ts) — use it on clips, or change it too */
+  role?: 'use' | 'edit'
 }
 
 /** How many brand kits each plan can have (user, 2026-10-17); a plan not listed gets the Free count */
@@ -148,9 +184,6 @@ export const brandFontKey = (userId: string, family: string) => `brand/${userId}
 
 /** The logo shown only at the start or end: for this long (s) */
 export const LOGO_SECONDS: [number, number] = [1, 15]
-/** How many people one kit can be shared with, and the plans that can share (user's plan names) */
-export const MAX_KIT_SHARES = 10
-export const SHARE_PLANS = ['agency']
 /** A progress bar's thickness (px on a 1080 × 1920 frame) */
 export const PROGRESS_HEIGHT: [number, number] = [4, 40]
 /** More brand colours besides the main and accent */
@@ -165,7 +198,7 @@ export const DEFAULT_BRAND_CAPTIONS: BrandCaptions = {
 
 export const DEFAULT_BRAND_KIT: BrandKitData = {
   colors: { main: '#1c1c22', accent: '#c8ff00', extra: [] },
-  logo: { path: null, ratio: null, corner: 'tr', x: null, y: null, size: 0.18, opacity: 0.9, show: 'all', seconds: 3 },
+  logo: { path: null, ratio: null, corner: 'tr', x: null, y: null, size: 0.18, opacity: 0.9, show: 'all', seconds: 3, safe: true, smart: true },
   captions: DEFAULT_BRAND_CAPTIONS,
   frames: { corners: null },
   lock: false,
@@ -180,6 +213,9 @@ export const DEFAULT_BRAND_KIT: BrandKitData = {
   card_title: '',
   card: { ...DEFAULT_CARD_LOOK, title: { show: true, color: '#ffffff', size: 64 }, handle: { show: true, color: '#c8ff00', size: 40 } },
   is_default: false,
+  progress_bar: { on: false, color: 'accent', height: 12, position: 'bottom' },
+  ends: { card: false, seconds: 3, intro: null, outro: null },
+  words: NO_BRAND_WORDS,
 }
 
 const ANIMATIONS: AnimationType[] = ['karaoke', 'fade', 'none', 'pop', 'highlight', 'bounce', 'word', 'hormozi', 'box', 'glow']
@@ -199,6 +235,21 @@ export function cleanProgressBar(raw: unknown, fallbackColor = '#ffffff'): Progr
     height: Math.round(num(p.height, PROGRESS_HEIGHT[0], PROGRESS_HEIGHT[1], 12)),
     position: p.position === 'top' ? 'top' : 'bottom',
   }
+}
+
+/** Whether two intros (or outros) are the same video at the same length */
+export const sameEndVideo = (a: BrandEndVideo | null, b: BrandEndVideo | null) => (a?.id ?? null) === (b?.id ?? null) && (a?.ms ?? 0) === (b?.ms ?? 0)
+
+function endVideoOf(raw: unknown): BrandEndVideo | null {
+  const v = raw && typeof raw === 'object' ? raw as Record<string, unknown> : null
+  if (!v || typeof v.id !== 'string' || !/^[0-9a-f-]{36}$/i.test(v.id) || typeof v.ms !== 'number' || !(v.ms >= 300)) return null
+  return { id: v.id.toLowerCase(), ms: Math.round(Math.min(MAX_END_VIDEO_MS, v.ms)), title: text(v.title, 80) }
+}
+
+/** The progress bar a kit puts on its clips (its accent colour filled in); null: none */
+export function brandProgressBar(d: Pick<BrandKitData, 'progress_bar' | 'colors'>): ProgressBar | null {
+  const p = d.progress_bar
+  return p?.on ? { color: p.color === 'accent' ? d.colors.accent : p.color, height: p.height, position: p.position } : null
 }
 
 /** A kit's settings as they may be saved: anything missing or wrong takes the default */
@@ -227,6 +278,9 @@ export function cleanBrandKitData(raw: unknown, userId?: string): BrandKitData {
       opacity: num(logo.opacity, 0.1, 1, def.logo.opacity),
       show: (['all', 'start', 'end'] as const).includes(logo.show as LogoShow) ? logo.show as LogoShow : def.logo.show,
       seconds: Math.round(num(logo.seconds, LOGO_SECONDS[0], LOGO_SECONDS[1], def.logo.seconds)),
+      // (on unless switched off: a kit from before these keeps clear and moves off faces too)
+      safe: logo.safe !== false,
+      smart: logo.smart !== false,
     },
     captions: {
       on: cap.on === true,
@@ -270,6 +324,20 @@ export function cleanBrandKitData(raw: unknown, userId?: string): BrandKitData {
       handle: { show: true, color: color(d.colors?.accent, def.colors.accent), size: 40 },
     }),
     is_default: d.is_default === true,
+    // (its own key: a kit's `progress` from before 2026-10-20, hidden since, doesn't come back on by itself)
+    progress_bar: {
+      on: d.progress_bar?.on === true,
+      color: d.progress_bar?.color === 'accent' ? 'accent' : color(d.progress_bar?.color, 'accent'),
+      height: Math.round(num(d.progress_bar?.height, PROGRESS_HEIGHT[0], PROGRESS_HEIGHT[1], def.progress_bar.height)),
+      position: d.progress_bar?.position === 'top' ? 'top' : 'bottom',
+    },
+    ends: {
+      card: d.ends?.card === true,
+      seconds: Math.round(num(d.ends?.seconds, END_CARD_SECONDS[0], END_CARD_SECONDS[1], def.ends.seconds)),
+      intro: endVideoOf(d.ends?.intro),
+      outro: endVideoOf(d.ends?.outro),
+    },
+    words: cleanBrandWords(d.words),
     frames: {
       corners: typeof d.frames?.corners === 'number' && isFinite(d.frames.corners) ? Math.round(num(d.frames.corners, 0, 100, 80)) : null,
     },
@@ -372,18 +440,72 @@ export function logoSpan(logo: BrandKitData['logo'], lengthMs: number): [number,
 export const showHandle = (handle: string) => (handle ? `@${handle.replace(/^@+/, '')}` : '')
 
 /**
- * Where a kit's logo sits on the 1080 × 1920 frame (shares of the frame, like a photo on the clip):
- * its width, its height from its shape, in its corner a margin in from the edges.
+ * What Instagram Reels and YouTube Shorts draw over a video (shares of the 9:16 frame, the larger of
+ * the two: the editor's PlatformOverlay PLATFORM_SAFE): the header along the top, the name and caption
+ * along the bottom, the like / comment / share column down the right from `rightFrom`, and a thin edge.
+ * A logo kept clear (logo.safe) sits inside it.
  */
-export function logoBox(logo: BrandKitData['logo'], frameW = 1080, frameH = 1920): { x: number; y: number; w: number; h: number } {
+export const LOGO_SAFE = { top: 0.08, bottom: 0.13, right: 0.14, rightFrom: 0.45, edge: 0.035 }
+
+/** A box on the frame, as shares of it */
+export interface FrameRect { x: number; y: number; w: number; h: number }
+
+const r4 = (v: number) => Math.round(v * 10000) / 10000
+
+/**
+ * Where a kit's logo sits on the 1080 × 1920 frame (shares of the frame, like a photo on the clip):
+ * its width, its height from its shape, in its corner (`corner`, else the kit's) a margin in from the
+ * edges — kept clear of the apps' buttons (logo.safe): below their header, above their caption, left
+ * of their button column.
+ */
+export function logoBox(logo: BrandKitData['logo'], frameW = 1080, frameH = 1920, corner: LogoCorner = logo.corner): FrameRect {
   const w = logo.size
   const h = Math.min(0.9, (w * frameW * (logo.ratio ?? 1)) / frameH)
-  const mx = LOGO_MARGIN, my = (LOGO_MARGIN * frameW) / frameH
+  const safe = logo.safe !== false
+  const mx = safe ? Math.max(LOGO_MARGIN, LOGO_SAFE.edge) : LOGO_MARGIN
+  const top = safe ? LOGO_SAFE.top : (LOGO_MARGIN * frameW) / frameH
+  const bottom = safe ? LOGO_SAFE.bottom : (LOGO_MARGIN * frameW) / frameH
+  // (bottom right: left of the button column, which runs down the right from `rightFrom`)
+  const right = safe && corner === 'br' ? LOGO_SAFE.right : mx
   // Placed anywhere (dragged): there, kept inside the frame; else in its corner
-  const x = logo.x !== null ? Math.min(1 - w, Math.max(0, logo.x)) : logo.corner.endsWith('l') ? mx : 1 - mx - w
-  const y = logo.y !== null ? Math.min(1 - h, Math.max(0, logo.y)) : logo.corner.startsWith('t') ? my : 1 - my - h
-  return { x: Math.round(x * 10000) / 10000, y: Math.round(y * 10000) / 10000, w: Math.round(w * 10000) / 10000, h: Math.round(h * 10000) / 10000 }
+  const x = logo.x !== null ? Math.min(1 - w, Math.max(0, logo.x)) : corner.endsWith('l') ? mx : 1 - right - w
+  const y = logo.y !== null ? Math.min(1 - h, Math.max(0, logo.y)) : corner.startsWith('t') ? top : 1 - bottom - h
+  return { x: r4(x), y: r4(y), w: r4(w), h: r4(h) }
 }
+
+/** A logo as a watermark (Phase 4): small, faint, the whole clip, clear of the apps' buttons */
+export const WATERMARK = { size: 0.12, opacity: 0.5, show: 'all', safe: true } as const satisfies Partial<BrandKitData['logo']>
+export const isWatermark = (logo: BrandKitData['logo']) =>
+  Math.abs(logo.size - WATERMARK.size) < 0.005 && Math.abs(logo.opacity - WATERMARK.opacity) < 0.01 && logo.show === WATERMARK.show && logo.safe
+
+/** How much two boxes overlap (a share of the frame's area) */
+const overlapArea = (a: FrameRect, b: FrameRect) =>
+  Math.max(0, Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x)) * Math.max(0, Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y))
+
+/**
+ * The corner a kit's logo is clearest in on a clip (Phase 4, "smart spot"): the kit's own corner when
+ * nothing is in the way there, else the corner covering the least of what's to `avoid` — its captions,
+ * the faces in it — the kit's corner winning a tie
+ */
+export function pickLogoCorner(logo: BrandKitData['logo'], avoid: FrameRect[]): LogoCorner {
+  const order = [...new Set<LogoCorner>([logo.corner, 'tr', 'tl', 'br', 'bl'])]
+  const cost = (c: LogoCorner) => { const b = logoBox(logo, 1080, 1920, c); return avoid.reduce((t, a) => t + overlapArea(b, a), 0) }
+  const scored = order.map(c => ({ c, v: cost(c) }))
+  const clear = scored.find(x => x.v < 1e-4)
+  return (clear ?? scored.reduce((best, x) => (x.v < best.v - 1e-6 ? x : best))).c
+}
+
+/** Where a kit's logo goes on a clip: placed by hand — there; else in its corner, or the clearest one (logo.smart) */
+export function brandLogoBox(logo: BrandKitData['logo'], avoid: FrameRect[] = []): FrameRect {
+  if (logo.x !== null || !logo.smart || !avoid.length) return logoBox(logo)
+  return logoBox(logo, 1080, 1920, pickLogoCorner(logo, avoid))
+}
+
+/**
+ * The band captions take up on the frame (a little taller than a line or two of them), from where
+ * they sit (`y`: their middle, a share of the frame's height): for the logo to keep off
+ */
+export const captionBand = (y: number): FrameRect => ({ x: 0.06, y: Math.max(0, y - 0.08), w: 0.88, h: 0.16 })
 
 // ── Making a kit in a minute (brand kit rebuild, Phase 1) ─────────────────────
 

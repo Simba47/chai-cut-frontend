@@ -5,6 +5,8 @@ import type { CaptionStyle, SegmentLocal, TextOverlay, TranscriptWord } from '@c
 import sql from '@/lib/db'
 import { r2, R2_BUCKET } from '@/lib/r2'
 import { rowsToLocal } from '@/modules/editor/utils'
+import { brandCaptionWords } from '@/lib/brandWords'
+import { brandWordsFor } from './brandKits'
 
 export interface ClipPreviewData {
   id: string; start_ms: number; end_ms: number
@@ -77,7 +79,8 @@ export async function getClipPreview(userId: string, clipId: string): Promise<Cl
   return {
     id: clip.id, start_ms: clip.start_ms, end_ms: clip.end_ms, video_id: clip.video_id,
     segments,
-    words: words as unknown as TranscriptWord[],
+    // (as the brand writes them: its spellings, its hidden words — as the editor and the export show them)
+    words: brandCaptionWords([...words] as unknown as TranscriptWord[], await brandWordsFor(userId, clipId)),
     captionStyle: (style as unknown as CaptionStyle) ?? null,
     textOverlays: (overlays as unknown as TextOverlay[]).filter(t => !t.hidden),
     stockUrls,

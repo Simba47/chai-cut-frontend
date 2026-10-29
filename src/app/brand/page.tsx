@@ -4,15 +4,17 @@ import { useEffect, useRef, useState } from 'react'
 import { Breadcrumbs } from '@/components/ui/breadcrumbs'
 import { AccountMenu } from '@/components/ui/account-menu'
 import { BrandLoaderScreen } from '@/components/ui/brand-loader'
-import { useBrandKits, BrandKitStudio, KitBadge } from '@/components/editor/BrandKit'
+import { useBrandKits, BrandKitStudio } from '@/components/editor/BrandKit'
 import { BrandSetup } from '@/components/brand/BrandSetup'
 import type { BrandKit } from '@/lib/shared/brandKit'
+import { ROLE_NAMES, type KitInviteIn } from '@/lib/shared/brandTeam'
 
 /**
  * Brand kits (user, 2026-10-26): every kit of the account in one place, outside the editor — each one
  * a card (its logo, colours, name; Default; shared by someone), a new one set up in a minute
  * (BrandSetup), any one opened in the full kit editor (BrandKitStudio). ?kit=<id>&view=setup|edit
- * opens one straight away (the editor and Make my clips link here). Styles: .bk-* in globals.css.
+ * opens one straight away (the editor and Make my clips link here). Invites to other people's kits wait
+ * at the top (Phase 6); ?invite=<id> — the link an owner sends — points at one. Styles: .bk-* in globals.css.
  */
 type View = { mode: 'list' } | { mode: 'setup' | 'edit'; id: string }
 
@@ -22,6 +24,10 @@ export default function BrandPage() {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [confirm, setConfirm] = useState<BrandKit | null>(null)
+  // An invite link opened (?invite=<id>): that invite, picked out — read before the address is tidied below
+  const [linked, setLinked] = useState<string | null>(null)
+  const [answering, setAnswering] = useState<string | null>(null)
+  useEffect(() => { setLinked(new URLSearchParams(window.location.search).get('invite')) }, [])
   // (the kits as they are now, for reading the address on back / forward)
   const kitsRef = useRef(brand.kits)
   kitsRef.current = brand.kits
@@ -73,6 +79,10 @@ export default function BrandPage() {
     for (const k of own) if (k.id !== kit.id && k.data.is_default) brand.update(k.id, { data: { ...k.data, is_default: false } })
     brand.update(kit.id, { data: { ...kit.data, is_default: true } })
   }
+  async function answer(inv: KitInviteIn, accept: boolean) {
+    setAnswering(inv.id); setError(null)
+    try { await brand.answerInvite(inv.id, accept); if (linked === inv.id) setLinked(null) } catch (e) { setError(e instanceof Error ? e.message : String(e)) } finally { setAnswering(null) }
+  }
   async function remove(kit: BrandKit) {
     setConfirm(null); setError(null)
     try { await (kit.shared_by ? brand.leave(kit.id) : brand.remove(kit.id)) } catch (e) { setError(e instanceof Error ? e.message : String(e)) }
@@ -122,7 +132,7 @@ export default function BrandPage() {
             </div>
             {own.length > 0 && (
               <div className="flex items-center gap-3">
-                <span className="bk-count">{own.length} of {brand.limit} on your plan</span>
+                <span className="bk-count"><b>{own.length}</b> of {brand.limit} on your plan</span>
                 <button type="button" onClick={newKit} disabled={busy || atLimit} className="bk-primary" title={atLimit ? 'Your plan has room for no more kits' : undefined}>
                   {busy ? 'Making it…' : '+ New brand kit'}
                 </button>
@@ -131,6 +141,31 @@ export default function BrandPage() {
           </header>
 
           {(error || brand.error) && <div className="bk-alert" role="alert">{error ?? brand.error}</div>}
+          {linked && !brand.invites.some(i => i.id === linked) && !brand.error && (
+            <p className="bk-note" role="status">
+              That invite isn&rsquo;t waiting for this account: it may be for another email (sign in with the one it was sent to),
+              taken back, expired, or already accepted. <button type="button" className="bk-link" onClick={() => setLinked(null)}>OK</button>
+            </p>
+          )}
+          {brand.invites.length > 0 && (
+            <section className="flex flex-col gap-3" aria-label="Invites">
+              <h2 className="bk-h2">Invites</h2>
+              <ul className="bk-invites">
+                {brand.invites.map(inv => (
+                  <li key={inv.id} className="bk-invite" data-linked={linked === inv.id || undefined}>
+                    <span className="flex-1 min-w-0">
+                      <strong>{inv.kit_name}</strong>
+                      <span>{inv.by} invited you to their brand kit · {ROLE_NAMES[inv.role]}</span>
+                    </span>
+                    <button type="button" className="bk-primary" disabled={answering === inv.id} onClick={() => answer(inv, true)}>
+                      {answering === inv.id ? 'Joining…' : 'Accept'}
+                    </button>
+                    <button type="button" className="bk-link bk-link-quiet" disabled={answering === inv.id} onClick={() => answer(inv, false)}>Decline</button>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
           {atLimit && own.length > 0 && (
             <p className="bk-note">Your plan has room for {brand.limit} brand kit{brand.limit > 1 ? 's' : ''}. <a href="/pricing">Upgrade</a> for more — one per client or channel.</p>
           )}
@@ -149,6 +184,16 @@ export default function BrandPage() {
             <div className="bk-grid">
               {own.map(k => <KitCard key={k.id} kit={k} onEdit={() => setView({ mode: 'edit', id: k.id })} onSetup={() => setView({ mode: 'setup', id: k.id })}
                 onDefault={() => makeDefault(k)} onDelete={() => setConfirm(k)} />)}
+              {/* one more: a tile beside them */}
+              {!atLimit && (
+                <button type="button" className="bk-add" onClick={newKit} disabled={busy}>
+                  <span className="bk-add-ico" aria-hidden="true">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round"><path d="M12 5v14M5 12h14" /></svg>
+                  </span>
+                  <span className="bk-add-title">{busy ? 'Making it…' : 'New brand kit'}</span>
+                  <span className="bk-add-sub">One per client, channel or show</span>
+                </button>
+              )}
             </div>
           )}
 
@@ -182,39 +227,63 @@ export default function BrandPage() {
 }
 
 /** A kit on the Brand kits page: what it looks like, and what can be done with it */
+/** A kit: its brand shown as a little cover (its colours, its logo, its @handle), its name and colours, what to do with it */
 function KitCard({ kit, onEdit, onSetup, onDefault, onDelete }: {
   kit: BrandKit; onEdit: () => void; onSetup?: () => void; onDefault?: () => void; onDelete: () => void
 }) {
   const d = kit.data
-  const colors = [d.colors.main, d.colors.accent, ...d.colors.extra]
+  const colors = [...new Set([d.colors.main, d.colors.accent, ...d.colors.extra])]
   const started = !!d.logo.path || d.captions.on || !!d.handle
+  const isDefault = d.is_default && !kit.shared_by
+  const handle = d.handle ? `@${d.handle.replace(/^@+/, '')}` : null
   return (
-    <article className="bk-card" data-default={d.is_default || undefined}>
+    <article className="bk-card" data-default={isDefault || undefined}
+      // (it leans a little toward the pointer: --rx / --ry, globals.css .bk-card)
+      onPointerMove={e => {
+        if (e.pointerType !== 'mouse') return
+        const r = e.currentTarget.getBoundingClientRect()
+        e.currentTarget.style.setProperty('--ry', `${(((e.clientX - r.left) / r.width) - 0.5) * 7}deg`)
+        e.currentTarget.style.setProperty('--rx', `${(0.5 - (e.clientY - r.top) / r.height) * 7}deg`)
+      }}
+      onPointerLeave={e => { e.currentTarget.style.setProperty('--rx', '0deg'); e.currentTarget.style.setProperty('--ry', '0deg') }}>
       <button type="button" className="bk-card-face" onClick={onEdit} aria-label={`Open ${kit.name}`}>
-        <span className="bk-card-logo" style={{ background: d.colors.main }}>
-          {d.logo.path && kit.logo_url
-            // eslint-disable-next-line @next/next/no-img-element
-            ? <img src={kit.logo_url} alt="" />
-            : <KitBadge kit={kit} />}
+        {/* The cover: the kit's main colour, lit with its accent, its logo in the middle */}
+        <span className="bk-card-cover" style={{ ['--main' as string]: d.colors.main, ['--accent' as string]: d.colors.accent }}>
+          <span className="bk-card-logo">
+            {d.logo.path && kit.logo_url
+              // eslint-disable-next-line @next/next/no-img-element
+              ? <img src={kit.logo_url} alt="" />
+              : <span className="bk-card-initial">{kit.name.trim().charAt(0).toUpperCase() || 'B'}</span>}
+          </span>
+          {handle && <span className="bk-card-handle">{handle}</span>}
+          {isDefault && <span className="bk-tag" title="New clips — and Make my clips — get this brand by themselves">Default</span>}
+          {kit.shared_by && <span className="bk-tag bk-tag-quiet">Shared</span>}
         </span>
         <span className="bk-card-body">
           <span className="bk-card-name">{kit.name}</span>
           <span className="bk-card-meta">
-            {kit.shared_by ? `Shared by ${kit.shared_by}` : d.handle ? `@${d.handle}` : 'No @handle yet'}
+            {kit.shared_by ? `By ${kit.shared_by} · ${ROLE_NAMES[kit.role ?? 'use']}${d.lock ? ' · brand lock' : ''}` : handle ?? 'No @handle yet'}
           </span>
           <span className="bk-card-colors" aria-label="Brand colours">
-            {colors.map((c, i) => <i key={`${c}-${i}`} style={{ background: c }} />)}
+            {colors.map(c => <i key={c} style={{ background: c }} title={c} />)}
+            <span className="bk-card-chips">
+              {d.captions?.on && <span>Captions</span>}
+              {d.ends?.card && <span>End card</span>}
+              {d.progress_bar?.on && <span>Progress bar</span>}
+            </span>
           </span>
         </span>
       </button>
       <div className="bk-card-foot">
-        {d.is_default && !kit.shared_by
-          ? <span className="bk-tag" title="New clips — and Make my clips — get this brand by themselves">Default</span>
-          : onDefault && <button type="button" className="bk-link" onClick={onDefault} title="New clips — and Make my clips — get this brand by themselves">Make default</button>}
-        <span className="flex-1" />
+        {!isDefault && onDefault && <button type="button" className="bk-link" onClick={onDefault} title="New clips — and Make my clips — get this brand by themselves">Make default</button>}
         {onSetup && !started && <button type="button" className="bk-link bk-link-strong" onClick={onSetup}>Finish setup</button>}
-        <button type="button" className="bk-link" onClick={onEdit}>{kit.shared_by ? 'View' : 'Edit'}</button>
-        <button type="button" className="bk-link bk-link-quiet" onClick={onDelete}>{kit.shared_by ? 'Leave' : 'Delete'}</button>
+        <span className="flex-1" />
+        <button type="button" className="bk-icon-btn" onClick={onDelete} title={kit.shared_by ? 'Stop using this kit' : 'Delete this kit'} aria-label={kit.shared_by ? `Leave ${kit.name}` : `Delete ${kit.name}`}>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            {kit.shared_by ? <path d="M15 4h4v16h-4M10 17l-5-5 5-5M5 12h11" /> : <path d="M4 7h16M10 11v6M14 11v6M5 7l1 12a2 2 0 002 2h8a2 2 0 002-2l1-12M9 7V4h6v3" />}
+          </svg>
+        </button>
+        <button type="button" className="bk-edit" onClick={onEdit}>{kit.shared_by && kit.role !== 'edit' ? 'View' : 'Edit'}</button>
       </div>
     </article>
   )

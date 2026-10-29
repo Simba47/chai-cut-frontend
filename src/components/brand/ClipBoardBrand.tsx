@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
 /**
  * The brand on the clip board (brand kit rebuild, Phase 2, 2026-10-27): which kit each clip has (a
@@ -42,7 +42,7 @@ export function useClipBrands(videoId: string, clipIds: string[]): ClipBrands {
   const clipsKey = clipIds.join(',')
 
   const loadClips = useCallback(() => fetch(`/api/videos/${videoId}/brand`).then(r => json<{ clips: Record<string, string | null> }>(r))
-    .then(d => setOf(d.clips)).catch(() => { /* tags left as they were */ }), [videoId])
+    .then(d => setOf(d.clips ?? {})).catch(() => { /* tags left as they were */ }), [videoId])
   useEffect(() => {
     fetch('/api/brand-kits').then(r => json<{ kits: Array<{ id: string; name: string; data: { is_default?: boolean; colors: { main: string; accent: string } } }> }>(r))
       .then(d => {
@@ -89,6 +89,62 @@ const Dots = ({ k }: { k: Pick<KitLite, 'main' | 'accent'> }) => (
   <span className="cbb-dots" aria-hidden="true"><i style={{ background: k.main }} /><i style={{ background: k.accent }} /></span>
 )
 
+/**
+ * Which kit (user, 2026-10-28: a designed menu, not the browser's own list): the picked kit's colours and
+ * name; open, each kit with its colours, Default marked, the picked one ticked. ↑ / ↓, Enter, Esc; a
+ * click outside closes it.
+ */
+function KitPick({ kits, value, onChange, disabled }: { kits: KitLite[]; value: string; onChange: (id: string) => void; disabled?: boolean }) {
+  const [open, setOpen] = useState(false)
+  const [active, setActive] = useState(0)
+  const ref = useRef<HTMLDivElement>(null)
+  const btn = useRef<HTMLButtonElement>(null)
+  const cur = kits.find(k => k.id === value) ?? kits[0]
+  useEffect(() => {
+    if (!open) return
+    const away = (e: PointerEvent) => { if (!ref.current?.contains(e.target as Node)) setOpen(false) }
+    window.addEventListener('pointerdown', away)
+    return () => window.removeEventListener('pointerdown', away)
+  }, [open])
+  const show = () => { setActive(Math.max(0, kits.findIndex(k => k.id === value))); setOpen(true) }
+  const pick = (id: string) => { onChange(id); setOpen(false); btn.current?.focus() }
+  return (
+    <div ref={ref} className="cbb-pick"
+      onKeyDown={e => {
+        if (!open) { if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); show() } return }
+        if (e.key === 'ArrowDown') { e.preventDefault(); setActive(i => (i + 1) % kits.length) }
+        else if (e.key === 'ArrowUp') { e.preventDefault(); setActive(i => (i - 1 + kits.length) % kits.length) }
+        else if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pick(kits[active].id) }
+        else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); setOpen(false) }
+        else if (e.key === 'Tab') setOpen(false)
+      }}>
+      <button ref={btn} type="button" className="cbb-pick-btn" disabled={disabled} aria-haspopup="listbox" aria-expanded={open}
+        aria-label={`The brand kit to put on the clips: ${cur?.name ?? 'none'}`} onClick={() => (open ? setOpen(false) : show())}>
+        {cur && <Dots k={cur} />}
+        <span className="cbb-pick-name">{cur?.name}</span>
+        {cur?.isDefault && <span className="cbb-pick-def">Default</span>}
+        <svg className="cbb-pick-chev" width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 9l6 6 6-6" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" /></svg>
+      </button>
+      {open && (
+        <ul className="cbb-pick-list" role="listbox" aria-label="Brand kits">
+          {kits.map((k, i) => (
+            <li key={k.id} role="option" aria-selected={k.id === value} className="cbb-pick-item" data-active={i === active || undefined}
+              onMouseEnter={() => setActive(i)} onClick={() => pick(k.id)}>
+              <Dots k={k} />
+              <span className="cbb-pick-name">{k.name}</span>
+              {k.isDefault && <span className="cbb-pick-def">Default</span>}
+              {k.id === value && (
+                <svg className="cbb-pick-check" width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" /></svg>
+              )}
+            </li>
+          ))}
+          <li role="presentation" className="cbb-pick-foot"><a href="/brand">Manage brand kits →</a></li>
+        </ul>
+      )}
+    </div>
+  )
+}
+
 /** Above the clips: the kit, "Put on all N clips", how many have one, and "Take off all" */
 export function BrandAllBar({ b, total }: { b: ClipBrands; total: number }) {
   if (!total) return null
@@ -107,10 +163,7 @@ export function BrandAllBar({ b, total }: { b: ClipBrands; total: number }) {
     <div className="flex flex-col gap-1.5">
       <div className="cbb-bar">
         <span className="cbb-label">Brand</span>
-        {kit && <Dots k={kit} />}
-        <select value={b.pick} onChange={e => b.setPick(e.target.value)} disabled={!!b.busy} aria-label="The brand kit to put on the clips" className="cbb-select">
-          {b.kits.map(k => <option key={k.id} value={k.id}>{k.name}{k.isDefault ? ' · default' : ''}</option>)}
-        </select>
+        <KitPick kits={b.kits} value={b.pick} onChange={b.setPick} disabled={!!b.busy} />
         <button type="button" className="cbb-btn" data-primary disabled={!!b.busy || !kit} onClick={() => b.applyAll(b.pick)}
           title={allOn ? 'Put it on again: a clip whose kit changed gets the newest version' : `Put ${kit?.name ?? 'this kit'} on all ${total} clips`}>
           {b.busy === 'all' ? 'Working…' : `Put on all ${total}`}

@@ -28,9 +28,11 @@ const frame = (id: string): SegmentLocal => ({
 function clip(over: Partial<BrandTarget> = {}): BrandTarget {
   return {
     clipId: 'c1', lengthMs: LEN, mainVideoId: 'v1', overlays: [], texts: [text('t1'), text('t2')],
-    caption: { template: 'plain', color: '#eeeeee', size: 52, animation: 'karaoke' }, textCase: 'title', segments: [frame('f1')], ...over,
+    caption: { template: 'plain', color: '#eeeeee', size: 52, animation: 'karaoke' }, textCase: 'title', segments: [frame('f1')], progressBar: null, keyframes: {}, transitions: [], timelineEdits: true, audioTracks: [], canInsert: true, ...over,
   }
 }
+/** The kit changed: the clip as it follows (the record of what the brand changed left aside) */
+const upd = (t: BrandTarget, old: BrandKitData, k: BrandKit) => updateBrand(t, old, k, null).target
 const logoOf = (t: BrandTarget) => t.overlays.find(o => o.storage_path?.startsWith('brand/'))
 
 test('on: logo in its corner, title style on text, caption look, frame colours', () => {
@@ -70,7 +72,7 @@ test('live: a new logo, colours and title style reach the clip', () => {
     colors: { ...k1.data.colors, main: '#334455' }, title: { font: 'Montserrat', color: '#ffffff', size: 90 },
   })
   k2.logo_url = 'https://cdn/logo-b.png'
-  const t = updateBrand(on.target, k1.data, k2)
+  const t = upd(on.target, k1.data, k2)
   const logo = logoOf(t)!
   assert.equal(logo.storage_path, 'brand/u1/b.png')
   assert.equal(logo.preview_url, 'https://cdn/logo-b.png')
@@ -89,7 +91,7 @@ test('live: the user\'s own changes stay — a moved logo, a recoloured text, a 
   }
   const k2 = kit({ logo: { ...k1.data.logo, path: 'brand/u1/b.png', ratio: 0.5 }, title: { ...k1.data.title, color: '#ff0000' },
     captions: { ...k1.data.captions, color: '#000000', size: 70 } })
-  const t = updateBrand(mine, k1.data, k2)
+  const t = upd(mine, k1.data, k2)
   const logo = logoOf(t)!
   assert.deepEqual([logo.x, logo.y, logo.storage_path], [0.1, 0.7, 'brand/u1/b.png'])
   assert.equal(logo.w, on.target.overlays[0].w)
@@ -102,9 +104,9 @@ test('live: the user\'s own changes stay — a moved logo, a recoloured text, a 
 test('live: a logo the user deleted stays deleted; a kit that loses its logo takes it off', () => {
   const k1 = kit(), on = putBrandOn(clip(), k1)
   const k2 = kit({ logo: { ...k1.data.logo, path: 'brand/u1/b.png' } })
-  assert.equal(logoOf(updateBrand({ ...on.target, overlays: [] }, k1.data, k2)), undefined)
+  assert.equal(logoOf(upd({ ...on.target, overlays: [] }, k1.data, k2)), undefined)
   const k3 = kit({ logo: { ...k1.data.logo, path: null } })
-  assert.equal(logoOf(updateBrand(on.target, k1.data, k3)), undefined)
+  assert.equal(logoOf(upd(on.target, k1.data, k3)), undefined)
 })
 
 test('a frame picked while the brand is on gets it too', () => {
@@ -138,7 +140,7 @@ test('frame text takes the kit\'s title font; off puts its own back', () => {
 test('a new title font reaches frame text still in the old one; a font the user picked stays', () => {
   const k1 = kit(), on = putBrandOn(clip({ segments: [frame('f1'), frame('f2')] }), k1)
   const mine = { ...on.target, segments: on.target.segments.map(s => (s.id === 'f2' ? { ...s, frame: { ...s.frame!, items: s.frame!.items!.map(it => ({ ...it, font: 'Anton' })) } } : s)) }
-  const t = updateBrand(mine, k1.data, kit({ title: { ...k1.data.title, font: 'Montserrat' } }))
+  const t = upd(mine, k1.data, kit({ title: { ...k1.data.title, font: 'Montserrat' } }))
   assert.equal(t.segments[0].frame!.items![0].font, 'Montserrat')
   assert.equal(t.segments[1].frame!.items![0].font, 'Anton')
 })
@@ -163,4 +165,89 @@ test('ready text styles: the title font when they have none; the call to action\
 test('caption looks: the main one first, then the others', () => {
   const d = cleanBrandKitData({ captions: { on: true, template: 'tpl:clean' }, more_captions: [{ id: 'hooks', name: 'Hooks', captions: { template: 'tpl:beast' } }] })
   assert.deepEqual(brandCaptionLooks(d).map(l => [l.id, l.captions.template]), [['main', 'tpl:clean'], ['hooks', 'tpl:beast']])
+})
+
+// ── Brand kit Phase 4: the logo kept clear of the apps' buttons, faces and captions ─────────
+import { LOGO_SAFE, pickLogoCorner, brandLogoBox, captionBand, WATERMARK, isWatermark } from '@/lib/shared/brandKit'
+
+test('kept clear: below the apps\' header, above their caption, left of their buttons', () => {
+  const l = kit().data.logo
+  const tr = logoBox(l, 1080, 1920, 'tr'), br = logoBox(l, 1080, 1920, 'br'), bl = logoBox(l, 1080, 1920, 'bl')
+  assert.equal(tr.y, LOGO_SAFE.top)
+  assert.ok(Math.abs(br.y + br.h - (1 - LOGO_SAFE.bottom)) < 1e-3)
+  assert.ok(br.x + br.w <= 1 - LOGO_SAFE.right + 1e-4)
+  assert.ok(bl.x >= LOGO_SAFE.edge - 1e-4 && tr.x + tr.w <= 1 - LOGO_SAFE.edge + 1e-4)
+  // (switched off: the old small margin)
+  assert.ok(logoBox({ ...l, safe: false }, 1080, 1920, 'tr').y < 0.03)
+})
+
+test('smart spot: the kit\'s corner when clear, else the clearest one; placed by hand or switched off stays', () => {
+  const l = kit().data.logo   // (top right)
+  assert.equal(pickLogoCorner(l, [captionBand(0.84)]), 'tr')
+  const face = { x: 0.6, y: 0.05, w: 0.35, h: 0.25 }
+  assert.equal(pickLogoCorner(l, [face]), 'tl')
+  assert.equal(pickLogoCorner(l, [face, { x: 0, y: 0.05, w: 0.4, h: 0.25 }, captionBand(0.5)]), 'br')
+  assert.deepEqual(brandLogoBox({ ...l, smart: false }, [face]), logoBox(l))
+  assert.deepEqual(brandLogoBox({ ...l, x: 0.7, y: 0.1 }, [face]), logoBox({ ...l, x: 0.7, y: 0.1 }))
+})
+
+test('on a clip: the logo goes where it\'s clear; a kit change moves it, a logo the user moved stays', () => {
+  const face = { x: 0.6, y: 0.05, w: 0.35, h: 0.25 }
+  const k1 = kit(), on = putBrandOn(clip({ avoid: [face] }), k1)
+  assert.deepEqual(pick(logoOf(on.target)!), logoBox(k1.data.logo, 1080, 1920, 'tl'))
+  const k2 = kit({ logo: { ...k1.data.logo, size: 0.25 } })
+  assert.deepEqual(pick(logoOf(upd(on.target, k1.data, k2))!), logoBox(k2.data.logo, 1080, 1920, 'tl'))
+  const moved = { ...on.target, overlays: on.target.overlays.map(o => ({ ...o, x: 0.3, y: 0.4 })) }
+  assert.deepEqual([logoOf(upd(moved, k1.data, k2))!.x, logoOf(upd(moved, k1.data, k2))!.y], [0.3, 0.4])
+})
+
+test('a clip branded before Phase 4 (old margins) still follows the kit', () => {
+  const k1 = kit(), old = { ...k1.data, logo: { ...k1.data.logo, safe: false } }
+  const on = putBrandOn(clip(), { ...k1, data: old })
+  const t = upd(on.target, { ...old, logo: { ...old.logo, safe: undefined as unknown as boolean } }, k1)
+  assert.deepEqual(pick(logoOf(t)!), logoBox(k1.data.logo))
+})
+
+test('watermark: small, faint, the whole clip', () => {
+  const l = { ...kit().data.logo, ...WATERMARK }
+  assert.ok(isWatermark(l) && !isWatermark(kit().data.logo))
+  assert.ok(isWatermark(cleanBrandKitData({ logo: { path: null, ...WATERMARK } }).logo))
+})
+
+function pick(o: { x: number; y: number; w: number; h: number }) { return { x: o.x, y: o.y, w: o.w, h: o.h } }
+
+// ── Brand kit Phase 4: the kit's progress bar ─────────
+import { brandProgressBar } from '@/lib/shared/brandKit'
+
+const BAR_ON = { on: true, color: 'accent', height: 10, position: 'bottom' as const }
+const mineBar = { color: '#123456', height: 20, position: 'top' as const }
+
+test("progress bar: on in the kit's accent; off puts the clip's own back", () => {
+  const k = kit({ progress_bar: BAR_ON })
+  const on = putBrandOn(clip({ progressBar: mineBar }), k)
+  assert.deepEqual(on.target.progressBar, { color: '#ff5500', height: 10, position: 'bottom' })
+  assert.deepEqual(takeBrandOff(on.target, k.data, on.before).progressBar, mineBar)
+  // (a bar the user changed while it was on stays)
+  const changed = { ...on.target, progressBar: { ...on.target.progressBar!, height: 30 } }
+  assert.equal(takeBrandOff(changed, k.data, on.before).progressBar!.height, 30)
+})
+
+test("progress bar: a kit without one leaves the clip's own alone, on and off", () => {
+  const k = kit(), on = putBrandOn(clip({ progressBar: mineBar }), k)
+  assert.deepEqual(on.target.progressBar, mineBar)
+  assert.deepEqual(takeBrandOff(on.target, k.data, on.before).progressBar, mineBar)
+})
+
+test("progress bar live: a new colour reaches it; switched on later it goes on; switched off it comes off; the user's own stays", () => {
+  const k1 = kit({ progress_bar: BAR_ON }), on = putBrandOn(clip(), k1)
+  const k2 = kit({ progress_bar: BAR_ON, colors: { main: '#112233', accent: '#00ff00', extra: [] } })
+  assert.equal(upd(on.target, k1.data, k2).progressBar!.color, '#00ff00')
+  assert.equal(upd(on.target, k1.data, kit()).progressBar, null)
+  const k0 = kit(), plain = putBrandOn(clip(), k0)
+  assert.deepEqual(upd(plain.target, k0.data, k1).progressBar, brandProgressBar(k1.data))
+  assert.deepEqual(upd({ ...plain.target, progressBar: mineBar }, k0.data, k1).progressBar, mineBar)
+})
+
+test("a kit's old `progress` (hidden since 2026-10-20) doesn't come back on", () => {
+  assert.equal(cleanBrandKitData({ progress: { on: true, color: '#ff0000' } }).progress_bar.on, false)
 })
