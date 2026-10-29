@@ -116,6 +116,9 @@ export function SubjectsPanel(p: Props) {
   const [renaming, setRenaming] = useState<string | null>(null)
   const [name, setName] = useState('')
   const [groupOpen, setGroupOpen] = useState(false)
+  // Mark as group just pressed: it says so for a moment (✓ Marked), so the press is seen
+  const [marked, setMarked] = useState(false)
+  useEffect(() => { if (!marked) return; const id = setTimeout(() => setMarked(false), 1400); return () => clearTimeout(id) }, [marked])
   const busy = p.subjects.some(s => s.status === 'queued' || s.status === 'running')
   /** Marked but not looked for yet (or the last try failed): Follow takes them */
   const waiting = p.subjects.filter(s => s.status === 'new' || s.status === 'failed').length
@@ -273,7 +276,7 @@ export function SubjectsPanel(p: Props) {
               </div>
             )}
             {heading(`Scene ${curNo} · ${cur.people === 1 ? '1 person' : `${cur.people} people`}`)}
-            <div className="flex flex-col gap-3 rounded-xl p-3.5"
+            <div className="flex flex-col gap-3.5 rounded-2xl px-4 py-5"
               style={{ background: 'rgb(var(--ed-fg) / 0.035)', boxShadow: cur.set ? 'inset 0 0 0 1.5px rgba(200,255,0,0.45)' : 'inset 0 0 0 1px rgb(var(--ed-fg) / 0.07)' }}>
               {cur.people >= 2 ? (
                 // Several people together are one group: one card, one button (the layout and views are the ones on screen)
@@ -282,7 +285,20 @@ export function SubjectsPanel(p: Props) {
                     <div className="flex items-center">
                       {cur.faces.map((f, k) => <FaceDot key={`${curAt}-${k}`} videoUrl={p.videoUrl} at={cur.at} box={f.box} first={k === 0} />)}
                     </div>
-                    <span className="text-[13px] font-semibold text-[var(--ed-text)]">Group of {cur.people}</span>
+                    <span className="text-[14.5px] font-semibold text-[var(--ed-text)]">{cur.people} angles</span>
+                    {/* Mark as group: small, at the card's top right (user, 2026-10-30) */}
+                    {!cur.group && (
+                      <button type="button" onClick={() => { p.onMarkShot(); setMarked(true) }} data-marked={marked || undefined}
+                        title="Set this scene's layout and views first (say Split), then mark it. Every time the clip shows this shot again, it gets the same."
+                        className="sp-mark ml-auto shrink-0 h-8 px-3 flex items-center gap-1.5 rounded-lg text-[12px] font-bold whitespace-nowrap transition-colors hover:bg-[rgba(200,255,0,0.2)] active:scale-95"
+                        style={cur.formatted
+                          ? { background: 'rgb(var(--ed-fg) / 0.06)', color: 'var(--ed-text)', boxShadow: 'inset 0 0 0 1px rgb(var(--ed-fg) / 0.12)' }
+                          : { background: 'rgba(200,255,0,0.12)', color: 'var(--ed-accent-text)', boxShadow: 'inset 0 0 0 1.5px rgba(200,255,0,0.55)' }}>
+                        {marked
+                          ? <><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className="sp-mark-tick"><path d="M5 12.5l4.5 4.5L19 7.5" /></svg>Marked</>
+                          : <>{groupIcon(13)}Mark as group</>}
+                      </button>
+                    )}
                   </div>
                   {cur.group ? (
                     <span className="flex items-center gap-1.5 text-[12px] font-semibold" style={{ color: 'var(--ed-accent-text)' }}>
@@ -299,15 +315,6 @@ export function SubjectsPanel(p: Props) {
                           Formatted · {cur.formatted === 'mixed' ? 'by who talks' : LAYOUT_NAMES[cur.formatted] ?? cur.formatted}
                         </span>
                       )}
-                      <button type="button" onClick={p.onMarkShot}
-                        title="Set this scene's layout and views first (say Split), then mark it. Every time the clip shows this shot again, it gets the same."
-                        className="h-9 flex items-center justify-center gap-2 rounded-lg text-[12.5px] font-bold transition-colors hover:bg-[rgba(200,255,0,0.2)]"
-                        style={cur.formatted
-                          ? { background: 'rgb(var(--ed-fg) / 0.06)', color: 'var(--ed-text)', boxShadow: 'inset 0 0 0 1px rgb(var(--ed-fg) / 0.12)' }
-                          : { background: 'rgba(200,255,0,0.12)', color: 'var(--ed-accent-text)', boxShadow: 'inset 0 0 0 1.5px rgba(200,255,0,0.55)' }}>
-                        {groupIcon(15)}
-                        Mark as group
-                      </button>
                     </>
                   )}
                 </>
@@ -486,7 +493,7 @@ function FaceDot({ videoUrl, at, box: b, first }: { videoUrl: string | null; at:
   const x = Math.max(0, b.x - b.w * 0.25), y = Math.max(0, b.y - b.h * 0.3)
   const url = useFaceAt(videoUrl, at, { x, y, w: Math.min(1 - x, b.w * 1.5), h: Math.min(1 - y, b.h * 1.5) })
   return (
-    <span className="w-11 h-11 rounded-full overflow-hidden shrink-0" aria-hidden="true"
+    <span className="w-10 h-10 rounded-full overflow-hidden shrink-0" aria-hidden="true"
       style={{ marginLeft: first ? 0 : -8, background: 'rgb(var(--ed-fg) / 0.1)', boxShadow: '0 0 0 2px #111112' }}>
       {url
         // eslint-disable-next-line @next/next/no-img-element

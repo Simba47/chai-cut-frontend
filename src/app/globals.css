@@ -3755,3 +3755,11 @@ html[data-theme="light"] .view-switch-knob { box-shadow: inset 0 0 0 1px rgba(12
 /* (user, 2026-10-29) the picked side's knob black, its lime edge kept */
 html .view-switch-knob { background: linear-gradient(180deg, #161618, #050506) !important; }
 html .view-switch-opt[data-on] { color: #fff !important; }
+
+/* (user, 2026-10-30) Mark as group, just pressed: a soft lime pulse round it and the tick drawn in (SubjectsPanel) */
+.sp-mark { transition: background-color .15s, transform .12s; }
+.sp-mark[data-marked] { animation: sp-mark-pulse .7s ease-out; }
+@keyframes sp-mark-pulse { from { box-shadow: inset 0 0 0 1.5px rgba(200, 255, 0, 0.8), 0 0 0 0 rgba(200, 255, 0, 0.45); } to { box-shadow: inset 0 0 0 1.5px rgba(200, 255, 0, 0.55), 0 0 0 8px rgba(200, 255, 0, 0); } }
+.sp-mark-tick path { stroke-dasharray: 24; stroke-dashoffset: 24; animation: sp-mark-tick .35s .05s ease-out forwards; }
+@keyframes sp-mark-tick { to { stroke-dashoffset: 0; } }
+@media (prefers-reduced-motion: reduce) { .sp-mark[data-marked], .sp-mark-tick path { animation: none; stroke-dashoffset: 0; } }
