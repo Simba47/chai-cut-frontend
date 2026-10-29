@@ -3,7 +3,7 @@ import { cleanTrims, trimMap, MAX_CLIP_MS, MIN_CLIP_MS } from '@/lib/trims'
 import { cleanProgressBar } from '@/lib/shared/brandKit'
 import { cleanCardLook, cleanFrameBackground } from '@/lib/shared/brandCard'
 import { cleanBrandOn } from '@/lib/shared/brandOn'
-import type { SegmentLocal, BoxKeyframeLocal, CaptionStyle, TextOverlay, AudioTrack, Transition, Overlay, FrameSettings, FrameItem, CornerStyle } from '@chai-cut/shared'
+import type { SegmentLocal, BoxKeyframeLocal, CaptionStyle, TextOverlay, AudioTrack, Transition, Overlay, FrameSettings, FrameItem, CornerStyle, BrollAlt, BrollPick } from '@chai-cut/shared'
 import { SPEED_MIN, SPEED_MAX } from '@chai-cut/shared'
 
 interface CreateClipInput {
@@ -529,6 +529,27 @@ function slotMap<T>(m: unknown, pick: (v: unknown) => T | undefined): Record<str
 }
 const num = (v: unknown, lo: number, hi: number) => typeof v === 'number' && isFinite(v) ? Math.max(lo, Math.min(hi, v)) : undefined
 
+// B-roll Make my clips laid: its search and the stock videos it chose from (for the editor's Swap) —
+// at most 8, each a stock library's own video (the links importStock accepts), and which one it shows
+const STOCK_REF = /^((pixabay|pexels):\d+|coverr:[A-Za-z0-9_-]{1,64})$/
+const STOCK_HOST = /(^|\.)(pixabay\.com|pexels\.com|coverr\.co)$/
+export function cleanBroll(b: unknown): BrollPick | null {
+  const x = b as Partial<BrollPick> | null | undefined
+  if (!x || !Array.isArray(x.alts)) return null
+  const host = (u: unknown) => { try { return typeof u === 'string' ? new URL(u).hostname : '' } catch { return '' } }
+  const alts: BrollAlt[] = x.alts.slice(0, 8).flatMap((a): BrollAlt[] => {
+    if (!a || typeof a.ref !== 'string' || !STOCK_REF.test(a.ref) || !STOCK_HOST.test(host(a.url))) return []
+    const text = (v: unknown, n: number) => (typeof v === 'string' ? v.slice(0, n) : '')
+    const link = (v: unknown) => (STOCK_HOST.test(host(v)) ? text(v, 600) : '')
+    return [{
+      ref: a.ref, provider: text(a.provider, 16), title: text(a.title, 120), thumb: link(a.thumb), preview: link(a.preview), url: text(a.url, 600),
+      width: Math.round(num(a.width, 0, 10000) ?? 0), height: Math.round(num(a.height, 0, 10000) ?? 0), duration: Math.round(num(a.duration, 0, 36000) ?? 0),
+    }]
+  })
+  if (!alts.length) return null
+  return { query: typeof x.query === 'string' ? x.query.slice(0, 100) : '', alts, at: Math.round(num(x.at, 0, alts.length - 1) ?? 0) }
+}
+
 // Keep only what a frame needs from the client: known fields, sane values, and never the
 // preview-only signed image URLs (they expire; the editor signs fresh ones on load)
 function cleanFrame(frame: FrameSettings): FrameSettings {
@@ -548,7 +569,8 @@ function cleanFrame(frame: FrameSettings): FrameSettings {
     const base: FrameItem = { id: it.id.slice(0, 64), lane: typeof lane === 'string' ? lane : Math.round(lane), kind: it.kind, start_ms: Math.round(start), end_ms: Math.round(end), ...(it.hidden ? { hidden: true } : {}), ...(it.locked ? { locked: true } : {}) }
     if (it.kind === 'video') {
       if (typeof it.source_video_id !== 'string') return []
-      return [{ ...base, source_video_id: it.source_video_id, source_offset_ms: Math.round(num(it.source_offset_ms, 0, 1e9) ?? 0), volume: num(it.volume, 0, 1) ?? 1, muted: !!it.muted, corners: corner(it.corners), ...rectOf(it.rect) }]
+      const broll = cleanBroll(it.broll)
+      return [{ ...base, source_video_id: it.source_video_id, source_offset_ms: Math.round(num(it.source_offset_ms, 0, 1e9) ?? 0), volume: num(it.volume, 0, 1) ?? 1, muted: !!it.muted, corners: corner(it.corners), ...rectOf(it.rect), ...(broll ? { broll } : {}) }]
     }
     if (it.kind === 'photo') {
       if (typeof it.image_path !== 'string') return []

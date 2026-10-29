@@ -50,6 +50,9 @@ export interface FrameItem {
   source_offset_ms?: number
   /** This video's share in the audio mix (0–1) */
   volume?: number
+  /** Video: B-roll Make my clips laid (the worker's lib/broll.ts) — what it searched for, the stock videos
+   *  it looked at (the editor's Swap shows the others) and which of them this is */
+  broll?: BrollPick | null
   muted?: boolean
   /** Not shown (or heard) in the preview or the export */
   hidden?: boolean
@@ -82,6 +85,14 @@ export interface FrameItem {
   /** Band only: show the clip's captions here instead of fixed text */
   captions?: boolean
 }
+
+/** A stock video B-roll was picked from (as the stock search lists it: server/services/stock.ts StockItem) */
+export interface BrollAlt {
+  ref: string; provider: string; title: string
+  thumb: string; preview: string; url: string
+  width: number; height: number; duration: number
+}
+export interface BrollPick { query: string; alts: BrollAlt[]; at: number }
 
 /** Extra settings of a format that uses a frame layout */
 export interface FrameSettings {
