@@ -359,6 +359,12 @@
   transition: opacity .2s, scale .15s, background-color .2s;
 }
 .dash-sheet-field.is-known .dash-sheet-import { background: var(--accent); color: #0A0A0A; }
+/* (user, 2026-10-29) the link pill stays black in light mode too, exactly as in dark */
+[data-theme="light"] .dash-sheet-field {
+  --bg: #0A0A0A; --text: #F4F4F5; --text-muted: rgba(244,244,245,0.58); --text-dim: rgba(244,244,245,0.36);
+  --border-strong: rgba(255,255,255,0.16); --btn-bg: #F4F4F5; --btn-text: #0A0A0A; --accent: #C8FF00;
+  color-scheme: dark;
+}
 .dash-sheet-import:active { scale: .96; }
 .dash-sheet-import:disabled { opacity: .35; cursor: default; }
 .dash-sheet-field.is-known .dash-sheet-import:disabled { opacity: .6; }
@@ -416,9 +422,10 @@
   transition: border-color 0.25s, transform 0.25s cubic-bezier(.2,.8,.2,1), box-shadow 0.25s;
 }
 .vcard.is-ready:hover {
-  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  /* neutral lift (lime is kept for actions): a lighter edge and a deep shadow underneath */
+  border-color: color-mix(in srgb, var(--text) 26%, transparent);
   transform: translateY(-4px);
-  box-shadow: 0 22px 50px -22px color-mix(in srgb, var(--accent) 35%, transparent);
+  box-shadow: 0 1px 0 color-mix(in srgb, var(--text) 10%, transparent) inset, 0 24px 48px -20px rgba(0,0,0,0.9);
 }
 .vcard-thumb {
   position: relative; aspect-ratio: 16 / 9; overflow: hidden; border-radius: 15px;

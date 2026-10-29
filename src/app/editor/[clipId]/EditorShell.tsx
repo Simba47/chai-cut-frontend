@@ -446,7 +446,7 @@ export function EditorShell({
   const [isFreePlan, setIsFreePlan] = useState(false)
   /** The Free plan's watermark shows on the preview, where the export will put it */
   const showWatermark = useFreeWatermark()
-  const [tool, setTool] = useState<Tool>('format')
+  const [tool, setTool] = useState<Tool>('subjects')
   // The editor always opens the same way — a new clip, a refresh, or coming from any board: the
   // tool rail with the options panel closed (a tool opens it), the video, the Preview column on the
   // right at its usual width (Off) and the timeline at its usual height. Sizes dragged while editing
@@ -458,8 +458,8 @@ export function EditorShell({
   useEffect(() => { if (tool === 'brand') setKitStudio(true) }, [tool])
   // What was open before the Brand kit (user, 2026-10-28: closing it goes back there — Brand kit isn't on
   // the rail any more, so nothing else would close its panel)
-  const beforeBrandRef = useRef<{ tool: Tool; open: boolean }>({ tool: 'format', open: false })
-  const lastToolRef = useRef<{ tool: Tool; open: boolean }>({ tool: 'format', open: false })
+  const beforeBrandRef = useRef<{ tool: Tool; open: boolean }>({ tool: 'subjects', open: false })
+  const lastToolRef = useRef<{ tool: Tool; open: boolean }>({ tool: 'subjects', open: false })
   useEffect(() => {
     if (tool === 'brand') { if (lastToolRef.current.tool !== 'brand') beforeBrandRef.current = lastToolRef.current }
     lastToolRef.current = { tool, open: optionsOpen }
@@ -783,7 +783,7 @@ export function EditorShell({
   function closeKitStudio() {
     setKitStudio(false)
     const was = beforeBrandRef.current
-    setTool(was.tool === 'brand' ? 'format' : was.tool)
+    setTool(was.tool === 'brand' || was.tool === 'format' ? 'subjects' : was.tool)
     setOptionsOpen(was.open && was.tool !== 'brand')
   }
   // Esc closes it (not while typing in a field of it)
@@ -3775,6 +3775,51 @@ export function EditorShell({
     pickShot(seg.id)
   }
   /**
+   * The main video's parts picked together, carried off the main row onto a row (as in Resolve, a
+   * selection dragged from V1 to V2): each lifts onto that row at its new start (liftToRow), keeping
+   * their places to each other; where they were is left empty. All on one row: the one let go over
+   * when they all fit there, else a new one (on top, or at the bottom under the main video). One step.
+   */
+  function liftParts(moves: { id: string; startMs: number }[], target: number | 'new' | 'new-below') {
+    if (!moves.length) return
+    if (trimmed) { trimsToPieces(); notifyLocked('The clip is ready to move its parts now — move them again'); return }
+    const segs = moves.map(mv => useEditorStore.getState().segments.find(x => x.id === mv.id))
+    if (segs.some(s => !s)) return
+    if (segs.some(s => s!.locked)) { notifyLocked('A part is locked — unlock it to move it'); return }
+    if (segs.some(s => isInsert(s!, mainVideoId))) { notifyLocked('A video put in the main row is among them — move it on its own'); return }
+    const why = segs.map(s => liftBlock(s!)).find(Boolean)
+    if (why) {
+      notifyLocked(why === 'speed' ? 'A part plays faster or slower — set it back to 1× to move them to another row'
+        : 'Only parts showing the video full screen can move to another row — set their format to Full first')
+      return
+    }
+    const spans = moves.map((mv, i) => {
+      const len = segs[i]!.end_ms - segs[i]!.start_ms
+      const at = Math.round(Math.max(0, Math.min(mv.startMs, MAX_CLIP_MS - len)))
+      return { id: mv.id, at, end: at + len }
+    })
+    const items = visualItems()
+    const fitAll = (t: number) => spans.every(sp => fitsOn(items, t, sp.at, sp.end))
+    const track = target === 'new-below' ? openRowBelow()
+      : target === 'new' ? newTopTrack(items)
+      : fitAll(target) ? target
+      : target < belowRowsRef.current ? openRowBelow() : newTopTrack(items)
+    const editor = useEditorStore.getState(), media = useMediaStore.getState()
+    let segments = editor.segments, keyframes = editor.keyframes
+    for (const sp of spans) {
+      const next = liftToRow(segments, keyframes, sp.id, sp.at, track, mainVideoId, piecesOn, rawClip.start_ms)
+      if (!next) return
+      segments = next.segments; keyframes = next.keyframes
+    }
+    pause()
+    skipCanvasTransitionRef.current = true
+    seekAfterInsertRef.current = Math.min(...spans.map(sp => sp.at))
+    editor.applyTrim(segments, keyframes, editor.trims, rangeAfterPieces(segments))
+    // (no transition joins them to the main row any more)
+    const gone = new Set(spans.map(sp => sp.id))
+    useMediaStore.setState({ transitions: media.transitions.filter(t => !gone.has(t.after_segment_id) && segments.some(x => x.id === t.after_segment_id)) })
+  }
+  /**
    * A video on a row dragged onto the main row: it goes in there (insertVideo), showing the same part
    * of it, with its sound on. A part of the main video on a row goes back to being a part of the main
    * row, with its start at `startMs` (where it was let go) over empty room there, else in between
@@ -4417,12 +4462,11 @@ export function EditorShell({
     else setAudioTracks(prev => prev.map(t => (t.id === ref.id ? { ...t, track } : t)))
   }
   /**
-   * What's picked together carried up or down (the timeline's group drag): each of `ids` on that kind
-   * of row goes `delta` rows (as Resolve moves a selection across tracks). All or none: when anything
-   * else is in the way on a row they'd land on, or one is locked, they stay — and a note says why.
+   * What's picked together carried (the timeline's group drag), once let go: each of `ids` on that
+   * kind of row goes `delta` rows (as Resolve moves a selection across tracks), and where anything else
+   * is on those rows there, rows open for them in place. One locked: they stay.
    */
   function moveGroupRows(ids: string[], delta: number, family: 'visual' | 'audio') {
-    if (!delta) return
     const m = useMediaStore.getState()
     const all: Array<TrackItem & { ref: TrackRef }> = family === 'audio'
       ? m.audioTracks.filter(t => !isMainAudio(t)).map(t => ({ id: t.id, start_ms: t.start_ms, end_ms: songEndMs(t), track: t.track ?? 0, ref: { kind: 'music' as const, id: t.id } }))
@@ -4438,12 +4482,41 @@ export function EditorShell({
     const ctlOf = (r: TrackRef): CtlTarget => (r.kind === 'shot' ? { kind: 'broll', id: r.id } : { kind: r.kind, id: r.id })
     if (moving.some(i => blocked(ctlOf(i.ref)))) return
     const stay = all.filter(i => !ids.includes(i.id))
+    // (videos, photos and text carried under the bottom row: new rows open there for them, as for one
+    // thing let go under the lowest row)
+    const under = family === 'visual' ? Math.max(0, -Math.min(...moving.map(i => (i.track ?? 0) + delta))) : 0
+    if (family === 'audio' && moving.some(i => (i.track ?? 0) + delta < 0)) return
     const clash = moving.some(i => {
       const t = (i.track ?? 0) + delta
-      return t < 0 || stay.some(o => (o.track ?? 0) === t && o.start_ms < i.end_ms && o.end_ms > i.start_ms)
+      return stay.some(o => (o.track ?? 0) === t && o.start_ms < i.end_ms && o.end_ms > i.start_ms)
     })
-    if (clash) { notifyLocked('Something else is on those rows there — move them to empty room, or above the top row for a new one'); return }
-    for (const i of moving) setTrackOf(i.ref, (i.track ?? 0) + delta)
+    if (!delta && !clash) return
+    for (let k = 0; k < under; k++) openRowBelow()
+    const want = new Map(moving.map(i => [i.id, (i.track ?? 0) + delta + under]))
+    // Something else on the rows they land on there (as CapCut and Premiere do): rows open right there
+    // for them — carried up, just above what's there; down, just below it — the rest moving out of the
+    // way. Under the main video and above it separately, so none crosses over it
+    if (clash) {
+      const lift = delta >= 0 ? 1 : 0
+      const below = family === 'visual' ? belowRowsRef.current : 0
+      const ts = [...want.values()]
+      const low = ts.filter(t => t < below), high = ts.filter(t => t >= below)
+      const lowN = low.length ? Math.max(...low) - Math.min(...low) + 1 : 0
+      const highN = high.length ? Math.max(...high) - Math.min(...high) + 1 : 0
+      const lowAt = low.length ? Math.min(...low) + lift : 0, highAt = high.length ? Math.min(...high) + lift : 0
+      const ids = new Set(moving.map(i => i.id))
+      for (const o of family === 'audio'
+        ? useMediaStore.getState().audioTracks.filter(t => !isMainAudio(t) && !ids.has(t.id)).map(t => ({ ref: { kind: 'music' as const, id: t.id }, track: t.track ?? 0 }))
+        : visualItems().filter(i => !ids.has(i.id))) {
+        const t = o.track ?? 0
+        const by = (lowN && t >= lowAt ? lowN : 0) + (highN && t >= highAt ? highN : 0)
+        if (by) setTrackOf(o.ref, t + by)
+      }
+      // (the ones above the main video go up past the rows opened under it)
+      for (const [id, t] of want) want.set(id, t + lift + (lowN && t >= below ? lowN : 0))
+      if (lowN) { belowRowsRef.current += lowN; setBelowRows(n => n + lowN) }
+    }
+    for (const i of moving) setTrackOf(i.ref, want.get(i.id)!)
     if (family === 'visual') tidyRowsBelow()
   }
   /**
@@ -5353,7 +5426,7 @@ export function EditorShell({
     document.addEventListener('pointerdown', onDown)
     return () => document.removeEventListener('pointerdown', onDown)
   }, [])
-  function pickSection(id: string | null, open = true) {
+  function pickSection(id: string | null, _open = true) {
     setPickedSegId(id)
     if (!id) return
     setActiveSegmentId(id)
@@ -5361,7 +5434,6 @@ export function EditorShell({
     // Its group must be open for the card to be there to scroll to
     const seg = segments.find(sg => sg.id === id)
     if (seg) setOpenGroups(prev => { const g = formatLayoutOf(seg.layout); return prev.has(g) ? prev : new Set(prev).add(g) })
-    if (open) openSettings('format')
   }
   useEffect(() => {
     if (tool !== 'format' || !pickedSegId) return
@@ -5796,6 +5868,36 @@ export function EditorShell({
     return () => window.removeEventListener('pointerdown', down)
   }, [hasGroupPick])
 
+  // Previous section · play · next section, in the timeline's bar beside the clock (user, 2026-10-29: on the
+  // picture they covered the crop boxes; under it they took the video's height). Styles: .ed-transport .ed-player
+  const playControls = (
+    <div className="ed-player" data-playing={playing || undefined}>
+      <div />
+      <div className="flex items-center gap-1.5">
+        <button onClick={jumpPrevSection} aria-label="Go to the previous section" title="Previous section"
+          className="ed-tl-btn">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="5" y="5" width="2.4" height="14" rx="1" /><path d="M19 5.8v12.4a.8.8 0 01-1.2.7L9.5 12.7a.8.8 0 010-1.4l8.3-6.2a.8.8 0 011.2.7z" /></svg>
+        </button>
+        {/* Film-reel play button (styles: .ed-play in globals.css) */}
+        <button onClick={togglePlay} aria-label={playing ? 'Pause' : 'Play'} title={`${playing ? 'Pause' : 'Play'} (Space)`}
+          data-playing={playing || undefined}
+          className="ed-play w-10 h-10 flex items-center justify-center rounded-full shrink-0">
+          <PlayRing lengthMs={clipDurationMs} />
+          <span key={playing ? 'pause' : 'play'} className="ed-play-icon flex">
+            {playing
+              ? <svg width="13" height="13" viewBox="0 0 12 12" fill={ACCENT}><rect x="2" y="1.5" width="3" height="9" rx="1"/><rect x="7" y="1.5" width="3" height="9" rx="1"/></svg>
+              : <svg width="13" height="13" viewBox="0 0 12 12" fill={ACCENT}><path d="M3.5 1.5l7.5 4.5L3.5 10.5V1.5z"/></svg>
+            }
+          </span>
+        </button>
+        <button onClick={jumpNextSection} aria-label="Go to the next section" title="Next section"
+          className="ed-tl-btn">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="16.6" y="5" width="2.4" height="14" rx="1" /><path d="M5 5.8v12.4a.8.8 0 001.2.7l8.3-6.2a.8.8 0 000-1.4L6.2 5.1A.8.8 0 005 5.8z" /></svg>
+        </button>
+      </div>
+      <div />
+    </div>
+  )
   return (
     <div className="editor-theme h-screen flex flex-col overflow-hidden" style={{ background: 'var(--ed-app)', color: 'var(--ed-text)' }}>
 
@@ -5974,10 +6076,6 @@ export function EditorShell({
                     const shown = formatLayoutOf(seg.layout)
                     const col = LAYOUT_COLORS[shown]
                     const isActiveSeg = seg.id === activeSegment?.id
-                    const only = cropPositions.length === 1
-                    // Deleting a section cuts that part of the video out (askDeleteFormat); only the whole clip is reset instead
-                    const deleteLabel = isInsert(seg, mainVideoId) ? 'Remove this inserted video (the rest moves back)' : !cutOk ? (only ? 'Reset this format to Vertical' : `Reset format ${i + 1} to Vertical`)
-                      : clipLengthMs - (seg.end_ms - seg.start_ms) < MIN_CLIP_LEFT_MS ? 'Reset this format to Vertical' : `Delete this part of the video (${msToLabel(seg.start_ms)}–${msToLabel(seg.end_ms)})`
                     const name = LAYOUTS.find(l => l.id === shown)?.label ?? shown
                     const all = itemsBySection.get(seg.id) ?? []
                     const items = sectionFilter === 'all' ? all : all.filter(x => x.kind === sectionFilter)
@@ -6013,7 +6111,7 @@ export function EditorShell({
                                 {msToLabel(seg.start_ms)} – {msToLabel(seg.end_ms)}
                               </span>
                             </div>
-                            {/* Line 2: length and what's in it · lock · delete */}
+                            {/* Line 2: length and what's in it (lock, delete, show and sound are on the timeline: user, 2026-10-29) */}
                             <div className="flex items-center gap-1 min-w-0 h-6">
                               <span className="flex-1 min-w-0 truncate text-[11px]" style={{ color: 'rgb(var(--ed-fg) / 0.42)' }}>
                                 {[lengthLabel(seg.end_ms - seg.start_ms), ...SECTION_KINDS.flatMap(k => {
@@ -6021,16 +6119,6 @@ export function EditorShell({
                                   return c ? [`${c} ${(c === 1 ? k.one : k.plural).toLowerCase()}`] : []
                                 })].join(' · ')}
                               </span>
-                              <span className={`shrink-0 flex items-center transition-opacity ${isActiveSeg || seg.locked ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 focus-within:opacity-100'}`}>
-                                <CtlButtons size="sm" state={seg} can={['locked']} onToggle={k => toggleCtl({ kind: 'section', id: seg.id }, k)}
-                                  what={name.toLowerCase() === 'video' ? 'this video section' : 'this section'} />
-                              </span>
-                              <button onClick={e => { e.stopPropagation(); askDeleteFormat(seg.id) }}
-                                aria-label={deleteLabel} title={`${deleteLabel} (Delete)`}
-                                className={`shrink-0 w-[22px] h-[22px] flex items-center justify-center rounded-md transition-[opacity,background,color] hover:bg-[rgba(239,68,68,0.12)] hover:text-[#f87171] ${isActiveSeg ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 focus:opacity-100'}`}
-                                style={{ color: 'rgb(var(--ed-fg) / 0.5)' }}>
-                                <TrashIcon />
-                              </button>
                             </div>
                           </div>
                           {/* What's in this section: open / close its list */}
@@ -6060,8 +6148,6 @@ export function EditorShell({
                                     Main video
                                   </span>
                                 </button>
-                                <CtlButtons size="sm" state={ctlState({ kind: 'section', id: seg.id })} can={isFrameLayout(seg.layout) ? ['muted'] : ['hidden', 'muted']}
-                                  onToggle={k => { if (!blocked({ kind: 'section', id: seg.id })) toggleCtl({ kind: 'section', id: seg.id }, k) }} what="the main video here" />
                               </div>
                             )}
                             {items.length === 0 ? (
@@ -6085,7 +6171,6 @@ export function EditorShell({
                                   <span className="flex-1 min-w-0 truncate text-[11.5px] font-medium text-[var(--ed-text)]">{it.name}</span>
                                   <span className="shrink-0 text-[10px] tabular-nums opacity-0 group-hover/row:opacity-100 transition-opacity" style={{ color: 'rgb(var(--ed-fg) / 0.42)' }}>{msToLabel(it.start)}–{msToLabel(it.end)}</span>
                                 </button>
-                                {it.ctl && <CtlButtons size="sm" state={st} can={it.ctl.kind === 'broll' ? ['hidden', 'muted'] : canCtl(it.ctl)} onToggle={key => toggleCtl(it.ctl!, key)} what={`this ${k.one.toLowerCase()}`} />}
                                 </div>
                               )
                             })}
@@ -6487,8 +6572,8 @@ export function EditorShell({
               <BrandKitStudio brand={brand} onKitId={brandOn?.kit_id ?? null} onTurnOn={turnBrandOn} onTurnOff={turnBrandOff} onClose={closeKitStudio} />
             </div>
           )}
-          {/* Canvas toolbar: two docks, centred — Layout (a segmented switch with a sliding lime
-              highlight) and Tools (Split · Motion · Delete). Styles: .ed-dock* in globals.css */}
+          {/* Canvas toolbar, centred: the layouts as one sliding switch, then the Motion button.
+              Styles: .ed-fmt* and .ed-motion* at the end of globals.css */}
           <div className="ed-canvas-bar shrink-0 flex items-center justify-center gap-3 px-4" style={{ minHeight: 60, borderBottom: '1px solid rgb(var(--ed-fg) / 0.06)' }}>
             {/* (in the empty space a deleted part left: nothing here — no layout to pick) */}
             {!inGap && <>
@@ -6497,32 +6582,20 @@ export function EditorShell({
               play={formatPlay}
               onPick={id => { setFormatPlay(p => ({ id, n: (p?.n ?? 0) + 1 })); if (tool === 'subjects' && pickForScene(id)) return; handleLayoutChange(id, 'fromPlayhead') }}
             />
-            {/* Where a layout picked now goes: from the playhead to the end of this section */}
-            {frameTarget && (
-              <span className="ed-applies flex flex-col leading-tight text-[10px] tabular-nums whitespace-nowrap" style={{ color: 'rgb(var(--ed-fg) / 0.45)' }}
-                title="Pick a layout: it starts here and runs to the end of this section">
-                <span className="uppercase tracking-wider font-semibold" style={{ color: 'rgb(var(--ed-fg) / 0.35)' }}>Applies</span>
-                {frameTarget}
-              </span>
-            )}
             </>}
 
-            <div className="ed-dock" role="toolbar" aria-label="Tools">
-              <button
-                onClick={() => setMotionMode(m => !m)}
-                aria-pressed={motionMode}
-                title={motionMode
-                  ? 'Motion is on: drag the view while the video plays and it follows your hand smoothly'
-                  : 'Motion is off: moving the view changes it from the playhead on (a cut). Turn on to record a smooth follow while the video plays'}
-                className="ed-press ed-dock-btn select-none" data-rec={motionMode || undefined}
-              >
-                <span key={motionMode ? 'on' : 'off'} className={motionMode ? 'ed-rec ed-rec-on' : 'ed-rec'} style={{
-                  display: 'inline-block', width: 8, height: 8, borderRadius: '50%',
-                  background: motionMode ? '#ef4444' : 'rgb(var(--ed-fg) / 0.35)',
-                }} />
-                <span className="ed-dock-label">{motionMode ? 'Recording motion' : 'Motion'}</span>
-              </button>
-            </div>
+            {/* Motion: a button beside the layouts — a dot that goes red while it records (styles: .ed-motion) */}
+            <button
+              onClick={() => setMotionMode(m => !m)}
+              aria-pressed={motionMode}
+              title={motionMode
+                ? 'Motion is on: drag the view while the video plays and it follows your hand smoothly'
+                : 'Motion is off: moving the view changes it from the playhead on (a cut). Turn on to record a smooth follow while the video plays'}
+              className="ed-motion select-none" data-on={motionMode || undefined}
+            >
+              <span className="ed-motion-dot" aria-hidden="true" />
+              {motionMode ? 'Recording motion' : 'Motion'}
+            </button>
           </div>
 
           {/* (behind the stage and the play bar together) */}
@@ -6551,40 +6624,6 @@ export function EditorShell({
             </div>
           </div>
 
-          {/* Under the player: the time, and previous section · play · next section */}
-          <div className="ed-player shrink-0 grid items-center gap-2 px-3" style={{ gridTemplateColumns: 'minmax(0,1fr) auto minmax(0,1fr)', height: 52, borderTop: '1px solid rgb(var(--ed-fg) / 0.06)', background: 'var(--ed-panel)' }}>
-            <div className="justify-self-start min-w-0">
-              <span className="ed-transport-time shrink-0 whitespace-nowrap text-[11px] tabular-nums" aria-label={`${msToClock(currentTimeMs)} of ${msToClock(clipDurationMs)}`}>
-                <span className="font-semibold" style={{ color: 'rgb(var(--ed-fg) / 0.85)' }}><LiveTime /></span>
-                <span className="ed-transport-total" style={{ color: 'rgb(var(--ed-fg) / 0.38)' }}><span className="ed-transport-slash"> / </span>{msToLabel(clipDurationMs)}</span>
-              </span>
-            </div>
-            {/* Centre: previous section · play · next section (the play button sits exactly in the middle) */}
-            <div className="flex items-center gap-1.5">
-              <button onClick={jumpPrevSection} aria-label="Go to the previous section" title="Previous section"
-                className="ed-tl-btn">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="5" y="5" width="2.4" height="14" rx="1" /><path d="M19 5.8v12.4a.8.8 0 01-1.2.7L9.5 12.7a.8.8 0 010-1.4l8.3-6.2a.8.8 0 011.2.7z" /></svg>
-              </button>
-              {/* Film-reel play button (styles: .ed-play in globals.css) */}
-              <button onClick={togglePlay} aria-label={playing ? 'Pause' : 'Play'} title={`${playing ? 'Pause' : 'Play'} (Space)`}
-                data-playing={playing || undefined}
-                className="ed-play w-10 h-10 flex items-center justify-center rounded-full shrink-0">
-                <PlayRing lengthMs={clipDurationMs} />
-                <span key={playing ? 'pause' : 'play'} className="ed-play-icon flex">
-                  {playing
-                    ? <svg width="13" height="13" viewBox="0 0 12 12" fill={ACCENT}><rect x="2" y="1.5" width="3" height="9" rx="1"/><rect x="7" y="1.5" width="3" height="9" rx="1"/></svg>
-                    : <svg width="13" height="13" viewBox="0 0 12 12" fill={ACCENT}><path d="M3.5 1.5l7.5 4.5L3.5 10.5V1.5z"/></svg>
-                  }
-                </span>
-              </button>
-              <button onClick={jumpNextSection} aria-label="Go to the next section" title="Next section"
-                className="ed-tl-btn">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="16.6" y="5" width="2.4" height="14" rx="1" /><path d="M5 5.8v12.4a.8.8 0 001.2.7l8.3-6.2a.8.8 0 000-1.4L6.2 5.1A.8.8 0 005 5.8z" /></svg>
-              </button>
-            </div>
-
-            <div />
-          </div>
         </main>
 
         {/* Right column: 9:16 output preview, always visible */}
@@ -6613,16 +6652,34 @@ export function EditorShell({
               onPointerDown={e => startColumnResize(e, 'preview')} onDoubleClick={() => resetColumn('preview')} />
           )}
           <div className="ed-preview-inner flex flex-col min-h-0 h-full" style={{ width: previewW }}>
-          <div className="shrink-0 px-4 flex items-center justify-between" style={{ height: 48, borderBottom: '1px solid rgb(var(--ed-fg) / 0.06)' }}>
-            <span className="flex items-center gap-1">
+          {/* One row (user, 2026-10-29: more room for the phone): close · how it looks inside each app · Export */}
+          <div className="ed-pv-head shrink-0 px-3 flex items-center gap-2" style={{ height: 52, borderBottom: '1px solid rgb(var(--ed-fg) / 0.06)' }}>
+            <span className="flex items-center shrink-0">
               {/* one chevron: sends the preview off to the right (styles: .ed-fold) */}
               <button onClick={() => togglePreview(false)} aria-label="Close the preview" title="Close the preview (more room to edit)"
-                className="ed-fold -ml-1 mr-1" data-dir="right">
+                className="ed-fold" data-dir="right">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path className="fold-arrow" d="M9.5 6.5L15 12l-5.5 5.5" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" /></svg>
               </button>
-              <span className="text-sm font-semibold text-[var(--ed-text)]">Preview</span>
+              <span className="sr-only">Preview</span>
             </span>
-            <div className="flex items-center gap-1.5">
+            {/* (short names — Off, Reels, Shorts; only their icons when the column is narrow) */}
+          <div role="radiogroup" aria-label="Show preview as" className="ed-pv-views flex-1 min-w-0 grid grid-cols-3 gap-0.5 p-[3px] rounded-full">
+            {PLATFORM_OPTIONS.map(({ id, label, icon }) => {
+              const on = platform === id
+              return (
+                <button key={id} role="radio" aria-checked={on} onClick={() => setPlatform(id)}
+                  aria-label={id === 'off' ? 'Plain preview' : `${PLATFORM_SAFE[id].name} ${label}`}
+                  title={id === 'off' ? 'Plain preview' : `See how it looks on ${PLATFORM_SAFE[id].name}`}
+                  className="ed-pv-view flex items-center justify-center gap-1.5 h-7 min-w-0 px-1.5 rounded-full text-xs font-medium" data-on={on || undefined}>
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    {icon}
+                  </svg>
+                  <span className="truncate">{label}</span>
+                </button>
+              )
+            })}
+          </div>
+            <div className="flex items-center gap-1.5 shrink-0">
               {rendering ? (
                 // While the reel renders, the Export button stays and keeps playing its download
                 // animation on a loop (.ed-export[data-busy] in globals.css) until it's done
@@ -6665,41 +6722,20 @@ export function EditorShell({
             </div>
           </div>
 
-          {/* How the reel looks inside each app */}
-          <div className="shrink-0 px-4 pt-3">
-            {/* (short names — Off, Reels, Shorts — so the three sit evenly even in the narrowest preview) */}
-            <div role="radiogroup" aria-label="Show preview as" className="grid grid-cols-3 gap-1 p-1 rounded-xl"
-              style={{ background: 'rgb(var(--ed-fg) / 0.04)', border: '1px solid rgb(var(--ed-fg) / 0.07)' }}>
-              {PLATFORM_OPTIONS.map(({ id, label, icon }) => {
-                const on = platform === id
-                return (
-                  <button key={id} role="radio" aria-checked={on} onClick={() => setPlatform(id)}
-                    aria-label={id === 'off' ? 'Plain preview' : `${PLATFORM_SAFE[id].name} ${label}`}
-                    title={id === 'off' ? 'Plain preview' : `See how it looks on ${PLATFORM_SAFE[id].name}`}
-                    className="flex items-center justify-center gap-1.5 h-8 min-w-0 px-1.5 rounded-lg text-xs font-medium transition-colors hover:text-[var(--ed-text)]"
-                    style={on
-                      ? { background: 'rgb(var(--ed-fg) / 0.12)', color: 'var(--ed-text)', boxShadow: 'inset 0 0 0 1px rgb(var(--ed-fg) / 0.1)' }
-                      : { color: 'rgb(var(--ed-fg) / 0.5)' }}>
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"
-                      style={{ color: on && id !== 'off' ? 'var(--ed-accent-text)' : undefined }}>
-                      {icon}
-                    </svg>
-                    <span className="truncate">{label}</span>
-                  </button>
-                )
-              })}
-            </div>
-          </div>
-
           {/* Preview fills the column: as wide as it can be while the full 9:16 frame fits the height */}
-          <div className="flex-1 min-h-0 p-3 overflow-hidden">
+          <div className="flex-1 min-h-0 px-2 py-1.5 overflow-hidden">
             <AmbientGlow videoRef={videoRef} />
             <div ref={fullViewRef} className="ed-pv-box h-full w-full flex justify-center" data-full-view={fullView || undefined}
               style={fullView
                 ? { containerType: 'size', alignItems: 'center', background: '#000', padding: '24px 24px 84px', boxSizing: 'border-box',
                     ...(fullViewFallback ? { position: 'fixed', inset: 0, zIndex: 200, width: '100vw', height: '100vh' } : {}) }
                 : { containerType: 'size', alignItems: 'flex-start' }}>
-            <div style={{ width: 'min(100cqw, calc(100cqh * 9 / 16))' }}>
+            {/* Not in full view: inside a phone — its status bar, the 9:16 video, its home bar (styles: .ed-phone*).
+                Everything on it is in proportion to its width (--pw), as tall as 1.86 widths: it always fits the panel */}
+            <div className={fullView ? undefined : 'ed-phone'}
+              style={fullView ? { width: 'min(100cqw, calc(100cqh * 9 / 16))' } : { ['--pw' as string]: 'min(100cqw, calc(100cqh / 1.86))', width: 'var(--pw)' }}>
+              <div className={fullView ? undefined : 'ed-phone-screen'}>
+              {!fullView && <PhoneStatusBar />}
               <div className="relative">
               {rendering ? (
                 <div className="flex flex-col items-center justify-center gap-4 rounded-xl" style={{ aspectRatio: '9/16', background: 'var(--ed-app)', border: '1px solid rgb(var(--ed-fg) / 0.08)' }}>
@@ -6772,6 +6808,8 @@ export function EditorShell({
                   </svg>
                 </button>
               )}
+              </div>
+              {!fullView && <div className="ed-phone-home" aria-hidden="true"><i /></div>}
               </div>
             </div>
             {fullView && (
@@ -6890,6 +6928,7 @@ export function EditorShell({
         <span className="ed-tl-sep" aria-hidden="true" />
         <UndoRedo />
         <div className="flex-1" />
+        {playControls}
         {/* Where the playhead is, and how long the clip is — the one clock (user, 2026-10-28: here, not under the video) */}
         <ClipClock lengthMs={clipLengthMs} />
         <div className="flex-1" />
@@ -6989,7 +7028,7 @@ export function EditorShell({
           onEdgeTrim={cutOk ? trimByEdgeLive : undefined}
           pickedSegmentId={pickedSegId}
           groupSel={groupLive} onGroupSel={setGroupPick}
-          groups={groups} onGroup={groupPicked} onUngroup={ungroupPicked} onGroupRows={moveGroupRows} onGroupParts={moveGroupParts}
+          groups={groups} onGroup={groupPicked} onUngroup={ungroupPicked} onGroupRows={moveGroupRows} onGroupParts={moveGroupParts} onGroupPartsToRow={liftParts}
           onPickSegment={id => (!id ? clearPicksRef.current() : shots.some(x => x.id === id) ? pickShot(id, doubleTap(`s${id}`)) : pickSection(id, doubleTap(`s${id}`)))}
           textOverlays={textOverlays.map(o => o.locked || !isLocked({ kind: 'text', id: o.id }) ? o : { ...o, locked: true })} activeTextOverlayId={activeTextOverlayId}
           onSelectTextOverlay={id => { if (id) pickText(id, doubleTap(`t${id}`)); else setActiveTextOverlayId(null) }}
@@ -7264,24 +7303,21 @@ function CaptionSelectBar({ lines, styles, onClear, onFromHere, onAll, onOneStyl
   onOneStyle: () => void
 }) {
   const n = lines.length
+  // (user, 2026-10-29) no card: a row like Language above it — what's selected on the left, the quick
+  // selections on the right; the how-to moved into the label's tooltip
   return (
-    <div className="cap-apply">
-      <div className="flex items-center gap-2">
-        <span className="cap-apply-dot" data-on={n > 0 || undefined} aria-hidden="true" />
-        <span className="cap-apply-title flex-1">
-          {n === 0 ? 'Styling all captions' : `Styling ${n} caption line${n > 1 ? 's' : ''}`}
-          {n > 0 && <span className="cap-apply-when"> · {msToLabel(lines[0].start)}–{msToLabel(lines[n - 1].end)}</span>}
-        </span>
-        {n > 0 && <button type="button" className="cap-apply-link" onClick={onClear}>Clear</button>}
-      </div>
-      <span className="cap-apply-note">
-        {n === 0 ? 'To style just some captions, click their lines on the Captions row of the timeline (Shift-click or drag for more).'
-          : 'The style you pick below goes on these lines only.'}
+    <div className="cap-row cap-apply-row">
+      <span className="cap-label min-w-0 truncate"
+        title={n === 0 ? 'Styles go on every caption. To style just some, click their lines on the Captions row of the timeline (Shift-click or drag for more).'
+          : 'The style you pick below goes on these lines only.'}>
+        {n === 0 ? 'Select' : `${n} line${n > 1 ? 's' : ''}`}
+        {n > 0 && <span className="cap-apply-when"> · {msToLabel(lines[0].start)}–{msToLabel(lines[n - 1].end)}</span>}
       </span>
-      <div className="flex flex-wrap gap-1.5">
-        <button type="button" className="cap-apply-chip" onClick={onFromHere} title="Select every caption line from the playhead to the end">Select from playhead</button>
-        <button type="button" className="cap-apply-chip" onClick={onAll} title="Select every caption line">Select all</button>
-        {styles > 1 && <button type="button" className="cap-apply-chip" onClick={onOneStyle} title="Use the first line's style for every caption">Use one style ({styles} now)</button>}
+      <div className="flex flex-wrap justify-end gap-1.5">
+        {n > 0 && <button type="button" className="cap-apply-chip" onClick={onClear} title="Style every caption again">Clear</button>}
+        <button type="button" className="cap-apply-chip" onClick={onFromHere} title="Select every caption line from the playhead to the end">From playhead</button>
+        <button type="button" className="cap-apply-chip" onClick={onAll} title="Select every caption line">All</button>
+        {styles > 1 && <button type="button" className="cap-apply-chip" onClick={onOneStyle} title="Use the first line's style for every caption">One style ({styles})</button>}
       </div>
     </div>
   )
@@ -7334,8 +7370,9 @@ function SkipFiveIcon({ dir }: { dir: 'back' | 'forward' }) {
 
 /** Tiny 9:16 frame showing how a format divides the reel */
 /**
- * Layout switch for the section under the playhead: a dock of the four formats with a lime highlight
- * that slides to the picked one (measured from the buttons, so it fits any label length or language).
+ * Layout switch for the section under the playhead: the four formats in one track, a knob sliding to the
+ * picked one (measured from the options, so it fits any label length or language); each shows its phone
+ * icon and name. Styles: .ed-fmt* in globals.css.
  */
 function FormatSwitcher({ activeId, play, onPick }: {
   activeId: LayoutType | null
@@ -7343,33 +7380,28 @@ function FormatSwitcher({ activeId, play, onPick }: {
   onPick: (id: LayoutType) => void
 }) {
   const btns = useRef(new Map<LayoutType, HTMLButtonElement>())
-  const [box, setBox] = useState<{ left: number; width: number } | null>(null)
+  const [knob, setKnob] = useState<{ left: number; width: number } | null>(null)
   useLayoutEffect(() => {
     const measure = () => {
       const el = activeId ? btns.current.get(activeId) : null
-      setBox(el ? { left: el.offsetLeft, width: el.offsetWidth } : null)
+      setKnob(el ? { left: el.offsetLeft, width: el.offsetWidth } : null)
     }
     measure()
     const ro = new ResizeObserver(measure)
     for (const el of btns.current.values()) ro.observe(el)
-    window.addEventListener('resize', measure)
-    return () => { ro.disconnect(); window.removeEventListener('resize', measure) }
+    return () => ro.disconnect()
   }, [activeId])
-
   return (
-    <div role="radiogroup" aria-label="Layout" data-tour="formats" className="ed-dock relative">
-      {box && <span className="ed-dock-glider" style={{ left: box.left, width: box.width }} aria-hidden="true" />}
+    <div role="radiogroup" aria-label="Layout" data-tour="formats" className="ed-fmt">
+      {knob && <span className="ed-fmt-knob" style={{ left: knob.left, width: knob.width }} aria-hidden="true" />}
       {LAYOUTS.map(l => {
         const on = activeId === l.id
         return (
-          <button key={l.id} role="radio" aria-checked={on}
+          <button key={l.id} role="radio" aria-checked={on} onClick={() => onPick(l.id)}
             ref={el => { if (el) btns.current.set(l.id, el); else btns.current.delete(l.id) }}
-            onClick={() => onPick(l.id)}
-            title={`${l.label} layout`}
-            className="ed-press ed-dock-btn ed-dock-choice" data-on={on || undefined}>
-            <LayoutGlyph key={play?.id === l.id ? play.n : 0} layout={l.id}
-              color={on ? 'var(--ed-accent-text)' : 'rgb(var(--ed-fg) / 0.5)'} active={on} play={play?.id === l.id} />
-            <span className="ed-dock-label">{l.label}</span>
+            title={`${l.label} layout`} className="ed-fmt-opt" data-on={on || undefined}>
+            <LayoutGlyph key={play?.id === l.id ? play.n : 0} layout={l.id} color="currentColor" active={on} play={play?.id === l.id} />
+            <span>{l.id === 'split' ? 'Split' : l.label}</span>
           </button>
         )
       })}
@@ -7520,6 +7552,21 @@ function msToClock(ms: number) {
 }
 
 /** Timeline zoom as − 1x +: each press one step (1x → 1.25x → 1.5x → 2x → 3x → 4x); click the value for 1x */
+/** A phone's status bar over the Preview (the time, the camera island, signal · Wi-Fi · battery), for the look of a real phone */
+function PhoneStatusBar() {
+  return (
+    <div className="ed-phone-status" aria-hidden="true">
+      <span className="ed-phone-time">9:41</span>
+      <i className="ed-phone-island" />
+      <span className="ed-phone-icons">
+        <svg width="16" height="10" viewBox="0 0 16 10" fill="currentColor"><rect x="0" y="7" width="3" height="3" rx=".7" /><rect x="4.3" y="5" width="3" height="5" rx=".7" /><rect x="8.6" y="2.6" width="3" height="7.4" rx=".7" /><rect x="12.9" y="0" width="3" height="10" rx=".7" /></svg>
+        <svg width="14" height="10" viewBox="0 0 14 10" fill="currentColor"><path d="M7 2.2c2 0 3.8.8 5.1 2l1.1-1.1A8.8 8.8 0 007 .6 8.8 8.8 0 00.8 3.1l1.1 1.1C3.2 3 5 2.2 7 2.2zm0 3.1c1.1 0 2.2.4 3 1.2l1.1-1.1A5.8 5.8 0 007 3.7c-1.6 0-3 .6-4.1 1.7L4 6.5c.8-.8 1.9-1.2 3-1.2zm0 3.1c.4 0 .8.2 1 .5L7 10 6 8.9c.2-.3.6-.5 1-.5z" /></svg>
+        <svg width="24" height="11" viewBox="0 0 24 11" fill="none"><rect x=".5" y=".5" width="20" height="10" rx="3" stroke="currentColor" strokeOpacity=".45" /><rect x="2" y="2" width="15.5" height="7" rx="1.8" fill="currentColor" /><path d="M22 3.8v3.4c.7-.3 1.2-1 1.2-1.7s-.5-1.4-1.2-1.7z" fill="currentColor" fillOpacity=".5" /></svg>
+      </span>
+    </div>
+  )
+}
+
 /** How far the clip has played, as an arc round the play button (globals.css .ed-play-ring: the desktop editor shows it) */
 function PlayRing({ lengthMs }: { lengthMs: number }) {
   const now = useLiveTimeMs()
@@ -7609,7 +7656,8 @@ function AmbientGlow({ videoRef }: { videoRef: React.RefObject<HTMLVideoElement 
 }
 
 /** The tools down the rail: all but Brand kit — it's in the top bar's Brand menu (its Edit opens it): user, 2026-10-28 */
-const RAIL_TOOLS = TOOLS.filter(t => t.id !== 'brand')
+// (Format isn't on the rail: user, 2026-10-29 — sections are picked and changed on the timeline and the video)
+const RAIL_TOOLS = TOOLS.filter(t => t.id !== 'brand' && t.id !== 'format')
 
 function ToolRail({ tool, open, onPick }: { tool: Tool; open: boolean; onPick: (t: Tool) => void }) {
   const ref = useRef<HTMLDivElement>(null)

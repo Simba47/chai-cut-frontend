@@ -838,9 +838,10 @@ export function BrandKitStudio({ brand, onKitId = null, onTurnOn, onTurnOff, onC
             return (
               <button key={x.id} type="button" onClick={() => setStep(x.id)} aria-current={on ? 'step' : undefined}
                 className="flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-left transition-colors hover:bg-[rgb(var(--ed-fg)/0.05)]"
-                style={on ? { background: 'rgba(200,255,0,0.1)', boxShadow: 'inset 0 0 0 1px rgba(200,255,0,0.45)' } : undefined}>
+                // (the step you're on: a lime edge, no lime fill — user, 2026-10-29)
+                style={on ? { background: 'rgb(var(--ed-fg) / 0.05)', boxShadow: 'inset 0 0 0 1.5px rgba(200,255,0,0.65)' } : undefined}>
                 <span className="shrink-0 w-6 h-6 rounded-full flex items-center justify-center text-[11px] font-bold tabular-nums"
-                  style={on ? { background: '#c8ff00', color: '#0a0a0a' } : { background: 'rgb(var(--ed-fg) / 0.08)', color: 'rgb(var(--ed-fg) / 0.7)' }}>{i + 1}</span>
+                  style={on ? { background: 'rgb(var(--ed-fg) / 0.06)', color: 'var(--ed-text)', boxShadow: 'inset 0 0 0 1.5px rgba(200,255,0,0.75)' } : { background: 'rgb(var(--ed-fg) / 0.08)', color: 'rgb(var(--ed-fg) / 0.7)' }}>{i + 1}</span>
                 <span className="flex-1 min-w-0 flex flex-col">
                   <span className="text-[12.5px] font-semibold leading-snug" style={{ color: on ? 'var(--ed-text)' : 'rgb(var(--ed-fg) / 0.8)' }}>{x.name}</span>
                   <span className="text-[10.5px] leading-snug" style={{ color: 'rgb(var(--ed-fg) / 0.45)' }}>{x.short}</span>

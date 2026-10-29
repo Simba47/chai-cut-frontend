@@ -163,6 +163,8 @@ export interface TimelineProps {
   onGroupRows?: (ids: string[], delta: number, family: 'visual' | 'audio') => void
   /** The main video's parts among what's picked, carried along: each goes exactly there (or none, if one has no room) */
   onGroupParts?: (moves: { id: string; startMs: number }[]) => void
+  /** The main video's parts among what's picked, carried off the main row onto a row (or a new one) */
+  onGroupPartsToRow?: (moves: { id: string; startMs: number }[], target: number | 'new' | 'new-below') => void
   /**
    * How tall the timeline is with just the ruler, the main video and its own rows (captions, sound,
    * views), px: the editor opens it this tall — the other rows scroll inside until it's dragged taller
@@ -170,13 +172,11 @@ export interface TimelineProps {
   onBaseHeight?: (px: number) => void
 }
 
-/** What the + adds (at the playhead) */
-const ADD_CHOICES: { kind: 'insert' | 'overlay' | 'music' | 'text'; label: string; hint: string; color: string; icon: React.ReactNode }[] = [
-  { kind: 'insert', label: 'Main video', hint: 'Put a video into the clip here', color: ACCENT,
-    icon: <><rect x="2" y="6" width="5" height="12" rx="1.5" /><rect x="17" y="6" width="5" height="12" rx="1.5" /><path d="M12 8v8M9 12h6" /></> },
-  { kind: 'overlay', label: 'Overlay', hint: 'A video or photo on top — full screen or a window', color: MEDIA_COLORS.video,
-    icon: <><rect x="2.5" y="4.5" width="19" height="15" rx="2.5" /><rect x="11" y="10" width="8" height="7" rx="1.2" fill="currentColor" fillOpacity=".3" /></> },
-  { kind: 'music', label: 'Music & sound', hint: 'Background music, effects, your own audio', color: MEDIA_COLORS.music,
+/** What the + adds (at the playhead): a video (picked in Media), sound, or text */
+const ADD_CHOICES: { kind: 'video' | 'music' | 'text'; label: string; hint: string; color: string; icon: React.ReactNode }[] = [
+  { kind: 'video', label: 'Video', hint: 'Pick one from your media', color: MEDIA_COLORS.video,
+    icon: <><rect x="2.5" y="5" width="14" height="14" rx="3" /><path d="M16.5 10l5-3v10l-5-3" /></> },
+  { kind: 'music', label: 'Music & sound', hint: 'Songs, effects or your audio', color: MEDIA_COLORS.music,
     icon: <><path d="M9 18V5l12-2v13" /><circle cx="6" cy="18" r="3" /><circle cx="18" cy="16" r="3" /></> },
   { kind: 'text', label: 'Text', hint: 'Words on the video', color: MEDIA_COLORS.text,
     icon: <path d="M4 7V4h16v3M9 20h6M12 4v16" /> },
@@ -261,7 +261,7 @@ export function Timeline({
   onAddKind, cutJoins = [], isStock, onDropFiles, onDropStock, onDropMedia,
   mainMuted = false, onToggleMainMute, laneCtl, onLaneCtl, captionRow, onCaptionLineClick, onSelectCaptionRange, transitions = [], focusCut = null, onOpenTransition, onRemoveTransition, onApplyTransitionToAll, onDropTransition,
   onTrackDrop, belowRows = 0, onMovePart, onPlacePart, onPartToTrack, onShotToMain, maxMs, pickedSegmentId = null, selectedId, onPickSegment,
-  groupSel = [], onGroupSel, groups = [], onGroup, onUngroup, onGroupRows, onGroupParts, onBaseHeight,
+  groupSel = [], onGroupSel, groups = [], onGroup, onUngroup, onGroupRows, onGroupParts, onGroupPartsToRow, onBaseHeight,
 }: TimelineProps) {
   const viewRef = useRef<HTMLDivElement>(null)        // what shows (the playhead sits in its middle)
   const contentRef = useRef<HTMLDivElement>(null)     // the layer that slides under it
@@ -533,7 +533,7 @@ export function Timeline({
    * While picked things are carried: how far along (px: for the main video's parts, which move on
    * release) and how far up or down the ones of the grabbed one's kind of row go (px, and in rows)
    */
-  const [groupShift, setGroupShift] = useState<{ dx: number; dy: number; rows: number; family: 'visual' | 'audio' | null } | null>(null)
+  const [groupShift, setGroupShift] = useState<{ dx: number; dy: number; rows: number; family: 'visual' | 'audio' | null; dys?: Record<string, number>; pdy?: number } | null>(null)
   /** The one thing picked on its own now, if it can join a group (Ctrl-click a second thing: both are picked) */
   const pickedAlone = () => viewRef.current?.querySelector('.tl2-bar[data-sel][data-pick]:not([data-group]), .tl2-block[data-selected][data-pick]:not([data-group])')?.getAttribute('data-item-id') ?? null
   /**
@@ -601,6 +601,8 @@ export function Timeline({
     // The main video's parts among them stop at the parts of the main video that aren't (empty
     // stretches and the room after the row are free): the whole group stops with them, so it all
     // moves or none of it does
+    // (off the main row, its parts aren't held by the rest of it)
+    const freeLo = lo, freeHi = hi
     const solid = mains.filter(m => !inIt.has(m.id) && !isTailPart(m) && !isGapPart(m, mainVideoId))
     for (const it of items) {
       if (it.kind !== 'part') continue
@@ -626,15 +628,36 @@ export function Timeline({
       const list = [...(viewRef.current?.querySelectorAll<HTMLElement>(`[data-track-row="${family}"]`) ?? [])]
       const home = homeRow.getBoundingClientRect()
       if (!list.length) return { rows: 0, dy: 0 }
-      // (above the top row of videos, photos and text: a new row over them all)
-      const top = list.reduce((a, b) => (b.getBoundingClientRect().top < a.getBoundingClientRect().top ? b : a))
-      const tb = top.getBoundingClientRect()
-      if (family === 'visual' && y < tb.top - ROW_GAP) {
-        const maxT = Math.max(...list.map(r => Number(r.dataset.track)))
-        return { rows: maxT + 1 - grabbed.track, dy: tb.top - tb.height - ROW_GAP - home.top }
+      let pool = list
+      if (family === 'visual') {
+        // Measured against the main video, as one thing dragged on its own (hoverTrack): on it, the
+        // group stays on its rows; above it, the rows above (past the highest, a new row on top);
+        // under it, the rows under it. (Measured against the topmost row alone, a group on the rows
+        // under the main video jumped over it to a new top row at the first move up.)
+        const main = trackRef.current?.querySelector('[data-lane="main"]')?.getBoundingClientRect()
+        const above = list.filter(r => Number(r.dataset.track) >= belowRows)
+        const under = list.filter(r => Number(r.dataset.track) < belowRows)
+        if (main && y >= main.top && y <= main.bottom) return { rows: 0, dy: 0 }
+        if (!main || y < main.top) {
+          const tb = (above[0] ?? null)?.getBoundingClientRect()
+          if (!tb || y < tb.top - ROW_GAP) {
+            const maxT = Math.max(belowRows - 1, ...list.map(r => Number(r.dataset.track)))
+            const roof = tb ? tb.top : (main?.top ?? home.top)
+            return { rows: maxT + 1 - grabbed.track, dy: roof - VIS_ROW_H - ROW_GAP - home.top }
+          }
+          pool = above
+        } else {
+          // (past the lowest row under it: a new row at the bottom, the group's lowest one on it)
+          const low = under.length ? under[under.length - 1].getBoundingClientRect() : main
+          if (low && y > low.bottom + ROW_GAP) {
+            const lowRow = list.find(r => Number(r.dataset.track) === lowest)?.getBoundingClientRect()
+            return lowRow ? { rows: -lowest - 1, dy: low.bottom + ROW_GAP - lowRow.top } : { rows: 0, dy: 0 }
+          }
+          if (under.length) pool = under
+        }
       }
       let best = homeRow, bestD = Infinity
-      for (const r of list) {
+      for (const r of pool) {
         const b = r.getBoundingClientRect()
         const dd = y < b.top ? b.top - y : y > b.bottom ? y - b.bottom : 0
         if (dd < bestD) { best = r; bestD = dd }
@@ -647,23 +670,73 @@ export function Timeline({
       }
       return { rows: n, dy: best.getBoundingClientRect().top - home.top }
     }
+    const fam = family ? items.filter(x => familyOf(x.kind) === family) : []
+    // Where each one lands, drawn row by row (the rows aren't evenly spaced across the main video, so
+    // one shift for all drew the ones crossing it on top of it); rows that don't exist yet, where they'll open
+    const rowStep = VIS_ROW_H + ROW_GAP
+    const topOf = (t: number, list: HTMLElement[], main: DOMRect | undefined): number | null => {
+      const r = list.find(x => Number(x.dataset.track) === t)
+      if (r) return r.getBoundingClientRect().top
+      if (family !== 'visual') return null
+      if (t >= belowRows) {
+        const up = list.filter(x => Number(x.dataset.track) >= belowRows)
+        if (up.length) { const maxT = Number(up[0].dataset.track); return up[0].getBoundingClientRect().top - (t - maxT) * rowStep }
+        return main ? main.top - ROW_GAP - VIS_ROW_H - (t - belowRows) * rowStep : null
+      }
+      const floor = list.find(x => Number(x.dataset.track) === 0)?.getBoundingClientRect() ?? main
+      return floor ? floor.bottom + ROW_GAP + (-t - 1) * rowStep : null
+    }
+    const landing = (n: number, dy: number) => {
+      if (!family || !n) return undefined
+      const list = [...(viewRef.current?.querySelectorAll<HTMLElement>(`[data-track-row="${family}"]`) ?? [])]
+      const main = trackRef.current?.querySelector('[data-lane="main"]')?.getBoundingClientRect()
+      const out: Record<string, number> = {}
+      for (const it of fam) {
+        const from = topOf(it.track, list, main), to = topOf(it.track + n, list, main)
+        out[it.id] = from != null && to != null ? to - from : dy
+      }
+      return out
+    }
     setDragging(`group-${id}`)
     const parts = items.filter(x => x.kind === 'part')
-    const apply = (done: boolean) => {
+    // Grabbed by one of the main video's parts: up or down, its parts leave the main row for a row
+    // above or below it (or a new one), as one part dragged on its own does (hoverTrack)
+    const partsOff = grabbed?.kind === 'part' && !!onGroupPartsToRow
+    let off = false
+    // Set once, on release (while carried they're only drawn moved: nothing is saved per pointer move,
+    // so it keeps up with the pointer). Never settled one by one: the group is placed as a whole after
+    // (onGroupRows), so none is bumped onto another row on its own
+    const apply = () => {
+      if (!Math.round(d)) return
       for (const it of items) {
         const s = Math.round(it.start + d), en = Math.round(it.end + d)
         if (it.kind === 'part') continue
-        if (it.kind === 'shot') onBrollChange?.(it.id, s, en, done)
-        else if (done) continue
+        if (it.kind === 'shot') onBrollChange?.(it.id, s, en, false)
         else if (it.kind === 'photo') onPhotoTimeChange?.(it.id, { start_ms: s, end_ms: en })
         else if (it.kind === 'text') onTextOverlayUpdate?.(it.id, { start_ms: s, end_ms: en })
         else onMusicMove?.(it.id, s)
       }
     }
+    // (one redraw per frame, however many pointer moves come in)
+    let raf = 0, lastEv: PointerEvent | null = null
     track(ev => {
+      lastEv = ev
+      if (!raf) raf = requestAnimationFrame(() => { raf = 0; if (lastEv) step(lastEv) })
+    }, () => {
+      if (raf) { cancelAnimationFrame(raf); raf = 0; if (lastEv) step(lastEv) }
+      finish()
+    }, true)
+    function step(ev: PointerEvent) {
       if (!moved && Math.abs(ev.clientX - sx) < 3 && Math.abs(ev.clientY - sy) < 3) return
       moved = true
-      let want = Math.max(lo, Math.min(hi, rawMsFromClientX(ev.clientX) - t0))
+      if (partsOff) {
+        const main = trackRef.current?.querySelector('[data-lane="main"]')?.getBoundingClientRect()
+        off = !!main && (ev.clientY < main.top - 8 || ev.clientY > main.bottom + 8)
+        if (off) hoverTrack(ev, 'visual', -1)
+        else if (trackHoverRef.current) { trackHoverRef.current = null; setTrackHover(null) }
+      }
+      const minD = off ? freeLo : lo, maxD = off ? freeHi : hi
+      let want = Math.max(minD, Math.min(maxD, rawMsFromClientX(ev.clientX) - t0))
       // (the group's start or end onto another thing's edge, whichever is nearer)
       if (!ev.altKey) {
         const tol = SNAP_PX * k
@@ -672,18 +745,27 @@ export function Timeline({
           const dd = x - edge
           if (Math.abs(dd - want) < tol && (!best || Math.abs(dd - want) < Math.abs(best.dd - want))) best = { dd, at: x }
         }
-        if (best && best.dd >= lo && best.dd <= hi) { want = best.dd; setSnapLine(best.at) } else setSnapLine(null)
+        if (best && best.dd >= minD && best.dd <= maxD) { want = best.dd; setSnapLine(best.at) } else setSnapLine(null)
       }
       d = want
-      apply(false)
       const v = rowsAt(ev.clientY)
       rows = v.rows
-      setGroupShift({ dx: d * geoRef.current.pxPerMs, dy: v.dy, rows, family })
-    }, () => {
+      setGroupShift({ dx: d * geoRef.current.pxPerMs, dy: rows ? v.dy : 0, rows, family, dys: landing(rows, v.dy), pdy: off ? ev.clientY - sy : 0 })
+    }
+    function finish() {
       setGroupShift(null)
       if (moved) {
-        apply(true)
-        if (rows !== 0 && family) onGroupRows?.(items.filter(x => familyOf(x.kind) === family).map(x => x.id), rows, family)
+        apply()
+        if (partsOff) {
+          const h = trackHoverRef.current
+          trackHoverRef.current = null
+          setTrackHover(null)
+          // (off the main row, over a row or where a new one opens: the parts go onto it)
+          if (off && h && h.target !== -1) onGroupPartsToRow?.(parts.map(p => ({ id: p.id, startMs: Math.round(p.start + d) })), h.target as number | 'new' | 'new-below')
+          if (off) return
+        }
+        // (on rows that are taken there, rows open for them right there: EditorShell moveGroupRows)
+        if (family && (rows !== 0 || Math.round(d) !== 0)) onGroupRows?.(fam.map(x => x.id), rows, family)
         if (parts.length && Math.round(d) !== 0) onGroupParts?.(parts.map(p => ({ id: p.id, startMs: Math.round(p.start + d) })))
         return
       }
@@ -692,7 +774,7 @@ export function Timeline({
       if (madeGroupOf(id)?.length) return
       onGroupSel?.([])
       pickOne(id)
-    }, true)
+    }
   }
   /**
    * Right-click on something that can be grouped: picked first if it wasn't (with its made group),
@@ -1547,9 +1629,12 @@ export function Timeline({
           // (carried: it is drawn over everything instead, following the pointer — blockGhost)
           ...(insertDrag?.id === seg.id ? { opacity: 0, cursor: 'grabbing' } : {}),
           // (carried along with what's picked with it: drawn where it will go, placed on release)
-          ...(groupSet.has(seg.id) && groupShift?.dx ? { transform: `translateX(${groupShift.dx}px)` } : {}),
+          ...(groupSet.has(seg.id) && groupShift?.dx && !groupShift.pdy ? { transform: `translateX(${groupShift.dx}px)` } : {}),
+          // (carried off the main row with what's picked: drawn over everything, following the pointer)
+          ...(groupSet.has(seg.id) && groupShift?.pdy ? { opacity: 0 } : {}),
         }}>
         {insertDrag?.id === seg.id && blockGhost(seg, insertDrag, name, isInsert, url, box?.source_offset_ms ?? 0, end - start)}
+        {groupSet.has(seg.id) && !!groupShift?.pdy && blockGhost(seg, { dx: groupShift.dx, dy: groupShift.pdy }, name, isInsert, url, box?.source_offset_ms ?? 0, end - start)}
         <div className="absolute inset-0 overflow-hidden" style={{ borderRadius: 8 }}>
           {url && (
             <VideoThumbnails tile videoUrl={url} radius={0} dim={false}
@@ -1660,20 +1745,22 @@ export function Timeline({
     const grouped = groupSet.has(key)
     if (grouped) sel = true
     // (carried up or down with its group: drawn where it will land)
-    const shifted = grouped && groupShift && groupShift.dy && groupShift.family === (kind === 'music' ? 'audio' : 'visual') ? groupShift.dy : 0
+    const shifted = grouped && groupShift && groupShift.rows && groupShift.family === (kind === 'music' ? 'audio' : 'visual') ? (groupShift.dys?.[key] ?? groupShift.dy) : 0
+    // (carried along: drawn moved, its times set on release)
+    const slid = grouped && groupShift ? groupShift.dx : 0
     const pick = onGroupSel && !st.locked && !st.fixed
     // (in a made group: a link on it, as Resolve marks linked clips)
     const linked = pick && !!madeGroupOf(key)?.length
     return (
       <Fragment key={key}>
-      <div className="tl2-bar absolute" data-sel={sel || undefined} data-group={grouped || undefined} data-shifted={shifted ? '' : undefined} data-pick={pick || undefined} data-kind={kind} data-item-id={key}
+      <div className="tl2-bar absolute" data-sel={sel || undefined} data-group={grouped || undefined} data-shifted={shifted || slid ? '' : undefined} data-pick={pick || undefined} data-kind={kind} data-item-id={key}
         onPointerDown={e => { if (!groupPointer(e, key, kind)) onBody(e) }} title={linked ? `${title} · grouped (Alt + click: this one alone)` : title}
         onContextMenu={pick && (onGroup || onUngroup) ? e => openGroupMenu(e, key) : undefined}
         style={{
           left: `${at(start)}%`, width: `max(10px, ${pct(end - start)}%)`,
           '--bar-c': color, cursor: st.locked ? 'pointer' : on ? 'grabbing' : 'grab', zIndex: sel ? 3 : 1,
           ...(st.hidden ? { opacity: 0.45 } : {}),
-          ...(shifted ? { transform: `translateY(${shifted}px)` } : {}),
+          ...(shifted || slid ? { transform: `translate(${slid}px, ${shifted}px)`, zIndex: 4 } : {}),
           // (carried: it is drawn over everything instead, following the pointer — liftedGhost)
           ...(lifted ? { opacity: 0, cursor: 'grabbing' } : {}),
         } as React.CSSProperties}>
@@ -2111,18 +2198,21 @@ export function Timeline({
             {addMenu && (
               <>
                 <div className="fixed inset-0" style={{ zIndex: 90 }} onClick={() => setAddMenu(null)} aria-hidden="true" />
-                {/* Four choices, as in CapCut / VN / InShot: into the main video, on top of it, sound, text */}
-                <div role="menu" aria-label="Add at the playhead" className="tl2-menu fixed flex flex-col py-1.5"
-                  style={{ zIndex: 91, left: Math.min(addMenu.left, window.innerWidth - 270), ...(addMenu.bottom + 240 <= window.innerHeight ? { top: addMenu.bottom + 6 } : { bottom: window.innerHeight - addMenu.top + 6 }) }}>
+                {/* Three choices, at the playhead: a video (Media opens to pick it), sound, text (styles: .tl2-addmenu) */}
+                <div role="menu" aria-label="Add at the playhead" className="tl2-addmenu fixed flex flex-col"
+                  style={{ zIndex: 91, left: Math.min(addMenu.left, window.innerWidth - 280), ...(addMenu.bottom + 220 <= window.innerHeight ? { top: addMenu.bottom + 8 } : { bottom: window.innerHeight - addMenu.top + 8 }) }}>
+                  <span className="tl2-addmenu-head">Add at the playhead</span>
                   {ADD_CHOICES.map(c => (
-                    <button key={c.kind} type="button" role="menuitem" onClick={() => { setAddMenu(null); onAddKind(c.kind) }}>
-                      <span className="tl2-menu-ico" style={{ color: c.color }}>
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{c.icon}</svg>
+                    <button key={c.kind} type="button" role="menuitem" onClick={() => { setAddMenu(null); onAddKind(c.kind) }}
+                      style={{ '--c': c.color } as React.CSSProperties}>
+                      <span className="tl2-addmenu-ico">
+                        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{c.icon}</svg>
                       </span>
-                      <span className="flex flex-col min-w-0">
-                        <span>{c.label}</span>
-                        <span className="tl2-menu-hint">{c.hint}</span>
+                      <span className="flex flex-col min-w-0 flex-1">
+                        <span className="tl2-addmenu-label">{c.label}</span>
+                        <span className="tl2-addmenu-hint">{c.hint}</span>
                       </span>
+                      <svg className="tl2-addmenu-go" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6" /></svg>
                     </button>
                   ))}
                 </div>
