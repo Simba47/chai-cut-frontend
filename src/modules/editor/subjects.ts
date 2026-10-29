@@ -243,16 +243,51 @@ export function turnStretches(
 }
 
 /**
+ * Every stretch at least `minMs` long (Auto format's Vertical mode, AUTO_FORMAT.MIN_HOLD — the view
+ * doesn't flick between people): a shorter one goes to the stretch before it, or else after it, when
+ * that one's subject is in the picture all through it; one that can't (nobody else there) stays.
+ */
+export function holdAtLeast(
+  stretches: Array<{ from: number; to: number; id: string }>, minMs: number, seen: (id: string, t: number) => boolean,
+): Array<{ from: number; to: number; id: string }> {
+  const out = stretches.map(s => ({ ...s }))
+  const seenThrough = (id: string, a: number, b: number) => {
+    for (let t = a; t < b; t += SUBJECT_STEP_MS) if (!seen(id, t)) return false
+    return true
+  }
+  for (let changed = true; changed && out.length > 1;) {
+    changed = false
+    // (the shortest first)
+    const order = out.map((s, i) => ({ i, len: s.to - s.from })).filter(x => x.len < minMs).sort((p, q) => p.len - q.len)
+    for (const { i } of order) {
+      const s = out[i], prev = out[i - 1], next = out[i + 1]
+      if (prev && seenThrough(prev.id, s.from, s.to)) prev.to = s.to
+      else if (next && seenThrough(next.id, s.from, s.to)) next.from = s.from
+      else continue
+      out.splice(i, 1)
+      for (let k = out.length - 1; k > 0; k--) if (out[k].id === out[k - 1].id) { out[k - 1].to = out[k].to; out.splice(k, 1) }
+      changed = true
+      break
+    }
+  }
+  return out
+}
+
+/**
  * The view changes that switch between the subjects over [from, to): each stretch follows its
  * subject (smoothly, the view keeping its size), with a cut where the subject changes. With the
  * speakers' turns (and `toTimeline`), on the turns — to the word; else on the talking readings.
+ * `minHoldMs`: each person held at least this long (holdAtLeast).
  */
 export function autoDirectChanges(
   subjects: readonly Speaker[], from: number, to: number, toSource: (t: number) => number,
-  view: { w: number; h: number }, cuts?: Cuts, toTimeline?: (s: number) => number,
+  view: { w: number; h: number }, cuts?: Cuts, toTimeline?: (s: number) => number, minHoldMs?: number,
 ): ViewChange[] | null {
   const byTurns = toTimeline && subjects.some(s => s.speaking?.length) ? turnStretches(subjects, from, to, toSource, toTimeline, cuts) : []
-  const stretches = byTurns.length ? byTurns : directStretches(subjects, from, to, toSource, cuts)
+  const found = byTurns.length ? byTurns : directStretches(subjects, from, to, toSource, cuts)
+  const stretches = minHoldMs
+    ? holdAtLeast(found, minHoldMs, (id, t) => !!subjectBoxAt(subjects.find(s => s.id === id)!.path, toSource(t), cuts))
+    : found
   if (!stretches.length) return null
   const out: ViewChange[] = []
   for (const st of stretches) {

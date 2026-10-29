@@ -99,6 +99,40 @@ test('a Split at the Rulebook’s cut that would lose someone tries the other cu
   assert.ok(r.startsWith('Split'), r)
 })
 
+test('a collage of two rows (people one above another) gets a Split whose views reach the bottom row', () => {
+  // The user's clip at 3:55: four interviews in a 2 × 2 grid — D over A, E over H on the left, I over B on
+  // the right. Views sized by width alone cut the bottom row's chins, so it fell to the whole picture
+  const faces = [
+    { x: 0.095, y: 0.622, w: 0.038, h: 0.088 }, { x: 0.110, y: 0.134, w: 0.035, h: 0.085 },
+    { x: 0.355, y: 0.605, w: 0.043, h: 0.106 }, { x: 0.383, y: 0.082, w: 0.040, h: 0.102 },
+    { x: 0.706, y: 0.085, w: 0.094, h: 0.217 }, { x: 0.793, y: 0.579, w: 0.074, h: 0.168 },
+  ]
+  const r = decideFormat(faces, null, AR)!
+  assert.equal(r.layout, 'split')
+  const [top, bottom] = r.framing
+  const holds = (v: typeof top, ids: number[]) => ids.every(i => {
+    const f = faces[i]
+    return f.x >= v.x && f.x + f.w <= v.x + v.w && f.y >= v.y && f.y + f.h * (1 + AUTO_FORMAT.CHIN_ROOM) <= v.y + v.h + 1e-6
+  })
+  assert.ok(holds(top, [0, 1, 2, 3]), 'the left two interviews on top, chins and all')
+  assert.ok(holds(bottom, [4, 5]), 'the right two at the bottom, chins and all')
+  assert.ok(top.x + top.w <= bottom.x, 'side by side, no overlap')
+})
+
+test('the mirrored collage gets the same Split, three and three (not one person alone on top)', () => {
+  // The same clip at 4:30: rows offset the other way. It got a Split only by luck (one wide side), with
+  // Siddharth alone on top; the Rulebook's middle cut (3 + 3) needs views tall enough for both rows
+  const faces = [
+    { x: 0.129, y: 0.078, w: 0.079, h: 0.200 }, { x: 0.350, y: 0.621, w: 0.041, h: 0.093 },
+    { x: 0.432, y: 0.058, w: 0.070, h: 0.159 }, { x: 0.607, y: 0.603, w: 0.049, h: 0.109 },
+    { x: 0.788, y: 0.562, w: 0.086, h: 0.203 }, { x: 0.822, y: 0.116, w: 0.068, h: 0.132 },
+  ]
+  const r = decideFormat(faces, null, AR)!
+  assert.equal(r.layout, 'split')
+  const inView = r.framing.map(v => faces.filter(f => f.x >= v.x && f.x + f.w <= v.x + v.w && f.y >= v.y && f.y + f.h <= v.y + v.h).length)
+  assert.deepEqual(inView, [3, 3])
+})
+
 // ── The guarantees, on thousands of random scenes (the user, 2026-10-25: "maintain these rules for every
 // possible clip, not only the one we're working on") ──
 // 1–8 people, faces tiny (a wide shot) to huge (a close-up), bunched, spread or at the picture's edges,
@@ -119,7 +153,8 @@ function random(seed: number) {
 const SHAPES = [16 / 9, 2.17, 4 / 3, 1]
 const VIEW_PX: Record<string, number> = { split: 960, trio: 640 }
 
-function randomScene(rnd: () => number) {
+/** `rows`: a collage — faces may sit one above another (in different rows), only never on top of each other */
+function randomScene(rnd: () => number, rows = false) {
   const ar = SHAPES[Math.floor(rnd() * SHAPES.length)]
   const n = 1 + Math.floor(rnd() * 8)
   const kind = rnd()
@@ -127,10 +162,12 @@ function randomScene(rnd: () => number) {
   const faces: Array<{ x: number; y: number; w: number; h: number }> = []
   for (let tries = 0; faces.length < n && tries < 200; tries++) {
     const w = size * (0.8 + rnd() * 0.4)
-    const h = Math.min(0.9, w * ar * 1.25)
+    const h = Math.min(rows ? 0.45 : 0.9, w * ar * 1.25)
     const x = rnd() * (1 - w), y = 0.03 + rnd() * Math.max(0, 0.95 - h - 0.03)
-    // Faces don't sit on top of each other (side by side, a little apart)
-    if (faces.some(f => x < f.x + f.w + 0.004 && f.x < x + w + 0.004)) continue
+    // Faces don't sit on top of each other (side by side, a little apart; in a collage, apart either way)
+    const across = (f: (typeof faces)[number]) => x < f.x + f.w + 0.004 && f.x < x + w + 0.004
+    const down = (f: (typeof faces)[number]) => y < f.y + f.h + 0.004 && f.y < y + h + 0.004
+    if (faces.some(f => across(f) && (!rows || down(f)))) continue
     faces.push({ x, y, w, h })
   }
   const talk = rnd() < 0.3 ? null : faces.map(() => (rnd() < 0.5 ? 0 : Math.round(rnd() * 9000)))
@@ -142,11 +179,11 @@ const inside = (f: { x: number; y: number; w: number; h: number }, v: { x: numbe
 const overlap = (p: { x: number; y: number; w: number; h: number }, q: { x: number; y: number; w: number; h: number }) =>
   Math.max(0, Math.min(p.x + p.w, q.x + q.w) - Math.max(p.x, q.x)) * Math.max(0, Math.min(p.y + p.h, q.y + q.h) - Math.max(p.y, q.y))
 
-test('the guarantees hold on 5,000 random scenes', () => {
-  const rnd = random(20261025)
+for (const [name, seed, rows] of [['5,000 random scenes', 20261025, false], ['5,000 random collages (people one above another)', 20261026, true]] as const) test(`the guarantees hold on ${name}`, () => {
+  const rnd = random(seed)
   const counts: Record<string, number> = {}
   for (let i = 0; i < 5000; i++) {
-    const { ar, faces, talk } = randomScene(rnd)
+    const { ar, faces, talk } = randomScene(rnd, rows)
     if (!faces.length) continue
     const where = `scene ${i}: ${JSON.stringify({ ar: +ar.toFixed(2), faces: faces.map(f => [f.x, f.y, f.w, f.h].map(v => +v.toFixed(4))), talk })}`
     const r = decideFormat(faces, talk, ar)
@@ -181,5 +218,81 @@ test('the guarantees hold on 5,000 random scenes', () => {
       }
     }
   }
-  console.log('formats over 5,000 random scenes:', JSON.stringify(counts))
+  console.log(`formats over ${name}:`, JSON.stringify(counts))
+})
+
+// ── Auto format's Vertical mode (the user, 2026-10-28: "when we select Vertical, the speaker gets the
+// priority rather than the people in it") — decideVertical places each scene's one view; Follow then
+// cuts it to whoever talks, each held at least MIN_HOLD (subjects.ts autoDirectChanges / holdAtLeast) ──
+import { decideVertical } from './autoFormat'
+import { autoDirectChanges, holdAtLeast, type SubjectPoint } from './subjects'
+
+const centre = (v: { x: number; w: number }) => v.x + v.w / 2
+const at = (cx: number, w = 0.08) => ({ x: cx - w / 2, y: 0.3, w, h: w * 1.6 })
+
+test('Vertical mode: everyone who fits one 9:16 view gets it, together', () => {
+  const r = decideVertical([at(0.45), at(0.55)], [9000, 1000], AR)!
+  assert.equal(r.layout, 'vertical')
+  assert.equal(r.why, 'fits')
+  assert.ok(Math.abs(centre(r.framing[0]) - 0.5) < 0.01)
+})
+
+test('Vertical mode: people apart — the view on the speaker, wherever they sit', () => {
+  const faces = [at(0.15), at(0.5), at(0.85)]
+  for (const [k, cx] of [[0, 0.15], [1, 0.5], [2, 0.85]] as const) {
+    const talk = [0, 0, 0]; talk[k] = 9000
+    const r = decideVertical(faces, talk, AR)!
+    assert.equal(r.why, 'speaker')
+    assert.ok(Math.abs(centre(r.framing[0]) - cx) < 0.01 || r.framing[0].x === 0 || r.framing[0].x + r.framing[0].w >= 0.999, `on ${NAMES[k]}`)
+  }
+})
+
+test('Vertical mode: nobody talks, or two talk as much (crosstalk) — the view on the biggest face', () => {
+  const faces = [at(0.2, 0.06), at(0.8, 0.12)]
+  for (const talk of [null, [0, 0], [5000, 5000]]) {
+    const r = decideVertical(faces, talk, AR)!
+    assert.equal(r.why, 'biggest')
+    assert.ok(r.framing[0].x <= 0.8 && r.framing[0].x + r.framing[0].w >= 0.8, 'on the bigger face')
+  }
+})
+
+test('Vertical mode never makes a Split or Trio, whoever is in the scene', () => {
+  const rnd = random(20261028)
+  for (let i = 0; i < 2000; i++) {
+    const { ar, faces, talk } = randomScene(rnd)
+    if (!faces.length) continue
+    const r = decideVertical(faces, talk, ar)!
+    assert.equal(r.layout, 'vertical')
+    const v = r.framing[0]
+    assert.ok(v.x >= -1e-9 && v.x + v.w <= 1 + 1e-9, 'inside the picture')
+  }
+})
+
+/** A person seen at x through [from, to) ms (4 readings a second), with their turns */
+function speakerSeen(id: string, x: number, seen: Array<[number, number]>, speaking: Array<[number, number]>) {
+  const path: SubjectPoint[] = []
+  for (const [a, b] of seen) for (let t = a; t < b; t += 250) path.push([t, x, 0.3, 0.08, 0.14, speaking.some(([p, q]) => t >= p && t < q) ? 1 : 0])
+  return { id, path, speaking }
+}
+const same = (t: number) => t
+
+test('Vertical mode: a turn shorter than MIN_HOLD (a “yeah”) doesn’t take the view', () => {
+  const hold = AUTO_FORMAT.MIN_HOLD * 1000
+  const a = speakerSeen('A', 0.2, [[0, 20000]], [[0, 5000], [6000, 12000]])
+  const b = speakerSeen('B', 0.8, [[0, 20000]], [[5000, 6000], [12000, 20000]])
+  const view = { w: 0.316, h: 1 }
+  const who = (changes: ReturnType<typeof autoDirectChanges>) => (changes ?? []).filter((c, i) => i === 0 || c.cut).map(c => `${c.x + c.w / 2 < 0.5 ? 'A' : 'B'}@${c.t_ms}`)
+  // Without the hold (as Follow does by hand): A, B for the second, A, B
+  assert.deepEqual(who(autoDirectChanges([a, b], 0, 20000, same, view, undefined, same)), ['A@0', 'B@5000', 'A@6000', 'B@12000'])
+  // Vertical mode: B's second goes to A — A, then B from 12 s
+  assert.deepEqual(who(autoDirectChanges([a, b], 0, 20000, same, view, undefined, same, hold)), ['A@0', 'B@12000'])
+})
+
+test('holdAtLeast: a short stretch is kept when nobody else is in the picture through it', () => {
+  const seen = (id: string, t: number) => id === 'B' || t < 5000 || t >= 6000   // A gone 5–6 s
+  const out = holdAtLeast([{ from: 0, to: 5000, id: 'A' }, { from: 5000, to: 6000, id: 'B' }, { from: 6000, to: 12000, id: 'A' }], 2000, seen)
+  assert.deepEqual(out.map(s => s.id), ['A', 'B', 'A'])
+  // The first stretch short: it joins the one after
+  const first = holdAtLeast([{ from: 0, to: 800, id: 'B' }, { from: 800, to: 9000, id: 'A' }], 2000, () => true)
+  assert.deepEqual(first, [{ from: 0, to: 9000, id: 'A' }])
 })

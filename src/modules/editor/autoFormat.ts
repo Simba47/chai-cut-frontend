@@ -26,8 +26,8 @@ import { defaultCropForSlot, normalizedSlotAspect } from './utils'
 /**
  * Every threshold, under the Rulebook's names and defaults (its section 7): tune here and rerun the test
  * log (autoFormat.test.ts). PRESENCE_MIN is applied by the scan (backend track_subjects.ts findAngles),
- * SHORT_PLACE by Auto format in EditorShell; SWAP_ON_TURN / MIN_HOLD (off) and FOLLOW_SMOOTH are not
- * built yet.
+ * SHORT_PLACE by Auto format in EditorShell, MIN_HOLD by its Vertical mode's Follow; SWAP_ON_TURN (off)
+ * and FOLLOW_SMOOTH are not built yet.
  */
 export const AUTO_FORMAT = {
   /** Who counts as in the frame: their face in this share of the place's frames (the scan) */
@@ -42,6 +42,7 @@ export const AUTO_FORMAT = {
   SPEAKER_MIN: 0.2,
   /** A Split swaps top and bottom when the speaker changes (not built: the order is fixed per place) */
   SWAP_ON_TURN: false,
+  /** Seconds the view stays on one person before it cuts to the next speaker (Vertical mode's Follow) */
   MIN_HOLD: 2.0,
   /** A place shorter than this (seconds) takes the format of the place before it */
   SHORT_PLACE: 1.0,
@@ -54,6 +55,8 @@ export const AUTO_FORMAT = {
   FACE_Y: 0.4,
   /** The view's top at least this many face heights above the forehead (wins over FACE_Y) */
   HEADROOM_MIN: 0.5,
+  /** A view on people one above another (a collage's rows) reaches this many face heights below the lowest chin */
+  CHIN_ROOM: 0.3,
   /** The tightest crop: face heights tall, face widths wide */
   MIN_VIEW_H: 1.55,
   MIN_VIEW_W: 1.6,
@@ -75,8 +78,9 @@ type Face = { x: number; y: number; w: number; h: number }
 export interface AutoLayout {
   layout: LayoutType
   framing: BoxPosition[]
-  /** Which rule decided it (for the notice and the tests); 'whole': no Split or Trio could hold everyone */
-  why: 'fits' | 'two' | 'three' | 'groups3' | 'sides' | 'whole'
+  /** Which rule decided it (for the notice and the tests); 'whole': no Split or Trio could hold everyone;
+   *  'speaker' / 'biggest': the Vertical mode (decideVertical) on the speaker, or nobody talks */
+  why: 'fits' | 'two' | 'three' | 'groups3' | 'sides' | 'whole' | 'speaker' | 'biggest'
 }
 
 /** The whole picture, nobody cropped out: the wide video on a blurred copy of itself */
@@ -92,11 +96,25 @@ type Strip = readonly [number, number]
 /** The smallest view height the upscale limit allows for a view of this layout (fractions of the picture) */
 const minZoomH = (layout: LayoutType, sourcePxH: number) => (VIEW_PX_H[layout] ?? 0) / AUTO_FORMAT.MAX_ZOOM / sourcePxH
 
-/** The smallest view height for `group` in a view of this layout: the tightness and upscale limits, and the group's own span */
-function leastH(layout: LayoutType, a: number, group: readonly Face[], sourcePxH: number) {
+/**
+ * How high and how low a view on `group` reaches (fractions of the height): HEADROOM_MIN above the highest
+ * forehead, and below the lowest chin — `room`: CHIN_ROOM more, when the strip has space for it — people one
+ * above another (the user, 2026-10-26: a collage of four interviews, two rows, got views sized by width only
+ * that cut the bottom row's chins, so every Split lost someone and the place fell to the whole picture)
+ */
+function reach(group: readonly Face[], room = false) {
+  const tallest = Math.max(...group.map(f => f.h))
+  const top = Math.max(0, Math.min(...group.map(f => f.y)) - AUTO_FORMAT.HEADROOM_MIN * tallest)
+  const bottom = Math.min(1, Math.max(...group.map(f => f.y + f.h * (1 + (room ? AUTO_FORMAT.CHIN_ROOM : 0)))))
+  return [top, bottom] as const
+}
+
+/** The smallest view height for `group` in a view of this layout: the tightness and upscale limits, and the group's own span (across and down; `room`: with CHIN_ROOM) */
+function leastH(layout: LayoutType, a: number, group: readonly Face[], sourcePxH: number, room = false) {
   const left = Math.min(...group.map(f => f.x)), right = Math.max(...group.map(f => f.x + f.w))
+  const [top, bottom] = reach(group, room)
   return Math.max(Math.max(...group.map(f => f.h)) * AUTO_FORMAT.MIN_VIEW_H, (Math.max(...group.map(f => f.w)) * AUTO_FORMAT.MIN_VIEW_W) / a,
-    (right - left) / a, minZoomH(layout, sourcePxH))
+    (right - left) / a, minZoomH(layout, sourcePxH), group.length > 1 ? bottom - top : 0)
 }
 
 /**
@@ -132,7 +150,8 @@ function viewIn(layout: LayoutType, a: number, group: readonly Face[], strip: St
   const left = Math.min(...group.map(f => f.x)), right = Math.max(...group.map(f => f.x + f.w))
   const tallest = Math.max(...group.map(f => f.h))
   const faceH = layout === 'trio' ? AUTO_FORMAT.TRIO_FACE_H : AUTO_FORMAT.SPLIT_FACE_H
-  const want = group.length === 1 ? tallest * faceH : Math.max(((right - left) * (1 + 2 * AUTO_FORMAT.GROUP_PAD)) / a, tallest * faceH)
+  const [above, below] = reach(group, true)
+  const want = group.length === 1 ? tallest * faceH : Math.max(((right - left) * (1 + 2 * AUTO_FORMAT.GROUP_PAD)) / a, tallest * faceH, below - above)
   const least = leastH(layout, a, group, sourcePxH)
   // The tallest the strip and the picture allow
   const most = Math.min(1, 1 / a, (strip[1] - strip[0]) / a)
@@ -140,9 +159,11 @@ function viewIn(layout: LayoutType, a: number, group: readonly Face[], strip: St
   const h = clamp(want, least, most), w = a * h
   const cx = (left + right) / 2, cy = group.reduce((t, f) => t + midY(f), 0) / group.length
   const top = Math.min(...group.map(f => f.y))
+  // (several people: low enough to reach the lowest chin, with CHIN_ROOM as far as the headroom allows)
+  const low = group.length > 1 ? Math.min(below - h, above) : 0
   return {
     x: clamp(cx - w / 2, strip[0], strip[1] - w),
-    y: clamp(Math.min(cy - h * AUTO_FORMAT.FACE_Y, top - AUTO_FORMAT.HEADROOM_MIN * tallest), 0, 1 - h),
+    y: clamp(Math.max(low, Math.min(cy - h * AUTO_FORMAT.FACE_Y, top - AUTO_FORMAT.HEADROOM_MIN * tallest)), 0, 1 - h),
     w, h,
   }
 }
@@ -170,16 +191,15 @@ export function decideFormat(faces: readonly Face[], talk: readonly number[] | n
   const order = faces.map((f, i) => ({ f, t: talk?.[i] ?? 0 })).sort((p, q) => midX(p.f) - midX(q.f))
   const byX = order.map(o => o.f)
   const n = byX.length
-  // The speaker: the most talk, at least SPEAKER_MIN of it, ahead of everyone (two level: crosstalk, nobody)
-  const total = order.reduce((s, o) => s + o.t, 0)
-  const ranked = order.map((o, i) => ({ i, t: o.t })).sort((p, q) => q.t - p.t)
-  const speaker = total > 0 && ranked[0].t / total >= AUTO_FORMAT.SPEAKER_MIN && (ranked.length === 1 || ranked[0].t > ranked[1].t) ? ranked[0].i : null
+  const speaker = speakerOf(order.map(o => o.t))
   const aSplit = normalizedSlotAspect('split', videoAR) ?? 1, aTrio = normalizedSlotAspect('trio', videoAR) ?? 1
   const vertical = (cx: number, why: AutoLayout['why']): AutoLayout => ({ layout: 'vertical', framing: [defaultCropForSlot('vertical', 0, videoAR, cx)], why })
   const whole: AutoLayout = { layout: WHOLE_PICTURE, framing: [], why: 'whole' }
   /** Views on side-by-side groups (left to right), each in its own strip; null when one can't be made */
   const viewsFor = (layout: LayoutType, a: number, groupsLR: Face[][]) => {
-    const st = strips(groupsLR, groupsLR.map(g => a * Math.min(leastH(layout, a, g, sourcePxH), 1)))
+    // (room under the chins when the gaps allow it, else just the faces)
+    const widths = (room: boolean) => groupsLR.map(g => a * Math.min(leastH(layout, a, g, sourcePxH, room), 1))
+    const st = strips(groupsLR, widths(true)) ?? strips(groupsLR, widths(false))
     if (!st) return null
     const views = groupsLR.map((g, i) => viewIn(layout, a, g, st[i], sourcePxH))
     return views.every(Boolean) ? (views as BoxPosition[]) : null
@@ -242,6 +262,33 @@ export function decideFormat(faces: readonly Face[], talk: readonly number[] | n
   //    middle (the sides differ by one person at most; with an odd count, the wider of the two middle gaps)
   if (breaks.length === 1) return sidesAt(breaks[0], 'sides')
   return sidesAt(middleCut(), 'sides')
+}
+
+/** The speaker (index into `talk`): the most talk, at least SPEAKER_MIN of it, ahead of everyone; null — two level (crosstalk), or nobody talks */
+function speakerOf(talk: readonly number[]): number | null {
+  const total = talk.reduce((s, t) => s + t, 0)
+  const ranked = talk.map((t, i) => ({ i, t })).sort((p, q) => q.t - p.t)
+  return total > 0 && ranked[0].t / total >= AUTO_FORMAT.SPEAKER_MIN && (ranked.length === 1 || ranked[0].t > ranked[1].t) ? ranked[0].i : null
+}
+
+/**
+ * Auto format's Vertical mode (the user, 2026-10-28: "when we select Vertical, the speaker gets the
+ * priority rather than the people in it"): every place gets one 9:16 view — on everyone when they fit
+ * one (rule 1's test), else on the place's speaker, else (nobody talks there) on the biggest face. Follow
+ * then cuts the view to whoever talks, turn by turn, each held at least MIN_HOLD (EditorShell
+ * frameClipOnSubjects). Listeners may be out of the picture here: the user's choice of this mode, over
+ * never ignore anyone (which the Cuts mode, decideFormat, keeps). Null with no faces.
+ */
+export function decideVertical(faces: readonly Face[], talk: readonly number[] | null, videoAR?: number): AutoLayout | null {
+  if (!faces.length) return null
+  const vertical = (cx: number, why: AutoLayout['why']): AutoLayout => ({ layout: 'vertical', framing: [defaultCropForSlot('vertical', 0, videoAR, cx)], why })
+  const vw = defaultCropForSlot('vertical', 0, videoAR).w
+  const left = Math.min(...faces.map(f => f.x)), right = Math.max(...faces.map(f => f.x + f.w))
+  if (faces.length === 1 || (right - left) * (1 + 2 * AUTO_FORMAT.FIT_MARGIN) <= vw) return vertical((left + right) / 2, 'fits')
+  const speaker = talk ? speakerOf(faces.map((_, i) => talk[i] ?? 0)) : null
+  if (speaker !== null) return vertical(midX(faces[speaker]), 'speaker')
+  const biggest = faces.reduce((b, f) => (f.w * f.h > b.w * b.h ? f : b))
+  return vertical(midX(biggest), 'biggest')
 }
 
 const within = (f: Face, v: BoxPosition) =>
