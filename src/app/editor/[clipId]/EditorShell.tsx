@@ -75,7 +75,7 @@ import { frameSlotSize } from '@/modules/editor/frames'
 import { getBoxPositionAtLerp, type BoxPosition } from '@/lib/interpolation'
 import { SubjectsPanel, type SubjectItem, type AnglesView } from '@/components/editor/SubjectsPanel'
 import { angleRows, angleAt, type Angle, type AngleRow } from '@/modules/editor/angles'
-import { decideFormat, AUTO_FORMAT, keepsAll, viewsOverlap } from '@/modules/editor/autoFormat'
+import { decideFormat, decideVertical, AUTO_FORMAT, keepsAll, viewsOverlap } from '@/modules/editor/autoFormat'
 import type { SegmentLocal, CropBoxLocal, FrameLayout, FrameLane, FrameItem, TransitionType } from '@chai-cut/shared'
 import { SPEED_MIN, SPEED_MAX } from '@chai-cut/shared'
 import { TransitionsPanel, TRANSITION_DEFAULT_MS, TRANSITION_KINDS, playedTransitionMs, type TransitionJoin } from '@/components/editor/TransitionsPanel'
@@ -194,6 +194,11 @@ const TOOLS: { id: Tool; label: string; title: string; hint: string; icon: React
     icon: <><path d="M12 21a9 9 0 110-18 8.5 8.5 0 018.5 8.2c0 2.6-1.8 3.8-3.8 3.8h-1.9a1.9 1.9 0 00-1 3.5A1.9 1.9 0 0112 21z" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" fill="none" /><circle cx="7.6" cy="11" r="1.3" fill="currentColor" /><circle cx="10.4" cy="7" r="1.3" fill="currentColor" /><circle cx="15.2" cy="7.6" r="1.3" fill="currentColor" /></>,
   },
 ]
+
+/** How Auto format lays the scenes (Subjects tool): every scene Vertical on whoever talks, or the Rulebook's formats */
+type AutoMode = 'vertical' | 'cuts'
+/** Auto format's mode, the places it laid ([source start ms, source end ms, layout]) and the groups it made */
+type AutoRecord = { mode: AutoMode; places: Array<[number, number, string]>; groups: string[] }
 
 export function EditorShell({
   clip: savedClip, videoUrl, words: initialWords, initialSegments,
@@ -2146,10 +2151,17 @@ export function EditorShell({
     const { segments: segs, keyframes: kfs } = useEditorStore.getState()
     const next = { ...kfs }
     let framed = 0
-    // After Auto format: a view it placed on two or more people (the middle two of a Trio, a side of
-    // the table, everyone in one Vertical) holds where it is — following would put it on one of them
-    const holdGroups = autoFollowRef.current
-    autoFollowRef.current = false
+    // After Auto format (Cuts): a view it placed on two or more people (the middle two of a Trio, a side
+    // of the table, everyone in one Vertical) holds where it is — following would put it on one of them.
+    // After Auto format (Vertical): one view, on whoever talks (each held MIN_HOLD)
+    const auto = autoFollowRef.current
+    autoFollowRef.current = null
+    const holdGroups = auto === 'cuts'
+    /** Someone talks in the section (the tracker's turns, or its talking readings) */
+    const talksIn = (seg: SegmentLocal) => {
+      const a = trim.toSource(seg.start_ms), b = trim.toSource(seg.end_ms)
+      return tracked.some(s => s.speaking?.some(([x, y]) => y > a && x < b) || s.path.some(pt => pt[5] === 1 && pt[0] >= a && pt[0] < b))
+    }
     /** The view has two or more of them in it most of the time (someone leaning in for a moment isn't it) */
     const onSeveral = (seg: SegmentLocal, box: CropBoxLocal) => {
       let seen = 0, several = 0
@@ -2193,10 +2205,17 @@ export function EditorShell({
         if (holdGroups && onSeveral(seg, box)) return
         const size = starts[i]
         const view = { w: size.w, h: size.h }
-        const person = who ? who[i] : null
+        let person = who ? who[i] : null
         if (who && !person) return
+        // Vertical mode, nobody talking in the section: it holds on the people it was placed on, or
+        // follows the one (the biggest face, as placed) — not the first one marked
+        if (auto === 'vertical' && !who && !talksIn(seg)) {
+          if (onSeveral(seg, box)) return
+          person = viewPeople(seg, [box], tracked, kfs, cuts)[0]
+          if (!person) return
+        }
         const found = !person
-          ? autoDirectChanges(tracked, seg.start_ms, seg.end_ms, trim.toSource, view, cuts, trim.toTimeline)
+          ? autoDirectChanges(tracked, seg.start_ms, seg.end_ms, trim.toSource, view, cuts, trim.toTimeline, auto === 'vertical' ? AUTO_FORMAT.MIN_HOLD * 1000 : undefined)
           : followChanges(person.path, seg.start_ms, seg.end_ms, trim.toSource, view, 'smooth', cuts)
         if (!found?.length) return
         const [sl, sr] = stripOf(i)
@@ -2424,8 +2443,30 @@ export function EditorShell({
   const autoAfterScanRef = useRef(false)
   /** This Auto format laid formats (Stop says they stay) */
   const formatsLaidRef = useRef(false)
-  /** The following Auto format started: when done, views on two or more people hold (frameClipOnSubjects) */
-  const autoFollowRef = useRef(false)
+  /** The following Auto format started, in its mode: when done, Cuts — views on two or more people hold;
+   *  Vertical — the view goes to whoever talks (frameClipOnSubjects) */
+  const autoFollowRef = useRef<AutoMode | null>(null)
+  /**
+   * Auto format's mode (user, 2026-10-28): 'vertical' — every scene Vertical, on whoever talks; 'cuts' — the
+   * Rulebook's formats (decideFormat). With it, the places Auto format laid (source ms, so trimming doesn't
+   * move them) and the groups it made: running it again — in either mode — redoes its own places; a place
+   * formatted by hand stays. Kept in this browser, per clip (on another, its places count as by hand)
+   */
+  const autoKey = `chai-cut:auto-format:${savedClip.id}`
+  const readAutoRecord = (): AutoRecord => {
+    try {
+      const r = JSON.parse(localStorage.getItem(autoKey) ?? 'null')
+      if (r && (r.mode === 'vertical' || r.mode === 'cuts') && Array.isArray(r.places) && Array.isArray(r.groups)) return r
+    } catch { /* none, or not readable */ }
+    return { mode: 'cuts', places: [], groups: [] }
+  }
+  const writeAutoRecord = (r: AutoRecord) => { try { localStorage.setItem(autoKey, JSON.stringify(r)) } catch { /* private window: not kept */ } }
+  const [autoMode, setAutoModeNow] = useState<AutoMode>('cuts')
+  useEffect(() => { setAutoModeNow(readAutoRecord().mode) }, [autoKey]) // eslint-disable-line react-hooks/exhaustive-deps
+  function setAutoMode(mode: AutoMode) {
+    setAutoModeNow(mode)
+    writeAutoRecord({ ...readAutoRecord(), mode })
+  }
   function runAutoFormat() {
     if (autoPhase !== 'idle') return
     stopAskedRef.current = false
@@ -2454,12 +2495,17 @@ export function EditorShell({
     markingSubjectRef.current = true
     try {
       const ar = getVideoAR()
+      const mode = autoMode
+      const record = readAutoRecord()
       const sectionsNow = () => useEditorStore.getState().segments.filter(x => !isShot(x, mainVideoId))
-      // A place formatted by hand — exactly one section, as a format picked in this tool leaves it — or
-      // a scene with a group marked stays as it is
+      /** Auto format laid this place in that format, and it is still as laid */
+      const laidByAuto = ([a, b]: readonly [number, number], layout: string) => record.places.some(([x, y, l]) => l === layout
+        && Math.abs(trim.toSource(a) - x) <= 150 && Math.abs(trim.toSource(b) - y) <= 150)
+      // A place formatted by hand — exactly one section, as a format picked in this tool leaves it, and
+      // not as Auto format laid it — or a scene with a group marked stays as it is
       const byHand = ([a, b]: readonly [number, number]) => {
         const over = sectionsNow().filter(x => x.end_ms > a + 50 && x.start_ms < b - 50)
-        return over.length === 1 && Math.abs(over[0].start_ms - a) <= 150 && Math.abs(over[0].end_ms - b) <= 150
+        return over.length === 1 && Math.abs(over[0].start_ms - a) <= 150 && Math.abs(over[0].end_ms - b) <= 150 && !laidByAuto([a, b], over[0].layout)
       }
       const rows = angleItems.filter(r => r.people > 0)
       // A group whose saved views overlap or leave someone out (marked before these rules) is rebuilt by
@@ -2470,7 +2516,9 @@ export function EditorShell({
         const g = subjects.find(x => x.shot && x.label === row.group!.label)
         if (!g?.shot) continue
         const boxes = [...g.shot.boxes].sort((p, q) => p.slot_index - q.slot_index)
-        if (!viewsOverlap(boxes) && keepsAll(g.shot.layout as LayoutType, boxes, row.faces.map(f => f.box))) continue
+        // (and in Vertical, a group Auto format made: a Split or Trio of its own — the user's groups stay)
+        const madeByAuto = mode === 'vertical' && record.groups.includes(g.id)
+        if (!madeByAuto && !viewsOverlap(boxes) && keepsAll(g.shot.layout as LayoutType, boxes, row.faces.map(f => f.box))) continue
         try {
           await subjectsCall(`${subjectsUrl}?id=${encodeURIComponent(g.id)}`, { method: 'DELETE' })
           setSubjects(list => list.filter(x => x.id !== g.id))
@@ -2480,7 +2528,7 @@ export function EditorShell({
       // Each place of each scene on its own (who talks differs between them: modules/editor/autoFormat.ts),
       // all decided first, then laid at once (one undo step)
       const decided = rows.filter(r => !r.group || rebuilt.has(r)).flatMap(row => row.places.filter(pl => rebuilt.has(row) || !byHand(pl.shown)).flatMap(pl => {
-        const plan = decideFormat(row.faces.map(f => f.box), pl.talk, ar)
+        const plan = mode === 'vertical' ? decideVertical(row.faces.map(f => f.box), pl.talk, ar) : decideFormat(row.faces.map(f => f.box), pl.talk, ar)
         return plan ? [{ row, shown: pl.shown, plan }] : []
       })).sort((p, q) => p.shown[0] - q.shown[0])
       // A very short place (under SHORT_PLACE) takes the format of the place right before it, so fast
@@ -2490,7 +2538,7 @@ export function EditorShell({
         const before = i > 0 ? decided[i - 1] : null
         const short = x.shown[1] - x.shown[0] < AUTO_FORMAT.SHORT_PLACE * 1000
         const fits = before && keepsAll(before.plan.layout, before.plan.framing, x.row.faces.map(f => f.box))
-        return short && before && fits && Math.abs(before.shown[1] - x.shown[0]) <= 150 ? { ...x, plan: before.plan } : x
+        return mode === 'cuts' && short && before && fits && Math.abs(before.shown[1] - x.shown[0]) <= 150 ? { ...x, plan: before.plan } : x
       })
       // A scene of two or more that gets the same format and views in every place (who talks changes
       // nothing there: four people's Trio, say) becomes a group with it (user, 2026-10-24: the scene
@@ -2510,11 +2558,15 @@ export function EditorShell({
           : []
       })
       const laid = { vertical: 0, split: 0, trio: 0, whole: 0 }
+      const places: AutoRecord['places'] = []
       for (const { shown, plan } of plans) {
         if (stopAskedRef.current) break
-        // (the whole picture: a frame showing all of the video — no views to place)
-        if (!formatSpans([shown], plan.layout, plan.framing.length ? plan.framing : undefined).length) continue
+        // (the whole picture: a frame showing all of the video — no views to place.) Each place its own
+        // section, not joined to a neighbour in the same format: the scene shows as formatted, and the
+        // next Auto format knows it as its own
+        if (!applyFormatSpans([shown], plan.layout, plan.framing.length ? plan.framing : undefined, clipLengthMs, ar, mainVideoId).length) continue
         formatsLaidRef.current = true
+        places.push([Math.round(trim.toSource(shown[0])), Math.round(trim.toSource(shown[1])), plan.layout])
         if (plan.why === 'whole') laid.whole++
         else if (plan.layout === 'vertical' || plan.layout === 'split' || plan.layout === 'trio') laid[plan.layout]++
       }
@@ -2546,6 +2598,16 @@ export function EditorShell({
         } catch { /* the most groups a clip can have, say: the scene stays as laid */ }
       }
       if (added.length) setSubjects(list => [...list, ...added])
+      // What Auto format laid and made, for the next time: its places from before that it decided again
+      // drop out (laid again, or by hand since and left alone — not its own any more), and the groups it
+      // took away
+      const decidedSrc = plans.map(pl => [trim.toSource(pl.shown[0]), trim.toSource(pl.shown[1])] as const)
+      const removedGroups = new Set(subjects.filter(x => x.shot && [...rebuilt].some(r => r.group?.label === x.label)).map(x => x.id))
+      writeAutoRecord({
+        mode,
+        places: [...record.places.filter(([x, y]) => !decidedSrc.some(([a, b]) => Math.min(b, y) - Math.max(a, x) > 0)), ...places],
+        groups: [...record.groups.filter(id => !removedGroups.has(id)), ...added.filter(x => x.shot).map(x => x.id)],
+      })
       const scenes = laid.vertical + laid.split + laid.trio + laid.whole
       const what = [laid.vertical && `${laid.vertical} Vertical`, laid.split && `${laid.split} Split`, laid.trio && `${laid.trio} Trio`,
         laid.whole && `${laid.whole} whole picture (Blur fill, so nobody is cut out)`].filter(Boolean).join(', ')
@@ -2554,11 +2616,14 @@ export function EditorShell({
         setSubjectNotice('Every scene already has its format — nothing to do.')
         return
       }
-      // When the following is done, a view on two or more people holds where it is (frameClipOnSubjects)
-      autoFollowRef.current = true
+      // When the following is done: Cuts — a view on two or more people holds where it is; Vertical — the
+      // view goes to whoever talks (frameClipOnSubjects)
+      autoFollowRef.current = mode
       // Follow them (it runs in the background; the bar at the bottom shows it)
       await trackSubjectsNow(true)
-      setSubjectNotice(`${scenes ? `${scenes} ${scenes === 1 ? 'place' : 'places'} formatted (${what}). ` : ''}Following them now — the views keep on the people as they move. Undo takes the formats back.`)
+      setSubjectNotice(mode === 'vertical'
+        ? `${scenes ? `${scenes} ${scenes === 1 ? 'place' : 'places'} made Vertical. ` : ''}Following them now — the view cuts to whoever is talking, at least ${AUTO_FORMAT.MIN_HOLD} seconds on each. Undo takes the formats back.`
+        : `${scenes ? `${scenes} ${scenes === 1 ? 'place' : 'places'} formatted (${what}). ` : ''}Following them now — the views keep on the people as they move. Undo takes the formats back.`)
     } catch (e) {
       setSubjectsError(e instanceof Error ? e.message : 'Auto format didn’t finish')
     } finally {
@@ -5890,7 +5955,7 @@ export function EditorShell({
                 onScanAngles={() => loadAngles(true)}
                 subjects={subjectItems} loading={subjectsLoading} error={subjectsError}
                 marking={marking} onToggleMarking={markFromView} onMarkShot={markShot} onMarkInClip={markInWholeClip} retrack={needsRetrack}
-                onAutoFormat={runAutoFormat} autoPhase={autoPhase} onStop={stopSubjectsWork}
+                onAutoFormat={runAutoFormat} autoPhase={autoPhase} autoMode={autoMode} onAutoMode={setAutoMode} onStop={stopSubjectsWork}
                 onRemove={removeSubject} onRename={renameSubject}
                 videoUrl={videoUrl}
                 showOnVideo={showSubjects} onShowOnVideo={setShowSubjects} notice={subjectNotice}

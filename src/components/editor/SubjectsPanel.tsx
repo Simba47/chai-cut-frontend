@@ -91,6 +91,9 @@ interface Props {
   onAutoFormat: () => void
   /** Where Auto format is: waiting for its scan, or laying the formats out */
   autoPhase: 'idle' | 'detecting' | 'formatting'
+  /** How Auto format lays the scenes: 'vertical' — every scene Vertical, on whoever talks; 'cuts' — the Rulebook's formats, everyone in */
+  autoMode: 'vertical' | 'cuts'
+  onAutoMode: (mode: 'vertical' | 'cuts') => void
   /** Stop whatever runs: Auto format, the scan, the following */
   onStop: () => void
   onRemove: (id: string) => void
@@ -198,7 +201,9 @@ export function SubjectsPanel(p: Props) {
               <span className="truncate">{scanning ? 'Detecting…' : detected ? 'Detect again' : 'Detect'}</span>
             </button>
             <button type="button" onClick={p.onAutoFormat} disabled={working}
-              title="Detects the scenes if needed, then gives every scene its format from who is in it (1 person: Vertical, 2: Split, 3: Trio, more: Split by halves), marks everyone and follows them. Scenes you formatted yourself stay as they are."
+              title={p.autoMode === 'vertical'
+                ? 'Detects the scenes if needed, then makes every scene Vertical on whoever is talking — the view cuts to each speaker — marks everyone and follows them. Scenes you formatted yourself stay as they are.'
+                : 'Detects the scenes if needed, then gives every scene its format from who is in it and where they sit (Vertical, Split, Trio, or the whole picture — nobody left out), marks everyone and follows them. Scenes you formatted yourself stay as they are.'}
               className="flex-1 min-w-0 h-11 flex items-center justify-center gap-2 rounded-xl text-[12.5px] font-bold transition-opacity hover:opacity-90 disabled:cursor-default"
               style={{ background: '#c8ff00', color: '#000', opacity: working && p.autoPhase === 'idle' ? 0.5 : 1 }}>
               {p.autoPhase !== 'idle'
@@ -215,6 +220,24 @@ export function SubjectsPanel(p: Props) {
                 Stop
               </button>
             )}
+          </div>
+        )}
+        {/* How Auto format lays the scenes (user, 2026-10-28): Vertical — the speaker first; Cuts — the Rulebook's formats */}
+        {canAct && (
+          <div className="-mt-2 flex items-center gap-2">
+            <span className="text-[11px]" style={{ color: muted }}>Auto format as</span>
+            <div role="radiogroup" aria-label="Auto format as" className="flex p-0.5 rounded-lg" style={{ background: 'rgb(var(--ed-fg) / 0.07)' }}>
+              {(['vertical', 'cuts'] as const).map(m => (
+                <button key={m} type="button" role="radio" aria-checked={p.autoMode === m} disabled={working} onClick={() => p.onAutoMode(m)}
+                  title={m === 'vertical'
+                    ? 'Every scene Vertical, on whoever is talking: the view cuts to each speaker, at least 2 seconds on each. Listeners can be out of the picture.'
+                    : 'Each scene gets its format from who is in it (Vertical, Split, Trio, or the whole picture), with everyone kept in.'}
+                  className="h-6 px-2.5 rounded-md text-[11px] font-semibold transition-colors disabled:cursor-default disabled:opacity-60"
+                  style={p.autoMode === m ? { background: '#c8ff00', color: '#000' } : { color: 'rgb(var(--ed-fg) / 0.7)' }}>
+                  {m === 'vertical' ? 'Vertical' : 'Cuts'}
+                </button>
+              ))}
+            </div>
           </div>
         )}
         {p.angles.status === 'done' && p.angles.stale && !working && (
