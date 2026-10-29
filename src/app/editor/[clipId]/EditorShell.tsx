@@ -4835,6 +4835,27 @@ export function EditorShell({
     setVideoLibrary(videoLibraryRef.current)
     return data.video_id as string
   }
+  /**
+   * B-roll Make my clips laid: show another of the stock videos it chose from (user, 2026-10-29). The
+   * video is added to the user's videos (once), then the item plays it from its start; the item keeps
+   * its time, slot and sound.
+   */
+  const [swappingBroll, setSwappingBroll] = useState<string | null>(null)
+  async function swapBroll(segId: string, itemId: string, index: number) {
+    const seg = useEditorStore.getState().segments.find(x => x.id === segId)
+    const item = seg?.frame?.items?.find(x => x.id === itemId)
+    const alt = item?.broll?.alts[index]
+    if (!item?.broll || !alt || swappingBroll) return
+    setSwappingBroll(itemId)
+    try {
+      const videoId = await importStock(alt)
+      updateFrameItem(segId, itemId, { source_video_id: videoId, source_offset_ms: 0, broll: { ...item.broll, at: index } })
+    } catch (e) {
+      notifyLocked(e instanceof Error ? e.message : 'Could not add that video')
+    } finally {
+      setSwappingBroll(null)
+    }
+  }
   async function addStockBroll(item: StockResult, lengthMs: number, atMs?: number) {
     const at = Math.max(0, Math.min(atMs ?? currentTimeMs, clipLengthMs - 500))
     if (rangeBlocked(at, Math.min(MAX_CLIP_MS, at + lengthMs))) return
@@ -6021,6 +6042,8 @@ export function EditorShell({
                 onRemoveItem={askRemoveFrameItem}
                 onUpdateFrame={(segId, patch) => { if (!sectionBlocked(segId)) updateFrame(segId, patch) }}
                 onReplaceMedia={(segId, id, kind) => { if (sectionBlocked(segId)) return; pause(); setFramePicker({ segId, kind, replaceId: id }) }}
+                onSwapBroll={(segId, id, index) => { if (!frameItemBlocked(segId, id)) void swapBroll(segId, id, index) }}
+                swappingBroll={swappingBroll}
                 onRemoveFrame={askRemoveFrame}
                 onRemoveMain={askRemoveMain}
               />
