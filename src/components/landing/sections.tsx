@@ -24,15 +24,27 @@ const CHORES = ['Find', 'Crop', 'Caption', 'Export']
 /** The editing clock running away: hours pile up while the chores tick by one at a time */
 function HoursArt() {
   const [secs, setSecs] = useState(0)
+  const ref = useRef<HTMLDivElement>(null)
   useEffect(() => {
     if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) { setSecs(3 * 3600 + 47 * 60 + 12); return }
-    const id = setInterval(() => setSecs(s => (s + 97) % (4 * 3600)), 80)
-    return () => clearInterval(id)
+    // Ticks only while it can be seen (on screen, the tab showing): off screen it used to redraw 12×
+    // a second for as long as the page was open
+    let id: ReturnType<typeof setInterval> | null = null
+    let seen = false
+    const run = () => {
+      const want = seen && !document.hidden
+      if (want && !id) id = setInterval(() => setSecs(s => (s + 97) % (4 * 3600)), 80)
+      else if (!want && id) { clearInterval(id); id = null }
+    }
+    const io = new IntersectionObserver(([e]) => { seen = e.isIntersecting; run() })
+    if (ref.current) io.observe(ref.current)
+    document.addEventListener('visibilitychange', run)
+    return () => { io.disconnect(); document.removeEventListener('visibilitychange', run); if (id) clearInterval(id) }
   }, [])
   const hh = Math.floor(secs / 3600), mm = Math.floor(secs / 60) % 60, ss = secs % 60
   const pad = (n: number) => String(n).padStart(2, '0')
   return (
-    <div className="lx-pa lx-pa-hours" aria-hidden="true">
+    <div ref={ref} className="lx-pa lx-pa-hours" aria-hidden="true">
       <div className="lx-pa-timer"><span className="lx-pa-rec" />{hh}:{pad(mm)}:{pad(ss)}</div>
       <div className="lx-pa-chores">{CHORES.map((c, i) => <span key={c} style={{ '--k': i } as React.CSSProperties}>{c}</span>)}</div>
       <div className="lx-pa-track"><span /></div>

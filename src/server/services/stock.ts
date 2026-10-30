@@ -9,8 +9,9 @@ import { safeName } from './media'
 /**
  * Stock video for B-roll in the editor: search, AI ideas for a clip, and adding a shot to the
  * user's assets. Three libraries, each on when its key is set: Pixabay (PIXABAY_API_KEY), Pexels
- * (PEXELS_API_KEY) and Coverr (COVERR_API_KEY); the editor's B-roll stock switches between them
- * (default: Pexels, else Pixabay, else Coverr). The same video is saved once per user
+ * (PEXELS_API_KEY) and Coverr (COVERR_API_KEY); the editor's B-roll tab searches all of them at
+ * once and mixes the results (2026-10-30: Pixabay + Coverr; Pexels isn't issuing new keys, so it
+ * stays off until a key is set). The same video is saved once per user
  * (videos.stock_ref, shared with the worker's auto B-roll).
  */
 
@@ -46,20 +47,45 @@ export function stockSources(): StockSource[] {
 const cache = new Map<string, { at: number; items: StockItem[] }>()
 
 /**
- * Stock videos for `query` from `source` (one of stockSources(); without one, the default library).
- * `sources`: every library that can be searched, for the editor's switch.
+ * Stock videos for `query`: from every library with a key at once (user, 2026-10-30: "we will
+ * retrieve all the b-rolls"), mixed evenly — the 1st of each, then the 2nd of each… — so no library
+ * crowds out the others; a library that fails or is slow just adds nothing. With `source`, that
+ * library only. `providers`: the libraries the results came from (each item also says its own:
+ * the editor shows it, as the libraries' terms ask). `sources`: every library that can be searched.
+ * `browse` with no words: the libraries' own picks (shown when the B-roll tab opens and the clip has
+ * no AI idea to search for).
  */
-export async function searchStock(query: string, page = 1, source?: string | null): Promise<{ provider: string | null; items: StockItem[]; sources: StockSource[] }> {
+export async function searchStock(query: string, page = 1, source?: string | null, browse = false): Promise<{ provider: string | null; providers: StockSource[]; items: StockItem[]; sources: StockSource[] }> {
   const q = query.trim().slice(0, 100)
   const sources = stockSources()
-  const provider: StockSource | null = sources.includes(source as StockSource) ? source as StockSource : (stockProvider() ?? sources[0] ?? null)
-  if (!q || !provider) return { provider, items: [], sources }
-  const key = `${provider}|${q.toLowerCase()}|${page}`
+  const asked = sources.includes(source as StockSource) ? [source as StockSource] : sources
+  if ((!q && !browse) || !asked.length) return { provider: asked[0] ?? null, providers: [], items: [], sources }
+  const lists = await Promise.all(asked.map(async from => {
+    try { return await searchOne(from, q, page) } catch (e) {
+      console.warn(`[stock] ${from} search failed:`, e instanceof Error ? e.message : e)
+      return [] as StockItem[]
+    }
+  }))
+  const items: StockItem[] = []
+  const seen = new Set<string>()
+  for (let i = 0; i < Math.max(0, ...lists.map(l => l.length)); i++) {
+    for (const list of lists) {
+      const it = list[i]
+      if (it && !seen.has(it.ref)) { seen.add(it.ref); items.push(it) }
+    }
+  }
+  const providers = asked.filter((_, k) => lists[k].length > 0)
+  return { provider: providers[0] ?? null, providers, items, sources }
+}
+
+/** One library's results for `q` (kept 24 h: Pixabay's API terms ask for it; it also saves quota) */
+async function searchOne(from: StockSource, q: string, page: number): Promise<StockItem[]> {
+  const key = `${from}|${q.toLowerCase()}|${page}`
   const hit = cache.get(key)
-  if (hit && Date.now() - hit.at < 24 * 3600_000) return { provider, items: hit.items, sources }
-  const items = provider === 'pexels' ? await searchPexels(q, page) : provider === 'coverr' ? await searchCoverr(q, page) : await searchPixabay(q, page)
+  if (hit && Date.now() - hit.at < 24 * 3600_000) return hit.items
+  const items = from === 'pexels' ? await searchPexels(q, page) : from === 'coverr' ? await searchCoverr(q, page) : await searchPixabay(q, page)
   cache.set(key, { at: Date.now(), items })
-  return { provider, items, sources }
+  return items
 }
 
 // Coverr (api.coverr.co): key as a Bearer token; its file links are signed for that key. Every
@@ -69,7 +95,8 @@ const coverrAuth = () => ({ Authorization: `Bearer ${process.env.COVERR_API_KEY}
 let coverrStatsWarned = false
 
 async function searchCoverr(q: string, page: number): Promise<StockItem[]> {
-  const params = new URLSearchParams({ query: q, page: String(Math.max(0, page - 1)), page_size: '24', urls: 'true' })
+  // (no words: Coverr's latest videos)
+  const params = new URLSearchParams({ ...(q ? { query: q } : {}), page: String(Math.max(0, page - 1)), page_size: '24', urls: 'true' })
   const res = await fetch(`${COVERR_API}/videos?${params}`, { headers: coverrAuth() })
   if (!res.ok) {
     // The demo key allows 50 searches an hour (for every user together)
@@ -92,7 +119,8 @@ async function searchCoverr(q: string, page: number): Promise<StockItem[]> {
 
 type PixabayFile = { url: string; width: number; height: number; thumbnail?: string }
 async function searchPixabay(q: string, page: number): Promise<StockItem[]> {
-  const params = new URLSearchParams({ key: process.env.PIXABAY_API_KEY!, q, safesearch: 'true', per_page: '24', page: String(page) })
+  // (no words: Pixabay's editor's choice; its plain newest list is mostly AI-made, which is left out)
+  const params = new URLSearchParams({ key: process.env.PIXABAY_API_KEY!, ...(q ? { q } : { editors_choice: 'true' }), safesearch: 'true', per_page: '24', page: String(page) })
   const res = await fetch(`https://pixabay.com/api/videos/?${params}`)
   if (!res.ok) throw Object.assign(new Error('Stock search is not available right now'), { status: 502 })
   const data = await res.json() as { hits?: Array<{ id: number; tags: string; duration: number; isAiGenerated?: boolean; isLowQuality?: boolean; videos: Record<string, PixabayFile> }> }
@@ -112,7 +140,9 @@ async function searchPixabay(q: string, page: number): Promise<StockItem[]> {
 
 type PexelsFile = { link: string; width: number; height: number; file_type?: string }
 async function searchPexels(q: string, page: number): Promise<StockItem[]> {
-  const res = await fetch(`https://api.pexels.com/videos/search?${new URLSearchParams({ query: q, per_page: '24', page: String(page) })}`, {
+  const res = await fetch(q
+    ? `https://api.pexels.com/videos/search?${new URLSearchParams({ query: q, per_page: '24', page: String(page) })}`
+    : `https://api.pexels.com/videos/popular?${new URLSearchParams({ per_page: '24', page: String(page) })}`, {
     headers: { Authorization: process.env.PEXELS_API_KEY! },
   })
   if (!res.ok) throw Object.assign(new Error('Stock search is not available right now'), { status: 502 })
@@ -132,10 +162,12 @@ async function searchPexels(q: string, page: number): Promise<StockItem[]> {
  * made on first use. Only files from the stock libraries' own hosts are fetched.
  */
 export async function importStock(userId: string, item: { ref: string; url: string; title?: string }) {
-  if (!/^((pixabay|pexels):\d+|coverr:[A-Za-z0-9_-]{1,64})$/.test(item.ref)) throw Object.assign(new Error('Unknown stock video'), { status: 400 })
+  // (Media ▸ Memes: a KLIPY GIF's or clip's mp4 — "klipy:gif:<slug>" / "klipy:clip:<slug>" — or a GIPHY GIF's — "giphy:gif:<id>")
+  if (!/^((pixabay|pexels):\d+|coverr:[A-Za-z0-9_-]{1,64}|klipy:(gif|clip):[A-Za-z0-9_-]{1,160}|giphy:gif:[A-Za-z0-9]{1,64})$/.test(item.ref)) throw Object.assign(new Error('Unknown stock video'), { status: 400 })
   let host = ''
   try { host = new URL(item.url).hostname } catch { /* invalid */ }
-  if (!/(^|\.)(pixabay\.com|pexels\.com|coverr\.co)$/.test(host)) throw Object.assign(new Error('Unknown stock video'), { status: 400 })
+  const hosts = item.ref.startsWith('klipy:') ? /^static\.klipy\.com$/ : item.ref.startsWith('giphy:') ? /^(media\d*|i)\.giphy\.com$/ : /(^|\.)(pixabay\.com|pexels\.com|coverr\.co)$/
+  if (!hosts.test(host)) throw Object.assign(new Error('Unknown stock video'), { status: 400 })
 
   const sign = (key: string) => getSignedUrl(r2, new GetObjectCommand({ Bucket: R2_BUCKET, Key: key }), { expiresIn: 43200 })
   const [existing] = await sql`SELECT id, title, storage_path FROM videos WHERE user_id = ${userId} AND stock_ref = ${item.ref} AND storage_path IS NOT NULL LIMIT 1`
@@ -145,7 +177,7 @@ export async function importStock(userId: string, item: { ref: string; url: stri
   if (!res.ok) throw Object.assign(new Error('Could not download that video'), { status: 502 })
   const body = Buffer.from(await res.arrayBuffer())
   if (body.length > 80 * 1024 * 1024) throw Object.assign(new Error('That video is too large'), { status: 400 })
-  const storagePath = `raw/${userId}/stock-${item.ref.replace(':', '-')}-${createHash('sha1').update(item.url).digest('hex').slice(0, 8)}.mp4`
+  const storagePath = `raw/${userId}/stock-${item.ref.replace(/:/g, '-')}-${createHash('sha1').update(item.url).digest('hex').slice(0, 8)}.mp4`
   await r2.send(new PutObjectCommand({ Bucket: R2_BUCKET, Key: storagePath, Body: body, ContentType: 'video/mp4' }))
   // Coverr counts a download when its mp4_download link is fetched (the file above came from it:
   // their API terms make that a must). Their stats call is sent too; it answered 404 for the demo
@@ -155,7 +187,7 @@ export async function importStock(userId: string, item: { ref: string; url: stri
       .then(r => { if (!r.ok && !coverrStatsWarned) { coverrStatsWarned = true; console.warn('[stock] Coverr stats call answered', r.status, '(the download itself is counted by Coverr)') } })
       .catch(() => {})
   }
-  const provider = item.ref.startsWith('pixabay') ? 'Pixabay' : item.ref.startsWith('coverr') ? 'Coverr' : 'Pexels'
+  const provider = item.ref.startsWith('pixabay') ? 'Pixabay' : item.ref.startsWith('coverr') ? 'Coverr' : item.ref.startsWith('klipy') ? 'KLIPY' : item.ref.startsWith('giphy') ? 'GIPHY' : 'Pexels'
   const title = `${provider}: ${(item.title ?? 'stock video').slice(0, 100)}`
   const [row] = await sql`
     INSERT INTO videos (user_id, source_type, storage_path, status, title, role, stock_ref)
@@ -196,18 +228,45 @@ export function photoSources(): PhotoSource[] {
   return stock ? [stock, 'wikimedia'] : ['wikimedia']
 }
 
-export async function searchPhotos(query: string, page = 1, source?: string): Promise<{ provider: PhotoSource; items: StockPhoto[]; sources: PhotoSource[] }> {
+/** `browse` with no words: the stock library's own picks (Wikimedia has none: it needs words) */
+/**
+ * Stock photos for `query` from every library at once (user, 2026-10-30: Pixabay and Wikimedia
+ * together, no switch), mixed evenly like the B-roll videos; a library that fails just adds
+ * nothing. With `source`, that library only. `providers`: the libraries the results came from.
+ */
+export async function searchPhotos(query: string, page = 1, source?: string, browse = false): Promise<{ provider: PhotoSource; providers: PhotoSource[]; items: StockPhoto[]; sources: PhotoSource[] }> {
   const q = query.trim().slice(0, 100)
   const sources = photoSources()
-  const provider = sources.find(s => s === source) ?? sources[0]
-  if (!q) return { provider, items: [], sources }
-  const key = `${provider}|${q.toLowerCase()}|${page}`
+  // (Wikimedia needs words: it has no picks of its own)
+  const asked = (sources.includes(source as PhotoSource) ? [source as PhotoSource] : sources).filter(s => q || (browse && s !== 'wikimedia'))
+  if (!asked.length) return { provider: sources[0], providers: [], items: [], sources }
+  const lists = await Promise.all(asked.map(async from => {
+    try { return await searchPhotosIn(from, q, page) } catch (e) {
+      console.warn(`[stock] ${from} photo search failed:`, e instanceof Error ? e.message : e)
+      return [] as StockPhoto[]
+    }
+  }))
+  const items: StockPhoto[] = []
+  const seen = new Set<string>()
+  for (let i = 0; i < Math.max(0, ...lists.map(l => l.length)); i++) {
+    for (const list of lists) {
+      const it = list[i]
+      if (it && !seen.has(it.ref)) { seen.add(it.ref); items.push(it) }
+    }
+  }
+  const providers = asked.filter((_, k) => lists[k].length > 0)
+  return { provider: providers[0] ?? asked[0], providers, items, sources }
+}
+
+/** One library's photos for `q` (kept 24 h) */
+async function searchPhotosIn(from: PhotoSource, q: string, page: number): Promise<StockPhoto[]> {
+  const key = `${from}|${q.toLowerCase()}|${page}`
   const hit = photoCache.get(key)
-  if (hit && Date.now() - hit.at < 24 * 3600_000) return { provider, items: hit.items, sources }
-  const items = provider === 'wikimedia' ? await searchWikimediaPhotos(q, page)
-    : provider === 'pexels' ? await searchPexelsPhotos(q, page) : await searchPixabayPhotos(q, page)
+  if (hit && Date.now() - hit.at < 24 * 3600_000) return hit.items
+  const items = from === 'wikimedia' ? await searchWikimediaPhotos(q, page)
+    : from === 'pexels' ? await searchPexelsPhotos(q, page) : await searchPixabayPhotos(q, page)
   photoCache.set(key, { at: Date.now(), items })
-  return { provider, items, sources }
+  return items
 }
 
 // ── Wikimedia Commons ──
@@ -274,7 +333,7 @@ async function searchWikimediaPhotos(q: string, page: number): Promise<StockPhot
 }
 
 async function searchPixabayPhotos(q: string, page: number): Promise<StockPhoto[]> {
-  const params = new URLSearchParams({ key: process.env.PIXABAY_API_KEY!, q, image_type: 'photo', safesearch: 'true', per_page: '30', page: String(page) })
+  const params = new URLSearchParams({ key: process.env.PIXABAY_API_KEY!, ...(q ? { q } : { editors_choice: 'true' }), image_type: 'photo', safesearch: 'true', per_page: '30', page: String(page) })
   const res = await fetch(`https://pixabay.com/api/?${params}`)
   if (!res.ok) throw Object.assign(new Error('Photo search is not available right now'), { status: 502 })
   const data = await res.json() as { hits?: Array<{ id: number; tags: string; previewURL?: string; webformatURL?: string; largeImageURL?: string; imageWidth: number; imageHeight: number; isAiGenerated?: boolean }> }
@@ -291,7 +350,9 @@ async function searchPixabayPhotos(q: string, page: number): Promise<StockPhoto[
 }
 
 async function searchPexelsPhotos(q: string, page: number): Promise<StockPhoto[]> {
-  const res = await fetch(`https://api.pexels.com/v1/search?${new URLSearchParams({ query: q, per_page: '30', page: String(page) })}`, {
+  const res = await fetch(q
+    ? `https://api.pexels.com/v1/search?${new URLSearchParams({ query: q, per_page: '30', page: String(page) })}`
+    : `https://api.pexels.com/v1/curated?${new URLSearchParams({ per_page: '30', page: String(page) })}`, {
     headers: { Authorization: process.env.PEXELS_API_KEY! },
   })
   if (!res.ok) throw Object.assign(new Error('Photo search is not available right now'), { status: 502 })
@@ -311,7 +372,10 @@ async function searchPexelsPhotos(q: string, page: number): Promise<StockPhoto[]
  * link to theirs).
  */
 export async function importPhoto(userId: string, item: { ref: string; url: string; title?: string }): Promise<{ storage_path: string; preview_url: string; credit?: string; credit_required?: boolean }> {
-  if (!/^(pixabay|pexels|wikimedia):\d+$/.test(item.ref)) throw Object.assign(new Error('Unknown stock photo'), { status: 400 })
+  // (Media ▸ Memes: a KLIPY still meme — "klipy:meme:<slug>" — or an Imgflip template — "imgflip:<id>")
+  const klipy = /^klipy:meme:[A-Za-z0-9_-]{1,160}$/.test(item.ref)
+  const imgflip = /^imgflip:\d{1,20}$/.test(item.ref)
+  if (!klipy && !imgflip && !/^(pixabay|pexels|wikimedia):\d+$/.test(item.ref)) throw Object.assign(new Error('Unknown stock photo'), { status: 400 })
   // Wikimedia: the picture and its credit are read from Wikimedia itself, by the file's id — never from what the browser sent
   const wiki = item.ref.startsWith('wikimedia:')
     ? (await wikimediaPages({ pageids: item.ref.slice('wikimedia:'.length) })).flatMap(p => wikimediaPhoto(p) ?? [])[0]
@@ -320,12 +384,12 @@ export async function importPhoto(userId: string, item: { ref: string; url: stri
   const url = wiki?.url ?? item.url, title = wiki?.title ?? item.title
   let host = ''
   try { host = new URL(url).hostname } catch { /* invalid */ }
-  if (!(wiki ? /^(upload|thumb)\.wikimedia\.org$/ : /(^|\.)(pixabay\.com|pexels\.com)$/).test(host)) throw Object.assign(new Error('Unknown stock photo'), { status: 400 })
+  if (!(wiki ? /^(upload|thumb)\.wikimedia\.org$/ : klipy ? /^static\.klipy\.com$/ : imgflip ? /^i\.imgflip\.com$/ : /(^|\.)(pixabay\.com|pexels\.com)$/).test(host)) throw Object.assign(new Error('Unknown stock photo'), { status: 400 })
 
-  const provider = wiki ? 'Wikimedia' : item.ref.startsWith('pixabay') ? 'Pixabay' : 'Pexels'
+  const provider = wiki ? 'Wikimedia' : klipy ? 'KLIPY' : imgflip ? 'Imgflip' : item.ref.startsWith('pixabay') ? 'Pixabay' : 'Pexels'
   const name = safeName(`${provider} ${(title ?? 'photo').split(',').slice(0, 3).join(' ')}`).slice(0, 60) || provider
-  const ext = wiki && /\.png$/i.test(new URL(url).pathname) ? 'png' : 'jpg'
-  const storagePath = `overlays/${userId}/${item.ref.replace(':', '-')}--${name}.${ext}`
+  const ext = (wiki || klipy || imgflip) && /\.png$/i.test(new URL(url).pathname) ? 'png' : klipy && /\.webp$/i.test(new URL(url).pathname) ? 'webp' : 'jpg'
+  const storagePath = `overlays/${userId}/${item.ref.replace(/:/g, '-')}--${name}.${ext}`
   const credit = wiki ? { credit: wiki.credit, credit_required: wiki.credit_required } : {}
   const sign = () => getSignedUrl(r2, new GetObjectCommand({ Bucket: R2_BUCKET, Key: storagePath }), { expiresIn: 60 * 60 })
   const saved = await r2.send(new HeadObjectCommand({ Bucket: R2_BUCKET, Key: storagePath })).then(() => true, () => false)
@@ -345,7 +409,23 @@ export async function importPhoto(userId: string, item: { ref: string; url: stri
   return { storage_path: storagePath, preview_url: await sign(), ...credit }
 }
 
-/** 4–6 short English stock-video searches that fit what is said in the clip (Gemini) */
+/**
+ * 4–6 short English stock-video searches that fit what is said in the clip (Gemini). Kept in
+ * clip_broll_ideas (the worker makes the table) while the clip's span and its video's transcript
+ * are the ones they came from: B-roll and Photos both ask each time they open, and a kept answer
+ * survives a redeploy and is shared by every server copy (user, 2026-10-30: it was kept in this
+ * server's memory, so those asked Gemini again). An answer still coming is shared; an empty one
+ * isn't kept.
+ */
+const ideasAsking = new Map<string, Promise<string[]>>()
+let ideasTableWarned = false
+/** Without the table (the worker not yet started with it) the ideas are just not kept */
+const noIdeasTable = (e: unknown) => {
+  if (!ideasTableWarned) console.warn('[broll-ideas] not kept:', e instanceof Error ? e.message : e)
+  ideasTableWarned = true
+  return []
+}
+
 export async function brollIdeas(userId: string, clipId: string): Promise<string[]> {
   const [clip] = await sql`
     SELECT c.start_ms, c.end_ms, c.video_id, v.user_id FROM clips c JOIN videos v ON v.id = c.video_id WHERE c.id = ${clipId}
@@ -355,8 +435,31 @@ export async function brollIdeas(userId: string, clipId: string): Promise<string
   if (!aiProvider()) return []
   const [t] = await sql`SELECT id FROM transcripts WHERE video_id = ${clip.video_id} ORDER BY created_at DESC LIMIT 1`
   if (!t) return []
+  const [kept] = await sql<{ ideas: string[] }[]>`
+    SELECT ideas FROM clip_broll_ideas
+    WHERE clip_id = ${clipId} AND transcript_id = ${t.id} AND start_ms = ${clip.start_ms} AND end_ms = ${clip.end_ms}
+  `.catch(noIdeasTable)
+  if (kept) return kept.ideas
+  const key = `${clipId}|${t.id}|${clip.start_ms}|${clip.end_ms}`
+  let asking = ideasAsking.get(key)
+  if (!asking) {
+    asking = askBrollIdeas(t.id, clip.start_ms, clip.end_ms).then(async ideas => {
+      if (ideas.length) await sql`
+        INSERT INTO clip_broll_ideas (clip_id, transcript_id, start_ms, end_ms, ideas)
+        VALUES (${clipId}, ${t.id}, ${clip.start_ms}, ${clip.end_ms}, ${sql.json(ideas)})
+        ON CONFLICT (clip_id) DO UPDATE SET transcript_id = EXCLUDED.transcript_id, start_ms = EXCLUDED.start_ms,
+          end_ms = EXCLUDED.end_ms, ideas = EXCLUDED.ideas, created_at = now()
+      `.catch(noIdeasTable)
+      return ideas
+    }).finally(() => ideasAsking.delete(key))
+    ideasAsking.set(key, asking)
+  }
+  return asking
+}
+
+async function askBrollIdeas(transcriptId: string, startMs: number, endMs: number): Promise<string[]> {
   const words = await sql<{ word: string }[]>`
-    SELECT word FROM transcript_words WHERE transcript_id = ${t.id} AND start_ms >= ${clip.start_ms} AND start_ms < ${clip.end_ms} ORDER BY start_ms`
+    SELECT word FROM transcript_words WHERE transcript_id = ${transcriptId} AND start_ms >= ${startMs} AND start_ms < ${endMs} ORDER BY start_ms`
   if (!words.length) return []
   const prompt = `This is what is said in a short video clip (any language, often Telugu, Hindi or Tamil mixed with English):
 ${words.map(w => w.word).join(' ').slice(0, 4000)}
@@ -364,7 +467,8 @@ ${words.map(w => w.word).join(' ').slice(0, 4000)}
 Suggest 6 short English searches (2-3 words each) for stock B-roll footage that would fit things, places or actions talked about. Concrete and visual only (e.g. "cinema crowd", "city traffic night"); no real people or brands.
 Return ONLY a JSON array of strings.`
   try {
-    const out = await askGemini(prompt)
+    // (a plain list of search words: no thinking needed — about 5× cheaper, user 2026-10-30)
+    const out = await askGemini(prompt, { thinkingBudget: 0 })
     const arr = JSON.parse(out.match(/\[[\s\S]*\]/)?.[0] ?? '[]') as unknown[]
     return arr.filter((s): s is string => typeof s === 'string').map(s => s.trim().slice(0, 40)).filter(Boolean).slice(0, 6)
   } catch (e) {

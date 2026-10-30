@@ -20,7 +20,7 @@ export const metadata: Metadata = {
   description: 'Transcribe, clip, and edit vertical videos in Telugu, Hindi, and Hinglish.',
   icons: {
     icon: '/favicon.png',
-    apple: '/favicon.png',
+    apple: '/apple-icon.png',
   },
 }
 

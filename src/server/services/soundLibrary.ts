@@ -73,8 +73,10 @@ export async function searchSounds(userId: string, kind: SoundKind, query: strin
     filter: `${LICENSES} duration:[${lo} TO ${hi}]`,
     fields: 'id,name,username,license,duration,previews',
     page_size: '15', page: String(Math.max(1, page)),
-    // (the best liked first: the first page is the part worth listening to)
-    sort: 'rating_desc',
+    // Music: the best liked first (the first page is the part worth listening to). Effects and meme
+    // sounds: the closest match first — best liked put metro horns above air horns and a ghost
+    // scream above "bruh" (tested 2026-10-30)
+    sort: kind === 'music' ? 'rating_desc' : 'score',
     token: key,
   })
   const res = await fetch(`${API}/search/text/?${params}`)

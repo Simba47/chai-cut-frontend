@@ -199,11 +199,13 @@ const FRAME_LANE_H = 26
 const LEFT_W = 52
 /** With a row's buttons beside its icon (view, sound, lock: as in Resolve's track header) */
 const LEFT_W_CTL = 104
-/** Where each of a row's buttons sits in the left column (px from its left edge), in this order:
- *  right of the row's icon, the same columns on every row (the main row's too) */
-const ROW_CTL_X: Record<LaneCtlKey, number> = { hidden: 34, muted: 56, locked: 78 }
-/** Where a row's icon sits beside its buttons */
-const ROW_ICO_X = 9
+/** Where each of a row's buttons sits in the left column (px from its left edge): evenly spaced from
+ *  the left, the same columns on every row (the main row's too), under the + button (user, 2026-10-30) */
+const ROW_CTL_X: Record<LaneCtlKey, number> = { hidden: 10, muted: 34, locked: 58 }
+/** Where a row's icon sits after its buttons (only a row of one kind of media has one) */
+const ROW_ICO_X = 82
+/** The + button over the buttons: as wide as the three of them */
+const ADD_CTL_BOX = { left: 10, width: 68 }
 /** Room at each end of the timeline, so the grips at the clip's very ends stay clear of the border */
 const PAD = 16
 const GRIP_W = 14
@@ -1575,8 +1577,12 @@ export function Timeline({
     if (LANE_META[kind]) return LANE_META[kind]
     const vt = /^track-(\d+)$/.exec(kind)
     if (vt) {
-      const on = visual.filter(v => v.track === Number(vt[1]))
-      const like = on.some(v => v.kind === 'shot') ? LANE_META.video : on.some(v => v.kind === 'photo') ? LANE_META.photo : LANE_META.text
+      // The row's icon only says what's on it when it's all one kind — videos, photos or text; a row
+      // with a photo among its videos has none (user, 2026-10-30)
+      const kinds = new Set(visual.filter(v => v.track === Number(vt[1]))
+        .map(v => (v.kind === 'shot' || (v.kind === 'photo' && v.ph.video) ? 'video' : v.kind)))
+      if (kinds.size !== 1) return undefined
+      const like = LANE_META[[...kinds][0] as 'video' | 'photo' | 'text']
       return { label: like.label, color: like.color, icon: like.icon }
     }
     if (/^audio-\d+$/.test(kind)) return { ...LANE_META.music, label: 'Music' }
@@ -1949,7 +1955,7 @@ export function Timeline({
    * row is shown, heard and free; marked while it's hidden, muted or locked. It switches for all of it.
    */
   const rowButton = (kind: string, k: LaneCtlKey, on: boolean, mid: number, what: string, note?: string) => {
-    const row = kind === 'main' ? `the main video${note ? ` (${note})` : ''}` : `this row (${what.toLowerCase()})`
+    const row = kind === 'main' ? `the main video${note ? ` (${note})` : ''}` : note ? `${what.toLowerCase()} (${note})` : `this row (${what.toLowerCase()})`
     const label = k === 'hidden' ? (on ? `Show ${row}` : `Hide ${row}`)
       : k === 'muted' ? (on ? `Turn the sound of ${row} back on` : `Mute ${row}`)
       : on ? `Unlock ${row}` : `Lock ${row}`
@@ -2190,7 +2196,7 @@ export function Timeline({
           <>
             <button type="button" className="tl2-add" onClick={e => { const r = e.currentTarget.getBoundingClientRect(); setAddMenu(addMenu ? null : r) }}
               aria-haspopup="menu" aria-expanded={!!addMenu} aria-label="Add media at the playhead" title="Add media at the playhead"
-              style={{ top: 2 }}>
+              style={{ top: 2, ...(laneCtl ? ADD_CTL_BOX : {}) }}>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" aria-hidden="true">
                 <path d={addMenu ? 'M6 6l12 12M18 6L6 18' : 'M12 5v14M5 12h14'} />
               </svg>
@@ -2288,15 +2294,8 @@ export function Timeline({
                   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{meta.icon}</svg>
                 </span>
               )}
-              {/* the main row's own icon, where the other rows have theirs */}
-              {!meta && sp.kind === 'main' && (
-                <span className="tl2-row-ico" title="Main video" style={{ top: mid - 9, left: ROW_ICO_X, color: ACCENT }}>
-                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                    <rect x="2" y="5" width="20" height="14" rx="2.5" /><path d="M10 9.5v5l4.5-2.5z" fill="currentColor" />
-                  </svg>
-                </span>
-              )}
-              {ctl && !ctl.empty && ctl.can.map(k => rowButton(sp.kind, k, !!ctl.state[k], mid, meta?.label ?? 'Main video', ctl.note))}
+              {/* (the main row has no icon: photos and frames go in it too — user, 2026-10-30) */}
+              {ctl && !ctl.empty && ctl.can.map(k => rowButton(sp.kind, k, !!ctl.state[k], mid, sp.kind === 'main' ? 'Main video' : meta?.label ?? 'Media', ctl.note))}
             </Fragment>
           )
         })}

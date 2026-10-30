@@ -7,6 +7,8 @@ export const authConfig = {
   trustHost: true,
   pages: {
     signIn: '/login',
+    // (a Google sign-in that didn't finish comes back to the form, which says why: ?error=…)
+    error: '/login',
   },
   callbacks: {
     authorized({ auth, request: { nextUrl } }) {

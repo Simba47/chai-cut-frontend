@@ -12,16 +12,18 @@ export interface StockResult {
 }
 export interface BrollShot { id: string; start_ms: number; end_ms: number; title: string }
 
-const CATEGORIES = ['City', 'People', 'Nature', 'Office', 'Food', 'Technology', 'Crowd', 'Travel']
-/** The stock video libraries: id, name, the key that turns it on */
-const STOCK_SOURCES = [['pixabay', 'Pixabay', 'PIXABAY_API_KEY'], ['pexels', 'Pexels', 'PEXELS_API_KEY'], ['coverr', 'Coverr', 'COVERR_API_KEY']] as const
+/** The stock video libraries' names: each tile shows where it is from (user, 2026-10-30: back, to
+ * compare the libraries; Pixabay's API terms ask for it too). No credit line under the results. */
+const SOURCE_NAMES: Record<string, string> = { pixabay: 'Pixabay', pexels: 'Pexels', coverr: 'Coverr' }
+const sourceName = (id: string) => SOURCE_NAMES[id] ?? id
 
 const fmt = (ms: number) => { const s = Math.max(0, Math.round(ms / 100) / 10); return `${Math.floor(s / 60)}:${(s % 60).toFixed(1).padStart(4, '0')}` }
 const muted = (a: number) => `rgb(var(--ed-fg) / ${a})`
 
 /**
- * B-roll: stock shots over the clip while the speaker keeps talking. AI ideas and categories to
- * start from, search, hover to preview, add at the playhead; the shots already in the clip can be
+ * B-roll: stock shots over the clip while the speaker keeps talking. Videos show as soon as it opens
+ * (for the clip's first AI idea, else the libraries' own picks), search, hover to preview, add at
+ * the playhead; the shots already in the clip can be
  * moved, lengthened or removed (or dragged on the timeline).
  */
 type BrollTab = 'search' | 'upload' | 'clip'
@@ -48,26 +50,13 @@ export function BrollPanel({ clipId, currentTimeMs, shots, selectedId = null, fo
 }) {
   const [query, setQuery] = useState('')
   const [results, setResults] = useState<StockResult[] | null>(null)
-  const [provider, setProvider] = useState<string | null>(null)
   const [searching, setSearching] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [ideas, setIdeas] = useState<string[] | null>(null)
   const [picked, setPicked] = useState<StockResult | null>(null)
   const [adding, setAdding] = useState(false)
+  /** The words of the results shown ('' = the ones shown on opening) */
   const asked = useRef('')
-  // Which library to search (Pixabay · Pexels · Coverr): the ones with a key can be picked, to
-  // compare them on the same search
-  const [sources, setSources] = useState<string[]>([])
-  const [source, setSource] = useState<string | null>(null)
-  useEffect(() => {
-    let alive = true
-    fetch('/api/stock/search?q=').then(r => (r.ok ? r.json() : null)).then(d => {
-      if (!alive || !d) return
-      setSources(d.sources ?? [])
-      setSource(s => s ?? d.provider ?? null)
-    }).catch(() => {})
-    return () => { alive = false }
-  }, [])
+  // Every library with a key is searched at once (user, 2026-10-30: no switch between them)
   // Search | Upload | In this clip: each part of B-roll on its own tab, like other editors
   const [tabState, setTab] = useState<BrollTab>(focusId ? 'clip' : 'search')
   const tab: BrollTab = searchOnly ? 'search' : tabState
@@ -77,27 +66,42 @@ export function BrollPanel({ clipId, currentTimeMs, shots, selectedId = null, fo
     if (selectedId) shotsRef.current?.querySelector(`[data-shot-id="${selectedId}"]`)?.scrollIntoView({ block: 'nearest' })
   }, [selectedId])
 
-  // Ideas for this clip, once
+  // Videos on opening, without suggestions to click first (user, 2026-10-30: show the videos, not
+  // the idea words): the libraries' own picks at once, then — when the AI's ideas for this clip
+  // come (10-15 s the first time) — videos for its first idea put on top, unless the user has
+  // searched by then
   useEffect(() => {
     let alive = true
-    fetch(`/api/clips/${clipId}/broll-ideas`).then(r => r.ok ? r.json() : { ideas: [] })
-      .then(d => { if (alive) setIdeas(d.ideas ?? []) }).catch(() => { if (alive) setIdeas([]) })
+    search('', true)
+    fetch(`/api/clips/${clipId}/broll-ideas`).then(r => r.ok ? r.json() : { ideas: [] }).catch(() => ({ ideas: [] }))
+      .then(async (d: { ideas?: string[] }) => {
+        const idea = d.ideas?.[0]
+        if (!idea || !alive || asked.current) return
+        const res = await fetch(`/api/stock/search?q=${encodeURIComponent(idea)}`).catch(() => null)
+        const data = res?.ok ? await res.json() : null
+        if (!data?.items?.length || !alive || asked.current) return
+        setResults(prev => {
+          const ours = new Set((data.items as StockResult[]).map(i => i.ref))
+          return [...data.items, ...(prev ?? []).filter(i => !ours.has(i.ref))]
+        })
+      })
     return () => { alive = false }
-  }, [clipId])
+  }, [clipId]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  async function search(q: string, from: string | null = source) {
+  /** `opening`: the videos shown on opening (no words: the libraries' own picks) */
+  async function search(q: string, opening = false) {
     const term = q.trim()
-    if (!term) return
-    setQuery(term); asked.current = `${from}|${term}`
+    if (!term && !opening) return
+    if (!opening) setQuery(term)
+    asked.current = term
     setSearching(true); setError(null); setPicked(null)
     try {
-      const res = await fetch(`/api/stock/search?q=${encodeURIComponent(term)}${from ? `&source=${from}` : ''}`)
+      const res = await fetch(`/api/stock/search?q=${encodeURIComponent(term)}${term ? '' : '&browse=1'}`)
       const data = await res.json()
       if (!res.ok) throw new Error(data.error ?? 'Search failed')
-      if (asked.current !== `${from}|${term}`) return
-      setProvider(data.provider)
+      if (asked.current !== term) return
       setResults(data.items ?? [])
-      if (!data.provider) setError('Stock video search is not set up (PIXABAY_API_KEY).')
+      if (!(data.sources ?? []).length) setError('Stock video search is not set up yet.')
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Search failed')
     } finally {
@@ -113,18 +117,8 @@ export function BrollPanel({ clipId, currentTimeMs, shots, selectedId = null, fo
     try { await onAdd(picked, len); setPicked(null); setTab('clip') } catch (e) { setError(e instanceof Error ? e.message : 'Could not add it') } finally { setAdding(false) }
   }
 
-  const chip = (label: string, accent = false) => (
-    <button key={label} onClick={() => search(label)}
-      className="shrink-0 px-2.5 py-1 rounded-full text-[11px] font-medium transition-colors"
-      style={accent
-        ? { background: 'rgba(200,255,0,0.12)', color: 'var(--ed-accent-text)', border: '1px solid rgba(200,255,0,0.3)' }
-        : { background: muted(0.06), color: muted(0.75), border: `1px solid ${muted(0.08)}` }}>
-      {label}
-    </button>
-  )
-
   return (
-    <div className="flex flex-col gap-3 p-4 min-h-0">
+    <div className="flex-1 flex flex-col gap-3 p-4 min-h-0">
       {!searchOnly && <div role="tablist" aria-label="B-roll" className="grid grid-cols-3 gap-0.5 p-0.5 rounded-lg" style={{ background: muted(0.06) }}>
         {([['search', 'Search'], ['upload', 'Upload'], ['clip', `In this clip${shots.length ? ` (${shots.length})` : ''}`]] as const).map(([id, label]) => (
           <button key={id} type="button" role="tab" aria-selected={tab === id} onClick={() => setTab(id)}
@@ -136,27 +130,9 @@ export function BrollPanel({ clipId, currentTimeMs, shots, selectedId = null, fo
       </div>}
 
       {tab === 'search' && (<>
-        {/* The library: switching it searches the same words there */}
-        <div role="radiogroup" aria-label="Stock library" className="grid grid-cols-3 gap-0.5 p-0.5 rounded-lg" style={{ background: muted(0.06) }}>
-          {STOCK_SOURCES.map(([id, label, keyName]) => {
-            const ready = sources.includes(id)
-            const on = source === id
-            return (
-              <button key={id} type="button" role="radio" aria-checked={on} disabled={!ready}
-                onClick={() => { setSource(id); if (query.trim()) search(query, id) }}
-                title={ready ? `Search ${label}` : `${label} isn’t set up (${keyName})`}
-                className="h-7 rounded-md text-[11.5px] font-semibold transition-colors disabled:cursor-not-allowed"
-                style={on ? { background: muted(0.16), color: 'var(--ed-text)' } : { color: muted(ready ? 0.6 : 0.28) }}>
-                {label}{!ready && <span className="ml-1 text-[9.5px] font-medium">· no key</span>}
-              </button>
-            )
-          })}
-        </div>
-
         {/* Search */}
         <form onSubmit={e => { e.preventDefault(); search(query) }} className="flex gap-1.5">
-          <input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search stock videos…"
-            aria-label="Search stock videos"
+          <input value={query} onChange={e => setQuery(e.target.value)} aria-label="Search stock videos"
             className="min-w-0 flex-1 px-3 py-2 rounded-lg text-sm outline-none"
             style={{ background: muted(0.06), border: `1px solid ${muted(0.1)}`, color: 'var(--ed-text)' }} />
           <button type="submit" disabled={searching || !query.trim()}
@@ -165,26 +141,20 @@ export function BrollPanel({ clipId, currentTimeMs, shots, selectedId = null, fo
           </button>
         </form>
 
-        {/* Starting points: AI ideas for this clip, then categories */}
-        <div className="flex flex-col gap-1.5">
-          {ideas === null && <span className="text-[11px]" style={{ color: muted(0.45) }}>Finding ideas for this clip…</span>}
-          {ideas && ideas.length > 0 && (
-            <div className="flex flex-wrap gap-1.5">
-              <span className="text-[11px] self-center" style={{ color: muted(0.45) }}>✦ For this clip</span>
-              {ideas.map(i => chip(i, true))}
-            </div>
-          )}
-          <div className="flex flex-wrap gap-1.5">{CATEGORIES.map(c => chip(c))}</div>
-        </div>
-
         {error && <p className="text-xs" style={{ color: '#f87171' }}>{error}</p>}
 
-        {/* Results */}
+        {/* Results (placeholders while the first ones load) */}
+        {!results && searching && (
+          <div className="grid grid-cols-2 gap-1.5" aria-label="Loading videos">
+            {Array.from({ length: 6 }, (_, i) => <div key={i} className="rounded-md animate-pulse" style={{ aspectRatio: '16 / 10', background: muted(0.06) }} />)}
+          </div>
+        )}
         {results && (
           results.length === 0 && !searching
-            ? <p className="text-xs" style={{ color: muted(0.5) }}>No videos for “{asked.current.slice(asked.current.indexOf('|') + 1)}”{provider ? ` on ${STOCK_SOURCES.find(s => s[0] === provider)?.[1] ?? provider}` : ''}. Try other words or another library.</p>
+            ? <p className="text-xs" style={{ color: muted(0.5) }}>{asked.current ? <>No videos for “{asked.current}”. Try other words.</> : 'Search for videos to put over your clip.'}</p>
             : (
-              <div className="grid grid-cols-2 gap-1.5 overflow-y-auto -mr-2 pr-2" style={{ maxHeight: 300 }}>
+              // (down to the panel's bottom: user, 2026-10-30)
+              <div className="flex-1 min-h-[240px] grid grid-cols-2 auto-rows-max content-start gap-1.5 overflow-y-auto -mr-2 pr-2">
                 {results.map(r => (
                   <StockTile key={r.ref} item={r} selected={picked?.ref === r.ref} onPick={() => setPicked(p => p?.ref === r.ref ? null : r)} />
                 ))}
@@ -202,8 +172,6 @@ export function BrollPanel({ clipId, currentTimeMs, shots, selectedId = null, fo
             </button>
           </div>
         )}
-
-        {provider && <p className="text-[10px]" style={{ color: muted(0.35) }}>Videos from {STOCK_SOURCES.find(s => s[0] === provider)?.[1] ?? 'Pixabay'}. The speaker keeps talking under each shot.</p>}
       </>)}
 
       {tab === 'upload' && <UploadBroll currentTimeMs={currentTimeMs} onUploaded={async id => { await onUploaded?.(id); setTab('clip') }} />}
@@ -268,6 +236,10 @@ function StockTile({ item, selected, onPick }: { item: StockResult; selected: bo
           : <video src={item.preview} muted playsInline preload="metadata" aria-label={item.title} className="w-full h-full object-cover" />}
       <span className="absolute right-1 bottom-1 px-1 rounded text-[9px] font-semibold tabular-nums text-white" style={{ background: 'rgba(0,0,0,0.6)' }}>
         {item.duration}s
+      </span>
+      {/* which library it is from */}
+      <span className="absolute left-1 top-1 px-1 rounded text-[9px] font-semibold text-white" style={{ background: 'rgba(0,0,0,0.6)' }}>
+        {sourceName(item.provider)}
       </span>
       {item.height > item.width && (
         <span className="absolute left-1 bottom-1 px-1 rounded text-[9px] font-semibold text-white" style={{ background: 'rgba(0,0,0,0.6)' }}>9:16</span>

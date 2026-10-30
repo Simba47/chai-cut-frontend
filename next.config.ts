@@ -2,6 +2,10 @@ import type { NextConfig } from 'next'
 
 const nextConfig: NextConfig = {
   devIndicators: false,
+  // React's compiler, only for components marked 'use memo' (the editor): it keeps the parts of the
+  // editor that didn't change, so a drag no longer rebuilds the whole editor on every mouse move
+  // (measured 2026-10-26: half the main-thread work per drag, the same saves)
+  reactCompiler: { compilationMode: 'annotation' },
   // Let phones/laptops on the same Wi-Fi open the dev server (http://192.168.x.x:3000).
   // Next blocks dev scripts for non-localhost origins otherwise, so nothing is interactive.
   allowedDevOrigins: ['192.168.*.*', '10.*.*.*'],
