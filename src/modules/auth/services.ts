@@ -16,11 +16,13 @@ export async function signupUser(email: string, password: string): Promise<void>
   if (pwErr) throw Object.assign(new Error(pwErr), { status: 400 })
 
   const [existing] = await sql`
-    SELECT id, "emailVerified" FROM users WHERE email = ${norm}
+    SELECT id, "emailVerified", password_hash FROM users WHERE email = ${norm}
   `
 
   if (existing?.emailVerified) {
-    throw Object.assign(new Error('An account with this email already exists'), { status: 409 })
+    // (made with Google: no password)
+    const msg = existing.password_hash ? 'An account with this email already exists' : 'This email already has an account — use Continue with Google'
+    throw Object.assign(new Error(msg), { status: 409 })
   }
 
   const passwordHash = await hashPassword(password)

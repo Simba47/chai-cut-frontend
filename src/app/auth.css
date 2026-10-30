@@ -120,6 +120,27 @@
 .auth-link:hover { color: var(--text); }
 .auth-error { margin: 0; font-size: 13px; color: var(--danger); }
 
+/* "Continue with Google": Google's dark button (its G, #131314, #8E918F outline, #E3E3E3 text), then
+   "or use your email" between it and the form. The card is taller for them (user, 2026-10-30) */
+.auth-card:has(.auth-google) { min-height: 650px; }
+.auth-google {
+  width: 100%; height: 48px;
+  display: flex; align-items: center; justify-content: center; gap: 12px;
+  border-radius: 14px; border: 1px solid #8E918F;
+  background: #131314; color: #E3E3E3;
+  font: inherit; font-size: 15px; font-weight: 600;
+  cursor: pointer; transition: background .15s, border-color .15s;
+}
+.auth-google:hover { background: #1f1f21; border-color: #a5a8a6; }
+.auth-google:focus-visible { outline: 2px solid var(--auth-lime); outline-offset: 2px; }
+.auth-google:disabled { opacity: .7; cursor: progress; }
+.auth-google svg { width: 20px; height: 20px; flex-shrink: 0; }
+.auth-or {
+  width: 100%; display: flex; align-items: center; gap: 12px;
+  font-size: 12px; color: var(--text-muted);
+}
+.auth-or::before, .auth-or::after { content: ''; flex: 1; height: 1px; background: var(--border-strong); }
+
 /* Submit uses the site's fill button (lime circle fills it on hover) */
 .auth-form .auth-submit {
   --fill-r: 24px; --fill-arrow: 16px; --fill-inset: 14px; --fill-shift: 10px;
@@ -232,7 +253,7 @@
 @media (max-width: 767px) {
   .auth-root { justify-content: flex-start; padding-top: 96px; }
   .auth-home { left: 20px; }
-  .auth-card { min-height: 0; border-radius: 22px; }
+  .auth-card, .auth-card:has(.auth-google) { min-height: 0; border-radius: 22px; }
   .auth-overlay-wrap { display: none; }
   .auth-card[data-mode] .auth-form-wrap { position: relative; width: 100%; opacity: 1; transform: none; }
   .auth-card[data-mode="signin"] .auth-signup,
