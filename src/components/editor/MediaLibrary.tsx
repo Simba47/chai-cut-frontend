@@ -17,7 +17,7 @@ export interface LibraryItem {
   created_at: string
 }
 
-export type MediaSection = 'media' | 'library' | 'photos'
+export type MediaSection = 'media' | 'library' | 'photos' | 'memes'
 
 
 type Filter = 'all' | 'video' | 'audio' | 'image'
@@ -46,7 +46,7 @@ const clock = (ms: number | null) => {
  * adds it at the playhead, or drag it onto the timeline; the bin deletes it. Library is the stock
  * footage search (`library`).
  */
-export function MediaLibrary({ items, loading, used, filter, onFilter, section, importing, onImport, onAdd, onDelete, library, photos }: {
+export function MediaLibrary({ items, loading, used, filter, onFilter, section, importing, onImport, onAdd, onDelete, library, photos, memes }: {
   items: LibraryItem[]
   loading: boolean
   /** Ids (videos) and storage paths (photos, audio) already in this clip */
@@ -64,6 +64,8 @@ export function MediaLibrary({ items, loading, used, filter, onFilter, section, 
   library: React.ReactNode
   /** Media ▸ Search photos: free stock photos to add */
   photos?: React.ReactNode
+  /** Media ▸ Memes: meme GIFs, still memes and clips (KLIPY, GIPHY, Imgflip) */
+  memes?: React.ReactNode
 }) {
   const [view, setView] = useState<View>('grid')
   const [sortBy, setSortBy] = useState<SortBy>('time')
@@ -104,9 +106,12 @@ export function MediaLibrary({ items, loading, used, filter, onFilter, section, 
     <div className="flex h-full min-h-0">
       <div className="flex-1 min-w-0 min-h-0 flex flex-col">
         {section === 'library' ? (
-          <div className="flex-1 min-h-0 overflow-y-auto">{library}</div>
+          // (a column, so the search's results can fill the panel's height)
+          <div className="flex-1 min-h-0 flex flex-col overflow-y-auto">{library}</div>
         ) : section === 'photos' ? (
-          <div className="flex-1 min-h-0 overflow-y-auto">{photos}</div>
+          <div className="flex-1 min-h-0 flex flex-col overflow-y-auto">{photos}</div>
+        ) : section === 'memes' ? (
+          <div className="flex-1 min-h-0 flex flex-col overflow-y-auto">{memes}</div>
         ) : (
           <>
             {/* ── Import · view · sort · filter ── */}

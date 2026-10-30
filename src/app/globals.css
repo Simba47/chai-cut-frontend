@@ -3671,6 +3671,12 @@ html:is([data-theme="light"], :not([data-theme="light"])) .editor-theme .ed-rail
 }
 html:is([data-theme="light"], :not([data-theme="light"])) .editor-theme .ed-rail .ed-tool[data-active] span { font-weight: 650; }
 html .editor-theme .ed-rail-tip { display: none !important; }
+/* (user, 2026-10-30) with the names the tools don't all fit a short window: the rail scrolls, and its arrows
+   (More tools / back up) show — only while some tool is out of view. Auto margins spread the tools while they
+   fit and fall away when they don't (space-evenly would cut the first one off) */
+html .editor-theme .ed-body .ed-rail > div { overflow-y: auto !important; justify-content: flex-start !important; }
+html .editor-theme .ed-body .ed-rail > div > .ed-tool { margin-block: auto; }
+html .editor-theme .ed-body .ed-rail > button { display: flex !important; }
 
 /* ══ The Preview as a real phone (user, 2026-10-29: "keep a exact mobile layout"): a tall phone body (bezel, side
    buttons), its screen with a status bar — the time, the camera island, signal · Wi-Fi · battery — the 9:16 video,

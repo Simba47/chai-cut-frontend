@@ -14,9 +14,11 @@ import { BrollPanel, type StockResult } from '@/components/editor/BrollPanel'
 import { VideoPanel, type PanelVideo } from '@/components/editor/VideoPanel'
 import { MediaLibrary, type LibraryItem, type MediaSection } from '@/components/editor/MediaLibrary'
 import { PhotoSearch } from '@/components/editor/PhotoSearch'
+import { MemesPanel } from '@/components/editor/MemesPanel'
 import { useBrollSources, useBorrowedSlots } from '@/modules/editor/brollSources'
 import { SOUND_DEFAULTS, type SoundItem, type SoundKind } from '@/modules/editor/soundCatalog'
 import { Timeline } from '@/components/editor/timeline/Timeline'
+import { memoStable } from '@/components/editor/memoStable'
 import { useFreeWatermark } from '@/components/editor/watermark'
 import { LAYOUT_COLORS, MAX_ZOOM, zoomStep, zoomLabel, STOCK_DRAG_TYPE, type LaneCtl, type LaneCtlKey } from '@/components/editor/SegmentTimeline'
 import { useVideoUpload } from '@/modules/upload/useVideoUpload'
@@ -148,15 +150,16 @@ const TOOLS: { id: Tool; label: string; title: string; hint: string; icon: React
     hint: 'Pick a layout and it starts at the playhead. Drag the view to reframe — each change is a ◆.',
     icon: <path d="M6 2v14a2 2 0 002 2h14M2 6h14a2 2 0 012 2v14" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" fill="none" />,
   },
-  {
-    id: 'subjects', label: 'Subjects', title: 'Subjects',
-    hint: 'Mark each person once: the view then switches between them through the whole clip, to whoever is talking. Mark a group shot to keep its format wherever it comes back.',
-    icon: <><circle cx="9" cy="8" r="3.2" stroke="currentColor" strokeWidth="1.8" fill="none" /><path d="M3.5 19.5c.6-3 2.8-5 5.5-5s4.9 2 5.5 5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" fill="none" /><path d="M16 5.5a3 3 0 010 5.6M18 14.6c1.4.7 2.3 2.4 2.6 4.9" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" fill="none" /></>,
-  },
+  // (Frames first, Subjects under it: user, 2026-10-30)
   {
     id: 'frames', label: 'Frames', title: 'Frames',
     hint: 'Combine videos, photos and a text letterbox in one reel. Pick a frame for the selected format.',
     icon: <><rect x="6" y="2.5" width="12" height="19" rx="2.5" stroke="currentColor" strokeWidth="1.8" fill="none" /><path d="M6 9.5h12M6 14.5h12" stroke="currentColor" strokeWidth="1.8" fill="none" /></>,
+  },
+  {
+    id: 'subjects', label: 'Subjects', title: 'Subjects',
+    hint: 'Mark each person once: the view then switches between them through the whole clip, to whoever is talking. Mark a group shot to keep its format wherever it comes back.',
+    icon: <><circle cx="9" cy="8" r="3.2" stroke="currentColor" strokeWidth="1.8" fill="none" /><path d="M3.5 19.5c.6-3 2.8-5 5.5-5s4.9 2 5.5 5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" fill="none" /><path d="M16 5.5a3 3 0 010 5.6M18 14.6c1.4.7 2.3 2.4 2.6 4.9" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" fill="none" /></>,
   },
   {
     id: 'captions', label: 'Captions', title: 'Captions',
@@ -201,6 +204,9 @@ const TOOLS: { id: Tool; label: string; title: string; hint: string; icon: React
   },
 ]
 
+// The timeline redraws only when what it shows changes (memoStable: not on every mouse move of a drag elsewhere)
+const StableTimeline = memoStable(Timeline)
+
 /** How Auto format lays the scenes (Subjects tool): every scene Vertical on whoever talks, or the Rulebook's formats */
 type AutoMode = 'vertical' | 'cuts'
 /** Auto format's mode, the places it laid ([source start ms, source end ms, layout]) and the groups it made */
@@ -211,6 +217,8 @@ export function EditorShell({
   initialCaptionStyles, initialTextOverlays, initialAudioTracks, initialTransitions, initialOverlays,
   initialMusicUrls, initialOriginalSound, initialProgressBar, initialBrand, backStart,
 }: Props) {
+  // (compiled by React's compiler: next.config.ts reactCompiler, annotation mode)
+  'use memo'
   // ── Removed parts of the video (lib/trims.ts, modules/editor/trimState.ts) ───
   // The editor works on the clip as it plays. `rawClip` is the clip's stretch of the source video
   // (as saved, or as its start / end was dragged since: clipRange). `clip` is that with the removed
@@ -1008,14 +1016,14 @@ export function EditorShell({
   function pickPhoto(id: string, _open = true) { setActiveOverlayId(id); setActiveTextOverlayId(null); setPickedSegIdState(null); setPickedMusicId(null); setLastPick('overlay') }
   // A picked photo or video on top lets go when anything else is clicked — not the photo itself on
   // the preview, its bar on the timeline, the timeline's buttons that act on it (Split, Delete,
-  // Hide, Mute, Lock…) or a dialog (Delete asks first)
+  // Hide, Mute, Lock…, and a row's own eye / sound / lock) or a dialog (Delete asks first)
   useEffect(() => {
     if (!activeOverlayId) return
     const id = activeOverlayId
     const away = (e: PointerEvent) => {
       const t = e.target as Element | null
       if (!t || !t.isConnected || !t.closest) return
-      if (t.closest(`[data-photo-id="${id}"], [data-item-id="${id}"], .ed-tl-btn, [role="dialog"], [role="alertdialog"]`)) return
+      if (t.closest(`[data-photo-id="${id}"], [data-item-id="${id}"], .ed-tl-btn, .lane-ctl, .tl2-row-ctl, [role="dialog"], [role="alertdialog"]`)) return
       setActiveOverlayId(null)
     }
     window.addEventListener('pointerdown', away, true)
@@ -1971,6 +1979,10 @@ export function EditorShell({
       : [],
     [viewBox, activeSegment, keyframes],
   )
+  // (for the timeline: when and whether a cut — the view's place changes with every move of a drag,
+  // and the timeline doesn't show it, so it isn't redrawn for it)
+  const viewMarkerKey = viewMarkers.map(v => `${v.t_ms}:${v.cut ? 1 : 0}`).join(',')
+  const timelineViewMarkers = useMemo(() => viewMarkers.map(v => ({ t_ms: v.t_ms, cut: v.cut })), [viewMarkerKey]) // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { setSelectedView(null) }, [viewBox?.id])
   function handleBoxChange(boxId: string, pos: { x: number; y: number; w: number; h: number }) {
     if (boxId === DEFAULT_BOX_ID) {
@@ -5816,30 +5828,55 @@ export function EditorShell({
   }
   /** The parts of the main row the main row's buttons act on (not the empty space a part left, nor the room after the main video) */
   const mainRowTargets = (): CtlTarget[] => sections.filter(s => !isGapPart(s, mainVideoId) && !isTail(s)).map(s => ({ kind: 'section', id: s.id }))
+  /** What's picked on the timeline now (several picked together, or the one picked), as ctlKey()s */
+  function pickedCtlKeys(): Set<string> {
+    if (groupLive.length) return new Set(groupLive)
+    const out = new Set<string>()
+    if (selTarget) out.add(ctlKey(selTarget))
+    // (the main video in a frame's slot isn't one of selTarget's)
+    if (lastPick === 'frameItem' && frameSeg && activeFrameItemId?.startsWith('main:')) out.add(`${frameSeg.id}|${activeFrameItemId}`)
+    return out
+  }
+  /**
+   * A row's eye / sound / lock act on what's picked on that row (one part, or the ones picked
+   * together) and only with nothing picked there on the whole row (user, 2026-10-30: the eye of a
+   * split part hid every part on its row)
+   */
+  function rowPick(all: CtlTarget[]): { targets: CtlTarget[]; picked: boolean } {
+    const keys = pickedCtlKeys()
+    const mine = keys.size ? all.filter(t => keys.has(ctlKey(t))) : []
+    return mine.length ? { targets: mine, picked: true } : { targets: all, picked: false }
+  }
+  /** The buttons' note while they act on what's picked (their labels say so) */
+  const pickNote = (n: number) => (n === 1 ? 'only the picked one' : `only the ${n} picked`)
   /**
    * The main row, as the other rows (Resolve's track header): its view, sound and lock for all of
-   * it. Its sound is the whole clip's (what "Mute clip audio" was); a frame has no view switch of
-   * its own (its slots are the frame).
+   * it — or for its parts picked. Its sound is the whole clip's (what "Mute clip audio" was); a
+   * frame has no view switch of its own (its slots are the frame).
    */
   function mainCtl(): LaneCtl {
     const all = mainRowTargets()
-    const viewable = all.filter(t => canCtl(t).includes('hidden'))
+    const { targets, picked } = rowPick(all)
+    const viewable = targets.filter(t => canCtl(t).includes('hidden'))
+    const soundy = targets.filter(t => canCtl(t).includes('muted'))
     return {
       can: viewable.length ? ['locked', 'hidden', 'muted'] : ['locked', 'muted'],
       state: {
-        locked: all.length > 0 && all.every(x => !!ctlState(x)?.locked),
+        locked: targets.length > 0 && targets.every(x => !!ctlState(x)?.locked),
         hidden: viewable.length > 0 && viewable.every(x => !!ctlState(x)?.hidden),
-        muted: mainAllMuted,
+        muted: picked ? soundy.length > 0 && soundy.every(x => !!ctlState(x)?.muted) : mainAllMuted,
       },
       empty: all.length === 0,
+      ...(picked ? { note: pickNote(targets.length) } : {}),
     }
   }
   function toggleMain(k: LaneCtlKey) {
     const cur = mainCtl()
-    if (k === 'muted') { setMainAllMuted(!cur.state.muted); return }
+    const { targets, picked } = rowPick(mainRowTargets())
+    if (k === 'muted' && !picked) { setMainAllMuted(!cur.state.muted); return }
     const want = !cur.state[k]
     // Hide only what isn't locked; the lock itself switches for everything
-    for (const t of mainRowTargets()) {
+    for (const t of targets) {
       if (!canCtl(t).includes(k) || !!ctlState(t)?.[k] === want) continue
       if (k !== 'locked' && isLocked(t)) continue
       toggleCtl(t, k)
@@ -5867,13 +5904,14 @@ export function EditorShell({
       ?? (kind.startsWith('track-') ? (laneTargets(kind).some(t => t.kind === 'broll') ? ['locked', 'hidden', 'muted'] : ['locked', 'hidden'])
         : kind.startsWith('audio-') ? ['locked', 'muted'] : undefined)
     if (!can) return null
-    const targets = laneTargets(kind)
+    const all = laneTargets(kind)
+    const { targets, picked } = rowPick(all)
     const state: LaneCtl['state'] = {}
     for (const k of can) {
       const able = targets.filter(t => canCtl(t).includes(k))
       state[k] = able.length > 0 && able.every(t => !!ctlState(t)?.[k])
     }
-    return { can, state, empty: targets.length === 0 }
+    return { can, state, empty: all.length === 0, ...(picked ? { note: pickNote(targets.length) } : {}) }
   }
   function toggleLane(kind: string, k: LaneCtlKey) {
     if (kind === 'main') { toggleMain(k); return }
@@ -5881,7 +5919,7 @@ export function EditorShell({
     if (!cur) return
     const want = !cur.state[k]
     // Hide / mute only what isn't locked; the lock itself switches for everything
-    for (const t of laneTargets(kind)) {
+    for (const t of rowPick(laneTargets(kind)).targets) {
       if (!canCtl(t).includes(k) || !!ctlState(t)?.[k] === want) continue
       if (k !== 'locked' && isLocked(t)) continue
       toggleCtl(t, k)
@@ -6530,20 +6568,20 @@ export function EditorShell({
               </>
             )}
 
-            {/* Media: Import · B-roll stock · Search photos (the switch on its own row: three names don't fit beside the header's buttons) */}
+            {/* Media: Import · B-roll · Photos · Memes (the switch on its own row: the names don't fit beside the header's buttons) */}
             {tool === 'media' && (() => {
               return (
                 <div className="flex flex-col h-full min-h-0">
-                <div role="tablist" aria-label="Media" className="shrink-0 grid grid-cols-3 gap-0.5 p-0.5 mx-3 mt-2 rounded-lg"
+                <div role="tablist" aria-label="Media" className="shrink-0 grid grid-cols-4 gap-0.5 p-0.5 mx-3 mt-2 rounded-lg"
                   style={{ background: 'rgb(var(--ed-fg) / 0.06)', border: '1px solid rgb(var(--ed-fg) / 0.07)' }}>
-                  {(['media', 'library', 'photos'] as const).map(sec => {
+                  {(['media', 'library', 'photos', 'memes'] as const).map(sec => {
                     const on = mediaSection === sec
                     return (
                       <button key={sec} type="button" role="tab" aria-selected={on} onClick={() => setMediaSection(sec)}
-                        title={sec === 'media' ? 'Your videos, photos and audio' : sec === 'library' ? 'Stock footage to search' : 'Free stock photos to search'}
+                        title={sec === 'media' ? 'Your videos, photos and audio' : sec === 'library' ? 'Stock footage to search' : sec === 'photos' ? 'Free stock photos to search' : 'Meme GIFs, memes and clips (KLIPY, GIPHY, Imgflip)'}
                         className="h-7 px-1 rounded-md text-[11.5px] font-semibold whitespace-nowrap transition-colors"
                         style={on ? { background: 'rgb(var(--ed-fg) / 0.12)', color: 'var(--ed-accent-text)', boxShadow: 'inset 0 0 0 1px rgb(var(--ed-fg) / 0.08)' } : { color: 'rgb(var(--ed-fg) / 0.6)' }}>
-                        {sec === 'media' ? 'Import' : sec === 'library' ? 'B-roll stock' : 'Search photos'}
+                        {sec === 'media' ? 'Import' : sec === 'library' ? 'B-roll' : sec === 'photos' ? 'Photos' : 'Memes'}
                       </button>
                     )
                   })}
@@ -6618,6 +6656,11 @@ export function EditorShell({
                   photos={
                     <PhotoSearch clipId={clip.id} currentTimeMs={currentTimeMs}
                       onAdd={p => { addPhotoPathAt(p.storage_path, p.preview_url, currentTimeMs); loadLibrary() }} />
+                  }
+                  memes={
+                    <MemesPanel currentTimeMs={currentTimeMs}
+                      onAddVideo={addStockBroll}
+                      onAddPhoto={p => { addPhotoPathAt(p.storage_path, p.preview_url, currentTimeMs); loadLibrary() }} />
                   }
                 />
                 </div>
@@ -7073,7 +7116,7 @@ export function EditorShell({
       {/* (it doesn't scroll as a whole: the ruler and the main video stay, the tracks under them scroll) */}
       <div ref={timelineRef} data-tour="timeline" data-layout-panel="Editing panel" hidden={timelineHidden} className="shrink-0 flex flex-col overflow-hidden px-4 pt-3 pb-4"
         style={{ ...(timelineH != null ? { height: timelineH } : timelineBaseH != null ? { height: timelineBaseH + TIMELINE_PAD_Y } : { maxHeight: TIMELINE_MAX_H }), background: 'var(--ed-track)', borderTop: '1px solid rgb(var(--ed-fg) / 0.06)', borderRadius: '0 0 11px 11px' }}>
-        <Timeline
+        <StableTimeline
           onBaseHeight={setTimelineBaseH}
           selectedMusicId={pickedMusicId} onSelectMusic={id => pickMusicTrack(id, doubleTap(`m${id}`))}
           photos={overlays.filter(o => o.type === 'image' || (o.type === 'video' && o.source_video_id)).map(o => ({
@@ -7162,7 +7205,7 @@ export function EditorShell({
             }
             setAddMenu({ segId: frameSeg.id, lane, t: currentTimeMs, anchor })
           }}
-          viewMarkers={viewMarkers}
+          viewMarkers={timelineViewMarkers}
           selectedViewT={selectedView && viewBox && selectedView.boxId === viewBox.id ? selectedView.t : null}
           onSelectView={t => {
             if (!viewBox) return
@@ -7267,6 +7310,8 @@ type CtlKey = 'hidden' | 'muted' | 'locked'
 // main video (shown or hidden, its own sound on or off — it IS its section, so its lock is the section's)
 // 'frameItem' = a photo, video or text in a frame (segId: its frame)
 type CtlTarget = { kind: 'section' | 'broll' | 'photo' | 'text' | 'music' | 'frameItem'; id: string; segId?: string }
+/** A target's key for "is it picked": its id (a frame's own items: with the frame, as main:<slot> repeats) */
+const ctlKey = (t: CtlTarget) => (t.kind === 'frameItem' ? `${t.segId}|${t.id}` : t.id)
 
 /** Eye / speaker / lock toggles. Lit (red for hide and mute, lime for lock) when that state is on. */
 function CtlButtons({ state, can, onToggle, size, what, inert }: {
