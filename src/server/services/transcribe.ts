@@ -32,6 +32,9 @@ export async function queueRetranscribe(userId: string, clipId: string, language
     clip_start_ms: row.start_ms,
     clip_end_ms: row.end_ms,
     user_id: userId,
+    // "Captions on" (no language picked, no fresh-captions export): only parts with no words need
+    // reading, so a video already read in full needs no new reading (the worker checks)
+    ...(!renderAfter && (!languageCode || languageCode === 'unknown') ? { fill_gaps: true } : {}),
     ...(renderAfter ? { render_after: renderAfter } : {}),
   }
   const [job] = await sql`INSERT INTO jobs (type, payload, status) VALUES ('transcribe', ${sql.json(payload)}, 'queued') RETURNING id`
