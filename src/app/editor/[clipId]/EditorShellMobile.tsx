@@ -127,10 +127,10 @@ export function EditorShellMobile({
 
   const {
     words, captionStyle, captionTextCase, showCaptions, romanize,
-    retranscribing, retranscribeElapsed, retranscribeError,
+    retranscribing, retranscribeElapsed, retranscribeError, retranscribePlace,
     hydrate: hydrateCaptions, setWords, updateWord, updateCaptionStyle,
     setCaptionTextCase, setShowCaptions, setRomanize,
-    setRetranscribing, setRetranscribeElapsed, setRetranscribeError,
+    setRetranscribing, setRetranscribeElapsed, setRetranscribeError, setRetranscribePlace,
   } = useCaptionStore()
 
   const {
@@ -432,7 +432,7 @@ export function EditorShellMobile({
   }
 
   async function handleRetranscribe(languageCode: string) {
-    setRetranscribing(true); setRetranscribeElapsed(0); setRetranscribeError(null)
+    setRetranscribing(true); setRetranscribeElapsed(0); setRetranscribeError(null); setRetranscribePlace(null)
     if (retranscribeTimerRef.current) clearInterval(retranscribeTimerRef.current)
     const startedAt = Date.now()
     retranscribeTimerRef.current = setInterval(
@@ -440,6 +440,7 @@ export function EditorShellMobile({
     )
     const stopTimer = () => {
       if (retranscribeTimerRef.current) { clearInterval(retranscribeTimerRef.current); retranscribeTimerRef.current = null }
+      setRetranscribePlace(null)
     }
     try {
       const res = await fetch('/api/transcribe/retranscribe', {
@@ -449,13 +450,16 @@ export function EditorShellMobile({
       if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? 'Retranscription failed')
       const videoId = (clip as unknown as { video_id: string }).video_id
       const queuedAt = new Date().toISOString()
+      const { job_id: jobId } = await res.json().catch(() => ({})) as { job_id?: string | null }
       const poll = async () => {
         const deadline = Date.now() + 5 * 60 * 1000
         while (Date.now() < deadline) {
           await new Promise(r => setTimeout(r, 3000))
-          const r = await fetch(`/api/transcribe/words?video_id=${videoId}&since=${encodeURIComponent(queuedAt)}`)
+          const r = await fetch(`/api/transcribe/words?video_id=${videoId}&since=${encodeURIComponent(queuedAt)}${jobId ? `&job=${jobId}` : ''}`)
           if (r.ok) {
-            const { words: newWords } = await r.json()
+            const { words: newWords, place } = await r.json()
+            // Waiting its turn (many people making captions at once): say where it is in line
+            setRetranscribePlace(typeof place === 'number' ? place : null)
             if (newWords?.length > 0) { setWords(newWords); stopTimer(); setRetranscribing(false); return }
           }
         }
@@ -768,7 +772,7 @@ export function EditorShellMobile({
                   style={captionStyle} textCase={captionTextCase}
                   onChange={updateCaptionStyle} onTextCaseChange={setCaptionTextCase}
                   onEditCaptions={() => {}} onRetranscribe={handleRetranscribe}
-                  retranscribing={retranscribing} retranscribeElapsed={retranscribeElapsed} retranscribeError={retranscribeError}
+                  retranscribing={retranscribing} retranscribeElapsed={retranscribeElapsed} retranscribePlace={retranscribePlace} retranscribeError={retranscribeError}
                   hasWords={words.length > 0} hasRoman={hasRoman} romanize={romanize} romanizeLabel={scriptLabel} onRomanizeChange={setRomanize}
                 />
               </div>
@@ -976,7 +980,7 @@ export function EditorShellMobile({
                         style={captionStyle} textCase={captionTextCase}
                         onChange={updateCaptionStyle} onTextCaseChange={setCaptionTextCase}
                         onEditCaptions={() => {}} onRetranscribe={handleRetranscribe}
-                        retranscribing={retranscribing} retranscribeElapsed={retranscribeElapsed} retranscribeError={retranscribeError}
+                        retranscribing={retranscribing} retranscribeElapsed={retranscribeElapsed} retranscribePlace={retranscribePlace} retranscribeError={retranscribeError}
                         hasWords={words.length > 0} hasRoman={hasRoman} romanize={romanize} romanizeLabel={scriptLabel} onRomanizeChange={setRomanize}
                       />
                     )}

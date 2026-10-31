@@ -4,6 +4,7 @@
 import { useClipBrands, BrandAllBar, BrandTag } from '@/components/brand/ClipBoardBrand'
 import { preloadMascot } from '@/components/ui/mascot'
 import { InfoTip } from '@/components/ui/info-tip'
+import { inLineText } from '@/lib/inLine'
 import { useFrameAt } from '@/modules/clips/thumbs'
 import { ScrubPlayer } from '@/components/clips/ScrubPlayer'
 import { useLocalVideo } from '@/modules/clips/localVideo'
@@ -555,7 +556,8 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
   // that reading as the clip board opens; how far it is shows on the AI card, and a Best moments or
   // Ask AI asked for before it's done runs by itself once it is. Manual edit never reads the whole
   // video: each clip's captions are made in the editor, for that clip alone.
-  type Reading = { status: 'none' | 'running' | 'ready' | 'failed'; progress: number | null; error: string | null; stopped?: boolean }
+  // place: waiting its turn (many readings at once), its place in line (1 = next)
+  type Reading = { status: 'none' | 'running' | 'ready' | 'failed'; progress: number | null; error: string | null; stopped?: boolean; place?: number | null }
   const [reading, setReading] = useState<Reading | null>(null)
   /** What was asked for while the video was being read (runs when it's done), and its name */
   const afterReading = useRef<(() => void) | null>(null)
@@ -1169,7 +1171,7 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
             {reading.status === 'running' ? (
               <>
                 <span className="flex items-center gap-2 text-xs font-semibold text-white">
-                  <Spinner /> Reading your video for AI{reading.progress ? ` · ${reading.progress}%` : '…'}
+                  <Spinner /> Reading your video for AI{reading.place ? ` · waiting its turn, ${inLineText(reading.place)}` : reading.progress ? ` · ${reading.progress}%` : '…'}
                 </span>
                 {reading.progress !== null && (
                   <span className="h-1 rounded-full overflow-hidden" style={{ background: 'rgb(var(--cb-fg) / 0.1)' }} aria-hidden="true">
@@ -1573,7 +1575,7 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
           ) : reading.status === 'running' ? (
             <div className="flex flex-col gap-2">
               <span className="flex items-center gap-2 text-[12.5px] font-semibold text-white">
-                <Spinner /> Getting the transcript{reading.progress ? ` · ${reading.progress}%` : '…'}
+                <Spinner /> Getting the transcript{reading.place ? ` · waiting its turn, ${inLineText(reading.place)}` : reading.progress ? ` · ${reading.progress}%` : '…'}
               </span>
               <span className="h-1.5 rounded-full overflow-hidden" style={{ background: 'rgb(var(--cb-fg) / 0.1)' }} aria-hidden="true">
                 <span className="block h-full rounded-full transition-[width] duration-700" style={{ width: `${Math.max(3, reading.progress ?? 3)}%`, background: ACCENT }} />
