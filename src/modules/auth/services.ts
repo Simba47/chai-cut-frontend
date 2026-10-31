@@ -40,6 +40,21 @@ export async function signupUser(email: string, password: string): Promise<void>
   await issueOtp(norm, 'signup')
 }
 
+// ── One form for signing in and up ───────────────────────────────────────────
+
+/**
+ * What the sign-in form does with an email (user, 2026-10-31: one form, one way through):
+ * 'password' — an account that signs in with a password; 'google' — one made with Google, no
+ * password yet; 'none' — no account (or a signup whose code was never entered): the form turns
+ * into "create your account". It says whether an email has an account — accepted by the user.
+ */
+export async function accountStatus(email: string): Promise<'password' | 'google' | 'none'> {
+  const norm = email.toLowerCase().trim()
+  const [u] = await sql`SELECT "emailVerified", password_hash FROM users WHERE email = ${norm}`
+  if (!u?.emailVerified) return 'none'
+  return u.password_hash ? 'password' : 'google'
+}
+
 // ── OTP issue / verify ────────────────────────────────────────────────────────
 
 export async function issueOtp(
