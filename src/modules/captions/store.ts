@@ -14,6 +14,8 @@ interface CaptionState {
   retranscribing: boolean
   retranscribeElapsed: number
   retranscribeError: string | null
+  /** While captions are being made: their place in line when they wait their turn (1 = next), else null */
+  retranscribePlace: number | null
   /** The caption line on the preview now (VideoPreview sets it when it changes): the Captions panel's key words */
   liveLine: Array<{ word: string; start_ms: number; end_ms: number }> | null
   /** The parts after the first, each in its own look (parts.ts); the first part is captionStyle */
@@ -33,6 +35,7 @@ interface CaptionActions {
   setRetranscribing: (v: boolean) => void
   setRetranscribeElapsed: (n: number) => void
   setRetranscribeError: (e: string | null) => void
+  setRetranscribePlace: (place: number | null) => void
   setLiveLine: (line: CaptionState['liveLine']) => void
   setCaptionParts: (parts: CaptionPart[]) => void
   pickCaptionPart: (id: string | null) => void
@@ -47,6 +50,7 @@ export const useCaptionStore = create<CaptionState & CaptionActions>()(set => ({
   retranscribing: false,
   retranscribeElapsed: 0,
   retranscribeError: null,
+  retranscribePlace: null,
   liveLine: null,
   captionParts: [],
   pickedCaptionPart: null,
@@ -66,6 +70,7 @@ export const useCaptionStore = create<CaptionState & CaptionActions>()(set => ({
   setRetranscribing: (v) => set({ retranscribing: v }),
   setRetranscribeElapsed: (n) => set({ retranscribeElapsed: n }),
   setRetranscribeError: (e) => set({ retranscribeError: e }),
+  setRetranscribePlace: (place) => set({ retranscribePlace: place }),
   setLiveLine: (line) => set({ liveLine: line }),
   setCaptionParts: (parts) => set(s => ({ captionParts: parts, pickedCaptionPart: s.pickedCaptionPart && s.pickedCaptionPart !== 'all' && !parts.some(p => p.id === s.pickedCaptionPart) ? null : s.pickedCaptionPart })),
   pickCaptionPart: (id) => set({ pickedCaptionPart: id }),

@@ -23,6 +23,8 @@ export async function queueRetranscribe(userId: string, clipId: string, language
     if (existing?.language) resolvedLang = existing.language
   }
 
+  const { getUserPlanConfig } = await import('./quota')
+  const plan = await getUserPlanConfig(userId)
   const payload = {
     video_id: row.video_id,
     storage_path: row.storage_path,
@@ -32,6 +34,8 @@ export async function queueRetranscribe(userId: string, clipId: string, language
     clip_start_ms: row.start_ms,
     clip_end_ms: row.end_ms,
     user_id: userId,
+    // The top plan: first in the worker's line and in the shared Google line, as its exports
+    ...(plan.priorityExports ? { priority: true } : {}),
     // "Captions on" (no language picked, no fresh-captions export): only parts with no words need
     // reading, so a video already read in full needs no new reading (the worker checks)
     ...(!renderAfter && (!languageCode || languageCode === 'unknown') ? { fill_gaps: true } : {}),
@@ -50,7 +54,7 @@ export async function queueRetranscribe(userId: string, clipId: string, language
  * the parts it had read, so only the rest is sent).
  */
 export async function ensureVideoTranscript(videoId: string): Promise<'ready' | 'running'> {
-  const [video] = await sql`SELECT storage_path, duration_ms FROM videos WHERE id = ${videoId}`
+  const [video] = await sql`SELECT storage_path, duration_ms, user_id FROM videos WHERE id = ${videoId}`
   if (await hasWholeTranscript(videoId, video?.duration_ms ?? null)) return 'ready'
   const [last] = await sql`
     SELECT id, status, error, payload->>'reported' AS reported FROM jobs
@@ -67,7 +71,10 @@ export async function ensureVideoTranscript(videoId: string): Promise<'ready' | 
     }
   }
   if (video?.storage_path) {
-    const payload = { video_id: videoId, storage_path: video.storage_path, transcribe_full: true }
+    const { getUserPlanConfig } = await import('./quota')
+    const plan = await getUserPlanConfig(video.user_id)
+    // The top plan: first in the shared Google line among readings (an editor's captions still go first)
+    const payload = { video_id: videoId, storage_path: video.storage_path, transcribe_full: true, ...(plan.priorityExports ? { priority: true } : {}) }
     // One reading per video, even when two asks come at once (two tabs, a double click, AI edit
     // picked while Best moments asks): the check and the insert hold the video's lock, so the
     // second ask finds the first one's job instead of paying for the video twice
@@ -114,6 +121,8 @@ export interface VideoTranscriptState {
   error: string | null
   /** The last reading was stopped by the user (status none): Unlock carries on from where it stopped */
   stopped?: boolean
+  /** While running: its place in line when it is waiting its turn (1 = next), else null (placeInLine) */
+  place?: number | null
 }
 
 /** What Stop writes on the reading's job (the worker's READING_STOPPED: it stops when it sees it) */
@@ -125,16 +134,56 @@ async function ownVideo(userId: string, videoId: string) {
   return video
 }
 
+/**
+ * A caption job's place in line (1 = next), or null when it isn't waiting (being read now, done, or
+ * no line). Two lines: the worker's queue while the job is queued (jobs of its kind queued before
+ * it, the top plan's first), then the shared Google line while the worker waits for Google
+ * (google_waiting: the worker's lib/googleBudget.ts — editors' captions before readings, the top plan
+ * first, then first come; only there when GOOGLE_STT_TPM is set).
+ */
+export async function placeInLine(jobId: string): Promise<number | null> {
+  const [job] = await sql<{ status: string; reading: boolean; priority: boolean; created_at: Date }[]>`
+    SELECT status, COALESCE(payload->>'transcribe_full', '') = 'true' AS reading,
+      payload @> '{"priority":true}'::jsonb AS priority, created_at
+    FROM jobs WHERE id = ${jobId} AND type = 'transcribe'`
+  if (!job) return null
+  if (job.status === 'queued') {
+    const [{ ahead }] = await sql<{ ahead: number }[]>`
+      SELECT count(*)::int AS ahead FROM jobs
+      WHERE type = 'transcribe' AND status = 'queued' AND id <> ${jobId}
+        AND (COALESCE(payload->>'transcribe_full', '') = 'true') = ${job.reading}
+        AND ((payload @> '{"priority":true}'::jsonb) > ${job.priority}
+          OR ((payload @> '{"priority":true}'::jsonb) = ${job.priority} AND created_at < ${job.created_at}))`
+    return ahead + 1
+  }
+  if (job.status !== 'processing') return null
+  try {
+    const [row] = await sql<{ place: number | null }[]>`
+      WITH alive AS (
+        SELECT id, job_id, rank, since FROM google_waiting
+        WHERE lane = 'stt' AND seen > clock_timestamp() - interval '30 seconds'
+      ), mine AS (SELECT rank, since, id FROM alive WHERE job_id = ${jobId} ORDER BY rank, since, id LIMIT 1)
+      SELECT (SELECT count(DISTINCT COALESCE(a.job_id, a.id))::int + 1 FROM alive a, mine m
+        WHERE COALESCE(a.job_id, a.id) <> ${jobId} AND (a.rank < m.rank OR (a.rank = m.rank AND (a.since, a.id) < (m.since, m.id)))) AS place
+      FROM mine`
+    return row?.place ?? null
+  } catch {
+    return null   // no shared line (the table is made when the worker first uses it)
+  }
+}
+
 /** How far the whole video's reading is (nothing is started) */
 export async function videoTranscriptState(userId: string, videoId: string): Promise<VideoTranscriptState> {
   const video = await ownVideo(userId, videoId)
   if (await hasWholeTranscript(videoId, video.duration_ms)) return { status: 'ready', progress: 100, error: null }
-  const [last] = await sql<{ status: string; error: string | null; read_pct: string | null }[]>`
-    SELECT status, error, payload->>'read_pct' AS read_pct FROM jobs
+  const [last] = await sql<{ id: string; status: string; error: string | null; read_pct: string | null }[]>`
+    SELECT id, status, error, payload->>'read_pct' AS read_pct FROM jobs
     WHERE type = 'transcribe' AND payload->>'video_id' = ${videoId} AND payload->>'transcribe_full' = 'true'
     ORDER BY created_at DESC LIMIT 1`
-  if (last?.status === 'queued') return { status: 'running', progress: 0, error: null }
-  if (last?.status === 'processing') return { status: 'running', progress: last.read_pct === null ? null : Math.min(99, Number(last.read_pct)), error: null }
+  if (last?.status === 'queued') return { status: 'running', progress: 0, error: null, place: await placeInLine(last.id) }
+  if (last?.status === 'processing') {
+    return { status: 'running', progress: last.read_pct === null ? null : Math.min(99, Number(last.read_pct)), error: null, place: await placeInLine(last.id) }
+  }
   if (last?.status === 'failed' && last.error === READING_STOPPED) {
     return { status: 'none', progress: last.read_pct === null ? null : Math.min(99, Number(last.read_pct)), error: null, stopped: true }
   }

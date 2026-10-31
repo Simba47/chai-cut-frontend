@@ -6,6 +6,7 @@ import { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback } fr
 import type { Clip, Segment, CropBox, BoxKeyframe, CaptionStyle, TextOverlay, AudioTrack, Transition, TranscriptWord, LayoutType, Overlay } from '@chai-cut/shared'
 import { VideoPreview, OutputCanvas, buildCaptionChunks, captionWordsPerLine, captionDefaultY } from '@/components/editor/VideoPreview'
 import { withoutRanges } from '@/lib/cuts'
+import { inLineText } from '@/lib/inLine'
 import { cleanTrims, trimMap, addTrim, wordsOnTimeline, MAX_CLIP_MS, MIN_CLIP_MS } from '@/lib/trims'
 import { toTimelineState, toSourceState, rippleDelete, rippleStretch, lockedInRange, insertAtStart, extendEnd, type TimedState } from '@/modules/editor/trimState'
 import { insertsOf, insertedMs, rippleInsert, isInsert, goesAfterMain, piecesOf, piecesLength, videoAtPieces, timelineAtPieces, rippleCut, pieceAt, speedOf, pieceVideoMs, mainFrom } from '@/modules/editor/inserts'
@@ -316,10 +317,10 @@ export function EditorShell({
 
   const {
     words: sourceWords, captionStyle, captionTextCase, showCaptions, romanize,
-    retranscribing, retranscribeElapsed, retranscribeError,
+    retranscribing, retranscribeElapsed, retranscribeError, retranscribePlace,
     hydrate: hydrateCaptions, setWords, updateWord, updateCaptionStyle,
     setCaptionTextCase, setShowCaptions, setRomanize,
-    setRetranscribing, setRetranscribeElapsed, setRetranscribeError,
+    setRetranscribing, setRetranscribeElapsed, setRetranscribeError, setRetranscribePlace,
   } = useCaptionStore()
 
   // The words as the brand writes them (brand kit Phase 5: the kit's spellings, its hidden words — set
@@ -1577,7 +1578,7 @@ export function EditorShell({
   }, [edgeDragsDone]) // eslint-disable-line react-hooks/exhaustive-deps
 
   async function handleRetranscribe(languageCode: string) {
-    setRetranscribing(true); setRetranscribeElapsed(0); setRetranscribeError(null)
+    setRetranscribing(true); setRetranscribeElapsed(0); setRetranscribeError(null); setRetranscribePlace(null)
     if (retranscribeTimerRef.current) clearInterval(retranscribeTimerRef.current)
     const startedAt = Date.now()
     retranscribeTimerRef.current = setInterval(
@@ -1585,6 +1586,7 @@ export function EditorShell({
     )
     const stopTimer = () => {
       if (retranscribeTimerRef.current) { clearInterval(retranscribeTimerRef.current); retranscribeTimerRef.current = null }
+      setRetranscribePlace(null)
     }
     try {
       const res = await fetch('/api/transcribe/retranscribe', {
@@ -1604,7 +1606,9 @@ export function EditorShell({
           await new Promise(r => setTimeout(r, 3000))
           const res = await fetch(`/api/transcribe/words?video_id=${videoId}&since=${encodeURIComponent(queuedAt)}${jobId ? `&job=${jobId}` : ''}`)
           if (res.ok) {
-            const { words: newWords, failed } = await res.json()
+            const { words: newWords, failed, place } = await res.json()
+            // Waiting its turn (many people making captions at once): say where it is in line
+            setRetranscribePlace(typeof place === 'number' ? place : null)
             if (newWords && newWords.length > 0) {
               setWords(newWords)
               stopTimer(); setRetranscribing(false); return
@@ -6426,7 +6430,7 @@ export function EditorShell({
                             {(transcribing || retranscribing) ? (
                               <p className="flex items-center gap-1.5 text-[11px]" style={{ color: 'var(--ed-accent-text)' }}>
                                 <span className="w-2.5 h-2.5 rounded-full border-[1.5px] border-t-transparent animate-spin shrink-0" style={{ borderColor: ACCENT, borderTopColor: 'transparent' }} />
-                                Generating… this can take a minute
+                                {retranscribePlace ? `Waiting its turn: ${inLineText(retranscribePlace)}` : 'Generating… this can take a minute'}
                               </p>
                             ) : words.length > 0 ? (
                               <p className="text-[11px]" style={{ color: 'rgb(var(--ed-fg) / 0.45)' }}>
@@ -6489,7 +6493,7 @@ export function EditorShell({
                       onTextCaseChange={setCaptionTextCase}
                       onEditCaptions={() => setEditingTranscript(true)}
                       onRetranscribe={handleRetranscribe}
-                      retranscribing={retranscribing} retranscribeElapsed={retranscribeElapsed}
+                      retranscribing={retranscribing} retranscribeElapsed={retranscribeElapsed} retranscribePlace={retranscribePlace}
                       retranscribeError={retranscribeError} hasWords={words.length > 0}
                       hasRoman={hasRoman} romanize={romanize} romanizeLabel={scriptLabel}
                       onRomanizeChange={setRomanize}

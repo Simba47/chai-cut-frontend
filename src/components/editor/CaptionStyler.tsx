@@ -8,6 +8,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { AnimationType, CaptionStyle } from '@chai-cut/shared'
 import { SARVAM_LANGUAGES, DEFAULT_CAPTION_STYLE } from '@chai-cut/shared'
 import { VIDEO_FONTS } from '@/lib/shared/videoFonts'
+import { inLineText } from '@/lib/inLine'
 
 export type TextCase = 'title' | 'upper' | 'lower'
 
@@ -134,6 +135,8 @@ interface Props {
   onRetranscribe: (languageCode: string) => void
   retranscribing: boolean
   retranscribeElapsed?: number
+  /** Waiting its turn: the place in line (1 = next) */
+  retranscribePlace?: number | null
   retranscribeError?: string | null
   hasWords?: boolean
   hasRoman?: boolean
@@ -501,7 +504,7 @@ function applyCase(text: string, tc: TextCase): string {
 export function CaptionStyler({
   style, textCase,
   onChange, onTextCaseChange, onEditCaptions, onRetranscribe, retranscribing, retranscribeElapsed = 0,
-  retranscribeError = null,
+  retranscribePlace = null, retranscribeError = null,
   hasWords = false, hasRoman = false, romanize = false, romanizeLabel = 'Romanize', onRomanizeChange,
 }: Props) {
   const color = style.color ?? DEFAULT_CAPTION_STYLE.color
@@ -550,7 +553,9 @@ export function CaptionStyler({
               <path d="M20 11a8 8 0 10-2.3 5.7M20 4v7h-7" />
             </svg>
             <span className="flex-1 text-left">
-              {retranscribing ? `Regenerating captions… ${formatElapsed(retranscribeElapsed)}` : 'Regenerate captions'}
+              {retranscribing
+                ? `Regenerating captions… ${formatElapsed(retranscribeElapsed)}${retranscribePlace ? ` · ${inLineText(retranscribePlace)}` : ''}`
+                : 'Regenerate captions'}
             </span>
           </button>
           {retranscribeError && (
