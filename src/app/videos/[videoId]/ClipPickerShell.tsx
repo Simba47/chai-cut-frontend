@@ -289,11 +289,19 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
   // What the captions and the title are written in (remembered per browser, like the checkboxes)
   // Make my clips: the brand kit its clips get ('default': the account's default kit; 'none'; or a kit's id)
   const [brandKits, setBrandKits] = useState<Array<{ id: string; name: string; isDefault: boolean }>>([])
-  const [brandPick, setBrandPick] = useState<string>('default')
+  const [brandPick, setBrandPickState] = useState<string>('default')
+  // (picked by the person: the list arriving later doesn't change it)
+  const brandPicked = useRef(false)
+  const setBrandPick = (v: string) => { brandPicked.current = true; setBrandPickState(v) }
   useEffect(() => {
     fetch('/api/brand-kits').then(r => (r.ok ? r.json() : null))
-      .then((d: { kits?: Array<{ id: string; name: string; data?: { is_default?: boolean } }> } | null) => {
-        if (d?.kits) setBrandKits(d.kits.map(k => ({ id: k.id, name: k.name, isDefault: !!k.data?.is_default })))
+      .then((d: { kits?: Array<{ id: string; name: string; shared_by?: string | null; data?: { is_default?: boolean } }> } | null) => {
+        if (!d?.kits) return
+        setBrandKits(d.kits.map(k => ({ id: k.id, name: k.name, isDefault: !!k.data?.is_default })))
+        // No kit marked as the default: start on the newest of the account's own kits, not on
+        // "Default (none set)" — which puts no kit on (user, 2026-10-31: the kit didn't apply)
+        const own = d.kits.filter(k => !k.shared_by)
+        if (!brandPicked.current && !d.kits.some(k => k.data?.is_default) && own.length) setBrandPickState(own[own.length - 1].id)
       }).catch(() => { /* no kits shown */ })
   }, [])
   const [captionLang, setCaptionLang] = useState<CaptionLanguage>('native')
@@ -315,6 +323,14 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
   function toggleAutoOpt(id: AutoOption) {
     setAutoOpts(o => {
       const next = { ...o, [id]: !o[id] }
+      try { localStorage.setItem(AUTO_OPTIONS_KEY, JSON.stringify(next)) } catch { /* storage blocked */ }
+      return next
+    })
+  }
+  /** "Turn them on" under Brand: Captions and Title on (remembered, as a click on their boxes) */
+  function captionsAndTitleOn() {
+    setAutoOpts(o => {
+      const next = { ...o, captions: true, title: true }
       try { localStorage.setItem(AUTO_OPTIONS_KEY, JSON.stringify(next)) } catch { /* storage blocked */ }
       return next
     })
@@ -1250,17 +1266,31 @@ export function ClipPickerShell({ video: initialVideo, videoUrl: signedUrl, vide
           {/* The brand kit the clips get (shown once the account has a kit) */}
           {brandKits.length > 0 && (() => {
             const def = brandKits.find(k => k.isDefault)
+            // A kit goes on, but with Captions or Title off its caption / title look has nothing to
+            // go on — only the logo would show (user, 2026-10-31): say so, with a way to turn them on
+            const kitOn = brandPick !== 'none' && (brandPick !== 'default' || !!def)
+            const missing = [!autoOpts.captions && 'Captions', !autoOpts.title && 'Title'].filter(Boolean) as string[]
             return (
-              <label className="mmc-row flex items-center gap-2 text-[11px]" data-off={autoRunning || undefined} style={{ color: 'rgb(var(--cb-fg) / 0.6)' }}>
-                <span className="shrink-0 w-[52px]">Brand</span>
-                <select value={brandPick} disabled={autoRunning} onChange={e => setBrandPick(e.target.value)}
-                  aria-label="The brand kit the clips get"
-                  className="mmc-select flex-1 min-w-0 px-2 py-1.5 rounded-md text-[11px] text-white outline-none">
-                  <option value="default">{def ? `Default · ${def.name}` : 'Default (none set)'}</option>
-                  {brandKits.filter(k => !k.isDefault).map(k => <option key={k.id} value={k.id}>{k.name}</option>)}
-                  <option value="none">No brand kit</option>
-                </select>
-              </label>
+              <>
+                <label className="mmc-row flex items-center gap-2 text-[11px]" data-off={autoRunning || undefined} style={{ color: 'rgb(var(--cb-fg) / 0.6)' }}>
+                  <span className="shrink-0 w-[52px]">Brand</span>
+                  <select value={brandPick} disabled={autoRunning} onChange={e => setBrandPick(e.target.value)}
+                    aria-label="The brand kit the clips get"
+                    className="mmc-select flex-1 min-w-0 px-2 py-1.5 rounded-md text-[11px] text-white outline-none">
+                    <option value="default">{def ? `Default · ${def.name}` : 'Default (none set)'}</option>
+                    {brandKits.filter(k => !k.isDefault).map(k => <option key={k.id} value={k.id}>{k.name}</option>)}
+                    <option value="none">No brand kit</option>
+                  </select>
+                </label>
+                {kitOn && missing.length > 0 && !autoRunning && (
+                  <p className="mmc-brand-note" role="status">
+                    {missing.length > 1
+                      ? 'Captions and Title are off, so only the kit’s logo goes on.'
+                      : `${missing[0]} is off, so the kit’s ${missing[0] === 'Captions' ? 'caption' : 'title'} look won’t show.`}{' '}
+                    <button type="button" onClick={captionsAndTitleOn}>Turn {missing.length > 1 ? 'them' : 'it'} on</button>
+                  </p>
+                )}
+              </>
             )
           })()}
         </div>

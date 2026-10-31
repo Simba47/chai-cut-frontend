@@ -659,6 +659,16 @@ body {
 .mmc-select:focus-visible { box-shadow: inset 0 0 0 1px rgba(200,255,0,0.55), 0 0 0 3px rgba(200,255,0,0.1); }
 .mmc-select:disabled { cursor: not-allowed; }
 .mmc-select option { background: #1b1b1f; color: #fff; }
+/* Under Brand: the kit's caption / title look can't show while those boxes are off (amber edge, "Turn them on") */
+.mmc-brand-note {
+  margin: 0; padding: 6px 9px; border-radius: 8px; font-size: 10.5px; line-height: 1.45;
+  color: rgb(var(--cb-fg) / 0.78); background: rgba(251, 191, 36, 0.08); border-left: 2px solid rgba(251, 191, 36, 0.7);
+}
+.mmc-brand-note button {
+  padding: 0; border: 0; background: none; cursor: pointer; font: inherit; font-weight: 700; color: #c8ff00;
+  text-decoration: underline; text-underline-offset: 2px;
+}
+.mmc-brand-note button:hover { color: #d9ff4d; }
 
 /* The count box ( − 5 + ): a dark pill whose border turns lime while typing */
 .mmc-count {
