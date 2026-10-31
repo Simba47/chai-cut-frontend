@@ -139,7 +139,8 @@ async function ownVideo(userId: string, videoId: string) {
  * no line). Two lines: the worker's queue while the job is queued (jobs of its kind queued before
  * it, the top plan's first), then the shared Google line while the worker waits for Google
  * (google_waiting: the worker's lib/googleBudget.ts — editors' captions before readings, the top plan
- * first, then first come; only there when GOOGLE_STT_TPM is set).
+ * first, then first come; only there when GOOGLE_STT_TPM / GEMINI_STT_TPM is set). Vertex and the
+ * Gemini key each have their own line (lane 'stt' / 'stt-key'): the place is in the line it waits in.
  */
 export async function placeInLine(jobId: string): Promise<number | null> {
   const [job] = await sql<{ status: string; reading: boolean; priority: boolean; created_at: Date }[]>`
@@ -160,11 +161,11 @@ export async function placeInLine(jobId: string): Promise<number | null> {
   try {
     const [row] = await sql<{ place: number | null }[]>`
       WITH alive AS (
-        SELECT id, job_id, rank, since FROM google_waiting
-        WHERE lane = 'stt' AND seen > clock_timestamp() - interval '30 seconds'
-      ), mine AS (SELECT rank, since, id FROM alive WHERE job_id = ${jobId} ORDER BY rank, since, id LIMIT 1)
+        SELECT id, lane, job_id, rank, since FROM google_waiting
+        WHERE lane IN ('stt', 'stt-key') AND seen > clock_timestamp() - interval '30 seconds'
+      ), mine AS (SELECT lane, rank, since, id FROM alive WHERE job_id = ${jobId} ORDER BY rank, since, id LIMIT 1)
       SELECT (SELECT count(DISTINCT COALESCE(a.job_id, a.id))::int + 1 FROM alive a, mine m
-        WHERE COALESCE(a.job_id, a.id) <> ${jobId} AND (a.rank < m.rank OR (a.rank = m.rank AND (a.since, a.id) < (m.since, m.id)))) AS place
+        WHERE a.lane = m.lane AND COALESCE(a.job_id, a.id) <> ${jobId} AND (a.rank < m.rank OR (a.rank = m.rank AND (a.since, a.id) < (m.since, m.id)))) AS place
       FROM mine`
     return row?.place ?? null
   } catch {
