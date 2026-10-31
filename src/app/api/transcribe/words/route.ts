@@ -44,14 +44,20 @@ export async function GET(req: NextRequest) {
   // The caption job the editor is waiting for (?job=), if it failed: its reason, so the editor can
   // say so instead of waiting
   let failed: string | null = null
+  // ...and while it waits its turn, its place in line (1 = next), so the editor can say so
+  let place: number | null = null
   const jobId = searchParams.get('job')
   if (jobId && /^[0-9a-f-]{36}$/i.test(jobId)) {
-    const [bad] = await sql`
-      SELECT error FROM jobs WHERE id = ${jobId} AND type = 'transcribe' AND payload->>'video_id' = ${videoId} AND status = 'failed'`
-    if (bad) failed = String(bad.error ?? 'the caption job failed').replace(/^Error:\s*/, '').slice(0, 200)
+    const [mine] = await sql`
+      SELECT status, error FROM jobs WHERE id = ${jobId} AND type = 'transcribe' AND payload->>'video_id' = ${videoId}`
+    if (mine?.status === 'failed') failed = String(mine.error ?? 'the caption job failed').replace(/^Error:\s*/, '').slice(0, 200)
+    if (mine?.status === 'queued' || mine?.status === 'processing') {
+      const { placeInLine } = await import('@/server/services/transcribe')
+      place = await placeInLine(jobId)
+    }
   }
 
-  if (!rows.length) return NextResponse.json({ words: null, video_status: video.status, pending, failed })
+  if (!rows.length) return NextResponse.json({ words: null, video_status: video.status, pending, failed, place })
 
   const raw = await sql<{ word: string; word_roman: string | null; start_ms: number; end_ms: number }[]>`SELECT * FROM transcript_words WHERE transcript_id = ${rows[0].id} ORDER BY start_ms`
   // As the brand writes them (its spellings, its hidden words): the clip's kit, else the default one
