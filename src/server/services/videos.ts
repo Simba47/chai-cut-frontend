@@ -374,7 +374,7 @@ async function clippedRanges(videoId: string, durationMs: number): Promise<Array
 
 // Best moments: the whole transcript in ~10-minute windows (see clipFinder.ts)
 async function detectBestMoments(words: Word[], durationMs: number, exclude: Array<[number, number]>): Promise<ClipSuggestion[]> {
-  const ask = (system: string, user: string) => askGemini(user, { model: CLIP_MODEL, system })
+  const ask = (system: string, user: string, o?: { temperature?: number }) => askGemini(user, { model: CLIP_MODEL, system, ...o })
   const clips = await findClips({
     words, durationMs, mode: { kind: 'best' }, ask, exclude,
     log: msg => console.error('[suggestions]', msg),
@@ -387,7 +387,7 @@ async function detectBestMoments(words: Word[], durationMs: number, exclude: Arr
 async function detectClipsByCriteria(
   words: Word[], durationMs: number, criteria: string,
 ): Promise<ClipSuggestion[]> {
-  const ask = (system: string, user: string) => askGemini(user, { model: CLIP_MODEL, system })
+  const ask = (system: string, user: string, o?: { temperature?: number }) => askGemini(user, { model: CLIP_MODEL, system, ...o })
   const clips = await findClips({
     words, durationMs, mode: { kind: 'search', criteria }, ask,
     log: msg => console.error('[ai-detect]', msg),
